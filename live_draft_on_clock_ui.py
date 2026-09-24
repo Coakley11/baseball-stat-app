@@ -34,15 +34,40 @@ def _emit_banner_html(
 
         countdown_script = ""
         if deadline is not None and timer_id:
+            # At zero: nudge Streamlit via hidden solo-timer-wake control when present.
+            # Solo static JS countdown otherwise never triggers a ScriptRun, so expire
+            # freezes at 0:00 if the heartbeat fragment failed to mount.
             countdown_script = f"""
             <script>
             (function() {{
               const deadline = {float(deadline)};
               const el = document.getElementById("{timer_id}");
+              let woke = false;
+              function wakeParent() {{
+                if (woke) return;
+                woke = true;
+                // Prefer hidden wake button click. Avoid top-level location.assign —
+                // that has closed headless Chromium mid-accept.
+                try {{
+                  const doc = (window.top || window.parent || window).document;
+                  if (doc) {{
+                    const buttons = Array.from(doc.querySelectorAll('button'));
+                    const wake = buttons.find((b) => {{
+                      const title = (b.getAttribute('title') || '') + ' ' + (b.getAttribute('aria-label') || '');
+                      const text = (b.innerText || '').trim();
+                      return title.includes('solo-timer-wake') || text === 'solo-timer-wake';
+                    }});
+                    if (wake) wake.click();
+                  }}
+                }} catch (e) {{}}
+              }}
               function tick() {{
                 const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
                 if (el) el.textContent = String(rem);
-                if (rem <= 0) return;
+                if (rem <= 0) {{
+                  wakeParent();
+                  return;
+                }}
                 window.setTimeout(tick, 250);
               }}
               tick();
@@ -372,6 +397,25 @@ def render_live_on_clock_banner(
                     and str(live_room.get("status") or "") == "in_progress"
                 ):
                     _emit_primary_auto_picking_status(st, session)
+                    # Same ScriptRun expire if the board painted already at 0 —
+                    # do not wait for a heartbeat tick that may never remount.
+                    try:
+                        from live_draft_solo_heartbeat import run_solo_expire_tick
+
+                        _zero = run_solo_expire_tick(
+                            st, session, source="on_clock_zero_paint"
+                        )
+                        if (
+                            _zero is not None
+                            and _zero.ok
+                            and (_zero.advanced or _zero.complete)
+                        ):
+                            try:
+                                st.rerun()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                 _mark_on_clock_done()
                 return
         except ImportError:

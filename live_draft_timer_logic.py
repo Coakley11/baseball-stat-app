@@ -14,12 +14,20 @@ TIMER_LIVE_READY_AT_KEY = "timer_live_ready_at"
 
 
 def first_pick_awaiting_live_ready(room: dict[str, Any]) -> bool:
-    """True until the first live-board paint arms pick 0 of an empty board."""
+    """True until the first live-board paint arms pick 0 of an empty board.
+
+    Once a deadline/start has been stamped for pick 0, never treat the room as
+    still awaiting — otherwise sparse ScriptRuns that rehydrate a room blob
+    without ``timer_live_ready_at`` keep calling ``live_draft_reset_timer`` and
+    the clock never reaches a durable zero for Solo expire.
+    """
     if not isinstance(room, dict):
         return False
     if int(room.get("current_pick_index") or 0) != 0:
         return False
     if room.get(TIMER_LIVE_READY_AT_KEY):
+        return False
+    if room.get("timer_deadline") is not None or room.get("timer_started_at") is not None:
         return False
     board = room.get("draft_board")
     if isinstance(board, list) and board:

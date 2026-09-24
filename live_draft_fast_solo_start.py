@@ -199,27 +199,39 @@ def _pool_has_projection_player_grades(pool: Any) -> bool:
             return False
     except ImportError:
         pass
-    cols = set(str(c) for c in getattr(pool, "columns", []))
+    raw_cols = getattr(pool, "columns", None)
+    try:
+        cols = [str(c) for c in list(raw_cols)] if raw_cols is not None else []
+    except Exception:
+        cols = []
+    colset = set(cols)
     # Require a real blended score column — proj_* alone can be zero placeholders.
-    if "Blended Projection Score" in cols or "Projected Production Score" in cols:
+    blend_col = None
+    if "Blended Projection Score" in colset:
+        blend_col = "Blended Projection Score"
+    elif "Projected Production Score" in colset:
+        blend_col = "Projected Production Score"
+    if blend_col is not None:
         try:
             import pandas as pd
 
-            blend_col = (
-                "Blended Projection Score"
-                if "Blended Projection Score" in cols
-                else "Projected Production Score"
-            )
-            vals = pd.to_numeric(pool[blend_col], errors="coerce")
-            if vals.notna().any() and float(vals.fillna(0).max()) > 0:
+            block = pool[blend_col]
+            # Duplicate labels return a DataFrame — take the first series.
+            if isinstance(block, pd.DataFrame):
+                block = block.iloc[:, 0]
+            vals = pd.to_numeric(block, errors="coerce")
+            if bool(vals.notna().any()) and float(vals.fillna(0).max()) > 0:
                 return True
         except Exception:
             return True
-    if "proj_HR" in cols and "proj_RBI" in cols:
+    if "proj_HR" in colset and "proj_RBI" in colset:
         try:
             import pandas as pd
 
-            hr = pd.to_numeric(pool["proj_HR"], errors="coerce").fillna(0)
+            hr_block = pool["proj_HR"]
+            if isinstance(hr_block, pd.DataFrame):
+                hr_block = hr_block.iloc[:, 0]
+            hr = pd.to_numeric(hr_block, errors="coerce").fillna(0)
             if float(hr.max()) > 0:
                 return True
         except Exception:

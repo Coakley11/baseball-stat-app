@@ -737,7 +737,11 @@ def is_shared_lobby(session: dict[str, Any], room: dict[str, Any] | None = None)
 
 
 def is_solo_lobby(session: dict[str, Any], room: dict[str, Any] | None = None) -> bool:
-    """Solo room prepared and waiting for Start Draft (timer not armed)."""
+    """Solo room prepared and waiting for Start Draft (timer not armed).
+
+    Requires a structurally valid Ready contract (teams, pick_order, pool, etc.).
+    Broken Pick-1-of-0 stubs must never appear as Ready.
+    """
     live = room if isinstance(room, dict) else session.get("live_draft_room")
     if not isinstance(live, dict):
         return False
@@ -752,7 +756,16 @@ def is_solo_lobby(session: dict[str, Any], room: dict[str, Any] | None = None) -
         if live.get("draft_board"):
             return False
     board = live.get("draft_board") or []
-    return not (isinstance(board, list) and len(board) > 0)
+    if isinstance(board, list) and len(board) > 0:
+        return False
+    try:
+        from live_draft_ready_contract import is_valid_solo_ready_room
+
+        return bool(is_valid_solo_ready_room(live, session))
+    except ImportError:
+        teams = [t for t in (live.get("teams") or []) if str(t).strip()]
+        pick_order = live.get("pick_order") or []
+        return len(teams) >= 2 and isinstance(pick_order, list) and len(pick_order) >= 2
 
 
 def start_prepared_solo_room(session: dict[str, Any], st_obj: Any) -> dict[str, Any]:
@@ -760,25 +773,30 @@ def start_prepared_solo_room(session: dict[str, Any], st_obj: Any) -> dict[str, 
     result: dict[str, Any] = {"handled": False, "ok": False, "error": ""}
     room = session.get("live_draft_room")
     if not is_solo_lobby(session, room if isinstance(room, dict) else None):
+        result["error"] = "not_solo_ready_lobby"
         return result
     if not isinstance(room, dict):
         return result
+    try:
+        from live_draft_ready_contract import solo_ready_contract
+
+        contract = solo_ready_contract(room, session)
+        if not contract.get("can_start"):
+            result["handled"] = True
+            result["error"] = "ready_contract:" + ",".join(contract.get("reasons") or ["incomplete"])
+            session["_solo_start_draft_blocked"] = dict(contract)
+            return result
+    except ImportError:
+        pass
     result["handled"] = True
-    # Never block Start Draft on a cold projection rebuild — schedule quiet attach.
+    # Start must never cold-rebuild projections — Ready already required a warm pool
+    # (or at least a usable attached pool). Schedule quiet upgrade only if needed.
     try:
         from live_draft_fast_solo_start import _pool_has_projection_player_grades
 
         if not _pool_has_projection_player_grades(room.get("pool")):
             session["_solo_needs_projection_player_grades"] = True
             session["_solo_deferred_pool_next_run"] = True
-        else:
-            try:
-                from live_draft_canonical_pool import attach_canonical_pool_to_room
-
-                attach_canonical_pool_to_room(session, room, force=False)
-                room = session.get("live_draft_room") or room
-            except ImportError:
-                pass
     except ImportError:
         pass
     room["status"] = "in_progress"
@@ -828,6 +846,12 @@ def start_prepared_solo_room(session: dict[str, Any], st_obj: Any) -> dict[str, 
     session["_live_draft_start_feedback"] = (
         "Solo draft started — Pick 1 clock begins when the live board is ready."
     )
+    session["_solo_start_draft_transition"] = {
+        "from": "not_started",
+        "to": "in_progress",
+        "timer_seconds": int((room.get("config") or {}).get("timer_seconds") or 0),
+        "ts": __import__("time").time(),
+    }
     return result
 
 

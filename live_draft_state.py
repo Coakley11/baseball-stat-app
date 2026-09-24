@@ -1562,6 +1562,15 @@ def _prepare_live_draft_state_body(session: dict[str, Any]) -> dict[str, Any] | 
     # End/Delete (Pick 1 of 0). Clear so Shared/Solo Create setup can render.
     if clear_uninhabitable_in_progress_stub(session, reason="prepare_uninhabitable_stub"):
         runtime_probe = session.get(LIVE_DRAFT_ROOM_KEY)
+    # Corrupt Solo Ready stubs (not_started + no teams/pick_order) sticky-Ready
+    # with an unusable Start Draft button — clear back to Draft Setup.
+    try:
+        from live_draft_ready_contract import clear_uninhabitable_solo_ready_stub
+
+        if clear_uninhabitable_solo_ready_stub(session, reason="prepare_ready_stub"):
+            runtime_probe = session.get(LIVE_DRAFT_ROOM_KEY)
+    except ImportError:
+        pass
     short = _try_short_circuit_prepare(session)
     if short is not None:
         return short
@@ -1700,12 +1709,19 @@ def _live_draft_from_blob(state: dict[str, Any]) -> dict[str, Any] | None:
     meta = state.get(LIVE_DRAFT_STATE_KEY)
     if isinstance(meta, dict) and meta.get("draft_room_id"):
         return copy.deepcopy(meta)
+    # Top-level runtime/persist key (expire/direct saves may write this without
+    # live_draft_state / page_filter yet).
+    top = state.get(LIVE_DRAFT_ROOM_KEY)
+    if isinstance(top, dict) and top.get("draft_room_id"):
+        return copy.deepcopy(top)
     pf = state.get("page_filter_state")
     if isinstance(pf, dict):
         block = pf.get(LIVE_DRAFT_PAGE_BLOCK)
         if isinstance(block, dict):
             legacy = block.get(LIVE_DRAFT_ROOM_KEY)
-            if is_persisted_room_blob(legacy):
+            if is_persisted_room_blob(legacy) or (
+                isinstance(legacy, dict) and legacy.get("draft_room_id")
+            ):
                 return copy.deepcopy(legacy)
     ws = state.get("baseball_workspace_state")
     if isinstance(ws, dict):
@@ -1756,6 +1772,38 @@ def apply_cloud_live_draft_state_if_allowed(session: dict[str, Any], state: dict
         return False
     blob = _live_draft_from_blob(state)
     if not blob or not blob.get("draft_room_id"):
+        try:
+            from pathlib import Path
+            import json as _json
+            import time as _time
+
+            out = (
+                Path(__file__).resolve().parent
+                / "data"
+                / "tb_probe"
+                / "live_draft_apply_cloud.json"
+            )
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(
+                _json.dumps(
+                    {
+                        "ts": _time.time(),
+                        "ok": False,
+                        "reason": "empty_blob",
+                        "state_keys": sorted(
+                            [
+                                k
+                                for k in (state or {})
+                                if "live" in str(k).lower() or "draft" in str(k).lower()
+                            ]
+                        )[:40],
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
         return False
     allowed, block_reason = live_draft_restore_allowed(session, blob, source="cloud_or_workspace")
     if not allowed:
@@ -1773,6 +1821,33 @@ def apply_cloud_live_draft_state_if_allowed(session: dict[str, Any], state: dict
         return False
     write_canonical_live_draft_state(session, restored, reason="cloud_restore", local_edit=False)
     session["_live_draft_restore_source"] = "cloud_or_workspace"
+    try:
+        from pathlib import Path
+        import json as _json
+        import time as _time
+
+        out = (
+            Path(__file__).resolve().parent
+            / "data"
+            / "tb_probe"
+            / "live_draft_apply_cloud.json"
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            _json.dumps(
+                {
+                    "ts": _time.time(),
+                    "ok": True,
+                    "status": str(restored.get("status") or ""),
+                    "draft_room_id": str(restored.get("draft_room_id") or ""),
+                    "board_len": len(restored.get("draft_board") or []),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
     return True
 
 
@@ -1887,6 +1962,24 @@ def enrich_save_payload_with_live_draft(
             diag["stripped_after_termination"] = bool(termination_cleared)
             return out, diag
         existing = _live_draft_from_blob(state)
+        if not (existing and existing.get("draft_room_id")):
+            # Session lost the room mid-run but disk may still hold a valid
+            # Solo complete / in-progress draft. Never blank that on autosave
+            # unless termination explicitly cleared the binding.
+            try:
+                from suite_user_persistence import _load_raw
+
+                ws = str(
+                    session.get("_suite_active_workspace_id")
+                    or session.get("workspace_id")
+                    or ""
+                ).strip() or None
+                disk_state, _, _ = _load_raw("baseball", workspace_id=ws)
+                existing = _live_draft_from_blob(disk_state if isinstance(disk_state, dict) else {})
+                if existing and existing.get("draft_room_id"):
+                    diag["recovered_from_disk"] = True
+            except Exception:
+                existing = None
         if existing and existing.get("draft_room_id"):
             # Never reinject a tombstoned room from soft workspace cache.
             try:

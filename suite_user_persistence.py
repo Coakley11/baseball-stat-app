@@ -685,16 +685,25 @@ def sync_workspace_protocol(
         return False
 
     if st.session_state.get("_suite_page_user_nav"):
-        reason = "user page navigation — workspace sync skipped"
-        _mark_user_nav_sync_skipped(st, reason)
-        _record_startup_restore_diagnostics(
-            st, app_id,
-            cloud_state=cloud_state, cloud_ts=cloud_ts,
-            disk_state=disk_state, disk_ts=disk_ts,
-            picked_source="none", picked_reason=reason,
-            should_apply=False, apply_reason="", skip_reason=reason,
+        synced_key = _workspace_synced_key(app_id)
+        already_synced = bool(st.session_state.get(synced_key))
+        # Deep-link / refresh often sets user-nav from ?active_page= before the
+        # first workspace hydrate. Skipping that first sync left Solo Draft
+        # Complete rooms on disk but never restored into session (setup UI).
+        if already_synced:
+            reason = "user page navigation — workspace sync skipped"
+            _mark_user_nav_sync_skipped(st, reason)
+            _record_startup_restore_diagnostics(
+                st, app_id,
+                cloud_state=cloud_state, cloud_ts=cloud_ts,
+                disk_state=disk_state, disk_ts=disk_ts,
+                picked_source="none", picked_reason=reason,
+                should_apply=False, apply_reason="", skip_reason=reason,
+            )
+            return False
+        st.session_state["_suite_persist_restore_skip_reason"] = (
+            "user page navigation — first sync still applied"
         )
-        return False
 
     if not cloud_state and not disk_state:
         reason = "no workspace blob"

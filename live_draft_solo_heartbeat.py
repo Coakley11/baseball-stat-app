@@ -468,18 +468,15 @@ def render_solo_countdown_wake_component(
 
 
 def process_solo_wake_query(st: Any, session: dict[str, Any], room: dict[str, Any]) -> bool:
-    """Consume ?solo_wake= from JS countdown zero-cross — sole Cloud wake delivery."""
+    """Consume ?solo_wake= from JS countdown zero-cross.
+
+    Primary on Cloud (wake owner). Also accepted locally as a backup when the
+    Solo On-the-Clock JS countdown hits zero and the heartbeat fragment missed
+    the cross — otherwise the UI freezes at 0:00.
+    """
     token = _solo_wake_query_token(st)
     if not token:
         return False
-    try:
-        from live_draft_solo_expire_chain import solo_expire_owner
-
-        if solo_expire_owner(session) != "wake":
-            _clear_solo_wake_query(st)
-            return False
-    except ImportError:
-        pass
     if token == str(session.get(SOLO_WAKE_QUERY_SEEN_KEY) or ""):
         _clear_solo_wake_query(st)
         return False
@@ -488,7 +485,7 @@ def process_solo_wake_query(st: Any, session: dict[str, Any], room: dict[str, An
     try:
         from live_draft_solo_expire_chain import note_solo_expire_chain
 
-        note_solo_expire_chain(session, "url_wake_triggered", source="wake", token=token)
+        note_solo_expire_chain(session, "url_wake_triggered", source="wake_or_backup", token=token)
     except ImportError:
         pass
     _handle_solo_wake_delivery(st, session, room, via="query")
@@ -496,7 +493,7 @@ def process_solo_wake_query(st: Any, session: dict[str, Any], room: dict[str, An
 
 
 def render_solo_timer_wake_button(st: Any, session: dict[str, Any], room: dict[str, Any]) -> None:
-    """Hidden control — JS clicks at countdown zero; sole Cloud expiration owner."""
+    """Hidden control — JS clicks at countdown zero; Cloud owner + local fragment backup."""
     try:
         from live_draft_solo_timer import is_solo_live_draft
 
@@ -506,18 +503,12 @@ def render_solo_timer_wake_button(st: Any, session: dict[str, Any], room: dict[s
         return
     if str(room.get("status") or "") != "in_progress":
         return
-    try:
-        from live_draft_solo_expire_chain import note_solo_expire_chain, solo_expire_owner
-
-        if solo_expire_owner(session) != "wake":
-            return
-    except ImportError:
-        pass
     btn_key = solo_timer_wake_button_key(session, room)
     st.markdown(
         """<style>
         button[aria-label="solo-timer-wake"],
-        button[title="solo-timer-wake"] {
+        button[title="solo-timer-wake"],
+        button:has(div:contains('solo-timer-wake')) {
           position: fixed !important;
           left: 0 !important;
           top: 0 !important;
@@ -530,15 +521,20 @@ def render_solo_timer_wake_button(st: Any, session: dict[str, Any], room: dict[s
         </style>""",
         unsafe_allow_html=True,
     )
+    # data attribute for reliable JS targeting (no help= tooltip twin)
+    st.markdown(
+        f'<div id="solo-timer-wake-anchor" data-wake-key="{btn_key}" style="display:none"></div>',
+        unsafe_allow_html=True,
+    )
     try:
+        # No help= — Streamlit tooltip clones a hidden twin button; JS wake clicks miss.
         clicked = st.button(
             SOLO_WAKE_BUTTON_LABEL,
             key=btn_key,
-            help="solo-timer-wake",
             label_visibility="collapsed",
         )
     except TypeError:
-        clicked = st.button(SOLO_WAKE_BUTTON_LABEL, key=btn_key, help="solo-timer-wake")
+        clicked = st.button(SOLO_WAKE_BUTTON_LABEL, key=btn_key)
     pending_rerun = bool(session.pop(SOLO_WAKE_PENDING_RERUN_KEY, None))
     pending_wake = bool(session.pop("_solo_timer_wake", None))
     if not (clicked or pending_wake or pending_rerun):
@@ -688,6 +684,31 @@ def _after_expire_success(
 ) -> bool:
     """Invalidate paint, bump diagnostics, and request full-page rerun for banner/board."""
     try:
+        from pathlib import Path
+        import json as _json
+
+        out = (
+            Path(__file__).resolve().parent
+            / "data"
+            / "tb_probe"
+            / "solo_after_expire_entered.json"
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            _json.dumps(
+                {
+                    "ts": time.time(),
+                    "source": commit_source,
+                    "status": str(tick_room.get("status") or ""),
+                    "board_len": len(tick_room.get("draft_board") or []),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    try:
         from live_draft_canonical_snapshot import (
             align_room_pick_index,
             begin_live_draft_paint,
@@ -720,6 +741,104 @@ def _after_expire_success(
         deadline=getattr(result, "timer_deadline", None) or tick_room.get("timer_deadline"),
         force=True,
     )
+    # Durable persist: fragment ticks often lack ScriptRunContext for force_save.
+    # Write canonical session keys + immediate workspace disk save.
+    session["live_draft_room"] = tick_room
+    session["_solo_expire_needs_disk_persist"] = {
+        "reason": f"solo_expire_{commit_source}",
+        "status": str(tick_room.get("status") or ""),
+        "board_len": len(tick_room.get("draft_board") or []),
+        "ts": time.time(),
+    }
+    try:
+        from live_draft_state import write_canonical_live_draft_state
+
+        write_canonical_live_draft_state(
+            session, tick_room, reason=f"solo_expire_{commit_source}", local_edit=True
+        )
+    except Exception as exc:
+        session["_solo_expire_persist_err"] = f"canon:{type(exc).__name__}: {exc}"[:160]
+    try:
+        from suite_user_persistence import save_user_state, _load_raw
+        from live_draft_state import (
+            LIVE_DRAFT_ROOM_KEY,
+            LIVE_DRAFT_STATE_KEY,
+            enrich_save_payload_with_live_draft,
+            room_to_persist_dict,
+        )
+
+        ws = str(
+            session.get("_suite_active_workspace_id")
+            or session.get("workspace_id")
+            or "daniel"
+        ).strip() or "daniel"
+        # Prefer compact pool so fragment disk writes stay small/reliable.
+        persist_room = room_to_persist_dict(tick_room, compact_pool=True)
+        session[LIVE_DRAFT_ROOM_KEY] = tick_room
+        try:
+            from live_draft_state import write_canonical_live_draft_state as _wcs
+
+            _wcs(session, tick_room, reason=f"solo_expire_disk_{commit_source}", local_edit=True)
+        except Exception:
+            session[LIVE_DRAFT_STATE_KEY] = persist_room
+        disk_state: dict[str, Any] = {}
+        try:
+            existing, _warn, _saved = _load_raw("baseball", workspace_id=ws)
+            if isinstance(existing, dict):
+                disk_state = dict(existing)
+        except Exception:
+            disk_state = {}
+        # Full enrich so top-level + page_filter_state both carry the room
+        # (cold restore reads page_filter / live_draft_state, not only room key).
+        disk_state, _enrich_diag = enrich_save_payload_with_live_draft(session, disk_state)
+        disk_state["active_page"] = session.get("active_page") or "Live Draft Room"
+        disk_state["_suite_active_workspace_id"] = ws
+        ok = bool(save_user_state("baseball", disk_state, workspace_id=ws))
+        # Readback proof — catch silent wipe races immediately.
+        readback_ok = False
+        readback_status = ""
+        readback_board = 0
+        try:
+            rb, _, _ = _load_raw("baseball", workspace_id=ws)
+            rb_room = (rb or {}).get(LIVE_DRAFT_ROOM_KEY) or (rb or {}).get(LIVE_DRAFT_STATE_KEY) or {}
+            if isinstance(rb_room, dict) and str(rb_room.get("draft_room_id") or ""):
+                readback_ok = str(rb_room.get("status") or "") in {"complete", "completed", "in_progress", "paused", "not_started"}
+                readback_status = str(rb_room.get("status") or "")
+                readback_board = len(rb_room.get("draft_board") or [])
+        except Exception:
+            pass
+        session["_solo_expire_disk_save"] = {
+            "ok": ok,
+            "readback_ok": readback_ok,
+            "workspace": ws,
+            "status": str(persist_room.get("status") or ""),
+            "board_len": len(persist_room.get("draft_board") or []),
+            "readback_status": readback_status,
+            "readback_board": readback_board,
+            "enrich": {
+                "injected": bool((_enrich_diag or {}).get("injected_from_session")),
+                "has_payload": bool((_enrich_diag or {}).get("cloud_payload_has_live_draft_state")),
+            },
+        }
+        try:
+            from pathlib import Path
+            import json as _json
+
+            out = (
+                Path(__file__).resolve().parent
+                / "data"
+                / "tb_probe"
+                / "solo_expire_disk_save.json"
+            )
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(
+                _json.dumps(session["_solo_expire_disk_save"], indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+    except Exception as exc:
+        session["_solo_expire_persist_err"] = f"disk:{type(exc).__name__}: {exc}"[:160]
     try:
         from live_draft_solo_expire_chain import note_solo_expire_chain
 
@@ -825,24 +944,80 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
         tick_room, session=session, request_full_rerun=False
     )
     tick_room = _resolve_tick_room(session) or tick_room
-    _log_tick(
-        session,
-        tick_room,
-        phase=f"{source}_expire_result",
-        remaining=int(live_draft_seconds_remaining(tick_room)),
-        deadline=tick_room.get("timer_deadline"),
-        expiration_claimed=str(tick_room.get(SOLO_EXPIRE_APPLIED_KEY) or ""),
-        auto_pick_attempted=True,
-        auto_pick_result=f"ok={result.ok} reason={result.reason} err={result.error or ''}",
-        commit_confirmed=bool(result.ok and (result.advanced or result.complete)),
-        new_deadline=getattr(result, "timer_deadline", None),
-        snapshot_rebuilt=True,
-    )
+    try:
+        from pathlib import Path
+        import json as _json
 
-    if result.ok and (result.advanced or result.complete):
-        # Stamp ownership only after a confirmed advance so a failed expire does not
-        # suppress page fallback for ~2s while the clock sits at 0:00.
-        note_solo_fragment_owned_expire(session)
+        proof = {
+            "ts": time.time(),
+            "source": source,
+            "ok": bool(getattr(result, "ok", False)),
+            "advanced": bool(getattr(result, "advanced", False)),
+            "complete": bool(getattr(result, "complete", False)),
+            "reason": str(getattr(result, "reason", "") or ""),
+            "error": str(getattr(result, "error", "") or "")[:200],
+            "remaining_after": int(live_draft_seconds_remaining(tick_room)),
+            "status": str(tick_room.get("status") or ""),
+            "pick_index": int(tick_room.get("current_pick_index") or 0),
+            "board_len": len(tick_room.get("draft_board") or []),
+        }
+        out = (
+            Path(__file__).resolve().parent
+            / "data"
+            / "tb_probe"
+            / "solo_expire_result.json"
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(_json.dumps(proof, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+    # Persist + rerun IMMEDIATELY — _log_tick / audit must never skip durable complete.
+    if result is not None and bool(getattr(result, "ok", False)) and (
+        bool(getattr(result, "advanced", False)) or bool(getattr(result, "complete", False))
+    ):
+        try:
+            note_solo_fragment_owned_expire(session)
+        except Exception:
+            pass
+        try:
+            _after_expire_success(
+                st, session, tick_room, result, commit_source=source
+            )
+        except Exception as _after_exc:
+            session["_solo_expire_after_err"] = (
+                f"{type(_after_exc).__name__}: {_after_exc}"
+            )[:160]
+
+    try:
+        _log_tick(
+            session,
+            tick_room,
+            phase=f"{source}_expire_result",
+            remaining=int(live_draft_seconds_remaining(tick_room)),
+            deadline=tick_room.get("timer_deadline"),
+            expiration_claimed=str(tick_room.get(SOLO_EXPIRE_APPLIED_KEY) or ""),
+            auto_pick_attempted=True,
+            auto_pick_result=(
+                f"ok={getattr(result, 'ok', None)} reason={getattr(result, 'reason', None)} "
+                f"err={getattr(result, 'error', None) or ''}"
+            ),
+            commit_confirmed=bool(
+                getattr(result, "ok", False)
+                and (
+                    getattr(result, "advanced", False)
+                    or getattr(result, "complete", False)
+                )
+            ),
+            new_deadline=getattr(result, "timer_deadline", None),
+            snapshot_rebuilt=True,
+        )
+    except Exception:
+        pass
+
+    if result is not None and bool(getattr(result, "ok", False)) and (
+        bool(getattr(result, "advanced", False)) or bool(getattr(result, "complete", False))
+    ):
         try:
             from live_draft_solo_expire_chain import note_solo_expire_chain
 
@@ -854,7 +1029,7 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
                 pick_index=int(tick_room.get("current_pick_index") or 0),
                 new_deadline=tick_room.get("timer_deadline"),
             )
-        except ImportError:
+        except Exception:
             pass
         try:
             from live_draft_stage1_expire_audit import record_pick_commit_audit
@@ -866,8 +1041,6 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
                 pick_index_after_raw = int(tick_room.get("current_pick_index") or 0)
                 pick_index_before = max(0, pick_index_after_raw - 1)
             pick_index_after = int(tick_room.get("current_pick_index") or 0)
-            pick_before = pick_index_before + 1
-            pick_after = pick_index_after + 1
             board = tick_room.get("draft_board") or []
             last_pick = board[-1] if isinstance(board, list) and board else {}
             player = ""
@@ -882,60 +1055,13 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
                 team=str(getattr(result, "team_on_clock", "") or getattr(snap, "team", "") or ""),
                 player=player,
                 selection_source=str(getattr(result, "reason", "") or "unknown"),
-                pick_before=pick_before,
-                pick_after=pick_after,
+                pick_before=pick_index_before + 1,
+                pick_after=pick_index_after + 1,
                 triggering_token=triggering_token,
                 triggering_callback_seq=int(seq) if seq is not None else None,
             )
-            try:
-                from live_draft_stage1_expire_audit import mark_token_action_complete
-
-                owners = session.get("_solo_token_delivery_owner") or {}
-                claim_source = ""
-                if isinstance(owners, dict):
-                    claim_source = str(owners.get(triggering_token) or "")
-                mark_token_action_complete(
-                    session,
-                    triggering_token,
-                    st=st,
-                    room_id=str(tick_room.get("draft_room_id") or tick_room.get("draft_id") or ""),
-                    pick_index_before=pick_index_before,
-                    pick_index_after=pick_index_after,
-                    committed_player=player,
-                    selection_source=str(getattr(result, "reason", "") or "unknown"),
-                    claim_source=claim_source,
-                    revision=str(tick_room.get("revision") or tick_room.get("_revision") or ""),
-                )
-            except ImportError:
-                pass
-            try:
-                from live_draft_stage1_post_commit_timer import finalize_post_commit_timer_continuity
-
-                finalize_post_commit_timer_continuity(
-                    st,
-                    session,
-                    tick_room,
-                    completed_token=triggering_token,
-                    result=result,
-                )
-            except ImportError:
-                pass
-        except ImportError:
-            pass
-        rerun_ok = _after_expire_success(
-            st, session, tick_room, result, commit_source=source
-        )
-        _log_tick(
-            session,
-            tick_room,
-            phase=f"{source}_expire_committed",
-            remaining=int(live_draft_seconds_remaining(tick_room)),
-            deadline=tick_room.get("timer_deadline"),
-            commit_confirmed=True,
-            new_deadline=tick_room.get("timer_deadline"),
-            rerender_requested=True,
-            rerender_completed=rerun_ok,
-        )
+        except Exception as _audit_exc:
+            session["_solo_expire_audit_err"] = f"{type(_audit_exc).__name__}: {_audit_exc}"[:160]
     elif result is not None:
         try:
             from live_draft_solo_expire_chain import note_solo_expire_chain
@@ -1033,6 +1159,36 @@ def render_solo_live_draft_heartbeat(st: Any, session: dict[str, Any], room: dic
 
             session[SOLO_HEARTBEAT_LAST_TICK_AT_KEY] = time.time()
         except ImportError:
+            pass
+        # Durable probe for browser acceptance — proves the 1 Hz expire owner is alive.
+        try:
+            from pathlib import Path
+            import json as _json
+
+            tick_room = _resolve_tick_room(session)
+            rem = None
+            try:
+                from live_draft_timer_logic import live_draft_seconds_remaining
+
+                if isinstance(tick_room, dict):
+                    rem = int(live_draft_seconds_remaining(tick_room))
+            except Exception:
+                pass
+            proof = {
+                "ts": time.time(),
+                "tick": int(session.get(SOLO_HEARTBEAT_TICK_KEY) or 0),
+                "remaining": rem,
+                "status": str((tick_room or {}).get("status") or ""),
+            }
+            out = (
+                Path(__file__).resolve().parent
+                / "data"
+                / "tb_probe"
+                / "solo_heartbeat_tick.json"
+            )
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(_json.dumps(proof, indent=2), encoding="utf-8")
+        except Exception:
             pass
         try:
             run_solo_expire_tick(st, session, source="heartbeat")

@@ -14683,6 +14683,28 @@ try:
     begin_nav_trace_run(st.session_state, st=st, phase="run_start_before_consume")
 except ImportError:
     pass
+# Deep-link: ?active_page=Live%20Draft%20Room must actually open Live Draft Room.
+# Query params were previously observed only for canaries — browsers landed on the
+# wrong page and Draft Setup ("Number of Teams") never mounted.
+if not st.session_state.get("_qp_active_page_nav_consumed"):
+    try:
+        from live_draft_cloud_diagnostics import _qp_get
+
+        _qp_page_raw = str(_qp_get(st, "active_page") or "").strip()
+    except Exception:
+        _qp_page_raw = ""
+    if not _qp_page_raw:
+        try:
+            _qp_page_raw = str(st.query_params.get("active_page") or "").strip()
+        except Exception:
+            _qp_page_raw = ""
+    if _qp_page_raw:
+        _qp_target = get_sidebar_page_value(_qp_page_raw)
+        if _qp_target in _PAGE_OPTION_SET:
+            st.session_state["_navigate_to_page"] = _qp_target
+            st.session_state["_skip_page_restore_for"] = _qp_target
+            st.session_state["_qp_active_page_nav_consumed"] = True
+            st.session_state["_qp_active_page_nav_target"] = _qp_target
 _record_sidebar_nav_trace("run_start_before_consume")
 _consumed_nav_target = _consume_scheduled_navigation()
 try:
@@ -14733,6 +14755,74 @@ try:
     except Exception:
         pass
     prepare_baseball_workspace(st)
+except Exception as _prep_ws_exc:
+    # Never silently drop restore failures — Draft Complete refresh depends on this.
+    try:
+        from pathlib import Path
+        import json as _json
+        import time as _time
+        import traceback as _tb
+
+        _out = Path(__file__).resolve().parent / "data" / "tb_probe" / "prepare_workspace_exc.json"
+        _out.parent.mkdir(parents=True, exist_ok=True)
+        _out.write_text(
+            _json.dumps(
+                {
+                    "ts": _time.time(),
+                    "error": f"{type(_prep_ws_exc).__name__}: {_prep_ws_exc}"[:300],
+                    "traceback": _tb.format_exc()[-2000:],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    try:
+        st.session_state["_prepare_baseball_workspace_error"] = (
+            f"{type(_prep_ws_exc).__name__}: {_prep_ws_exc}"
+        )[:200]
+    except Exception:
+        pass
+try:
+    from pathlib import Path
+    import json as _json
+    import time as _time
+
+    _room_after = st.session_state.get("live_draft_room")
+    _state_after = st.session_state.get("live_draft_state")
+    _out2 = Path(__file__).resolve().parent / "data" / "tb_probe" / "prepare_workspace_after.json"
+    _out2.parent.mkdir(parents=True, exist_ok=True)
+    _out2.write_text(
+        _json.dumps(
+            {
+                "ts": _time.time(),
+                "room_status": (
+                    str((_room_after or {}).get("status") or "")
+                    if isinstance(_room_after, dict)
+                    else ""
+                ),
+                "room_id": (
+                    str((_room_after or {}).get("draft_room_id") or "")
+                    if isinstance(_room_after, dict)
+                    else ""
+                ),
+                "state_id": (
+                    str((_state_after or {}).get("draft_room_id") or "")
+                    if isinstance(_state_after, dict)
+                    else ""
+                ),
+                "restore_source": str(st.session_state.get("_live_draft_restore_source") or ""),
+                "restore_blocked": str(
+                    st.session_state.get("_live_draft_restore_blocked_reason") or ""
+                ),
+                "sync_skip": str(st.session_state.get("_suite_persist_restore_skip_reason") or ""),
+                "prep_err": str(st.session_state.get("_prepare_baseball_workspace_error") or ""),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 except Exception:
     pass
 try:
@@ -24630,9 +24720,12 @@ elif active_page == "Live Draft Room":
                                     f"Room ID **{new_room['draft_room_id']}**."
                                 )
                             else:
+                                _ready_timer = int(
+                                    (new_room.get("config") or {}).get("timer_seconds") or 60
+                                )
                                 st.session_state["_live_draft_start_feedback"] = (
                                     f"Solo draft **ready** — press **Start Draft** when you are "
-                                    f"prepared. Pick 1 clock will begin at 60. "
+                                    f"prepared. Pick 1 clock will begin at {_ready_timer}. "
                                     f"Room ID **{new_room['draft_room_id']}**."
                                 )
                             st.success(st.session_state["_live_draft_start_feedback"])
@@ -25211,396 +25304,400 @@ elif active_page == "Live Draft Room":
             _setup_render_ctx.__enter__()
         except ImportError:
             _setup_render_ctx = None
-        with st.expander("Draft Setup / Configuration", expanded=True):
-            try:
-                from live_draft_setup_ui import (
-                    render_guest_join_from_setup,
-                    render_join_attempt_feedback,
-                    render_live_draft_mode_selector,
-                    render_shared_multiplayer_setup,
-                    start_button_disabled,
-                )
+        # Authoritative Solo Draft Setup surface (exactly one Number of Teams /
+        # Picks per Team / Start New Live Draft). Not nested in an expander —
+        # expanded=True expanders still intermittently hide labels from a11y.
+        st.markdown("### Draft Setup / Configuration")
+        st.caption("live-draft-setup-anchor")
+        try:
+            from live_draft_setup_ui import (
+                render_guest_join_from_setup,
+                render_join_attempt_feedback,
+                render_live_draft_mode_selector,
+                render_shared_multiplayer_setup,
+                start_button_disabled,
+            )
 
-                _setup_mode = render_live_draft_mode_selector(st, st.session_state)
-                # Join pending is processed before lifecycle capture above; this
-                # call is a no-op when the flag was already consumed.
-                if render_guest_join_from_setup(st, st.session_state):
-                    try:
-                        from live_draft_safe_mode import request_live_draft_rerun
-
-                        request_live_draft_rerun(
-                            st,
-                            st.session_state,
-                            "shared_draft_join_route",
-                            room=st.session_state.get("live_draft_room"),
-                        )
-                    except ImportError:
-                        st.rerun()
-                    st.stop()
-                render_join_attempt_feedback(st, st.session_state)
-            except ImportError:
-                _setup_mode = "solo"
-            st.subheader("League & Draft Settings")
-            lc1, lc2, lc3 = st.columns(3)
-            _live_scoring_options = ["Roto (5x5)", "Points League"]
-            _live_timer_options = list(LIVE_DRAFT_TIMER_CHOICES.keys())
-            _live_proj_window_options = [3, 4, 5]
-
-            def _live_draft_setting_changed():
+            _setup_mode = render_live_draft_mode_selector(st, st.session_state)
+            # Join pending is processed before lifecycle capture above; this
+            # call is a no-op when the flag was already consumed.
+            if render_guest_join_from_setup(st, st.session_state):
                 try:
-                    from live_draft_setup_persist import on_live_draft_setup_widget_changed
+                    from live_draft_safe_mode import request_live_draft_rerun
 
-                    on_live_draft_setup_widget_changed(st.session_state)
-                except ImportError:
-                    try:
-                        from shared_draft_context import on_draft_settings_changed
-
-                        on_draft_settings_changed(
-                            st.session_state,
-                            source_page="Live Draft Room",
-                            lookback_key="live_draft_proj_window",
-                            style_key="live_draft_proj_style",
-                            format_key="live_draft_scoring",
-                        )
-                    except ImportError:
-                        pass
-                _record_settings_onchange("Live Draft Room", "_live_draft_setting_changed", "live_draft_setup_deferred")
-
-            with lc1:
-                validate_text_state("live_draft_league_name", "My Fantasy League")
-                live_league_name = st.text_input(
-                    "League Name",
-                    key="live_draft_league_name",
-                    on_change=_live_draft_setting_changed,
-                )
-                try:
-                    from user_page_preferences import live_draft_setup_number_default
-
-                    _team_default = live_draft_setup_number_default(
-                        st.session_state, "live_draft_team_count", 2
-                    )
-                    _picks_default = live_draft_setup_number_default(
-                        st.session_state, "live_draft_picks_per_team", 4
+                    request_live_draft_rerun(
+                        st,
+                        st.session_state,
+                        "shared_draft_join_route",
+                        room=st.session_state.get("live_draft_room"),
                     )
                 except ImportError:
-                    _team_default = 2
-                    _picks_default = 4
-                ensure_number_state(
-                    "live_draft_team_count",
-                    _team_default,
-                    min_value=2,
-                    max_value=20,
-                )
-                live_num_teams = st.number_input(
-                    "Number of Teams",
-                    min_value=2,
-                    max_value=20,
-                    step=1,
-                    key="live_draft_team_count",
-                    on_change=_live_draft_setting_changed,
-                )
-                validate_number_state("live_draft_picks_per_team", _picks_default, min_value=1, max_value=30)
-                live_picks_per_team = st.number_input(
-                    "Picks per Team",
-                    min_value=1,
-                    max_value=30,
-                    step=1,
-                    key="live_draft_picks_per_team",
-                    on_change=_live_draft_setting_changed,
-                )
-            with lc2:
-                validate_state_option("live_draft_type", ["Snake Draft"], "Snake Draft")
-                live_draft_type = st.selectbox("Draft Type", ["Snake Draft"], key="live_draft_type", on_change=_live_draft_setting_changed)
-                validate_state_option("live_draft_scoring", _live_scoring_options, "Roto (5x5)")
-                live_scoring = st.selectbox(
-                    "Scoring Type",
-                    _live_scoring_options,
-                    key="live_draft_scoring",
-                    on_change=_live_draft_setting_changed,
-                )
-                validate_state_option("live_draft_timer", _live_timer_options, _live_timer_options[1] if len(_live_timer_options) > 1 else _live_timer_options[0])
-                live_timer_label = st.selectbox("Timer per Pick", _live_timer_options, key="live_draft_timer", on_change=_live_draft_setting_changed)
-            with lc3:
-                validate_state_option("live_draft_auto_rule", LIVE_DRAFT_AUTO_RULES, LIVE_DRAFT_AUTO_RULES[4] if len(LIVE_DRAFT_AUTO_RULES) > 4 else LIVE_DRAFT_AUTO_RULES[0])
-                live_auto_rule = st.selectbox("Auto-Pick Rule", LIVE_DRAFT_AUTO_RULES, key="live_draft_auto_rule", on_change=_live_draft_setting_changed)
-                validate_state_option("live_draft_proj_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
-                live_proj_style = st.selectbox("Projection Style", list(PROJECTION_STYLE_OPTIONS), key="live_draft_proj_style", on_change=_live_draft_setting_changed)
-                validate_state_option("live_draft_proj_window", _live_proj_window_options, 3)
-                live_proj_window = st.selectbox("Projection Window (years)", _live_proj_window_options, key="live_draft_proj_window", on_change=_live_draft_setting_changed)
+                    st.rerun()
+                st.stop()
+            render_join_attempt_feedback(st, st.session_state)
+        except ImportError:
+            _setup_mode = "solo"
+        st.subheader("League & Draft Settings")
+        lc1, lc2, lc3 = st.columns(3)
+        _live_scoring_options = ["Roto (5x5)", "Points League"]
+        _live_timer_options = list(LIVE_DRAFT_TIMER_CHOICES.keys())
+        _live_proj_window_options = [3, 4, 5]
 
-            st.subheader("Roster Settings")
+        def _live_draft_setting_changed():
             try:
-                from user_page_preferences import live_draft_setup_number_default as _ld_setup_default
+                from live_draft_setup_persist import on_live_draft_setup_widget_changed
+
+                on_live_draft_setup_widget_changed(st.session_state)
             except ImportError:
-                _ld_setup_default = lambda _s, _k, fb: fb  # type: ignore[misc,assignment]
-            for _slot_key, _slot_default in [
-                ("live_slot_c", 1), ("live_slot_1b", 1), ("live_slot_2b", 1), ("live_slot_3b", 1),
-                ("live_slot_ss", 1), ("live_slot_of", 3), ("live_slot_dh", 1), ("live_slot_p", 0),
-                ("live_slot_bench", 5),
-            ]:
-                validate_number_state(
-                    _slot_key,
-                    _ld_setup_default(st.session_state, _slot_key, _slot_default),
-                    min_value=0,
-                )
-            rs1, rs2, rs3, rs4 = st.columns(4)
-            with rs1:
-                slot_c = st.number_input("C", min_value=0, max_value=3, step=1, key="live_slot_c", on_change=_live_draft_setting_changed)
-                slot_1b = st.number_input("1B", min_value=0, max_value=3, step=1, key="live_slot_1b", on_change=_live_draft_setting_changed)
-            with rs2:
-                slot_2b = st.number_input("2B", min_value=0, max_value=3, step=1, key="live_slot_2b", on_change=_live_draft_setting_changed)
-                slot_3b = st.number_input("3B", min_value=0, max_value=3, step=1, key="live_slot_3b", on_change=_live_draft_setting_changed)
-            with rs3:
-                slot_ss = st.number_input("SS", min_value=0, max_value=3, step=1, key="live_slot_ss", on_change=_live_draft_setting_changed)
-                slot_of = st.number_input("OF", min_value=0, max_value=5, step=1, key="live_slot_of", on_change=_live_draft_setting_changed)
-            with rs4:
-                slot_dh = st.number_input("DH / UTIL", min_value=0, max_value=3, step=1, key="live_slot_dh", on_change=_live_draft_setting_changed)
-                slot_p = st.number_input("P", min_value=0, max_value=10, step=1, key="live_slot_p", on_change=_live_draft_setting_changed)
-                slot_bench = st.number_input("Bench Spots", min_value=0, max_value=15, step=1, key="live_slot_bench", on_change=_live_draft_setting_changed)
+                try:
+                    from shared_draft_context import on_draft_settings_changed
 
-            st.caption("Rename teams (optional)")
-            default_teams = _live_draft_default_teams(live_num_teams)
-            team_cols = st.columns(min(int(live_num_teams), 4))
-            team_names = []
-            for i in range(int(live_num_teams)):
-                with team_cols[i % len(team_cols)]:
-                    team_names.append(
-                        st.text_input(f"Team {i + 1}", value=default_teams[i], key=f"live_draft_team_name_{i}")
+                    on_draft_settings_changed(
+                        st.session_state,
+                        source_page="Live Draft Room",
+                        lookback_key="live_draft_proj_window",
+                        style_key="live_draft_proj_style",
+                        format_key="live_draft_scoring",
                     )
+                except ImportError:
+                    pass
+            _record_settings_onchange("Live Draft Room", "_live_draft_setting_changed", "live_draft_setup_deferred")
 
+        with lc1:
+            validate_text_state("live_draft_league_name", "My Fantasy League")
+            live_league_name = st.text_input(
+                "League Name",
+                key="live_draft_league_name",
+                on_change=_live_draft_setting_changed,
+            )
             try:
-                from live_draft_setup_ui import render_shared_multiplayer_setup, start_button_disabled
+                from user_page_preferences import live_draft_setup_number_default
 
-                _prep_room = st.session_state.get("live_draft_room")
-                _prep_status = _prep_room.get("status") if isinstance(_prep_room, dict) else None
-                render_shared_multiplayer_setup(
+                _team_default = live_draft_setup_number_default(
+                    st.session_state, "live_draft_team_count", 2
+                )
+                _picks_default = live_draft_setup_number_default(
+                    st.session_state, "live_draft_picks_per_team", 4
+                )
+            except ImportError:
+                _team_default = 2
+                _picks_default = 4
+            ensure_number_state(
+                "live_draft_team_count",
+                _team_default,
+                min_value=2,
+                max_value=20,
+            )
+            live_num_teams = st.number_input(
+                "Number of Teams",
+                min_value=2,
+                max_value=20,
+                step=1,
+                key="live_draft_team_count",
+                on_change=_live_draft_setting_changed,
+            )
+            validate_number_state("live_draft_picks_per_team", _picks_default, min_value=1, max_value=30)
+            live_picks_per_team = st.number_input(
+                "Picks per Team",
+                min_value=1,
+                max_value=30,
+                step=1,
+                key="live_draft_picks_per_team",
+                on_change=_live_draft_setting_changed,
+            )
+        with lc2:
+            validate_state_option("live_draft_type", ["Snake Draft"], "Snake Draft")
+            live_draft_type = st.selectbox("Draft Type", ["Snake Draft"], key="live_draft_type", on_change=_live_draft_setting_changed)
+            validate_state_option("live_draft_scoring", _live_scoring_options, "Roto (5x5)")
+            live_scoring = st.selectbox(
+                "Scoring Type",
+                _live_scoring_options,
+                key="live_draft_scoring",
+                on_change=_live_draft_setting_changed,
+            )
+            validate_state_option("live_draft_timer", _live_timer_options, _live_timer_options[1] if len(_live_timer_options) > 1 else _live_timer_options[0])
+            live_timer_label = st.selectbox("Timer per Pick", _live_timer_options, key="live_draft_timer", on_change=_live_draft_setting_changed)
+        with lc3:
+            validate_state_option("live_draft_auto_rule", LIVE_DRAFT_AUTO_RULES, LIVE_DRAFT_AUTO_RULES[4] if len(LIVE_DRAFT_AUTO_RULES) > 4 else LIVE_DRAFT_AUTO_RULES[0])
+            live_auto_rule = st.selectbox("Auto-Pick Rule", LIVE_DRAFT_AUTO_RULES, key="live_draft_auto_rule", on_change=_live_draft_setting_changed)
+            validate_state_option("live_draft_proj_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
+            live_proj_style = st.selectbox("Projection Style", list(PROJECTION_STYLE_OPTIONS), key="live_draft_proj_style", on_change=_live_draft_setting_changed)
+            validate_state_option("live_draft_proj_window", _live_proj_window_options, 3)
+            live_proj_window = st.selectbox("Projection Window (years)", _live_proj_window_options, key="live_draft_proj_window", on_change=_live_draft_setting_changed)
+
+        st.subheader("Roster Settings")
+        try:
+            from user_page_preferences import live_draft_setup_number_default as _ld_setup_default
+        except ImportError:
+            _ld_setup_default = lambda _s, _k, fb: fb  # type: ignore[misc,assignment]
+        for _slot_key, _slot_default in [
+            ("live_slot_c", 1), ("live_slot_1b", 1), ("live_slot_2b", 1), ("live_slot_3b", 1),
+            ("live_slot_ss", 1), ("live_slot_of", 3), ("live_slot_dh", 1), ("live_slot_p", 0),
+            ("live_slot_bench", 5),
+        ]:
+            validate_number_state(
+                _slot_key,
+                _ld_setup_default(st.session_state, _slot_key, _slot_default),
+                min_value=0,
+            )
+        rs1, rs2, rs3, rs4 = st.columns(4)
+        with rs1:
+            slot_c = st.number_input("C", min_value=0, max_value=3, step=1, key="live_slot_c", on_change=_live_draft_setting_changed)
+            slot_1b = st.number_input("1B", min_value=0, max_value=3, step=1, key="live_slot_1b", on_change=_live_draft_setting_changed)
+        with rs2:
+            slot_2b = st.number_input("2B", min_value=0, max_value=3, step=1, key="live_slot_2b", on_change=_live_draft_setting_changed)
+            slot_3b = st.number_input("3B", min_value=0, max_value=3, step=1, key="live_slot_3b", on_change=_live_draft_setting_changed)
+        with rs3:
+            slot_ss = st.number_input("SS", min_value=0, max_value=3, step=1, key="live_slot_ss", on_change=_live_draft_setting_changed)
+            slot_of = st.number_input("OF", min_value=0, max_value=5, step=1, key="live_slot_of", on_change=_live_draft_setting_changed)
+        with rs4:
+            slot_dh = st.number_input("DH / UTIL", min_value=0, max_value=3, step=1, key="live_slot_dh", on_change=_live_draft_setting_changed)
+            slot_p = st.number_input("P", min_value=0, max_value=10, step=1, key="live_slot_p", on_change=_live_draft_setting_changed)
+            slot_bench = st.number_input("Bench Spots", min_value=0, max_value=15, step=1, key="live_slot_bench", on_change=_live_draft_setting_changed)
+
+        st.caption("Rename teams (optional)")
+        default_teams = _live_draft_default_teams(live_num_teams)
+        team_cols = st.columns(min(int(live_num_teams), 4))
+        team_names = []
+        for i in range(int(live_num_teams)):
+            with team_cols[i % len(team_cols)]:
+                team_names.append(
+                    st.text_input(f"Team {i + 1}", value=default_teams[i], key=f"live_draft_team_name_{i}")
+                )
+
+        try:
+            from live_draft_setup_ui import render_shared_multiplayer_setup, start_button_disabled
+
+            _prep_room = st.session_state.get("live_draft_room")
+            _prep_status = _prep_room.get("status") if isinstance(_prep_room, dict) else None
+            render_shared_multiplayer_setup(
+                st,
+                st.session_state,
+                team_names=team_names,
+                room_status=_prep_status,
+            )
+            _start_disabled, _start_help = start_button_disabled(st.session_state)
+            if developer_mode_enabled():
+                try:
+                    from draft_room_diagnostics import render_pre_draft_shared_room_diagnostics
+
+                    render_pre_draft_shared_room_diagnostics(
+                        st, st.session_state, developer_mode=True
+                    )
+                except ImportError:
+                    pass
+        except ImportError:
+            _start_disabled, _start_help = False, ""
+
+        try:
+            from live_draft_start_setup import (
+                evaluate_live_draft_start_setup,
+                peek_setup_validation_error,
+                render_start_path_diagnostics,
+            )
+
+            _preview = evaluate_live_draft_start_setup(
+                st.session_state,
+                picks_per_team=int(live_picks_per_team),
+                solo_mode=True,
+            )
+            st.caption(
+                f"Required starting positions: **{_preview.get('required_starting_positions', 0)}** · "
+                f"Picks per team: **{_preview.get('picks_per_team', 0)}**"
+                + (
+                    f" · Bench spots after start: **{_preview.get('extra_picks', 0)}**"
+                    if int(_preview.get("extra_picks") or 0) > 0 and _preview.get("ok")
+                    else ""
+                )
+            )
+            render_start_path_diagnostics(st, st.session_state)
+        except ImportError:
+            _preview = None
+
+        b_start, b_reset, b_restore = st.columns([2, 2, 1])
+        with b_start:
+            try:
+                from live_draft_auth_prestart_stage1_diag import (
+                    emit_auth_state_before_start_control,
+                    emit_prestart_hydration_checkpoint,
+                )
+
+                emit_prestart_hydration_checkpoint(
+                    st.session_state,
+                    "before_start_control_render",
+                    st=st,
+                    extra={"start_button_enabled": not bool(_start_disabled)},
+                )
+                emit_auth_state_before_start_control(
+                    st.session_state,
+                    st=st,
+                    start_button_enabled=not bool(_start_disabled),
+                )
+                from live_draft_stage1_current_auth_state import render_stage1_current_auth_state_probe
+
+                render_stage1_current_auth_state_probe(
                     st,
                     st.session_state,
-                    team_names=team_names,
-                    room_status=_prep_status,
+                    start_visible=True,
+                    start_enabled=not bool(_start_disabled),
                 )
-                _start_disabled, _start_help = start_button_disabled(st.session_state)
-                if developer_mode_enabled():
-                    try:
-                        from draft_room_diagnostics import render_pre_draft_shared_room_diagnostics
-
-                        render_pre_draft_shared_room_diagnostics(
-                            st, st.session_state, developer_mode=True
-                        )
-                    except ImportError:
-                        pass
             except ImportError:
-                _start_disabled, _start_help = False, ""
-
+                pass
             try:
-                from live_draft_start_setup import (
-                    evaluate_live_draft_start_setup,
-                    peek_setup_validation_error,
-                    render_start_path_diagnostics,
-                )
+                from live_draft_start_stage1_observability import emit_start_control_rendered
 
-                _preview = evaluate_live_draft_start_setup(
+                emit_start_control_rendered(
+                    st,
                     st.session_state,
-                    picks_per_team=int(live_picks_per_team),
-                    solo_mode=True,
+                    disabled=bool(_start_disabled),
+                    help_text=str(_start_help or ""),
                 )
-                st.caption(
-                    f"Required starting positions: **{_preview.get('required_starting_positions', 0)}** · "
-                    f"Picks per team: **{_preview.get('picks_per_team', 0)}**"
-                    + (
-                        f" · Bench spots after start: **{_preview.get('extra_picks', 0)}**"
-                        if int(_preview.get("extra_picks") or 0) > 0 and _preview.get("ok")
-                        else ""
-                    )
-                )
-                render_start_path_diagnostics(st, st.session_state)
             except ImportError:
-                _preview = None
+                pass
+            st.button(
+                "Start New Live Draft",
+                type="primary",
+                key="live_draft_start_btn",
+                disabled=_start_disabled,
+                help=_start_help or None,
+                on_click=on_start_new_live_draft,
+            )
+            try:
+                from live_draft_start_stage1_observability import emit_start_button_value
 
-            b_start, b_reset, b_restore = st.columns([2, 2, 1])
-            with b_start:
-                try:
-                    from live_draft_auth_prestart_stage1_diag import (
-                        emit_auth_state_before_start_control,
-                        emit_prestart_hydration_checkpoint,
-                    )
-
-                    emit_prestart_hydration_checkpoint(
-                        st.session_state,
-                        "before_start_control_render",
-                        st=st,
-                        extra={"start_button_enabled": not bool(_start_disabled)},
-                    )
-                    emit_auth_state_before_start_control(
-                        st.session_state,
-                        st=st,
-                        start_button_enabled=not bool(_start_disabled),
-                    )
-                    from live_draft_stage1_current_auth_state import render_stage1_current_auth_state_probe
-
-                    render_stage1_current_auth_state_probe(
-                        st,
-                        st.session_state,
-                        start_visible=True,
-                        start_enabled=not bool(_start_disabled),
-                    )
-                except ImportError:
-                    pass
-                try:
-                    from live_draft_start_stage1_observability import emit_start_control_rendered
-
-                    emit_start_control_rendered(
-                        st,
-                        st.session_state,
-                        disabled=bool(_start_disabled),
-                        help_text=str(_start_help or ""),
-                    )
-                except ImportError:
-                    pass
-                st.button(
-                    "Start New Live Draft",
-                    type="primary",
-                    key="live_draft_start_btn",
-                    disabled=_start_disabled,
-                    help=_start_help or None,
-                    on_click=on_start_new_live_draft,
+                emit_start_button_value(
+                    st,
+                    st.session_state,
+                    live_draft_branch_entered=True,
+                    setup_surface_active=True,
                 )
-                try:
-                    from live_draft_start_stage1_observability import emit_start_button_value
+            except ImportError:
+                pass
+            try:
+                from live_draft_start_setup import peek_setup_validation_error
 
-                    emit_start_button_value(
-                        st,
-                        st.session_state,
-                        live_draft_branch_entered=True,
-                        setup_surface_active=True,
-                    )
-                except ImportError:
-                    pass
-                try:
-                    from live_draft_start_setup import peek_setup_validation_error
+                _setup_err = peek_setup_validation_error(st.session_state)
+            except ImportError:
+                _setup_err = str(
+                    st.session_state.get("_live_draft_setup_validation_error") or ""
+                ).strip()
+            if _setup_err:
+                st.error(_setup_err)
+        with b_reset:
+            reset_live = st.button(
+                "End/Delete Draft",
+                key="live_draft_reset_btn",
+                help="Permanently discard any leftover draft state and clear the resumable slot.",
+            )
+        with b_restore:
+            st.caption("Setup autosaves.")
+            if st.button(
+                "Reset Setup to Defaults",
+                key="live_draft_reset_setup_btn",
+                help="Restore application default setup values for future drafts. Does not wipe an in-progress draft board.",
+            ):
+                st.session_state["_live_draft_reset_setup_confirm"] = True
+            if st.session_state.get("_live_draft_reset_setup_confirm"):
+                st.warning("Replace your saved Live Draft setup with application defaults?")
+                c_yes, c_no = st.columns(2)
+                with c_yes:
+                    if st.button("Confirm reset", key="live_draft_reset_setup_confirm_btn"):
+                        try:
+                            from user_page_preferences import reset_live_draft_setup_to_defaults
 
-                    _setup_err = peek_setup_validation_error(st.session_state)
-                except ImportError:
-                    _setup_err = str(
-                        st.session_state.get("_live_draft_setup_validation_error") or ""
-                    ).strip()
-                if _setup_err:
-                    st.error(_setup_err)
-            with b_reset:
-                reset_live = st.button(
-                    "End/Delete Draft",
-                    key="live_draft_reset_btn",
-                    help="Permanently discard any leftover draft state and clear the resumable slot.",
-                )
-            with b_restore:
-                st.caption("Setup autosaves.")
-                if st.button(
-                    "Reset Setup to Defaults",
-                    key="live_draft_reset_setup_btn",
-                    help="Restore application default setup values for future drafts. Does not wipe an in-progress draft board.",
-                ):
-                    st.session_state["_live_draft_reset_setup_confirm"] = True
-                if st.session_state.get("_live_draft_reset_setup_confirm"):
-                    st.warning("Replace your saved Live Draft setup with application defaults?")
-                    c_yes, c_no = st.columns(2)
-                    with c_yes:
-                        if st.button("Confirm reset", key="live_draft_reset_setup_confirm_btn"):
-                            try:
-                                from user_page_preferences import reset_live_draft_setup_to_defaults
-
-                                reset_live_draft_setup_to_defaults(st.session_state, st=st)
-                                st.session_state.pop("_live_draft_reset_setup_confirm", None)
-                                st.success("Setup restored to defaults.")
-                                st.rerun()
-                            except ImportError:
-                                st.error("Preference reset unavailable.")
-                    with c_no:
-                        if st.button("Cancel", key="live_draft_reset_setup_cancel_btn"):
+                            reset_live_draft_setup_to_defaults(st.session_state, st=st)
                             st.session_state.pop("_live_draft_reset_setup_confirm", None)
+                            st.success("Setup restored to defaults.")
+                            st.rerun()
+                        except ImportError:
+                            st.error("Preference reset unavailable.")
+                with c_no:
+                    if st.button("Cancel", key="live_draft_reset_setup_cancel_btn"):
+                        st.session_state.pop("_live_draft_reset_setup_confirm", None)
 
-            if st.session_state.get("_live_draft_start_replace_resumable_pending"):
-                st.warning(
-                    str(
-                        st.session_state.get("_live_draft_start_replace_resumable_message")
-                        or (
-                            "Disregard the saved draft and start a new draft?\n\n"
-                            "This permanently discards the unfinished saved draft. "
-                            "The new draft will use the Solo/Shared mode and settings currently selected below."
-                        )
+        if st.session_state.get("_live_draft_start_replace_resumable_pending"):
+            st.warning(
+                str(
+                    st.session_state.get("_live_draft_start_replace_resumable_message")
+                    or (
+                        "Disregard the saved draft and start a new draft?\n\n"
+                        "This permanently discards the unfinished saved draft. "
+                        "The new draft will use the Solo/Shared mode and settings currently selected below."
                     )
                 )
-                sr1, sr2 = st.columns(2)
-                with sr1:
-                    try:
-                        from live_draft_resumable_ops import on_replace_confirm_click
+            )
+            sr1, sr2 = st.columns(2)
+            with sr1:
+                try:
+                    from live_draft_resumable_ops import on_replace_confirm_click
 
-                        st.button(
-                            "Disregard Saved Draft and Start New",
-                            key="live_draft_start_replace_confirm_btn",
-                            type="primary",
-                            on_click=on_replace_confirm_click,
-                        )
-                    except ImportError:
-                        if st.button(
-                            "Disregard Saved Draft and Start New",
-                            key="live_draft_start_replace_confirm_btn",
-                            type="primary",
-                        ):
-                            st.session_state["_live_draft_start_replace_resumable_ok"] = True
-                            st.session_state.pop("_live_draft_start_replace_resumable_pending", None)
-                            on_start_new_live_draft()
-                            st.rerun()
-                with sr2:
-                    if st.button("Cancel", key="live_draft_start_replace_cancel_btn"):
-                        st.session_state.pop("_live_draft_start_replace_resumable_pending", None)
-                        st.session_state.pop("_live_draft_start_replace_resumable_message", None)
-                        st.rerun()
-
-            if reset_live:
-                st.session_state["_live_draft_discard_confirm"] = True
-            if st.session_state.get("_live_draft_discard_confirm") and _live_draft_lifecycle == LIFECYCLE_SETUP:
-                st.error(
-                    "Permanently delete this draft and start over?\n\n"
-                    "All current picks, teams, room information, queues, participants, and live-draft "
-                    "progress will be removed. This draft cannot be resumed.\n\n"
-                    "Choose **Save & Continue Later** instead if you want to finish it another time."
-                )
-                dc1, dc2 = st.columns(2)
-                with dc1:
+                    st.button(
+                        "Disregard Saved Draft and Start New",
+                        key="live_draft_start_replace_confirm_btn",
+                        type="primary",
+                        on_click=on_replace_confirm_click,
+                    )
+                except ImportError:
                     if st.button(
-                        "Delete Draft Permanently",
-                        key="live_draft_setup_delete_confirm_btn",
+                        "Disregard Saved Draft and Start New",
+                        key="live_draft_start_replace_confirm_btn",
                         type="primary",
                     ):
-                        from live_draft_termination import bump_live_draft_page_epoch
-                        from live_draft_resumable_slot import clear_resumable_live_draft_slot
-
-                        st.session_state.pop("_live_draft_discard_confirm", None)
-                        st.session_state["_live_draft_deleting"] = "in_progress"
-                        st.session_state["_live_draft_controls_locked"] = True
-                        st.session_state.pop("_live_draft_timer_expired_pending", None)
-                        bump_live_draft_page_epoch(st.session_state)
-                        clear_resumable_live_draft_slot(st.session_state)
-                        # Two-phase: paint "Deleting draft…" then execute discard on next run.
+                        st.session_state["_live_draft_start_replace_resumable_ok"] = True
+                        st.session_state.pop("_live_draft_start_replace_resumable_pending", None)
+                        on_start_new_live_draft()
                         st.rerun()
-                        st.stop()
-                with dc2:
-                    if st.button("Keep Draft", key="live_draft_setup_delete_cancel_btn"):
-                        st.session_state.pop("_live_draft_discard_confirm", None)
-                        st.rerun()
+            with sr2:
+                if st.button("Cancel", key="live_draft_start_replace_cancel_btn"):
+                    st.session_state.pop("_live_draft_start_replace_resumable_pending", None)
+                    st.session_state.pop("_live_draft_start_replace_resumable_message", None)
+                    st.rerun()
 
-            with st.expander("Advanced — Convert Simulator to Live Draft", expanded=False):
-                st.caption(
-                    "Advanced: converts your Draft Room Simulator board into a live draft with a clock. "
-                    "Existing picks, queue, watchlist, and tracked players carry over. "
-                    "You will choose timer and projection settings before the draft starts."
-                )
-                st.button(
-                    "Convert Simulator to Live Draft…",
-                    key="live_draft_convert_sim_btn",
-                    help="Review simulator state and confirm before starting the live draft clock.",
-                    on_click=on_open_simulator_convert_panel,
-                )
+        if reset_live:
+            st.session_state["_live_draft_discard_confirm"] = True
+        if st.session_state.get("_live_draft_discard_confirm") and _live_draft_lifecycle == LIFECYCLE_SETUP:
+            st.error(
+                "Permanently delete this draft and start over?\n\n"
+                "All current picks, teams, room information, queues, participants, and live-draft "
+                "progress will be removed. This draft cannot be resumed.\n\n"
+                "Choose **Save & Continue Later** instead if you want to finish it another time."
+            )
+            dc1, dc2 = st.columns(2)
+            with dc1:
+                if st.button(
+                    "Delete Draft Permanently",
+                    key="live_draft_setup_delete_confirm_btn",
+                    type="primary",
+                ):
+                    from live_draft_termination import bump_live_draft_page_epoch
+                    from live_draft_resumable_slot import clear_resumable_live_draft_slot
+
+                    st.session_state.pop("_live_draft_discard_confirm", None)
+                    st.session_state["_live_draft_deleting"] = "in_progress"
+                    st.session_state["_live_draft_controls_locked"] = True
+                    st.session_state.pop("_live_draft_timer_expired_pending", None)
+                    bump_live_draft_page_epoch(st.session_state)
+                    clear_resumable_live_draft_slot(st.session_state)
+                    # Two-phase: paint "Deleting draft…" then execute discard on next run.
+                    st.rerun()
+                    st.stop()
+            with dc2:
+                if st.button("Keep Draft", key="live_draft_setup_delete_cancel_btn"):
+                    st.session_state.pop("_live_draft_discard_confirm", None)
+                    st.rerun()
+
+        with st.expander("Advanced — Convert Simulator to Live Draft", expanded=False):
+            st.caption(
+                "Advanced: converts your Draft Room Simulator board into a live draft with a clock. "
+                "Existing picks, queue, watchlist, and tracked players carry over. "
+                "You will choose timer and projection settings before the draft starts."
+            )
+            st.button(
+                "Convert Simulator to Live Draft…",
+                key="live_draft_convert_sim_btn",
+                help="Review simulator state and confirm before starting the live draft clock.",
+                on_click=on_open_simulator_convert_panel,
+            )
         try:
             if _setup_render_ctx is not None:
                 _setup_render_ctx.__exit__(None, None, None)
@@ -26293,6 +26390,43 @@ elif active_page == "Live Draft Room":
                             st.session_state["_solo_lobby_pool_warm_done"] = True
                     except ImportError:
                         pass
+                    # Solo Ready/Preparing is NOT In Progress. Do not fall through into
+                    # ACTIVE_DRAFT chrome (queue/timer/recs/fragments). That kept Streamlit
+                    # "Running", remounted widgets under Start Draft, and dropped clicks.
+                    try:
+                        st.session_state.pop("_live_draft_start_in_flight", None)
+                        st.session_state.pop("_live_draft_light_rerun", None)
+                        # Only keep a deferred rerun when Preparing still needs warm.
+                        if st.session_state.get("_solo_lobby_pool_warm_done") and not st.session_state.get(
+                            "_solo_needs_projection_player_grades"
+                        ):
+                            st.session_state.pop("_live_draft_defer_full_rerun", None)
+                    except Exception:
+                        pass
+                    try:
+                        from live_draft_render_trace import ldr_section_done
+
+                        ldr_section_done(st.session_state, "room_lobby", st=st)
+                    except ImportError:
+                        pass
+                    # If still Preparing, allow end-of-page warm by not stopping when
+                    # projections are missing; otherwise stop on a stable Ready surface.
+                    _ready_stop = bool(st.session_state.get("_solo_lobby_pool_warm_done")) and not bool(
+                        st.session_state.get("_solo_needs_projection_player_grades")
+                    )
+                    if not _ready_stop:
+                        try:
+                            from live_draft_ready_contract import ensure_ready_pool_warm
+
+                            _warm_now = ensure_ready_pool_warm(st.session_state)
+                            st.session_state["_solo_ready_pool_warm"] = _warm_now
+                            if _warm_now.get("ok"):
+                                st.session_state.pop("_solo_needs_projection_player_grades", None)
+                                st.session_state["_solo_lobby_pool_warm_done"] = True
+                                st.rerun()
+                        except Exception:
+                            pass
+                    st.stop()
         except ImportError:
             pass
         try:
@@ -26908,9 +27042,18 @@ elif active_page == "Live Draft Room":
         if _draft_in_progress and not _draft_is_complete and room and isinstance(room, dict):
             try:
                 from live_draft_solo_timer import is_solo_live_draft
-                from live_draft_solo_heartbeat import render_solo_expire_owner
+                from live_draft_solo_heartbeat import (
+                    process_solo_wake_query,
+                    render_solo_expire_owner,
+                    render_solo_timer_wake_button,
+                )
 
                 if is_solo_live_draft(st.session_state, room):
+                    # JS countdown zero-cross may set ?solo_wake= — consume before chrome.
+                    try:
+                        process_solo_wake_query(st, st.session_state, room)
+                    except Exception:
+                        pass
                     _solo_diag_mounted = False
                     try:
                         from live_draft_solo_placement_micro import (
@@ -26964,6 +27107,11 @@ elif active_page == "Live Draft Room":
                         pass
                     if not _solo_diag_mounted:
                         render_solo_expire_owner(st, st.session_state, room)
+                    # Backup wake control for JS zero-cross even when fragment owns expire.
+                    try:
+                        render_solo_timer_wake_button(st, st.session_state, room)
+                    except Exception:
+                        pass
             except ImportError:
                 pass
 
@@ -28763,6 +28911,26 @@ elif active_page == "Live Draft Room":
     except ImportError:
         pass
 
+    # Solo expire from a fragment/on-clock paint: flush durable workspace state here
+    # where ScriptRunContext is valid (refresh must keep Draft Complete).
+    try:
+        _pend = st.session_state.pop("_solo_expire_needs_disk_persist", None)
+        if isinstance(_pend, dict):
+            from live_draft_state import commit_live_draft_room
+
+            _room_p = st.session_state.get("live_draft_room")
+            if isinstance(_room_p, dict):
+                commit_live_draft_room(
+                    st,
+                    st.session_state,
+                    _room_p,
+                    reason=str(_pend.get("reason") or "solo_expire_deferred"),
+                )
+    except Exception as _solo_persist_exc:
+        st.session_state["_solo_expire_persist_err"] = (
+            f"{type(_solo_persist_exc).__name__}: {_solo_persist_exc}"
+        )[:160]
+
     try:
         from live_draft_pick_persist import flush_deferred_pick_persist
 
@@ -28814,7 +28982,17 @@ elif active_page == "Live Draft Room":
         _room_end = st.session_state.get("live_draft_room")
         if not _force_proj and isinstance(_room_end, dict):
             _force_proj = not _pool_has_projection_player_grades(_room_end.get("pool"))
-        if not _action_pending:
+        # Ready/Preparing lobby warm must NOT wait for create "start_in_flight" to clear —
+        # that flag stays latched through Solo Ready and previously blocked parquet attach
+        # forever (Start Draft never enabled).
+        _ready_lobby_warm = False
+        try:
+            from live_draft_setup_mode import is_solo_lobby as _is_solo_lobby_warm
+
+            _ready_lobby_warm = bool(_is_solo_lobby_warm(st.session_state))
+        except ImportError:
+            _ready_lobby_warm = False
+        if not _action_pending and not _ready_lobby_warm:
             try:
                 from live_draft_start_progress import is_live_draft_start_in_flight
 
@@ -28828,6 +29006,42 @@ elif active_page == "Live Draft Room":
         _heavy_done = bool(st.session_state.get("_live_draft_heavy_paint_done"))
         _early_cards = bool(st.session_state.get("_live_draft_rec_cards_early_viewport"))
         _pool_next = bool(st.session_state.pop("_solo_deferred_pool_next_run", None))
+        # Always instrument Ready/Preparing warm gates for browser acceptance.
+        try:
+            from pathlib import Path
+            import json as _json
+            import time as _time
+
+            gate = {
+                "ts": _time.time(),
+                "action_pending": bool(_action_pending),
+                "pool_next": bool(_pool_next),
+                "heavy_done": bool(_heavy_done),
+                "early_cards": bool(_early_cards),
+                "ready_lobby_warm": bool(_ready_lobby_warm),
+                "force_proj": bool(_force_proj),
+                "needs_flag": bool(
+                    st.session_state.get("_solo_needs_projection_player_grades")
+                ),
+                "will_warm": bool(
+                    (not _action_pending)
+                    and (
+                        _pool_next
+                        or _heavy_done
+                        or (_ready_lobby_warm and _force_proj)
+                    )
+                ),
+            }
+            gpath = (
+                Path(__file__).resolve().parent
+                / "data"
+                / "tb_probe"
+                / "ready_warm_gate.json"
+            )
+            gpath.parent.mkdir(parents=True, exist_ok=True)
+            gpath.write_text(_json.dumps(gate, indent=2), encoding="utf-8")
+        except Exception:
+            pass
         if (
             _early_cards
             and st.session_state.get("_solo_needs_projection_player_grades")
@@ -28836,8 +29050,59 @@ elif active_page == "Live Draft Room":
             st.session_state["_solo_early_cards_pool_scheduled"] = True
             st.session_state["_solo_deferred_pool_next_run"] = True
             _pool_next = False
-        if not _action_pending and (_pool_next or _heavy_done):
-            _upgraded = maybe_build_deferred_full_pool(st.session_state, force=_force_proj)
+        # Preparing Solo Ready: never skip warm because early-card scheduling
+        # deferred this run — parquet attach is cheap and unlocks Start Draft.
+        # Also clear soft "action_pending" (light rerun / create latch) for Ready warm only.
+        if _ready_lobby_warm and (
+            _force_proj or st.session_state.get("_solo_needs_projection_player_grades")
+        ):
+            _hard_pick_pending = bool(
+                st.session_state.get("_pending_manual_draft_pick")
+                or st.session_state.get("_live_draft_manual_pick_in_flight")
+                or st.session_state.get("_live_draft_pick_submitting")
+            )
+            if not _hard_pick_pending:
+                _action_pending = False
+            _pool_next = True
+        if not _action_pending and (
+            _pool_next or _heavy_done or (_ready_lobby_warm and _force_proj)
+        ):
+            _upgraded = False
+            if _ready_lobby_warm and _force_proj:
+                # Dedicated Preparing ScriptRun: attach canonical / parquet / pinned
+                # pool AFTER Ready widgets from the prior paint have settled.
+                try:
+                    from live_draft_ready_contract import ensure_ready_pool_warm
+
+                    _warm = ensure_ready_pool_warm(st.session_state)
+                    st.session_state["_solo_ready_pool_warm"] = _warm
+                    _upgraded = bool(_warm.get("ok"))
+                    try:
+                        from pathlib import Path
+                        import json as _json
+                        import time as _time
+
+                        proof = {
+                            "warm": _warm,
+                            "ts": _time.time(),
+                            "site": "end_of_page_ready_lobby",
+                        }
+                        outp = (
+                            Path(__file__).resolve().parent
+                            / "data"
+                            / "tb_probe"
+                            / "ready_pool_warm_proof.json"
+                        )
+                        outp.parent.mkdir(parents=True, exist_ok=True)
+                        outp.write_text(
+                            _json.dumps(proof, indent=2, default=str), encoding="utf-8"
+                        )
+                    except Exception:
+                        pass
+                except Exception:
+                    _upgraded = False
+            if not _upgraded:
+                _upgraded = maybe_build_deferred_full_pool(st.session_state, force=_force_proj)
             if _upgraded:
                 st.session_state.pop("_solo_needs_projection_player_grades", None)
                 st.session_state.pop("_solo_early_cards_pool_scheduled", None)

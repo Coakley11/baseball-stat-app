@@ -1811,6 +1811,12 @@ def on_start_new_live_draft() -> None:
     import streamlit as st
 
     session = st.session_state
+    try:
+        from live_draft_ready_contract import PHASE_CREATING, set_prestart_phase
+
+        set_prestart_phase(session, PHASE_CREATING)
+    except ImportError:
+        pass
     _pending_armed = False
     _exit_reason = "callback_completed"
     _gate_error = ""

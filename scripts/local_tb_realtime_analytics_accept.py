@@ -107,33 +107,61 @@ def _click_end(page) -> None:
 
 
 def _nav_live_draft(page) -> None:
-    for _ in range(3):
-        try:
-            loc = page.locator("label", has_text=re.compile(r"Live Draft Room")).first
-            if loc.count() == 0:
-                loc = page.get_by_text("Live Draft Room", exact=False).last
-            loc.click(timeout=10000, force=True)
-            page.wait_for_timeout(4000)
+    # Prefer deep-link first — product now consumes ?active_page=.
+    try:
+        page.goto(
+            "http://127.0.0.1:8511/?suite_workspace=daniel&active_page=Live%20Draft%20Room&ux_latency=1",
+            wait_until="domcontentloaded",
+            timeout=120000,
+        )
+        page.wait_for_timeout(3000)
+    except Exception:
+        pass
+    for attempt in range(5):
+        body = _body(page)
+        if (
+            "live-draft-setup-anchor" in body
+            or "Start New Live Draft" in body
+            or "Draft Setup" in body
+            or "Draft ready" in body
+            or "Preparing" in body
+            or re.search(r"\bStart Draft\b", body)
+        ):
             return
+        try:
+            loc = page.locator("label", has_text=re.compile(r"Live Draft Room"))
+            if loc.count() == 0:
+                loc = page.get_by_text(re.compile(r"📡?\s*Live Draft Room"))
+            if loc.count() == 0:
+                loc = page.locator("text=Live Draft Room")
+            if loc.count():
+                loc.last.scroll_into_view_if_needed(timeout=3000)
+                loc.last.click(timeout=10000, force=True)
+            page.wait_for_timeout(2500)
         except Exception:
             page.wait_for_timeout(1500)
 
 
 def _expand_draft_setup(page) -> None:
-    for _ in range(4):
+    for _ in range(6):
         try:
             teams = page.get_by_label(re.compile(r"Number of Teams", re.I))
             if teams.count() and teams.first.is_visible():
                 return
         except Exception:
             pass
-        try:
-            summary = page.locator('summary:has-text("Draft Setup")').first
-            if summary.count():
-                summary.click(timeout=4000, force=True)
-                page.wait_for_timeout(1000)
-        except Exception:
-            page.wait_for_timeout(600)
+        for loc in (
+            page.locator('summary:has-text("Draft Setup")').first,
+            page.locator("[data-testid=stExpander]").filter(has_text="Draft Setup").locator("summary").first,
+            page.get_by_text("Draft Setup", exact=False).first,
+        ):
+            try:
+                if loc.count():
+                    loc.click(timeout=3000, force=True)
+                    page.wait_for_timeout(800)
+            except Exception:
+                pass
+        page.wait_for_timeout(600)
 
 
 def _median(xs: list[float]) -> float | None:
@@ -171,7 +199,14 @@ def _timed_click(page, locator, *, settle_ms: int = 400) -> float:
     return time.perf_counter() - t0
 
 
-def _create_ready_solo(page, report: dict) -> bool:
+def _create_ready_solo(
+    page,
+    report: dict,
+    *,
+    num_teams: int = 2,
+    picks_per_team: int = 5,
+    timer_seconds: int = 8,
+) -> bool:
     _nav_live_draft(page)
     page.wait_for_timeout(2500)
     # If a prior run left an active draft, end it before create/ready checks.
@@ -184,6 +219,8 @@ def _create_ready_solo(page, report: dict) -> bool:
     body0 = _body(page)
     # Already in Solo Ready lobby — require the Start Draft button, not just copy.
     # Reject broken stubs (Pick 1 of 0 / empty teams / no scheduled picks).
+    # Never reuse a Ready room when the caller requested a specific timer/picks —
+    # those settings must come from a fresh create.
     ready_btn0 = page.get_by_role("button", name=re.compile(r"^Start Draft$", re.I))
     broken_ready = bool(
         re.search(r"Pick\s*1\s*of\s*0\b", body0, re.I)
@@ -191,7 +228,7 @@ def _create_ready_solo(page, report: dict) -> bool:
         or re.search(r"Teams:\s*[—\-]\b", body0, re.I)
         or ("pool_rows= None" in body0 and "avail= 0" in body0)
     )
-    if (
+    reuse_ok = (
         ready_btn0.count()
         and not broken_ready
         and (
@@ -199,27 +236,66 @@ def _create_ready_solo(page, report: dict) -> bool:
             or "Pick 1 clock will begin" in body0
             or "Solo draft" in body0
         )
-    ):
+        and int(timer_seconds) <= 0  # only reuse when caller did not pin a timer
+    )
+    if reuse_ok:
         report["ready_reused_existing"] = True
         report["clock_before_start"] = bool(
             re.search(r"TIME REMAINING\s+[1-9]", body0, re.I)
         )
         return True
-    if broken_ready:
-        report["broken_ready_detected"] = True
-        _click_end(page)
-        page.wait_for_timeout(2000)
-        try:
-            page.get_by_role("button", name=re.compile(r"Return to Live Draft Lobby|Start Over|Delete", re.I)).first.click(
-                timeout=4000, force=True
-            )
-            page.wait_for_timeout(2000)
-        except Exception:
-            pass
-        _nav_live_draft(page)
-        page.wait_for_timeout(2000)
+    if ready_btn0.count() or broken_ready or "Draft ready" in body0 or "Waiting for Start Draft" in body0:
+        report["clearing_existing_ready"] = True
+        for _clear in range(5):
+            _click_end(page)
+            page.wait_for_timeout(1000)
+            for name in (
+                r"Return to Live Draft Lobby",
+                r"Return to Setup",
+                r"Start Over",
+                r"Delete Draft",
+                r"End Draft",
+                r"End/Delete",
+            ):
+                try:
+                    page.get_by_role("button", name=re.compile(name, re.I)).first.click(
+                        timeout=2500, force=True
+                    )
+                    page.wait_for_timeout(900)
+                except Exception:
+                    pass
+            _nav_live_draft(page)
+            page.wait_for_timeout(1500)
+            body_clr = _body(page)
+            if "Start New Live Draft" in body_clr or "Number of Teams" in body_clr:
+                break
+            if "Draft ready" not in body_clr and "Waiting for Start Draft" not in body_clr:
+                break
+        _expand_draft_setup(page)
 
     _expand_draft_setup(page)
+    # Wait until the authoritative Setup surface mounts (deep-link + stub clear).
+    setup_ok = False
+    for _ in range(40):
+        body_w = _body(page)
+        teams_n = page.get_by_label("Number of Teams", exact=True).count()
+        if teams_n == 0:
+            teams_n = page.get_by_label(re.compile(r"Number of Teams", re.I)).count()
+        if (
+            teams_n >= 1
+            and (
+                "live-draft-setup-anchor" in body_w
+                or "Start New Live Draft" in body_w
+                or "Draft Setup" in body_w
+            )
+        ):
+            setup_ok = True
+            break
+        page.wait_for_timeout(1000)
+        _expand_draft_setup(page)
+    if not setup_ok:
+        report["setup_fill_err"] = "Number of Teams never mounted"
+        return False
     try:
         page.get_by_role("button", name=re.compile(r"Reset Setup to Defaults", re.I)).first.click(
             timeout=4000
@@ -237,39 +313,48 @@ def _create_ready_solo(page, report: dict) -> bool:
     page.wait_for_timeout(800)
     _expand_draft_setup(page)
     try:
-        # Prefer exact label; fall back to regex when Streamlit nests labels.
-        teams = page.get_by_label("Number of Teams", exact=True)
-        if not teams.count():
-            teams = page.get_by_label(re.compile(r"Number of Teams", re.I))
-        teams.first.fill("2", timeout=8000)
+        teams_input = page.get_by_label("Number of Teams", exact=True)
+        if not teams_input.count():
+            teams_input = page.get_by_label(re.compile(r"Number of Teams", re.I))
+        teams_input.first.click(timeout=8000)
+        teams_input.first.fill(str(int(num_teams)), timeout=8000)
+        teams_input.first.press("Tab")
         picks = page.get_by_label("Picks per Team", exact=True)
         if not picks.count():
             picks = page.get_by_label(re.compile(r"Picks per Team", re.I))
-        picks.first.fill("5", timeout=8000)
+        picks.first.click(timeout=8000)
+        picks.first.fill(str(int(picks_per_team)), timeout=8000)
+        picks.first.press("Tab")
         try:
             timer = page.get_by_label("Timer per Pick", exact=True)
             if not timer.count():
                 timer = page.get_by_label(re.compile(r"Timer per Pick", re.I))
             if timer.count():
-                timer.first.fill("8", timeout=5000)
-                report["timer_set_8"] = True
+                # Selectbox — map seconds to product labels (no free-text fill).
+                label_map = {
+                    30: "30 sec",
+                    60: "60 sec",
+                    90: "90 sec",
+                    120: "2 min",
+                    300: "5 min",
+                    1200: "20 min",
+                }
+                want = label_map.get(int(timer_seconds), "30 sec")
+                timer.first.click(timeout=5000)
+                page.get_by_text(want, exact=True).first.click(timeout=5000)
+                report["timer_set"] = int(
+                    {v: k for k, v in label_map.items()}.get(want, 30)
+                )
         except Exception:
             pass
+        page.wait_for_timeout(800)
         report["teams_picks_set"] = True
+        report["setup_teams"] = int(num_teams)
+        report["setup_picks_per_team"] = int(picks_per_team)
     except Exception as e:
         report["setup_fill_err"] = str(e)[:160]
-        # If setup is inaccessible but a *healthy* Ready is visible, continue.
-        body = _body(page)
-        broken_now = bool(
-            re.search(r"Pick\s*1\s*of\s*0\b", body, re.I)
-            or re.search(r"Scheduled picks:\s*[—\-]\b", body, re.I)
-            or re.search(r"Teams:\s*[—\-]\b", body, re.I)
-        )
-        if not broken_now and (
-            "Draft ready" in body or re.search(r"\bStart Draft\b", body)
-        ):
-            report["ready_after_setup_fail"] = True
-            return True
+        # Do NOT accept an existing Ready after a failed setup fill — that leaves
+        # sticky rooms with the wrong timer / cold projection gate.
         return False
     for lab, val in (
         ("C", "0"),

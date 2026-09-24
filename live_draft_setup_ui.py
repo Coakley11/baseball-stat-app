@@ -814,49 +814,223 @@ def render_solo_draft_ready_card(
     if not is_solo_lobby(session, room=room):
         return
 
+    try:
+        from live_draft_ready_contract import (
+            PHASE_PREPARING,
+            PHASE_READY,
+            set_prestart_phase,
+            solo_ready_contract,
+        )
+
+        contract = solo_ready_contract(room, session)
+        # Never attach/mutate the heavy canonical pool under this Ready card paint.
+        # Schedule Preparing → warm on the next quiet ScriptRun (end-of-page / deferred).
+        if not contract.get("pool_has_projections"):
+            session["_solo_needs_projection_player_grades"] = True
+            session["_solo_deferred_pool_next_run"] = True
+            session["_solo_ready_pool_warm"] = {"ok": False, "reason": "deferred_next_run"}
+            set_prestart_phase(session, PHASE_PREPARING)
+        else:
+            set_prestart_phase(session, PHASE_READY)
+        session["_solo_ready_contract"] = contract
+    except ImportError:
+        contract = {
+            "can_start": True,
+            "pool_has_projections": True,
+            "timer_seconds": 60,
+            "phase": "ready",
+        }
+
     teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
     pick_order = room.get("pick_order") or []
     total = len(pick_order)
     start_disabled, start_help = start_button_disabled(session)
-    timer_sec = int((room.get("config") or {}).get("timer_seconds") or 60)
+    timer_sec = int(
+        (room.get("config") or {}).get("timer_seconds")
+        or contract.get("timer_seconds")
+        or 60
+    )
+    projections_ready = bool(contract.get("pool_has_projections"))
+    phase = str(contract.get("phase") or ("ready" if projections_ready else "preparing"))
+    if not projections_ready:
+        start_disabled = True
+        start_help = "Preparing canonical projections… Start Draft unlocks when Ready is complete."
 
     with st.container(border=True):
-        st.markdown("### Draft ready")
-        st.success(
-            "Solo draft room is prepared. Model/projection data can finish loading now — "
-            "the Pick 1 clock will **not** start until you press **Start Draft**."
-        )
+        if projections_ready:
+            st.markdown("### Draft ready")
+            st.success(
+                "Solo draft room is prepared. Canonical projections are loaded — "
+                "the Pick 1 clock will **not** start until you press **Start Draft**."
+            )
+        else:
+            st.markdown("### Preparing")
+            st.info(
+                "Solo draft room structure is ready. Preparing canonical projections… "
+                "Start Draft unlocks when projections finish loading (timer stays off)."
+            )
         st.caption(
-            f"**Mode:** Solo · **Teams:** {len(teams) or '—'} · "
+            f"**Lifecycle:** {phase} · **Mode:** Solo · **Teams:** {len(teams) or '—'} · "
             f"**Scheduled picks:** {total or '—'} · **Timer:** not running"
+            + (f" · **Clock:** {timer_sec}s" if timer_sec else "")
+            + (" · **Projections:** ready" if projections_ready else " · **Projections:** warming")
         )
-        clicked = st.button(
-            "Start Draft",
-            type="primary",
-            key="live_draft_solo_lobby_start_btn",
-            disabled=start_disabled,
-            help=start_help or f"Begin Pick 1 with a full {timer_sec}-second clock.",
-            use_container_width=True,
-        )
-        if clicked:
-            # Prefer direct start — avoids depending on the create-path pending handler.
+        if start_help:
+            st.caption(str(start_help))
+
+        def _on_solo_start_draft() -> None:
+            """on_click fires before ScriptRun body — survives Ready-chrome races."""
+            # Guard: Streamlit may keep the callback registered while disabled flips.
+            try:
+                from live_draft_ready_contract import solo_ready_contract as _src
+
+                if not _src(session.get("live_draft_room") or room, session).get("can_start"):
+                    session["_solo_start_draft_blocked_click"] = True
+                    return
+            except Exception:
+                pass
+            session["_solo_start_draft_click_ts"] = __import__("time").time()
+            session["_solo_start_draft_button_return"] = True
+            _status_before = str(
+                (session.get("live_draft_room") or room or {}).get("status") or ""
+            )
+            session["_solo_start_draft_widget"] = {
+                "key": "live_draft_solo_lobby_start_btn",
+                "clicked": True,
+                "disabled": bool(start_disabled),
+                "projections_ready": projections_ready,
+                "timer_seconds": timer_sec,
+                "room_status_before": _status_before,
+                "scheduled_picks": total,
+                "teams": len(teams),
+                "via": "on_click",
+            }
             try:
                 prep = start_prepared_solo_room(session, st)
             except Exception as exc:
                 prep = {"handled": False, "ok": False, "error": str(exc)}
-            if not prep.get("ok"):
-                # Fallback to the shared Start New Live Draft callback path.
-                if on_start is not None:
-                    try:
-                        on_start()
-                    except Exception:
-                        pass
-                if prep.get("error"):
-                    st.error(str(prep.get("error")))
+            session["_solo_start_draft_result"] = {
+                "ok": bool(prep.get("ok")),
+                "handled": bool(prep.get("handled")),
+                "error": str(prep.get("error") or "")[:160],
+                "status_after": str(
+                    (session.get("live_draft_room") or {}).get("status") or ""
+                ),
+            }
+            try:
+                from pathlib import Path
+                import json as _json
+                import time as _time
+
+                proof = {
+                    "st_button_start_draft": True,
+                    "widget_key": "live_draft_solo_lobby_start_btn",
+                    "via": "on_click",
+                    "disabled_at_click": bool(start_disabled),
+                    "projections_ready": projections_ready,
+                    "timer_seconds": timer_sec,
+                    "status_before": _status_before,
+                    "status_after": str(
+                        (session.get("live_draft_room") or {}).get("status") or ""
+                    ),
+                    "transition": dict(session.get("_solo_start_draft_transition") or {}),
+                    "result": dict(session.get("_solo_start_draft_result") or {}),
+                    "ts": _time.time(),
+                }
+                out = (
+                    Path(__file__).resolve().parent
+                    / "data"
+                    / "tb_probe"
+                    / "start_draft_click_proof.json"
+                )
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(_json.dumps(proof, indent=2), encoding="utf-8")
+                session["_solo_start_draft_proof_path"] = str(out)
+            except Exception:
+                pass
+            if not prep.get("ok") and on_start is not None:
+                try:
+                    on_start()
+                except Exception:
+                    pass
+            session["_solo_start_draft_needs_rerun"] = True
+
+        # No help= tooltip: Streamlit clones a hidden primary button into the
+        # tooltip hover target, and Playwright often clicks the invisible twin.
+        # Prefer on_click (same as Shared Start Live Draft) so the click is
+        # consumed even when ACTIVE_DRAFT chrome was racing the return value.
+        st.button(
+            "Start Draft",
+            type="primary",
+            key="live_draft_solo_lobby_start_btn",
+            disabled=start_disabled,
+            on_click=_on_solo_start_draft,
+            use_container_width=True,
+        )
+        session["_solo_start_draft_widget"] = dict(
+            session.get("_solo_start_draft_widget")
+            or {
+                "key": "live_draft_solo_lobby_start_btn",
+                "clicked": bool(session.get("_solo_start_draft_button_return")),
+                "disabled": bool(start_disabled),
+                "projections_ready": projections_ready,
+                "timer_seconds": timer_sec,
+                "room_status_before": str(room.get("status") or ""),
+                "scheduled_picks": total,
+                "teams": len(teams),
+            }
+        )
+        if session.pop("_solo_start_draft_needs_rerun", None):
             try:
                 st.rerun()
             except Exception:
                 pass
+            return
+
+        # After Start is painted (still disabled): attach parquet/canonical on this
+        # Preparing ScriptRun *after* widgets exist, then rerun into Ready.
+        if not projections_ready:
+            session["_solo_needs_projection_player_grades"] = True
+            session["_solo_deferred_pool_next_run"] = True
+            warm = {"ok": False, "reason": "deferred_next_run"}
+            try:
+                from live_draft_ready_contract import ensure_ready_pool_warm as _warm_fn
+
+                warm = _warm_fn(session, session.get("live_draft_room") or room)
+                session["_solo_ready_pool_warm"] = warm
+            except Exception as exc:
+                warm = {"ok": False, "reason": f"warm_exc:{type(exc).__name__}:{exc}"[:120]}
+                session["_solo_ready_pool_warm"] = warm
+            try:
+                from pathlib import Path
+                import json as _json
+                import time as _time
+
+                proof = {
+                    "warm": warm,
+                    "ts": _time.time(),
+                    "phase": phase,
+                    "site": "ready_card_after_start_btn",
+                }
+                out = (
+                    Path(__file__).resolve().parent
+                    / "data"
+                    / "tb_probe"
+                    / "ready_pool_warm_proof.json"
+                )
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(_json.dumps(proof, indent=2, default=str), encoding="utf-8")
+            except Exception:
+                pass
+            if warm.get("ok"):
+                session.pop("_solo_needs_projection_player_grades", None)
+                # Immediate Ready paint — Solo Ready must not fall through into
+                # ACTIVE_DRAFT chrome (that kept Streamlit Running and ate Start clicks).
+                try:
+                    st.rerun()
+                except Exception:
+                    session["_live_draft_defer_full_rerun"] = True
+            return
 
 
 def render_edit_setup_expander(

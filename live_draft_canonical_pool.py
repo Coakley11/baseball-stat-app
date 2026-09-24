@@ -57,18 +57,33 @@ def collapse_identity_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_canonical_unified_pool(session: dict[str, Any] | None = None) -> pd.DataFrame:
-    """Resolve the same unified pool Draft Assistant uses (session-aware when possible)."""
+    """Resolve the same unified pool Draft Assistant uses (session-aware when possible).
+
+    Rejects non-projection frames (raw batting / fast-market) so Ready never
+    treats a placeholder table as canonical.
+    """
     session = session if isinstance(session, dict) else {}
+    errors: list[str] = []
+
+    def _is_projection_pool(pool: Any) -> bool:
+        if pool is None or getattr(pool, "empty", True):
+            return False
+        try:
+            from live_draft_fast_solo_start import _pool_has_projection_player_grades
+
+            return bool(_pool_has_projection_player_grades(pool))
+        except ImportError:
+            cols = set(str(c) for c in getattr(pool, "columns", []))
+            return "Blended Projection Score" in cols or (
+                "proj_HR" in cols and "proj_RBI" in cols
+            )
+
     try:
         import importlib
 
         app_mod = importlib.import_module("streamlit_app")
-        live_fn = getattr(app_mod, "get_cached_unified_projection_pool_live", None)
-        if callable(live_fn):
-            pool = live_fn()
-            if pool is not None and not getattr(pool, "empty", True):
-                return pool
-        # Fallback: explicit kwargs from room/session draft settings.
+        # Prefer explicit cached builder first — the live wrapper can return a
+        # session-tainted non-projection frame under Ready / bare imports.
         room = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else {}
         cfg = dict((room or {}).get("config") or {})
         try:
@@ -89,19 +104,37 @@ def load_canonical_unified_pool(session: dict[str, Any] | None = None) -> pd.Dat
                 from datetime import datetime
 
                 lahman = int(datetime.now().year) - 1
-            pool = get_pool(
-                lahman,
-                int(kw.get("draft_window") or cfg.get("projection_window") or 3),
-                str(kw.get("fantasy_format") or cfg.get("scoring_type") or "5x5 Roto"),
-                str(kw.get("projection_style") or cfg.get("projection_style") or "Balanced"),
-                bool(kw.get("use_ml_blend", cfg.get("use_ml_blend"))),
-                float(kw.get("ml_blend_weight") or cfg.get("ml_blend_weight") or 0),
-                int(kw.get("ml_min_games_for_signal") or cfg.get("ml_min_games_for_signal") or 50),
-            )
-            if pool is not None and not getattr(pool, "empty", True):
-                return pool
-    except Exception:
-        pass
+            for year_try in (lahman, lahman - 1, 2024, 2023):
+                if year_try <= 0:
+                    continue
+                try:
+                    pool = get_pool(
+                        int(year_try),
+                        int(kw.get("draft_window") or cfg.get("projection_window") or 3),
+                        str(kw.get("fantasy_format") or cfg.get("scoring_type") or "5x5 Roto"),
+                        str(kw.get("projection_style") or cfg.get("projection_style") or "Balanced"),
+                        bool(kw.get("use_ml_blend", cfg.get("use_ml_blend"))),
+                        float(kw.get("ml_blend_weight") or cfg.get("ml_blend_weight") or 0),
+                        int(kw.get("ml_min_games_for_signal") or cfg.get("ml_min_games_for_signal") or 50),
+                    )
+                    if _is_projection_pool(pool):
+                        return pool
+                    errors.append(f"year_{year_try}_not_projection")
+                except Exception as exc:
+                    errors.append(f"year_{year_try}:{type(exc).__name__}")
+        live_fn = getattr(app_mod, "get_cached_unified_projection_pool_live", None)
+        if callable(live_fn):
+            try:
+                pool = live_fn()
+                if _is_projection_pool(pool):
+                    return pool
+                errors.append("live_fn_not_projection")
+            except Exception as exc:
+                errors.append(f"live_fn:{type(exc).__name__}")
+    except Exception as exc:
+        errors.append(f"import:{type(exc).__name__}:{exc}"[:120])
+    if errors:
+        session["_canonical_pool_load_errors"] = errors[-8:]
     return pd.DataFrame()
 
 
@@ -165,6 +198,19 @@ def attach_canonical_pool_to_room(
     if pool is None or getattr(pool, "empty", True):
         result["reason"] = "canonical_pool_empty"
         return result
+    try:
+        from live_draft_fast_solo_start import _pool_has_projection_player_grades
+
+        if not _pool_has_projection_player_grades(pool):
+            result["reason"] = "canonical_pool_missing_projections"
+            return result
+    except ImportError:
+        cols = set(str(c) for c in getattr(pool, "columns", []))
+        if "Blended Projection Score" not in cols and not (
+            "proj_HR" in cols and "proj_RBI" in cols
+        ):
+            result["reason"] = "canonical_pool_missing_projections"
+            return result
     try:
         from draft_scoring_pool import (
             POOL_KIND_VALID_PROJECTION,

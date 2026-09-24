@@ -250,6 +250,41 @@ def audited_pop_live_draft_room(
             prev_room=prev if prev is not default else None,
             new_room=None,
         )
+    # Always-on breadcrumb for refresh/complete regressions (not gated on audit_enabled).
+    try:
+        from pathlib import Path
+        import json as _json
+        import time as _time
+
+        prev_status = ""
+        prev_id = ""
+        prev_board = 0
+        if isinstance(prev, dict):
+            prev_status = str(prev.get("status") or "")
+            prev_id = str(prev.get("draft_room_id") or "")
+            prev_board = len(prev.get("draft_board") or [])
+        out = (
+            Path(__file__).resolve().parent
+            / "data"
+            / "tb_probe"
+            / "live_draft_room_pop.json"
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            _json.dumps(
+                {
+                    "ts": _time.time(),
+                    "reason": str(reason or "")[:160],
+                    "prev_status": prev_status,
+                    "prev_id": prev_id,
+                    "prev_board": prev_board,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
     return session.pop(LIVE_DRAFT_ROOM_KEY, default)
 
 
