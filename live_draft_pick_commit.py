@@ -665,19 +665,33 @@ def finalize_live_draft_pick_transition(
 
     # Patch recommendation tables + invalidate Draft Assistant caches so drafted
     # players cannot reappear on the next paint.
-    try:
-        from live_draft_ui_cache import (
-            invalidate_draft_assistant_scoring_cache,
-            invalidate_draft_assistant_why_cache,
-            patch_live_draft_caches_after_pick,
-        )
-
-        patch_live_draft_caches_after_pick(session, room, player_id=pid, player_name=pname)
-        invalidate_draft_assistant_scoring_cache(session)
-        invalidate_draft_assistant_why_cache(session)
-    except Exception:
+    # fast_path (timer Auto Pick): defer heavy cache rebuild — expire critical path
+    # must only commit + arm the next clock; enrichment runs after paint.
+    if fast_path:
+        session["_solo_post_pick_cache_pending"] = {
+            "player_id": pid,
+            "player_name": pname,
+            "source": source,
+            "ts": time.time(),
+        }
+        # Lightweight: drop stale rec cache keys so UI cannot reuse drafted rows.
         session.pop("_live_draft_rec_cache", None)
         session.pop("_draft_assistant_scoring_cache", None)
+        session.pop("_draft_assistant_why_cache", None)
+    else:
+        try:
+            from live_draft_ui_cache import (
+                invalidate_draft_assistant_scoring_cache,
+                invalidate_draft_assistant_why_cache,
+                patch_live_draft_caches_after_pick,
+            )
+
+            patch_live_draft_caches_after_pick(session, room, player_id=pid, player_name=pname)
+            invalidate_draft_assistant_scoring_cache(session)
+            invalidate_draft_assistant_why_cache(session)
+        except Exception:
+            session.pop("_live_draft_rec_cache", None)
+            session.pop("_draft_assistant_scoring_cache", None)
 
     snap = {}
     try:

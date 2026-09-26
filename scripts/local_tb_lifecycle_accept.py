@@ -367,8 +367,11 @@ def main() -> int:
                     if btn.first.is_enabled():
                         blob = _all_text(page)
                         if (
-                            "Projections: ready" in blob
+                            "Your draft is ready" in blob
+                            or "rankings and player projections are ready" in blob
+                            or "Projections: ready" in blob
                             or "Canonical projections are loaded" in blob
+                            or "Draft ready" in blob
                             or i >= 5
                         ):
                             start_enabled = True

@@ -296,20 +296,55 @@ def ensure_live_draft_timer_for_pick(
             return False
         live_draft_reset_timer(room)
         room[TIMER_LIVE_READY_AT_KEY] = time.time()
+        _note_timer_rearm(room, reason="first_pick_live_ready", live_board_ready=live_board_ready)
         return True
     if deadline is None and started is None:
         live_draft_reset_timer(room)
+        _note_timer_rearm(room, reason="missing_deadline", live_board_ready=live_board_ready)
         return True
     if handled is not None and int(handled) >= 0 and int(handled) < idx:
         live_draft_reset_timer(room)
+        _note_timer_rearm(room, reason="handled_behind_pick", live_board_ready=live_board_ready)
         return True
     if live_draft_seconds_remaining(room) <= 0 and handled != idx:
         return False
     return False
 
 
+def _note_timer_rearm(room: dict[str, Any], *, reason: str, live_board_ready: bool) -> None:
+    try:
+        from pathlib import Path
+        import json as _json
+
+        out = (
+            Path(__file__).resolve().parent
+            / "data"
+            / "tb_probe"
+            / "timer_rearm_events.jsonl"
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        row = {
+            "ts": time.time(),
+            "reason": reason,
+            "live_board_ready": bool(live_board_ready),
+            "pick_index": int(room.get("current_pick_index") or 0),
+            "deadline": room.get("timer_deadline"),
+            "live_ready_at": room.get(TIMER_LIVE_READY_AT_KEY),
+            "status": room.get("status"),
+        }
+        with out.open("a", encoding="utf-8") as fh:
+            fh.write(_json.dumps(row) + "\n")
+    except Exception:
+        pass
+
+
 def live_draft_timer_expired_for_pick(room: dict[str, Any]) -> bool:
     if room.get("status") != "in_progress":
+        return False
+    # Pick 1 must not expire until the live board has armed a real deadline.
+    if first_pick_awaiting_live_ready(room):
+        return False
+    if room.get("timer_deadline") is None and room.get("timer_started_at") is None:
         return False
     if expiration_already_processed(room):
         return False

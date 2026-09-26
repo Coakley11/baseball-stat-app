@@ -43,16 +43,18 @@ def resolve_rec_queue_help_variant(st: Any | None, session: dict[str, Any]) -> t
     """
     Returns (help_variant, help_present).
 
-    Outside solo diagnostics: production path always uses help= (unchanged).
+    Production path omits ``help=`` — Streamlit clones a hidden primary button into
+    the tooltip hover target, which steals Add-to-Queue clicks (same bug as Start Draft).
+    Solo diagnostics may still A/B with_help vs no_help via query latch.
     """
     if not _solo_diag_enabled(st, session):
-        return ("production_default", True)
-    variant = str(session.get(SESSION_VARIANT_KEY) or "with_help").strip().lower()
+        return ("production_no_help", False)
+    variant = str(session.get(SESSION_VARIANT_KEY) or "no_help").strip().lower()
     if variant not in VALID_DIAG_VARIANTS:
-        variant = "with_help"
-    if variant == "no_help":
-        return ("no_help", False)
-    return ("with_help", True)
+        variant = "no_help"
+    if variant == "with_help":
+        return ("with_help", True)
+    return ("no_help", False)
 
 
 def rec_queue_add_button_help_kwargs(st: Any | None, session: dict[str, Any], *, player_name: str) -> dict[str, str]:

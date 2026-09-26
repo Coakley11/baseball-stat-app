@@ -62,13 +62,13 @@ def _room() -> dict[str, Any]:
 
 
 class RecQueueHelpAbResolverTests(unittest.TestCase):
-    def test_production_path_always_uses_help(self) -> None:
+    def test_production_path_omits_help(self) -> None:
         session: dict[str, Any] = {}
         variant, present = resolve_rec_queue_help_variant(None, session)
-        self.assertEqual(variant, "production_default")
-        self.assertTrue(present)
+        self.assertEqual(variant, "production_no_help")
+        self.assertFalse(present)
         kwargs = rec_queue_add_button_help_kwargs(None, session, player_name="Francisco Lindor")
-        self.assertEqual(kwargs["help"], "Add Francisco Lindor to your draft queue.")
+        self.assertEqual(kwargs, {})
 
     def test_diag_with_help_control(self) -> None:
         session: dict[str, Any] = {"_solo_component_diag_enabled": True, SESSION_VARIANT_KEY: "with_help"}
@@ -155,8 +155,8 @@ class RecQueueHelpAbCardRenderTests(unittest.TestCase):
         render_live_draft_rec_cards(st, session, _room(), _francisco_rec_df(), max_cards=1)
         _args, kwargs = self._queue_button_call(st)
         self.assertEqual(_args[0], "⭐ Add to Queue")
-        # Return-value dispatch (Pause contract) — no nested on_click closure.
-        self.assertIsNone(kwargs.get("on_click"))
+        # on_click survives remount races that drop return values (Start Draft pattern).
+        self.assertIsNotNone(kwargs.get("on_click"))
         self.assertEqual(kwargs.get("help"), "Add Francisco Lindor to your draft queue.")
         self.assertEqual(kwargs.get("key"), "rec_card_queue_C9A3CB70_0_231_rec_card")
 
@@ -173,7 +173,7 @@ class RecQueueHelpAbCardRenderTests(unittest.TestCase):
         render_live_draft_rec_cards(st, session, _room(), _francisco_rec_df(), max_cards=1)
         _args, kwargs = self._queue_button_call(st)
         self.assertEqual(_args[0], "⭐ Add to Queue")
-        self.assertIsNone(kwargs.get("on_click"))
+        self.assertIsNotNone(kwargs.get("on_click"))
         self.assertNotIn("help", kwargs)
         self.assertEqual(kwargs.get("key"), "rec_card_queue_C9A3CB70_0_231_rec_card")
 
@@ -181,7 +181,7 @@ class RecQueueHelpAbCardRenderTests(unittest.TestCase):
     @mock.patch("draft_actions.resolve_manual_draft_panel_gate")
     @mock.patch("draft_actions.draft_action_context")
     @mock.patch("draft_actions._live_player_available", return_value=(True, ""))
-    def test_non_diag_path_unchanged_with_help(
+    def test_non_diag_path_omits_help(
         self, _avail: object, _ctx: object, gate_fn: mock.MagicMock, _pg: object
     ) -> None:
         gate_fn.return_value = {"draft_enabled": True, "draft_complete": False}
@@ -189,7 +189,8 @@ class RecQueueHelpAbCardRenderTests(unittest.TestCase):
         session: dict[str, Any] = {}
         render_live_draft_rec_cards(st, session, _room(), _francisco_rec_df(), max_cards=1)
         _args, kwargs = self._queue_button_call(st)
-        self.assertEqual(kwargs.get("help"), "Add Francisco Lindor to your draft queue.")
+        self.assertNotIn("help", kwargs)
+        self.assertIsNotNone(kwargs.get("on_click"))
 
 
 if __name__ == "__main__":

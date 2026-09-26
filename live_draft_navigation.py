@@ -172,13 +172,23 @@ def on_return_to_draft_simulator(session: dict[str, Any]) -> None:
 
 def _seconds_remaining(room: dict[str, Any]) -> int | None:
     try:
-        from live_draft_timer_logic import live_draft_seconds_remaining
+        from live_draft_timer_logic import (
+            TIMER_LIVE_READY_AT_KEY,
+            live_draft_seconds_remaining,
+            live_draft_timer_deadline,
+        )
 
-        if str(room.get("status") or "") == "in_progress":
-            return int(live_draft_seconds_remaining(room))
-        paused = room.get("paused_remaining_seconds")
-        if paused is not None:
-            return int(paused)
+        if str(room.get("status") or "") != "in_progress":
+            paused = room.get("paused_remaining_seconds")
+            if paused is not None:
+                return int(paused)
+            return None
+        # Unarmed Pick 1 (no deadline / live-ready) must not show a fake full clock
+        # beside a missing On-the-Clock banner.
+        if live_draft_timer_deadline(room) is None and not room.get(TIMER_LIVE_READY_AT_KEY):
+            if room.get("timer_started_at") is None:
+                return None
+        return int(live_draft_seconds_remaining(room))
     except ImportError:
         pass
     return None

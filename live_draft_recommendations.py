@@ -231,23 +231,56 @@ def _live_draft_recommendations_impl(
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     # Warm Auto Pick for this on-clock team/pick so timer-zero can commit without
-    # rebuilding scoring under the 0-second boundary.
+    # rebuilding scoring under the 0-second boundary. Reuse THIS scored frame —
+    # do not re-invoke the scoring engine.
     if isinstance(session, dict) and not scored.empty:
         try:
             board = room.get("draft_board") or []
             board_n = len(board) if isinstance(board, list) else 0
-            session["_live_draft_autopick_warm"] = {
+            candidates = []
+            try:
+                for _, row in scored.head(10).iterrows():
+                    candidates.append(row.to_dict())
+            except Exception:
+                candidates = []
+            plan = {
                 "key": (
-                    str(room.get("draft_room_id") or ""),
+                    str(room.get("draft_room_id") or room.get("draft_id") or ""),
                     int(room.get("current_pick_index") or 0),
                     str(team_on_clock),
                     int(board_n),
                     str(rule).strip().lower(),
                 ),
-                "scored": scored,
+                "candidates": candidates,
                 "gaps": list(gaps or []),
+                "rule_key": str(rule).strip().lower(),
+                "team": str(team_on_clock or ""),
+                "pick_index": int(room.get("current_pick_index") or 0),
+                "board_len": int(board_n),
                 "warmed_at": __import__("time").time(),
+                "candidate_count": len(candidates),
+                "source": "live_draft_recommendations",
             }
+            session["_live_draft_autopick_warm"] = plan
+            session["_solo_auto_pick_plan"] = plan
+            session["_solo_warm_plan_for_pick"] = int(room.get("current_pick_index") or 0)
+            try:
+                from live_draft_autopick import _store_process_warm_plan
+
+                _store_process_warm_plan(
+                    room,
+                    {
+                        "key": plan["key"],
+                        "candidates": candidates,
+                        "gaps": list(gaps or []),
+                        "rule_key": str(rule).strip().lower(),
+                        "warmed_at": plan["warmed_at"],
+                        "candidate_count": len(candidates),
+                        "source": "live_draft_recommendations",
+                    },
+                )
+            except Exception:
+                pass
         except Exception:
             pass
 

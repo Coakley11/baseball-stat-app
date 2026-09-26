@@ -192,6 +192,10 @@ def _handle_solo_wake_delivery(
         need_rerun = True
     if not need_rerun:
         return
+    # Banner fragment already painted the next pick — do not full-ScriptRun remount.
+    if bool(session.get("_solo_server_timer_active")):
+        session["_solo_needs_post_expire_board_sync"] = True
+        return
     live = _resolve_tick_room(session) or room
     rerun_ok = False
     try:
@@ -980,14 +984,34 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
             note_solo_fragment_owned_expire(session)
         except Exception:
             pass
-        try:
-            _after_expire_success(
-                st, session, tick_room, result, commit_source=source
-            )
-        except Exception as _after_exc:
-            session["_solo_expire_after_err"] = (
-                f"{type(_after_exc).__name__}: {_after_exc}"
-            )[:160]
+        # Banner fragment owns the next-clock paint; skip heavy disk I/O here so the
+        # 1 Hz fragment can remount the new full clock instead of dying at visible 0.
+        if str(source or "") == "solo_banner_fragment":
+            session["live_draft_room"] = tick_room
+            session["_solo_banner_force_paint"] = True
+            session.pop(ON_CLOCK_BANNER_PAINT_TOKEN_KEY, None)
+            # Defer disk/canonical persistence — next-clock paint must not wait on I/O.
+            session["_solo_expire_needs_disk_persist"] = {
+                "reason": f"solo_expire_{source}",
+                "status": str(tick_room.get("status") or ""),
+                "board_len": len(tick_room.get("draft_board") or []),
+                "ts": time.time(),
+            }
+            try:
+                from live_draft_solo_timer import install_solo_display_snapshot
+
+                install_solo_display_snapshot(session, tick_room)
+            except Exception:
+                pass
+        else:
+            try:
+                _after_expire_success(
+                    st, session, tick_room, result, commit_source=source
+                )
+            except Exception as _after_exc:
+                session["_solo_expire_after_err"] = (
+                    f"{type(_after_exc).__name__}: {_after_exc}"
+                )[:160]
 
     try:
         _log_tick(
@@ -1062,6 +1086,17 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
             )
         except Exception as _audit_exc:
             session["_solo_expire_audit_err"] = f"{type(_audit_exc).__name__}: {_audit_exc}"[:160]
+        # Force Solo banner fragment to remount with the next full clock.
+        session["_solo_banner_force_paint"] = True
+        session.pop(ON_CLOCK_BANNER_PAINT_TOKEN_KEY, None)
+        session.pop("_solo_banner_paint_token", None)
+        # Heartbeat/wake expire must force a full-page remount of the static Solo
+        # banner; otherwise JS stays at visible 0 after the server already advanced.
+        if str(source or "") not in {"on_clock_zero_paint", "solo_banner_fragment"}:
+            try:
+                st.rerun()
+            except Exception:
+                pass
     elif result is not None:
         try:
             from live_draft_solo_expire_chain import note_solo_expire_chain
@@ -1079,7 +1114,12 @@ def run_solo_expire_tick(st: Any, session: dict[str, Any], *, source: str = "hea
 
 
 def render_solo_live_draft_heartbeat(st: Any, session: dict[str, Any], room: dict[str, Any]) -> None:
-    """Mount the sole Solo 1 Hz fragment — local-only expiration owner."""
+    """Mount Solo heartbeat — skipped when server-driven banner timer owns expire."""
+    # Banner fragment owns expire + paint; a second 1 Hz expire fragment caused
+    # duplicate work and Streamlit unresponsiveness under iframe remounts.
+    if bool(session.get("_solo_server_timer_active")):
+        session.pop(SOLO_HEARTBEAT_ACTIVE_KEY, None)
+        return
     try:
         from live_draft_solo_placement_ladder import try_placement_in_heartbeat_fragment
 

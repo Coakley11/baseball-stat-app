@@ -326,6 +326,7 @@ def apply_draft_pick_scoring(
     recommendation_mode="decision",
     room: dict[str, Any] | None = None,
     team_scoped_open_positions: bool = True,
+    _profile_stages: dict[str, Any] | None = None,
 ):
     """
     Centralized fantasy draft intelligence engine.
@@ -335,10 +336,16 @@ def apply_draft_pick_scoring(
 
     All component columns are exposed for the Draft Scoring Breakdown debug expander.
     """
+    import time as _time
+
+    stages = _profile_stages if isinstance(_profile_stages, dict) else {}
+    t_all = _time.perf_counter()
     try:
         from draft_scoring_pool import ensure_draft_scoring_pool_columns
 
+        t0 = _time.perf_counter()
         available = ensure_draft_scoring_pool_columns(available)
+        stages["scoring_pool_columns_ms"] = round((_time.perf_counter() - t0) * 1000.0, 2)
     except ImportError:
         pass
     roster_df = roster_df if roster_df is not None else pd.DataFrame()
@@ -355,6 +362,7 @@ def apply_draft_pick_scoring(
         if room and isinstance(room.get("config"), dict):
             slot_cfg = dict(room["config"])
         # Hard gate: illegal / exhausted positions never enter scoring, survival, or auto-pick.
+        t0 = _time.perf_counter()
         available = filter_candidates_to_legal_roster_positions(
             available,
             config=slot_cfg,
@@ -381,6 +389,7 @@ def apply_draft_pick_scoring(
                 )
         except ImportError:
             pass
+        stages["open_position_filter_ms"] = round((_time.perf_counter() - t0) * 1000.0, 2)
         active_positions = get_active_position_codes(slot_cfg)
         league_demand = get_league_remaining_demand(room, slot_cfg)
     except ImportError:
@@ -397,6 +406,7 @@ def apply_draft_pick_scoring(
         needed_positions = [p for p in needed_positions if p in active_positions]
 
     # --- Positional / roster slot fit (display + Decision roster-need term) ---
+    t0 = _time.perf_counter()
     slot_fit = scored["Primary Position"].isin(gaps).astype(float)
     slot_fit = slot_fit.mask(scored["Primary Position"].astype(str).eq("C"), slot_fit * 0.85)
     if category_needs:
@@ -410,8 +420,10 @@ def apply_draft_pick_scoring(
         lambda p: 0.08 if str(p) in needed_positions else 0.0
     )
     scored["Category Need Bonus"] = cat_need_raw
+    stages["category_fit_ms"] = round((_time.perf_counter() - t0) * 1000.0, 2)
 
     # --- Replacement-level position scarcity (pick-time, from remaining pool) ---
+    t0 = _time.perf_counter()
     replacement_values, position_summary_rows = _draft_compute_position_replacement(
         scored,
         replacement_depths=replacement_depths,
@@ -427,6 +439,7 @@ def apply_draft_pick_scoring(
     ).clip(lower=0)
     scored["Position Scarcity Bonus"] = normalize_series(scored["Position Scarcity Score"]) * 0.12
     scored.loc[scored["Primary Position"].isin(needed_positions), "Position Scarcity Bonus"] *= 1.25
+    stages["scarcity_ms"] = round((_time.perf_counter() - t0) * 1000.0, 2)
 
     # --- Risk & projection confidence ---
     scored["Risk Penalty"] = normalize_series(safe_numeric_series(scored, "Expert Std Dev", 0))
@@ -540,6 +553,7 @@ def apply_draft_pick_scoring(
         scored["Recommendation Score"] = scored["Decision Score"]
         scored["Recommendation Rank"] = scored["Decision Score"].rank(ascending=False, method="min")
 
+    stages["decision_score_ms"] = round((_time.perf_counter() - t_all) * 1000.0, 2)
     if return_position_summary:
         return scored, gaps, position_summary_rows
     return scored, gaps
@@ -561,12 +575,18 @@ def _sort_draft_candidates(df, columns, *, ascending=None):
 
 
 def score_available_for_rule(available, roster_df, rule, target_counts, config=None):
+    import time as _time
+
     config = config or {}
+    stages = config.setdefault("_score_stages_ms", {})
     fantasy_format = config.get("fantasy_format", "5x5 Roto")
     current_pick = int(config.get("current_pick", 1) or 1)
+    t0 = _time.perf_counter()
     category_needs = config.get("category_needs")
     if category_needs is None and not roster_df.empty:
         category_needs = _draft_lab_infer_category_needs(roster_df, available, fantasy_format)
+    stages["category_needs_ms"] = round((_time.perf_counter() - t0) * 1000.0, 2)
+    t1 = _time.perf_counter()
     scored, gaps = apply_draft_pick_scoring(
         available,
         roster_df,
@@ -579,7 +599,10 @@ def score_available_for_rule(available, roster_df, rule, target_counts, config=N
         ml_blend_weight=float(config.get("ml_blend_weight", 0) or 0),
         room=config.get("room") if isinstance(config.get("room"), dict) else None,
         team_scoped_open_positions=not bool(config.get("_skip_team_open_filter")),
+        _profile_stages=stages,
     )
+    stages["apply_draft_pick_scoring_ms"] = round((_time.perf_counter() - t1) * 1000.0, 2)
+    t2 = _time.perf_counter()
     scored = enrich_player_survival_metrics(
         scored,
         current_pick=current_pick,
@@ -588,6 +611,8 @@ def score_available_for_rule(available, roster_df, rule, target_counts, config=N
         room=config.get("room"),
         user_team=str(config.get("your_team") or config.get("user_team") or ""),
     )
+    stages["survival_metrics_ms"] = round((_time.perf_counter() - t2) * 1000.0, 2)
+    t3 = _time.perf_counter()
     rule = str(rule).strip().lower()
     if rule == "best market rank":
         scored["_pick_score"] = -pd.to_numeric(scored.get("Market Rank"), errors="coerce").fillna(9999)
@@ -611,6 +636,7 @@ def score_available_for_rule(available, roster_df, rule, target_counts, config=N
         scored = _sort_draft_candidates(
             scored, ["Decision Score", "Draft Fit Score", "Expected Fantasy Value"], ascending=False
         )
+    stages["rule_sort_ms"] = round((_time.perf_counter() - t3) * 1000.0, 2)
     return scored, gaps
 
 

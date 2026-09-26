@@ -28,6 +28,28 @@ _BLOCKED_RERUN_SOURCES = frozenset(
     }
 )
 
+# While Solo server-driven timer owns the clock, defer these full-app ScriptRuns
+# so Streamlit does not remount/destroy the On-the-Clock fragment mid-transition.
+_SOLO_CLOCK_DEFER_RERUN_SOURCES = frozenset(
+    {
+        "poll_fragment",
+        "poll_shared_draft",
+        "poll_apply",
+        "poll_remote_revision",
+        "timer_fragment",
+        "timer_fragment_zero",
+        "page_autopick",
+        "solo_expire",
+        "solo_expire_wake",
+        "solo_cloud_poll",
+        "solo_post_commit_next_timer",
+        "expired_pick_pending",
+        "deferred_pool",
+        "projection_upgrade",
+        "live_draft_queue",  # queue uses fragment-scoped rerun when possible
+    }
+)
+
 # Local pick commits and zero→auto transitions must never wait on passive-poll throttle.
 _LOCAL_IMMEDIATE_RERUN_SOURCES = frozenset(
     {
@@ -381,6 +403,18 @@ def timer_should_run(session: dict[str, Any], room: dict[str, Any]) -> bool:
         from live_draft_start_progress import is_live_draft_start_in_flight
 
         if is_live_draft_start_in_flight(session):
+            # Solo Start can leave the in-flight flag set while Pick 1 is already
+            # armed — do not block the 1 Hz banner fragment in that case.
+            try:
+                from live_draft_timer_logic import live_draft_timer_deadline
+
+                if (
+                    str(room.get("status") or "") == "in_progress"
+                    and live_draft_timer_deadline(room) is not None
+                ):
+                    return True
+            except ImportError:
+                pass
             return False
     except ImportError:
         pass
@@ -425,6 +459,41 @@ def is_rerun_allowed(session: dict[str, Any], source: str, *, room: dict[str, An
         pass
     if is_safe_mode_active(session) and source in _BLOCKED_RERUN_SOURCES:
         return False, f"safe_mode_blocks_{source}"
+
+    # Solo server timer owns pick/clock paint. Deferable full-app ScriptRuns remount
+    # the fragment and were observed to drop intermediate pick DOM (browser 1→3).
+    if bool(session.get("_solo_server_timer_active")) and source in _SOLO_CLOCK_DEFER_RERUN_SOURCES:
+        live = room or session.get(LIVE_DRAFT_ROOM_KEY)
+        status = str((live or {}).get("status") or "") if isinstance(live, dict) else ""
+        if status == "in_progress" or not status:
+            try:
+                from pathlib import Path
+                import json as _json
+                import time as _time
+
+                out = (
+                    Path(__file__).resolve().parent
+                    / "data"
+                    / "tb_probe"
+                    / "solo_rerun_blocked.jsonl"
+                )
+                out.parent.mkdir(parents=True, exist_ok=True)
+                with out.open("a", encoding="utf-8") as fh:
+                    fh.write(
+                        _json.dumps(
+                            {
+                                "ts": _time.time(),
+                                "source": source,
+                                "reason": "solo_server_timer_owns_clock",
+                                "status": status,
+                            },
+                            ensure_ascii=True,
+                        )
+                        + "\n"
+                    )
+            except Exception:
+                pass
+            return False, "solo_server_timer_owns_clock"
 
     try:
         from live_draft_expired_pick import (

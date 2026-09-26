@@ -1250,12 +1250,26 @@ def build_draft_profile_card_html(
 ) -> str:
     name = str(_row_get(row, "fullName") or _row_get(row, "Player") or photo_info.get("full_name") or "Player")
     pos = str(_row_get(row, "Primary Position") or _row_get(row, "Position") or "—")
-    team = str(
-        _row_get(row, "Team")
-        or _row_get(row, "MLB Team")
-        or _row_get(row, "teamName")
-        or ""
+    # Prefer canonical MLB Team — never show fantasy manager name in the club field.
+    # Pick records overwrite ``Team`` with the fantasy display name; MLB lives in ``MLB Team``.
+    fantasy = str(
+        _row_get(row, "Fantasy Team") or _row_get(row, "Draft Team") or ""
     ).strip()
+    mlb = str(
+        _row_get(row, "MLB Team") or _row_get(row, "mlb_team") or _row_get(row, "teamName") or ""
+    ).strip()
+    raw_team = str(_row_get(row, "Team") or "").strip()
+    team = ""
+    for candidate in (mlb, raw_team):
+        if not candidate:
+            continue
+        if fantasy and candidate.casefold() == fantasy.casefold():
+            continue
+        # Numbered fantasy slots (Team A / Team 1) are not MLB clubs.
+        if re.match(r"^Team\s+[A-Z0-9]+$", candidate, re.I):
+            continue
+        team = candidate
+        break
     photo_html = render_rec_card_photo_html(photo_info, alt=name)
     meta_bits = [pos]
     if team:
@@ -1366,7 +1380,23 @@ def render_insight_player_header(st: Any, row: Any) -> None:
         photo_info = {}
     name = str(_row_get(row, "fullName") or _row_get(row, "Player") or "Player")
     pos = str(_row_get(row, "Primary Position") or "")
-    team = str(_row_get(row, "Team") or _row_get(row, "MLB Team") or "").strip()
+    fantasy = str(
+        _row_get(row, "Fantasy Team") or _row_get(row, "Draft Team") or ""
+    ).strip()
+    mlb = str(
+        _row_get(row, "MLB Team") or _row_get(row, "mlb_team") or _row_get(row, "teamName") or ""
+    ).strip()
+    raw_team = str(_row_get(row, "Team") or "").strip()
+    team = ""
+    for candidate in (mlb, raw_team):
+        if not candidate:
+            continue
+        if fantasy and candidate.casefold() == fantasy.casefold():
+            continue
+        if re.match(r"^Team\s+[A-Z0-9]+$", candidate, re.I):
+            continue
+        team = candidate
+        break
     subtitle = " · ".join(x for x in (pos, team) if x)
     render_player_headshot_row(st, photo_info, title=name, subtitle=subtitle, size=72)
 

@@ -202,8 +202,16 @@ def solo_clock_expired(room: dict[str, Any]) -> bool:
     if str(room.get("status") or "") != "in_progress":
         return False
     try:
-        from live_draft_timer_logic import live_draft_seconds_remaining
+        from live_draft_timer_logic import (
+            first_pick_awaiting_live_ready,
+            live_draft_seconds_remaining,
+        )
 
+        # Never treat an unarmed Pick-1 Ready→Start handoff as expired.
+        if first_pick_awaiting_live_ready(room):
+            return False
+        if room.get("timer_deadline") is None and room.get("timer_started_at") is None:
+            return False
         return int(live_draft_seconds_remaining(room)) <= 0
     except ImportError:
         deadline = room.get("timer_deadline")
@@ -253,6 +261,18 @@ def expire_current_pick_and_advance(
         return SoloExpireResult(ok=False, reason="paused", error="Draft is paused.")
     if status != "in_progress":
         return SoloExpireResult(ok=False, reason="not_in_progress", error=f"Status is {status or 'empty'}.")
+
+    try:
+        from live_draft_ready_contract import prestart_expiration_blocked
+
+        if prestart_expiration_blocked(room):
+            return SoloExpireResult(
+                ok=False,
+                reason="prestart_blocked",
+                error="Expiration blocked until Start Draft arms Pick 1.",
+            )
+    except ImportError:
+        pass
 
     if live_draft_seconds_remaining(room) > 0:
         display = install_solo_display_snapshot(session, room, now=now)

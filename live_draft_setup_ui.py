@@ -852,31 +852,50 @@ def render_solo_draft_ready_card(
     )
     projections_ready = bool(contract.get("pool_has_projections"))
     phase = str(contract.get("phase") or ("ready" if projections_ready else "preparing"))
+    # Hard pre-Start invariants: no deadline, empty board, Pick 1 pending.
+    try:
+        from live_draft_ready_contract import enforce_prestart_invariants
+
+        enforce_prestart_invariants(room, session)
+        session["live_draft_room"] = room
+    except ImportError:
+        pass
     if not projections_ready:
         start_disabled = True
-        start_help = "Preparing canonical projections… Start Draft unlocks when Ready is complete."
+        start_help = "Getting your player rankings ready… Start Draft unlocks in a moment."
+
+    first_team = ""
+    try:
+        slot0 = pick_order[0] if isinstance(pick_order, list) and pick_order else None
+        if isinstance(slot0, dict):
+            first_team = str(slot0.get("Team") or "").strip()
+    except Exception:
+        first_team = ""
 
     with st.container(border=True):
         if projections_ready:
-            st.markdown("### Draft ready")
+            st.markdown("### Your draft is ready")
+            st.markdown(
+                f"**{len(teams) or '—'} teams · {total or '—'} picks · "
+                f"{timer_sec}-second clock**"
+            )
             st.success(
-                "Solo draft room is prepared. Canonical projections are loaded — "
-                "the Pick 1 clock will **not** start until you press **Start Draft**."
+                "Your rankings and player projections are ready. "
+                f"The clock will start at **{timer_sec} seconds** when you press **Start Draft**."
             )
         else:
-            st.markdown("### Preparing")
+            st.markdown("### Preparing your draft")
             st.info(
-                "Solo draft room structure is ready. Preparing canonical projections… "
-                "Start Draft unlocks when projections finish loading (timer stays off)."
+                "Your draft room is set up. Loading rankings and player projections… "
+                "Start Draft unlocks when everything is ready (the clock stays off)."
             )
-        st.caption(
-            f"**Lifecycle:** {phase} · **Mode:** Solo · **Teams:** {len(teams) or '—'} · "
-            f"**Scheduled picks:** {total or '—'} · **Timer:** not running"
-            + (f" · **Clock:** {timer_sec}s" if timer_sec else "")
-            + (" · **Projections:** ready" if projections_ready else " · **Projections:** warming")
-        )
-        if start_help:
+            st.caption(
+                f"{len(teams) or '—'} teams · {total or '—'} picks · {timer_sec}-second clock"
+            )
+        if start_help and not projections_ready:
             st.caption(str(start_help))
+        if first_team and projections_ready:
+            st.caption(f"First up after Start: **{first_team}** on the clock.")
 
         def _on_solo_start_draft() -> None:
             """on_click fires before ScriptRun body — survives Ready-chrome races."""

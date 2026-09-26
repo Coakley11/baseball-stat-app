@@ -124,6 +124,8 @@ def _nav_live_draft(page) -> None:
             or "Start New Live Draft" in body
             or "Draft Setup" in body
             or "Draft ready" in body
+            or "Your draft is ready" in body
+            or "Preparing your draft" in body
             or "Preparing" in body
             or re.search(r"\bStart Draft\b", body)
         ):
@@ -233,7 +235,9 @@ def _create_ready_solo(
         and not broken_ready
         and (
             "Draft ready" in body0
+            or "Your draft is ready" in body0
             or "Pick 1 clock will begin" in body0
+            or "rankings and player projections are ready" in body0
             or "Solo draft" in body0
         )
         and int(timer_seconds) <= 0  # only reuse when caller did not pin a timer
@@ -332,6 +336,8 @@ def _create_ready_solo(
             if timer.count():
                 # Selectbox — map seconds to product labels (no free-text fill).
                 label_map = {
+                    8: "8 sec",
+                    10: "10 sec",
                     30: "30 sec",
                     60: "60 sec",
                     90: "90 sec",
@@ -410,11 +416,22 @@ def _create_ready_solo(
             except Exception:
                 pass
             if any(re.fullmatch(r"Start Draft", lab, re.I) for lab in labels):
+                # Wait until Start is actually enabled (rankings/pool attach).
+                enabled = False
+                try:
+                    enabled = bool(ready_btn.first.is_enabled())
+                except Exception:
+                    enabled = False
+                if not enabled:
+                    if i % 10 == 0:
+                        report["ready_waiting_enabled_s"] = i
+                    continue
                 report["ready_at_s"] = i
                 report["clock_before_start"] = bool(
                     re.search(r"TIME REMAINING\s+[1-9]", body, re.I)
                 )
                 report["ready_btn_labels"] = labels
+                report["start_enabled"] = True
                 return True
         if "Recommended Players" in body and "TIME REMAINING" in body and not ready_btn.count():
             report["started_without_ready"] = True
@@ -435,15 +452,164 @@ def _press_start_draft(page, report: dict) -> bool:
     # Capture pre-click body so we can detect transition out of Ready.
     before = _body(page)
     report["start_draft_btn_disabled"] = False
-    try:
-        report["start_draft_btn_disabled"] = not btn.first.is_enabled()
-    except Exception:
-        pass
-    btn.first.click(timeout=8000, force=True)
+    # Wait for Start to unlock (player rankings / pool attach).
+    for wait_i in range(90):
+        try:
+            if btn.first.is_enabled():
+                report["start_draft_btn_disabled"] = False
+                report["start_enabled_wait_s"] = wait_i
+                break
+            report["start_draft_btn_disabled"] = True
+        except Exception:
+            report["start_draft_btn_disabled"] = True
+        page.wait_for_timeout(1000)
+        btn = page.get_by_role("button", name=re.compile(r"^Start Draft$", re.I))
+        if not btn.count():
+            btn = page.get_by_role("button", name=re.compile(r"Start Draft", re.I))
+        if not btn.count():
+            report["start_draft_btn_missing"] = True
+            return False
+    else:
+        report["start_never_enabled"] = True
+        return False
+    # Prefer a real enabled click — force=True on a disabled Streamlit button
+    # does not fire on_click and leaves the lobby stuck.
+    btn.first.click(timeout=8000, force=False)
+
+    def _iframe_timer_remaining() -> int | None:
+        vals: list[int] = []
+        for frame in page.frames:
+            try:
+                el = frame.locator(
+                    '[data-testid="live-draft-timer"], .live-draft-timer'
+                )
+                for i in range(el.count()):
+                    try:
+                        if not el.nth(i).is_visible():
+                            continue
+                    except Exception:
+                        continue
+                    m = re.search(r"(\d+)", el.nth(i).inner_text() or "")
+                    if m:
+                        vals.append(int(m.group(1)))
+            except Exception:
+                pass
+        try:
+            el = page.locator('[data-testid="live-draft-timer"], .live-draft-timer')
+            for i in range(el.count()):
+                try:
+                    if not el.nth(i).is_visible():
+                        continue
+                except Exception:
+                    continue
+                m = re.search(r"(\d+)", el.nth(i).inner_text() or "")
+                if m:
+                    vals.append(int(m.group(1)))
+        except Exception:
+            pass
+        return max(vals) if vals else None
+
+    def _on_clock_wrapper_snap() -> dict | None:
+        """Server-driven Solo clock (st.html) — authoritative Start success signal."""
+        try:
+            snap = page.evaluate(
+                """() => {
+                  const roots = Array.from(
+                    document.querySelectorAll('[data-testid="live-draft-on-clock"]')
+                  ).filter((el) => {
+                    const style = window.getComputedStyle(el);
+                    return style && style.display !== 'none' && style.visibility !== 'hidden';
+                  });
+                  if (!roots.length) return null;
+                  let best = roots[0];
+                  let bestIdx = -1;
+                  for (const el of roots) {
+                    const raw = el.getAttribute('data-pick-index');
+                    const idx = raw != null && raw !== '' ? parseInt(raw, 10) : -1;
+                    if (idx >= bestIdx) { best = el; bestIdx = idx; }
+                  }
+                  const timer = best.querySelector('[data-testid="live-draft-timer"]');
+                  let remaining = null;
+                  if (timer) {
+                    const m = (timer.textContent || '').match(/(\\d+)/);
+                    if (m) remaining = parseInt(m[1], 10);
+                  }
+                  const pidxAttr = best.getAttribute('data-pick-index');
+                  let pickIndex = pidxAttr != null && pidxAttr !== '' ? parseInt(pidxAttr, 10) : null;
+                  return {
+                    wrapper_count: roots.length,
+                    pick_index: pickIndex,
+                    remaining: remaining,
+                  };
+                }"""
+            )
+            return snap if isinstance(snap, dict) else None
+        except Exception:
+            return None
+
     for i in range(90):
         page.wait_for_timeout(1000)
         body = _body(page)
         still_ready = "Draft ready" in body and re.search(r"\bStart Draft\b", body)
+        start_btn_alive = False
+        try:
+            start_btn_alive = (
+                page.get_by_role("button", name=re.compile(r"^Start Draft$", re.I)).count()
+                > 0
+            )
+        except Exception:
+            start_btn_alive = bool(re.search(r"\bStart Draft\b", body))
+        # Start often leaves the main pane on Insight/setup while the sidebar
+        # already shows a live room. Prefer waiting until Start is gone, but if
+        # the sidebar is already live for several seconds, Return anyway.
+        if not start_btn_alive and report.get("_start_gone_at") is None:
+            report["_start_gone_at"] = i
+        sidebar_live = bool(
+            re.search(r"Time remaining:\s*\d+", body, re.I)
+            or (
+                re.search(r"On clock:\s*\S+", body, re.I)
+                and re.search(r"Round\s+\d+\s*[·•]\s*Pick\s+\d+", body, re.I)
+            )
+        )
+        can_return = (
+            (
+                not start_btn_alive
+                and report.get("_start_gone_at") is not None
+                and i >= int(report.get("_start_gone_at") or 0) + 2
+            )
+            or (sidebar_live and i >= 3)
+        )
+        if (
+            not report.get("clicked_return_to_live")
+            and can_return
+            and re.search(r"Return to Live Draft", body, re.I)
+        ):
+            try:
+                ret = page.get_by_role(
+                    "button", name=re.compile(r"Return to Live Draft$", re.I)
+                )
+                if ret.count():
+                    ret.first.click(timeout=3000, force=False)
+                    report["clicked_return_to_live"] = True
+                    page.wait_for_timeout(4000)
+                    body = _body(page)
+            except Exception as exc:
+                report["return_to_live_error"] = f"{type(exc).__name__}: {exc}"[:120]
+            # Fallback: choose Live Draft Room from the page nav if banner missing.
+            if _iframe_timer_remaining() is None:
+                try:
+                    nav = page.get_by_role(
+                        "button", name=re.compile(r"Live Draft Room", re.I)
+                    )
+                    if not nav.count():
+                        nav = page.get_by_text(re.compile(r"Live Draft Room", re.I))
+                    if nav.count():
+                        nav.first.click(timeout=3000, force=True)
+                        report["clicked_live_draft_nav"] = True
+                        page.wait_for_timeout(4000)
+                        body = _body(page)
+                except Exception as exc:
+                    report["live_draft_nav_error"] = f"{type(exc).__name__}: {exc}"[:120]
         m = re.search(r"TIME REMAINING\s*[:\-]?\s*(\d{1,3})\b", body, re.I)
         if not m:
             m = re.search(r"Time remain(?:ing)?\s*[:\-]?\s*(\d{1,3})\b", body, re.I)
@@ -455,31 +621,98 @@ def _press_start_draft(page, report: dict) -> bool:
                 rem = None
         else:
             rem = int(m.group(1))
+        # Prefer the Live Draft Room caption/clock over sidebar "30s" suffix noise.
+        cap = re.search(r"TIME REMAINING\s+(\d{1,3})\b", body, re.I)
+        if cap:
+            rem = int(cap.group(1))
+            report["caption_timer"] = rem
+        iframe_rem = _iframe_timer_remaining()
+        if rem is None and iframe_rem is not None:
+            rem = iframe_rem
+        # Server-driven Solo HTML clock (st.html — not components.html).
+        wrap = _on_clock_wrapper_snap()
+        if wrap and isinstance(wrap.get("remaining"), int) and wrap["remaining"] >= 1:
+            rem = int(wrap["remaining"])
+            report["html_timer"] = rem
+            report["on_clock_wrapper"] = wrap
+        if rem is None or rem <= 0:
+            try:
+                el = page.locator('[data-testid="live-draft-timer"]')
+                if el.count():
+                    m2 = re.search(r"(\d+)", el.first.inner_text() or "")
+                    if m2:
+                        rem = int(m2.group(1))
+                        report["html_timer"] = rem
+            except Exception:
+                pass
         live_markers = (
             ("Pause Draft" in body)
-            or ("TIME REMAINING" in body.upper())
-            or ("Manual Draft" in body and re.search(r"On the Clock|ON THE CLOCK", body, re.I))
-            or (rem is not None and rem >= 1)
+            or bool(report.get("caption_timer"))
+            or bool(report.get("html_timer"))
+            or bool(report.get("on_clock_wrapper"))
+            or (iframe_rem is not None and iframe_rem >= 1)
+            or (
+                rem is not None
+                and rem >= 1
+                and not start_btn_alive
+                and (
+                    "TIME REMAINING" in body
+                    or "Pause Draft" in body
+                    or bool(re.search(r"On the clock\s*[—\-].+", body, re.I))
+                )
+            )
         )
         # Never treat Ready-lobby recommendation cards as a live start.
         if "Draft ready" in body or re.search(r"Waiting for Start Draft", body, re.I):
-            live_markers = False
+            if start_btn_alive:
+                live_markers = False
         if live_markers and not still_ready:
-            report["pick1_timer"] = rem
+            report["pick1_timer"] = rem if iframe_rem is None else iframe_rem
             report["live_at_s"] = i
-            report["pick1_full_clock"] = bool(rem is not None and rem >= 1)
+            report["pick1_full_clock"] = bool(
+                (iframe_rem if iframe_rem is not None else rem) is not None
+                and (iframe_rem if iframe_rem is not None else rem) >= 1
+            )
+            report["iframe_timer"] = iframe_rem
             return True
-        if i in (5, 15, 30) and still_ready:
+        # Hard navigation fallback: deep-link back to Live Draft Room.
+        # Only when the on-clock wrapper is still missing after Return — a
+        # premature goto mid-clock burns an 8s pick and can open a new session.
+        if (
+            not report.get("forced_ldr_url")
+            and i >= 8
+            and not report.get("on_clock_wrapper")
+            and (
+                report.get("clicked_return_to_live")
+                or report.get("clicked_live_draft_nav")
+                or (sidebar_live and not start_btn_alive)
+            )
+        ):
+            try:
+                page.goto(
+                    "http://127.0.0.1:8511/?suite_workspace=daniel&active_page=Live%20Draft%20Room&ux_latency=1",
+                    wait_until="domcontentloaded",
+                    timeout=60000,
+                )
+                report["forced_ldr_url"] = True
+                page.wait_for_timeout(2000)
+                # Prefer staying on this websocket session — avoid a second goto
+                # that creates a new Streamlit session mid-draft.
+            except Exception as exc:
+                report["forced_ldr_url_err"] = f"{type(exc).__name__}: {exc}"[:120]
+        # Once the on-clock wrapper is visible, stop navigating.
+        if i in (5, 15, 30) and (still_ready or start_btn_alive):
             # Retry click if Ready stuck.
             try:
                 btn2 = page.get_by_role("button", name=re.compile(r"^Start Draft$", re.I))
-                if btn2.count():
-                    btn2.first.click(timeout=3000, force=True)
+                if btn2.count() and btn2.first.is_enabled():
+                    btn2.first.click(timeout=3000, force=False)
             except Exception:
                 pass
     report["live_timeout"] = True
     report["after_start_snip"] = _body(page)[:800]
     report["before_start_had_ready"] = "Draft ready" in before
+    report["iframe_timer_at_timeout"] = _iframe_timer_remaining()
     return False
 
 

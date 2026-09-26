@@ -799,7 +799,19 @@ def start_prepared_solo_room(session: dict[str, Any], st_obj: Any) -> dict[str, 
             session["_solo_deferred_pool_next_run"] = True
     except ImportError:
         pass
+    # Deterministic Pick 1 handoff — never inherit a stale board / deadline / index.
+    try:
+        from live_draft_ready_contract import enforce_prestart_invariants
+
+        enforce_prestart_invariants(room, session)
+    except ImportError:
+        pass
     room["status"] = "in_progress"
+    room["current_pick_index"] = 0
+    room["draft_board"] = []
+    room["drafted_player_ids"] = []
+    teams = [str(t).strip() for t in (room.get("teams") or []) if str(t).strip()]
+    room["rosters"] = {t: [] for t in teams}
     # Same as Shared: do not arm the pick clock here. First live-board paint is
     # the readiness boundary so Start→Pick 1 always shows a full timer.
     try:
@@ -811,6 +823,7 @@ def start_prepared_solo_room(session: dict[str, Any], st_obj: Any) -> dict[str, 
         room["timer_deadline"] = None
     room.pop("timer_live_ready_at", None)
     room["timer_handled_index"] = -1
+    room.pop("last_processed_expiration_token", None)
     session["live_draft_room"] = room
     user_team = str(
         (room.get("config") or {}).get("your_team")
@@ -819,6 +832,13 @@ def start_prepared_solo_room(session: dict[str, Any], st_obj: Any) -> dict[str, 
     )
     if user_team:
         session["room_your_team"] = user_team
+    first_on_clock = ""
+    try:
+        pick_order = room.get("pick_order") or []
+        if isinstance(pick_order, list) and pick_order and isinstance(pick_order[0], dict):
+            first_on_clock = str(pick_order[0].get("Team") or "").strip()
+    except Exception:
+        first_on_clock = ""
     try:
         from draft_room_state import ACTIVE_DRAFT_MODE_LIVE, set_canonical_draft_meta
 
@@ -826,7 +846,7 @@ def start_prepared_solo_room(session: dict[str, Any], st_obj: Any) -> dict[str, 
             session,
             mode=ACTIVE_DRAFT_MODE_LIVE,
             source="start_prepared_solo_room",
-            pick_count=len(room.get("draft_board") or []),
+            pick_count=0,
         )
     except ImportError:
         pass
@@ -843,13 +863,20 @@ def start_prepared_solo_room(session: dict[str, Any], st_obj: Any) -> dict[str, 
     except ImportError:
         pass
     result["ok"] = True
-    session["_live_draft_start_feedback"] = (
-        "Solo draft started — Pick 1 clock begins when the live board is ready."
-    )
+    if first_on_clock:
+        session["_live_draft_start_feedback"] = (
+            f"Draft started — **{first_on_clock}** is on the clock."
+        )
+    else:
+        session["_live_draft_start_feedback"] = "Draft started — Pick 1 is on the clock."
     session["_solo_start_draft_transition"] = {
         "from": "not_started",
         "to": "in_progress",
         "timer_seconds": int((room.get("config") or {}).get("timer_seconds") or 0),
+        "first_team": first_on_clock,
+        "current_pick_index": 0,
+        "board_len": 0,
+        "deadline": None,
         "ts": __import__("time").time(),
     }
     return result

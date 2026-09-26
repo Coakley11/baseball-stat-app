@@ -88,9 +88,10 @@ REC_TABLE_SORT_OPTIONS: dict[str, str] = {
     # label → actual dataframe column used by the recommendation engine
     "Decision Score": "Decision Score",
     "Player Grade": "Player Grade",
+    "Model Rank": "Model Rank",
+    "Market Rank": "Market Rank",
     "Roster Fit": "Roster Fit Score",
     "Positional Scarcity": "Position Scarcity Score",
-    "Market Rank": "Market Rank",
     "Primary Position": "Primary Position",
 }
 
@@ -299,9 +300,28 @@ def sort_recommendation_table(df: pd.DataFrame, sort_key: str, *, ascending: boo
     if col not in df.columns:
         return df
     # Rank-like fields sort ascending (lower is better); scores/probabilities descending.
-    if ascending is False and col in {"Market Rank", "Primary Position"}:
-        ascending = True if col == "Market Rank" else False
-    return df.sort_values(col, ascending=ascending, na_position="last")
+    if ascending is False and col in {"Market Rank", "Model Rank", "Primary Position"}:
+        ascending = True if col in {"Market Rank", "Model Rank"} else False
+    # Tie-breakers only when primary values are equal:
+    # Decision Score ↓, Player Grade ↓, Market Rank ↑, name A→Z.
+    secondary: list[tuple[str, bool]] = []
+    for sec_col, sec_asc in (
+        ("Decision Score", False),
+        ("Player Grade", False),
+        ("Expected Fantasy Value", False),
+        ("Market Rank", True),
+        ("fullName", True),
+        ("Player", True),
+    ):
+        if sec_col == col or sec_col not in df.columns:
+            continue
+        secondary.append((sec_col, sec_asc))
+    sort_cols = [col] + [c for c, _ in secondary[:3]]
+    sort_asc = [ascending] + [a for _, a in secondary[:3]]
+    try:
+        return df.sort_values(sort_cols, ascending=sort_asc, na_position="last")
+    except Exception:
+        return df.sort_values(col, ascending=ascending, na_position="last")
 
 
 def inject_position_color_styles() -> str:

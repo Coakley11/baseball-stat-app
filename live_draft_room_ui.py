@@ -929,8 +929,9 @@ def render_roster_tracker_panel(
     category_needs: list[str] | None = None,
     category_levels: dict[str, str] | None = None,
     scarcity_by_pos: dict[str, str] | None = None,
+    category_outlook: dict[str, Any] | None = None,
 ) -> None:
-    """One consolidated Team Needs graphic — roster slots + categories to strengthen."""
+    """One consolidated Team Needs graphic — roster slots + Needs Help + Strengths."""
     lines = list(tracker.get("lines") or [])
     cats = [str(c).strip() for c in (category_needs or []) if str(c).strip()]
     # Never treat projection/strategy modes as scoring categories.
@@ -938,8 +939,16 @@ def render_roster_tracker_panel(
     cat_display = [("AVG" if c.upper() in {"BA", "AVG"} else c.upper()) for c in cats]
     levels = {str(k).upper(): str(v) for k, v in (category_levels or {}).items()}
     scarcity = {str(k).upper(): str(v) for k, v in (scarcity_by_pos or {}).items()}
+    outlook = category_outlook if isinstance(category_outlook, dict) else {}
+    outlook_bars = list(outlook.get("bars") or [])
+    outlook_strengths = [
+        str(s).strip().upper() for s in (outlook.get("strengths") or []) if str(s).strip()
+    ]
+    outlook_needs = [
+        str(n).strip().upper() for n in (outlook.get("needs_attention") or []) if str(n).strip()
+    ]
 
-    if not lines and not cat_display:
+    if not lines and not cat_display and not outlook_bars:
         st.caption("No roster slots configured.")
         return
 
@@ -978,21 +987,23 @@ def render_roster_tracker_panel(
             roster_html.append(
                 f'<div class="ld-need-slot ld-need-ok">'
                 f'<span class="ld-need-mark">✅</span> '
-                f"<strong>{pos}</strong> — Complete{scar_bit}</div>"
+                f"<strong>{pos}</strong> — Filled{scar_bit}</div>"
             )
         else:
             need_txt = f"Need {need}" if need != 1 else "Need 1"
+            high_scar = "High " if str(scar).lower() in {"high", "critical", "rising"} else ""
+            scar_txt = f" · {high_scar}{scar} scarcity" if scar else ""
             roster_html.append(
                 f'<div class="ld-need-slot ld-need-open">'
                 f'<span class="ld-need-mark">❌</span> '
-                f"<strong>{pos}</strong> — {need_txt}{scar_bit}</div>"
+                f"<strong>{pos}</strong> — {need_txt}{scar_txt}</div>"
             )
     if bench_total:
         if bench_open <= 0:
             roster_html.append(
                 '<div class="ld-need-slot ld-need-ok">'
                 '<span class="ld-need-mark">✅</span> '
-                "<strong>Bench</strong> — Complete</div>"
+                "<strong>Bench</strong> — Filled</div>"
             )
         else:
             spots = "spot" if bench_open == 1 else "spots"
@@ -1006,27 +1017,95 @@ def render_roster_tracker_panel(
     target = int(tracker.get("target") or 0)
     progress = f"{filled} / {target} roster slots filled" if target else ""
 
-    if cat_display:
-        cat_bits = []
-        for c in cat_display[:6]:
-            lvl = levels.get(c) or levels.get("BA" if c == "AVG" else c) or "Low"
-            cat_bits.append(
-                f'<span class="ld-cat-need-chip ld-cat-{lvl.lower()}">'
-                f"{c} — {lvl}</span>"
-            )
+    def _bar_blocks(level_num: int) -> str:
+        filled_n = max(0, min(5, int(level_num)))
+        return "█" * filled_n + "░" * (5 - filled_n)
+
+    def _classify_level(level: str, level_num: int) -> str:
+        lvl = str(level or "").strip()
+        if level_num >= 4 or lvl.lower() in {"strong", "elite", "above average"}:
+            return "Strong" if level_num < 5 and lvl.lower() != "elite" else (lvl or "Strong")
+        if level_num <= 2 or lvl.lower() in {"low", "very low", "weak", "critical", "moderate"}:
+            if level_num <= 1 or lvl.lower() in {"very low", "critical"}:
+                return "Weak"
+            if level_num == 2 or lvl.lower() in {"low", "moderate"}:
+                return "Below average" if level_num == 2 else "Slightly below average"
+            return lvl or "Needs Help"
+        return "Average"
+
+    # Category Outlook — Needs Help + Strengths with visual comparison.
+    weak_html: list[str] = []
+    strong_html: list[str] = []
+    if outlook.get("pre_draft_neutral") or (not outlook_bars and not cat_display):
         cat_section = (
             '<div class="ld-need-cat-block">'
-            '<div class="ld-panel-subtitle">Categories to strengthen</div>'
-            f'<div class="ld-cat-strengthen-chips">{"".join(cat_bits)}</div>'
+            '<div class="ld-panel-subtitle">Category Outlook</div>'
+            '<div class="ld-need-cat-ok">Neutral baseline — outlook updates after your first pick.</div>'
             "</div>"
         )
     else:
-        cat_section = (
-            '<div class="ld-need-cat-block">'
-            '<div class="ld-panel-subtitle">Categories to strengthen</div>'
-            '<div class="ld-need-cat-ok">No weak categories vs pool baseline yet.</div>'
-            "</div>"
-        )
+        used: set[str] = set()
+        for b in outlook_bars:
+            cat = str(b.get("category") or "").strip().upper()
+            if not cat or cat in used:
+                continue
+            used.add(cat)
+            level_num = int(b.get("level_num") or 0)
+            level = str(b.get("level") or "")
+            label = _classify_level(level, level_num)
+            team_val = b.get("team_value")
+            expected = b.get("expected")
+            try:
+                tv = float(team_val) if team_val is not None else None
+                ev = float(expected) if expected is not None else None
+            except (TypeError, ValueError):
+                tv = ev = None
+            if cat.upper() in {"AVG", "BA", "OPS"} and tv is not None and ev is not None:
+                cmp_txt = f"Projected {tv:.3f} vs roster benchmark {ev:.3f}"
+            elif tv is not None and ev is not None:
+                cmp_txt = f"Projected {tv:.0f} vs roster benchmark {ev:.0f}"
+            else:
+                cmp_txt = ""
+            row = (
+                f'<div class="ld-cat-bar-row"><strong>{cat}</strong>  '
+                f'{_bar_blocks(level_num)}  {label}'
+                + (f'<div class="ld-cat-cmp">{cmp_txt}</div>' if cmp_txt else "")
+                + "</div>"
+            )
+            if level_num <= 2 or cat in outlook_needs or cat in {c.upper() for c in cat_display}:
+                weak_html.append(row)
+            elif level_num >= 4 or cat in outlook_strengths:
+                strong_html.append(row)
+
+        # Fallback chips when outlook bars missing but need levels exist.
+        if not weak_html and cat_display:
+            for c in cat_display[:6]:
+                lvl = levels.get(c) or levels.get("BA" if c == "AVG" else c) or "Low"
+                weak_html.append(
+                    f'<div class="ld-cat-bar-row"><strong>{c}</strong>  '
+                    f'{_bar_blocks(2)}  {lvl}</div>'
+                )
+        if not strong_html and outlook_strengths:
+            for c in outlook_strengths[:4]:
+                strong_html.append(
+                    f'<div class="ld-cat-bar-row"><strong>{c}</strong>  '
+                    f'{_bar_blocks(4)}  Strong</div>'
+                )
+
+        parts: list[str] = ['<div class="ld-need-cat-block">']
+        parts.append('<div class="ld-panel-subtitle">Category Outlook</div>')
+        if weak_html:
+            parts.append('<div class="ld-panel-subtitle" style="margin-top:6px;">Needs Help</div>')
+            parts.extend(weak_html[:5])
+        if strong_html:
+            parts.append('<div class="ld-panel-subtitle" style="margin-top:6px;">Strengths</div>')
+            parts.extend(strong_html[:5])
+        if not weak_html and not strong_html:
+            parts.append(
+                '<div class="ld-need-cat-ok">Categories look balanced vs the roster benchmark.</div>'
+            )
+        parts.append("</div>")
+        cat_section = "".join(parts)
 
     st.markdown(
         f'<div class="ld-team-needs-panel">'
@@ -1245,10 +1324,12 @@ def build_rec_card_detail_body(
     gaps: list[str] | None = None,
     category_needs: list[str] | None = None,
     rank: int = 0,
+    rec_df: Any = None,
 ) -> str:
     """Expanded analytics for Why Recommended — player-specific fantasy reasons first."""
     reasons: list[str] = []
     pos = str(row.get("Primary Position") or "—")
+    badge_labels = {label for label, _css in (badges or [])}
 
     def _proj(*cols: str) -> float:
         for col in cols:
@@ -1257,6 +1338,24 @@ def build_rec_card_detail_body(
                 return float(val)
         return float("nan")
 
+    def _pct(*cols: str) -> float:
+        if rec_df is None or getattr(rec_df, "empty", True):
+            return float("nan")
+        val = _proj(*cols)
+        if not pd.notna(val):
+            return float("nan")
+        series = None
+        for col in cols:
+            if col in getattr(rec_df, "columns", []):
+                series = pd.to_numeric(rec_df[col], errors="coerce")
+                break
+        if series is None:
+            return float("nan")
+        clean = series.dropna()
+        if len(clean) < 4:
+            return float("nan")
+        return float((clean < float(val)).mean())
+
     hr = _proj("proj_HR", "HR")
     rbi = _proj("proj_RBI", "RBI")
     sb = _proj("proj_SB", "SB")
@@ -1264,46 +1363,70 @@ def build_rec_card_detail_body(
     runs = _proj("proj_R", "R", "Runs")
     needs = {str(c).strip().upper() for c in (category_needs or []) if str(c).strip()}
     needs.discard("BALANCED")
+    hr_pct = _pct("proj_HR", "HR")
+    rbi_pct = _pct("proj_RBI", "RBI")
+    sb_pct = _pct("proj_SB", "SB")
 
-    if pd.notna(hr) and float(hr) >= 25:
-        reasons.append(f"Projects for {int(round(float(hr)))} HR — elite power")
-    elif pd.notna(hr) and float(hr) >= 18:
-        reasons.append(f"Projects for {int(round(float(hr)))} HR")
-    if pd.notna(rbi) and float(rbi) >= 80:
+    if pd.notna(hr):
+        if (pd.notna(hr_pct) and hr_pct >= 0.88) or (pd.isna(hr_pct) and float(hr) >= 40):
+            reasons.append(f"Projects for {int(round(float(hr)))} HR — elite power vs this board")
+        elif (pd.notna(hr_pct) and hr_pct >= 0.70) or float(hr) >= 30:
+            reasons.append(f"Projects for {int(round(float(hr)))} HR")
+        elif "HR" in needs and float(hr) >= 18:
+            reasons.append(
+                f"Projects for {int(round(float(hr)))} HR and helps your weak power category"
+            )
+    if pd.notna(rbi) and ((pd.notna(rbi_pct) and rbi_pct >= 0.65) or float(rbi) >= 90):
         reasons.append(f"Projected {int(round(float(rbi)))} RBI")
-    if pd.notna(runs) and float(runs) >= 80:
+    if pd.notna(runs) and float(runs) >= 85:
         reasons.append(f"Projects for {int(round(float(runs)))} R — run producer")
     elif "R" in needs and pd.notna(runs) and float(runs) >= 60:
         reasons.append(f"Helps your weakest category: Runs ({int(round(float(runs)))} projected)")
-    if pd.notna(sb) and float(sb) >= 15:
-        reasons.append(f"Projects for {int(round(float(sb)))} SB — major speed contribution")
-    elif pd.notna(sb) and float(sb) >= 10 and "SB" in needs:
-        reasons.append(f"Helps a weak SB category ({int(round(float(sb)))} projected)")
+    if pd.notna(sb):
+        if (pd.notna(sb_pct) and sb_pct >= 0.80) or float(sb) >= 20:
+            if "SB" in needs:
+                reasons.append(
+                    f"Projects for {int(round(float(sb)))} SB and directly improves your weakest category"
+                )
+            else:
+                reasons.append(f"Projects for {int(round(float(sb)))} SB — major speed contribution")
+        elif "SB" in needs and float(sb) >= 10:
+            reasons.append(f"Helps a weak SB category ({int(round(float(sb)))} projected)")
     if pd.notna(avg) and float(avg) >= 0.285:
         reasons.append(f"Strong {float(avg):.3f} projected AVG")
     elif pd.notna(avg) and float(avg) >= 0.265 and ("AVG" in needs or "BA" in needs):
         reasons.append(f"Helps a weak batting-average roster ({float(avg):.3f})")
 
     if gaps and pos in gaps:
-        reasons.append(f"Fills your remaining {pos} starter slot")
-    if "C" == pos and gaps and "C" in gaps:
-        reasons.append("Addresses catcher scarcity")
+        if pos == "C":
+            reasons.append(
+                "Fills your final catcher slot at a position with limited remaining depth"
+            )
+        else:
+            reasons.append(f"Fills your remaining {pos} starter slot")
+    if "Fills C Need" in badge_labels or ("C" == pos and gaps and "C" in gaps):
+        if "catcher" not in " ".join(reasons).lower():
+            reasons.append("Addresses catcher scarcity")
 
     mkt = pd.to_numeric(row.get("Market Rank", np.nan), errors="coerce")
     mdl = pd.to_numeric(row.get("Model Rank", np.nan), errors="coerce")
     if pd.notna(mkt) and pd.notna(mdl) and float(mdl) < float(mkt) - 5:
         edge = float(mkt) - float(mdl)
-        reasons.append(f"Model ranks him {int(round(edge))} spots above market (#{int(round(float(mdl)))} vs #{int(round(float(mkt)))})")
-    elif pd.notna(mkt) and pd.notna(mdl) and abs(float(mkt) - float(mdl)) <= 2:
-        # Tiny edge is not a primary reason — omit market-value marketing copy.
-        pass
+        reasons.append(
+            f"Model ranks him {int(round(edge))} spots above market "
+            f"(#{int(round(float(mdl)))} vs #{int(round(float(mkt)))})"
+        )
 
     toks: list[str] = []
     for col in ("Positions", "Eligible Positions", "Position"):
         raw = row.get(col) if hasattr(row, "get") else None
         if raw is None:
             continue
-        toks.extend(str(p).strip().upper() for p in str(raw).replace("/", ",").split(",") if str(p).strip())
+        toks.extend(
+            str(p).strip().upper()
+            for p in str(raw).replace("/", ",").split(",")
+            if str(p).strip()
+        )
     uniq = {t for t in toks if t and t not in ("UTIL", "DH", "NA", pos.upper())}
     if uniq:
         reasons.append(f"Multi-position flexibility ({', '.join(sorted(uniq)[:3])})")
@@ -1534,8 +1657,10 @@ def build_rec_card_why_bullets(
     runs = _proj("proj_R", "R", "Runs", "Projected R")
     needs = [str(c).strip().upper() for c in (category_needs or []) if str(c).strip()]
 
-    if pd.notna(hr) and float(hr) >= 25:
-        _add(f"Projects {int(round(float(hr)))} HR — elite power production", key="hr")
+    if pd.notna(hr) and float(hr) >= 35:
+        _add(f"Projects {int(round(float(hr)))} HR — top-tier power production", key="hr")
+    elif pd.notna(hr) and float(hr) >= 25:
+        _add(f"Projects {int(round(float(hr)))} HR", key="hr")
     elif pd.notna(hr) and float(hr) >= 18 and "HR" in needs:
         _add(f"Projects {int(round(float(hr)))} HR to shore up your power need", key="hr_need")
 
@@ -2567,10 +2692,37 @@ def render_live_draft_rec_cards(
                             )
                         except ImportError:
                             pass
+                        # No help= tooltip: Streamlit clones a hidden primary button into
+                        # the tooltip hover target and steals Add-to-Queue clicks.
+                        # Prefer on_click (same as Start Draft / Pause) so the mutation
+                        # survives Ready→live remount races that drop return values.
+                        def _on_rec_queue_add(
+                            _session: dict[str, Any] = session,
+                            _name: str = name,
+                            _event_id: str = queue_click_event_id,
+                            _widget_key: str = queue_widget_key,
+                            _room_id: str = room_id,
+                            _pick_idx: int = pick_idx,
+                            _player_id: str = player_id,
+                        ) -> None:
+                            execute_rec_card_queue_click(
+                                _session,
+                                name=_name,
+                                event_id=_event_id,
+                                widget_key=_widget_key,
+                                room_id=_room_id,
+                                pick_idx=_pick_idx,
+                                player_id=_player_id,
+                            )
+                            if _session.pop("_live_draft_queue_sidebar_rerun", None):
+                                _session["_live_draft_defer_full_rerun"] = True
+                                _session["_live_draft_queue_sidebar_rerun"] = True
+
                         _rec_queue_clicked = st.button(
                             "⭐ Add to Queue",
                             key=queue_widget_key,
                             use_container_width=True,
+                            on_click=_on_rec_queue_add,
                             **_queue_help,
                         )
                         try:
@@ -2715,6 +2867,7 @@ def render_live_draft_rec_cards(
                                 gaps=gaps,
                                 category_needs=category_needs,
                                 rank=i,
+                                rec_df=rec_df,
                             ),
                             unsafe_allow_html=True,
                         )
@@ -2862,125 +3015,13 @@ def render_draft_decision_panel(
     page_label_fn: Any = None,
     include_quick_tools: bool = True,
 ) -> None:
-    """One compact Roster Status + Scarcity strip for timed picks.
+    """Legacy lower-right decision strip — Roster & Scarcity duplicate removed.
 
-    Quick Draft Tools render at the end by default. Callers may set
-    ``include_quick_tools=False`` and paint Quick Draft Tools later (e.g. after
-    recommendation ranking tables) without moving other page sections.
+    Team Needs (top of recommendations) is the single roster/scarcity surface.
+    This panel only keeps optional Quick Draft Tools when requested.
     """
-    lines = list(tracker.get("lines") or [])
-    open_gaps = {str(g).strip() for g in (gaps or tracker.get("gaps") or []) if str(g).strip()}
-    scarcity_by_pos: dict[str, dict[str, Any]] = {}
-    strong_cut = weak_cut = 0.0
-    if available_df is not None and not getattr(available_df, "empty", True):
-        try:
-            from live_draft_pick_scoring import _draft_compute_position_replacement
-            from live_draft_roster_slots import (
-                get_active_position_codes,
-                get_league_remaining_demand,
-                normalize_draft_slot_config,
-            )
-
-            cfg = normalize_draft_slot_config(dict((room or {}).get("config") or {}))
-            active = get_active_position_codes(cfg)
-            league_demand = get_league_remaining_demand(room, cfg)
-            _, rows = _draft_compute_position_replacement(
-                available_df,
-                active_positions=active,
-                league_demand=league_demand,
-            )
-            dropoffs = [
-                float(r.get("Scarcity Score"))
-                for r in rows
-                if r.get("Scarcity Score") is not None and not pd.isna(r.get("Scarcity Score"))
-            ]
-            if dropoffs:
-                strong_cut = float(np.percentile(dropoffs, 66))
-                weak_cut = float(np.percentile(dropoffs, 33))
-            for row in rows:
-                pos = str(row.get("Position") or "").strip()
-                if pos:
-                    scarcity_by_pos[pos] = row
-        except Exception:
-            # Scarcity enrichment is optional — never blank the primary roster rows.
-            pass
-
-    # Build position rows from tracker lines (preferred) or scarcity keys.
-    pos_rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for ln in lines:
-        code = str(ln.get("position") or ln.get("code") or ln.get("slot") or "").strip().upper()
-        if not code:
-            label = str(ln.get("label") or "").strip()
-            code = label.split()[0].strip("—-").upper() if label else ""
-        if not code or code in seen:
-            continue
-        seen.add(code)
-        filled = bool(ln.get("filled"))
-        need_n = 1 if not filled else 0
-        scar = scarcity_by_pos.get(code) or {}
-        avail_n = int(scar.get("Quality Supply") or scar.get("Available") or 0)
-        drafted_n = 0
-        if isinstance(room, dict):
-            board = room.get("draft_board") or []
-            drafted_n = sum(
-                1
-                for r in board
-                if isinstance(r, dict)
-                and str(r.get("Primary Position") or r.get("Pos") or "").strip().upper() == code
-            )
-        score = scar.get("Scarcity Score")
-        pos_rows.append(
-            {
-                "pos": code,
-                "status": "Filled" if filled else f"Need {need_n}",
-                "mark": "OK" if filled else "NEED",
-                "available": avail_n,
-                "drafted": drafted_n,
-                "scarcity": _scarcity_label(score, strong_cut=strong_cut, weak_cut=weak_cut),
-                "need": code in open_gaps or not filled,
-            }
-        )
-    if not pos_rows and scarcity_by_pos:
-        for code, scar in sorted(scarcity_by_pos.items()):
-            need = code in open_gaps
-            pos_rows.append(
-                {
-                    "pos": code,
-                    "status": "Need 1" if need else "Filled",
-                    "mark": "NEED" if need else "OK",
-                    "available": int(scar.get("Quality Supply") or 0),
-                    "drafted": 0,
-                    "scarcity": _scarcity_label(
-                        scar.get("Scarcity Score"), strong_cut=strong_cut, weak_cut=weak_cut
-                    ),
-                    "need": need,
-                }
-            )
-
-    filled = int(tracker.get("filled") or 0)
-    target = int(tracker.get("target") or 0)
-    progress = f"{filled}/{target}" if target else ""
-    # Mobile-safe plain markdown rows — Streamlit HTML <table> often blanks cell text on phones.
-    st.markdown(
-        f"**Draft Decision · Roster & Scarcity**"
-        + (f" · {progress}" if progress else "")
-    )
-    if pos_rows:
-        lines: list[str] = []
-        for r in pos_rows[:14]:
-            mark = "❌" if r.get("need") else "✅"
-            lines.append(
-                f"- **{r['pos']}** · {mark} {r['status']} · "
-                f"{r['available']} available · {r['drafted']} drafted · "
-                f"{r['scarcity']} scarcity"
-            )
-        st.markdown("\n".join(lines))
-    else:
-        st.caption("Roster slots not configured.")
-
+    del available_df, gaps, room, tracker  # scarcity rows removed — top Team Needs owns this
     if include_quick_tools:
-        # Compact quick tools — no large tiles.
         try:
             from live_draft_navigation import render_live_draft_quick_nav_compact
 

@@ -149,6 +149,104 @@ def is_valid_solo_ready_room(room: dict[str, Any] | None, session: dict[str, Any
     return bool(solo_ready_contract(room, session).get("can_show_ready"))
 
 
+def enforce_prestart_invariants(
+    room: dict[str, Any] | None,
+    session: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Hard pre-Start invariants for Solo Ready / Setup / Preparing rooms.
+
+    While status is not ``in_progress`` / ``paused`` / ``complete``:
+    - no active deadline / countdown
+    - board length == 0
+    - current pick index == 0 (Pick 1 pending)
+    - expiration / Auto Pick must not execute (callers also gate on status)
+
+    Mutates ``room`` in place when safe. Returns a diagnostic dict.
+    """
+    out: dict[str, Any] = {
+        "ok": False,
+        "mutated": False,
+        "status": "",
+        "cleared_timer": False,
+        "reset_board": False,
+        "reset_pick_index": False,
+    }
+    if not isinstance(room, dict):
+        out["reason"] = "no_room"
+        return out
+    status = str(room.get("status") or "").strip().lower()
+    out["status"] = status
+    if status in {"in_progress", "paused", "complete", "completed"}:
+        out["ok"] = True
+        out["skipped"] = True
+        return out
+
+    mutated = False
+    if room.get("timer_deadline") is not None or room.get("timer_started_at") is not None:
+        room["timer_deadline"] = None
+        room["timer_started_at"] = None
+        out["cleared_timer"] = True
+        mutated = True
+    if room.pop("timer_live_ready_at", None) is not None:
+        mutated = True
+        out["cleared_timer"] = True
+    room["timer_handled_index"] = -1
+    room.pop("last_processed_expiration_token", None)
+
+    if int(room.get("current_pick_index") or 0) != 0:
+        room["current_pick_index"] = 0
+        out["reset_pick_index"] = True
+        mutated = True
+
+    board = room.get("draft_board")
+    if isinstance(board, list) and board:
+        # Solo Ready must never carry picks — wipe corrupt pre-start board.
+        room["draft_board"] = []
+        room["drafted_player_ids"] = []
+        teams = [str(t).strip() for t in (room.get("teams") or []) if str(t).strip()]
+        rosters = room.get("rosters") if isinstance(room.get("rosters"), dict) else {}
+        room["rosters"] = {t: [] for t in teams} if teams else {}
+        if isinstance(rosters, dict) and not teams:
+            room["rosters"] = {str(k): [] for k in rosters.keys()}
+        out["reset_board"] = True
+        mutated = True
+
+    if isinstance(session, dict):
+        session["_solo_prestart_invariants"] = {
+            "cleared_timer": out["cleared_timer"],
+            "reset_board": out["reset_board"],
+            "reset_pick_index": out["reset_pick_index"],
+            "status": status,
+        }
+
+    out["mutated"] = mutated
+    out["ok"] = True
+    out["deadline"] = room.get("timer_deadline")
+    out["board_len"] = len(room.get("draft_board") or []) if isinstance(room.get("draft_board"), list) else 0
+    out["current_pick_index"] = int(room.get("current_pick_index") or 0)
+    return out
+
+
+def prestart_expiration_blocked(room: dict[str, Any] | None) -> bool:
+    """True when expire / Auto Pick must not run (not yet In Progress with a live clock)."""
+    if not isinstance(room, dict):
+        return True
+    status = str(room.get("status") or "").strip().lower()
+    if status != "in_progress":
+        return True
+    try:
+        from live_draft_timer_logic import first_pick_awaiting_live_ready
+
+        if first_pick_awaiting_live_ready(room):
+            return True
+    except ImportError:
+        if room.get("timer_deadline") is None and room.get("timer_started_at") is None:
+            board = room.get("draft_board") or []
+            if int(room.get("current_pick_index") or 0) == 0 and not board:
+                return True
+    return False
+
+
 def is_uninhabitable_solo_ready_stub(room: Any) -> bool:
     """Corrupt not_started Solo rooms (Pick 1 of 0 / no teams) that must not sticky-Ready.
 
