@@ -813,6 +813,15 @@ if apply_suite_resume_launch:
     except Exception:
         pass
 
+# Responsive foundation (breakpoints, overflow containment, touch targets). Appended to
+# the base <style> markdown below — a separate st.markdown adds an empty block + gap.
+try:
+    from mobile_foundation import mobile_foundation_style_tag
+
+    _MOBILE_FOUNDATION_STYLE = mobile_foundation_style_tag()
+except Exception:
+    _MOBILE_FOUNDATION_STYLE = ""
+
 st.markdown("""
 <style>
 .block-container {padding-top: 1.2rem; padding-bottom: 2rem; padding-left: 2rem; padding-right: 2rem;}
@@ -861,7 +870,7 @@ st.markdown("""
 .ctx-transfer-row {margin-top: 10px; padding-top: 10px; border-top: 1px dashed #d5dde5;}
 .ctx-transfer-row [data-testid="stSelectbox"] label p {font-size: 12px; color: #5a6f82; font-weight: 600;}
 </style>
-""", unsafe_allow_html=True)
+""" + _MOBILE_FOUNDATION_STYLE, unsafe_allow_html=True)
 
 DRAFT_FOCUS_PAGES = frozenset({
     "Draft Room Simulator",
