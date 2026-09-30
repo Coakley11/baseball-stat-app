@@ -901,6 +901,20 @@ def _streamlit_script_run_ctx_active() -> bool:
 
 def render_global_app_chrome(active_page: str) -> None:
     """Single app header + tutorial entry — always show explorer banner."""
+    try:
+        from mobile_nav_m2 import render_mobile_quick_nav
+
+        render_mobile_quick_nav(
+            st,
+            active_page=active_page,
+            page_options=PAGE_OPTIONS,
+            page_option_label=page_option_label,
+            main_sidebar_page_key=MAIN_SIDEBAR_PAGE_KEY,
+            on_sidebar_page_change=_on_sidebar_page_change,
+        )
+    except Exception:
+        # Mobile quick-nav is purely additive chrome — never block the page body.
+        pass
     suppress_tutorial = False
     suppress_hero = False
     if active_page == "Live Draft Room":
@@ -14717,6 +14731,16 @@ if not st.session_state.get("_qp_active_page_nav_consumed"):
             st.session_state["_skip_page_restore_for"] = _qp_target
             st.session_state["_qp_active_page_nav_consumed"] = True
             st.session_state["_qp_active_page_nav_target"] = _qp_target
+            # Outranks a stale owned_page/blob restore later this same rerun — an
+            # explicit deep link must win over session restore. Single-rerun scoped
+            # (read-and-cleared in apply_baseball_disk_state); ordinary sidebar/nav
+            # afterward is unaffected.
+            try:
+                from baseball_persistent_state import EXPLICIT_PAGE_NAV_KEY
+
+                st.session_state[EXPLICIT_PAGE_NAV_KEY] = _qp_target
+            except ImportError:
+                st.session_state["_suite_explicit_page_nav_target"] = _qp_target
             if _qp_target == "Live Draft Room":
                 # Deep-link must enter the live room body, not the browse-away
                 # "Return to Live Draft" card on another page.
