@@ -140,3 +140,11 @@ def test_style_tag_wraps_css():
 def test_portfolio_polish_has_no_stale_column_testid():
     src = (ROOT / "portfolio_polish.py").read_text(encoding="utf-8")
     assert 'data-testid="column"' not in src
+
+
+def test_wrap_row_button_rule_targets_streamlit_buttons_only():
+    """M3 regression (caught live on Live Draft setup): a bare ``button`` selector also
+    stretched the select (react-aria ComboBox) chevron over the field, hiding values."""
+    css = mf.mobile_foundation_css()
+    assert '[data-testid="stColumn"] button {' not in css
+    assert '[data-testid="stColumn"] [data-testid^="stBaseButton-"] { width: 100%; }' in css

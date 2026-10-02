@@ -178,7 +178,9 @@ def mobile_foundation_css() -> str:
         min-width: min(9.5rem, 100%) !important; width: auto !important;
         flex: 1 1 calc(50% - 0.5rem) !important;
     }}
-    {_WRAP} [data-testid="stColumn"] button {{ width: 100%; }}
+    /* Streamlit action buttons only: a bare ``button`` selector also stretched the
+       select (react-aria ComboBox) chevron and number-input steppers over the field. */
+    {_WRAP} [data-testid="stColumn"] [data-testid^="stBaseButton-"] {{ width: 100%; }}
 }}
 """
 

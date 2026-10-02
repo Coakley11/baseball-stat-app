@@ -57,6 +57,20 @@ class PageGuideMarkupTests(unittest.TestCase):
         self.assertIn("render_quick_guide_card", block)
         self.assertIn("page_quick_guide", block)
 
+    def test_desktop_reopens_chromium_details_content_slot(self) -> None:
+        """M3 regression (caught live at 1280): current Chromium hides closed details
+        content via ::details-content, so the display override alone left desktop
+        showing only the header. The slot rule must be its own rule, desktop-scoped."""
+        from mobile_foundation import PHONE_MAX_PX
+        from page_quick_guide import _QUICK_GUIDE_CSS
+
+        idx = _QUICK_GUIDE_CSS.index(".page-guide::details-content")
+        media = _QUICK_GUIDE_CSS.rfind("@media", 0, idx)
+        self.assertIn(f"min-width: {PHONE_MAX_PX + 1}px", _QUICK_GUIDE_CSS[media:idx])
+        line = _QUICK_GUIDE_CSS[idx:].split("{", 1)[0]
+        self.assertNotIn(",", line)  # not part of a selector list
+        self.assertIn("content-visibility: visible", _QUICK_GUIDE_CSS[idx: idx + 200])
+
 
 if __name__ == "__main__":
     unittest.main()

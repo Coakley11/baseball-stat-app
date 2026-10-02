@@ -821,6 +821,39 @@ try:
     _MOBILE_FOUNDATION_STYLE = mobile_foundation_style_tag()
 except Exception:
     _MOBILE_FOUNDATION_STYLE = ""
+# Live Draft phone composition (M3) — same no-extra-element rule as the foundation.
+try:
+    from live_draft_mobile_layout import live_draft_mobile_style_tag
+
+    # Leading newline is required: a CommonMark <style> HTML block ends on the line that
+    # contains </style>, so a second <style> started on that same line is parsed as
+    # markdown text (visible CSS, rules never applied). Each block starts its own line.
+    _MOBILE_FOUNDATION_STYLE += "\n" + live_draft_mobile_style_tag()
+except Exception:
+    pass
+
+
+try:
+    from mobile_foundation import mobile_wrap_row
+except Exception:  # pragma: no cover - foundation module always present in-repo
+
+    def mobile_wrap_row(_st, _key):  # type: ignore[misc]
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+
+def _ldr_m_hook(key: str):
+    """Keyed container around one existing Live Draft call site (phone CSS hook only)."""
+    try:
+        from live_draft_mobile_layout import keyed
+
+        return keyed(st, key)
+    except Exception:
+        from contextlib import nullcontext
+
+        return nullcontext()
+
 
 st.markdown("""
 <style>
@@ -928,7 +961,8 @@ def render_global_app_chrome(active_page: str) -> None:
             suppress_hero = False
     if suppress_hero:
         # Active draft: do not spend the first viewport on the brand hero.
-        st.caption("⚾ Baseball Explorer · Live Draft")
+        with _ldr_m_hook("ldr-m-brand"):
+            st.caption("⚾ Baseball Explorer · Live Draft")
     else:
         compact = active_page in DRAFT_FOCUS_PAGES
         if compact:
@@ -23127,7 +23161,8 @@ elif active_page == "Live Draft Room":
         render_page_guide(active_page)
     else:
         # Active draft: keep a compact title only — Quick Guide pushes cards below the fold.
-        st.markdown("### 📡 Live Draft Room")
+        with _ldr_m_hook("ldr-m-active-title"):
+            st.markdown("### 📡 Live Draft Room")
     try:
         from live_draft_render_trace import ldr_post_rerun_checkpoint, ldr_section_done, ldr_step
 
@@ -25397,7 +25432,9 @@ elif active_page == "Live Draft Room":
         except ImportError:
             _setup_mode = "solo"
         st.subheader("League & Draft Settings")
-        lc1, lc2, lc3 = st.columns(3)
+        # Phone: 2-up wrap (M1 helper) instead of nine full-width rows. Same widgets/keys.
+        with mobile_wrap_row(st, "ldr-league-settings"):
+            lc1, lc2, lc3 = st.columns(3)
         _live_scoring_options = ["Roto (5x5)", "Points League"]
         _live_timer_options = list(LIVE_DRAFT_TIMER_CHOICES.keys())
         _live_proj_window_options = [3, 4, 5]
@@ -25499,7 +25536,8 @@ elif active_page == "Live Draft Room":
                 _ld_setup_default(st.session_state, _slot_key, _slot_default),
                 min_value=0,
             )
-        rs1, rs2, rs3, rs4 = st.columns(4)
+        with mobile_wrap_row(st, "ldr-roster-slots"):
+            rs1, rs2, rs3, rs4 = st.columns(4)
         with rs1:
             slot_c = st.number_input("C", min_value=0, max_value=3, step=1, key="live_slot_c", on_change=_live_draft_setting_changed)
             slot_1b = st.number_input("1B", min_value=0, max_value=3, step=1, key="live_slot_1b", on_change=_live_draft_setting_changed)
@@ -25516,7 +25554,8 @@ elif active_page == "Live Draft Room":
 
         st.caption("Rename teams (optional)")
         default_teams = _live_draft_default_teams(live_num_teams)
-        team_cols = st.columns(min(int(live_num_teams), 4))
+        with mobile_wrap_row(st, "ldr-team-names"):
+            team_cols = st.columns(min(int(live_num_teams), 4))
         team_names = []
         for i in range(int(live_num_teams)):
             with team_cols[i % len(team_cols)]:
@@ -26817,17 +26856,26 @@ elif active_page == "Live Draft Room":
             try:
                 from live_draft_room_ui import render_live_draft_room_header
 
-                render_live_draft_room_header(
-                    st,
-                    st.session_state,
-                    room,
-                    multiplayer=_multiplayer_draft,
-                    user_team=user_team,
-                    on_clock_team=on_clock_team,
-                    pick_label=pick_label,
-                    status_label=_status_label,
-                    draft_in_progress=_draft_in_progress,
-                )
+                # Phone CSS hook (M3), shared drafts only: this header card repeats the
+                # room code / role / teams already in the lobby-section summary card.
+                from contextlib import nullcontext as _ldr_nullctx
+
+                with (
+                    _ldr_m_hook("ldr-m-dup-room-header")
+                    if (_multiplayer_draft and _draft_in_progress)
+                    else _ldr_nullctx()
+                ):
+                    render_live_draft_room_header(
+                        st,
+                        st.session_state,
+                        room,
+                        multiplayer=_multiplayer_draft,
+                        user_team=user_team,
+                        on_clock_team=on_clock_team,
+                        pick_label=pick_label,
+                        status_label=_status_label,
+                        draft_in_progress=_draft_in_progress,
+                    )
             except ImportError:
                 try:
                     from live_draft_room_ui import render_live_draft_room_code_header
@@ -26869,14 +26917,16 @@ elif active_page == "Live Draft Room":
             try:
                 from live_draft_setup_ui import render_draft_status_summary_card
 
-                render_draft_status_summary_card(
-                    st,
-                    st.session_state,
-                    room,
-                    on_clock_team=on_clock_team,
-                    pick_label=pick_label,
-                    round_no=round_no,
-                )
+                # Phone CSS hook (M3): this second summary repeats the lobby-section card.
+                with _ldr_m_hook("ldr-m-dup-summary"):
+                    render_draft_status_summary_card(
+                        st,
+                        st.session_state,
+                        room,
+                        on_clock_team=on_clock_team,
+                        pick_label=pick_label,
+                        round_no=round_no,
+                    )
             except ImportError:
                 pass
         try:
@@ -27172,19 +27222,21 @@ elif active_page == "Live Draft Room":
                         "your roster needs, and positional scarcity. Draft a player now or save "
                         "one to your Queue for later."
                     )
-                    _early_ok = bool(
-                        render_rec_interactive_widgets(
-                            st,
-                            st.session_state,
-                            room,
-                            fmt_rate_4=fmt_rate_4,
-                            fmt_int=fmt_int,
-                            dense=False,
-                            layout="horizontal",
-                            max_cards_override=6,
-                            skip_summary_banner=True,
+                    # Phone CSS hook (M3): card rows become swipe strips.
+                    with _ldr_m_hook("ldr-m-recs-early"):
+                        _early_ok = bool(
+                            render_rec_interactive_widgets(
+                                st,
+                                st.session_state,
+                                room,
+                                fmt_rate_4=fmt_rate_4,
+                                fmt_int=fmt_int,
+                                dense=False,
+                                layout="horizontal",
+                                max_cards_override=6,
+                                skip_summary_banner=True,
+                            )
                         )
-                    )
                     st.session_state["_live_draft_rec_cards_early_viewport"] = _early_ok
                     if _early_ok:
                         st.session_state["_live_draft_rec_cards_inline"] = True
@@ -27228,24 +27280,26 @@ elif active_page == "Live Draft Room":
                     from draft_ui import render_live_manual_draft_panel
 
                     # Heading owned by render_live_manual_draft_panel (avoid duplicate "Manual Draft").
-                    st.caption(
-                        "Browse any available legal player — you are not limited to the recommendation cards."
-                    )
-                    if render_live_manual_draft_panel(
-                        st,
-                        st.session_state,
-                        room,
-                        user_team=user_team,
-                        multiplayer=_multiplayer_draft,
-                    ):
-                        try:
-                            from live_draft_safe_mode import request_live_draft_rerun
+                    # Phone CSS hook (M3): the primary draft action is raised under the clock.
+                    with _ldr_m_hook("ldr-m-action-early"):
+                        st.caption(
+                            "Browse any available legal player — you are not limited to the recommendation cards."
+                        )
+                        if render_live_manual_draft_panel(
+                            st,
+                            st.session_state,
+                            room,
+                            user_team=user_team,
+                            multiplayer=_multiplayer_draft,
+                        ):
+                            try:
+                                from live_draft_safe_mode import request_live_draft_rerun
 
-                            request_live_draft_rerun(
-                                st, st.session_state, "manual_pick_early", room=room
-                            )
-                        except ImportError:
-                            st.rerun()
+                                request_live_draft_rerun(
+                                    st, st.session_state, "manual_pick_early", room=room
+                                )
+                            except ImportError:
+                                st.rerun()
                     st.session_state["_live_draft_manual_panel_early"] = True
                 except Exception as _early_manual_exc:
                     st.session_state["_live_draft_manual_panel_early_error"] = (
@@ -27640,7 +27694,10 @@ elif active_page == "Live Draft Room":
                 ):
                     _is_commissioner, _doc_h = _paint_live_draft_control_center()
             else:
-                _is_commissioner, _doc_h = _paint_live_draft_control_center()
+                # Phone CSS hook (M3): host controls ordered under the draft action,
+                # live chat (2nd column) ordered with supporting context.
+                with _ldr_m_hook("ldr-m-controls"):
+                    _is_commissioner, _doc_h = _paint_live_draft_control_center()
             try:
                 from live_draft_render_checkpoints import note_active_page_receipt
 
@@ -28443,15 +28500,17 @@ elif active_page == "Live Draft Room":
                                                 render_rec_interactive_widgets,
                                             )
 
-                                            _inline_ok = bool(
-                                                render_rec_interactive_widgets(
-                                                    st,
-                                                    st.session_state,
-                                                    room,
-                                                    fmt_rate_4=fmt_rate_4,
-                                                    fmt_int=fmt_int,
+                                            # Phone CSS hook (M3): card rows become swipe strips.
+                                            with _ldr_m_hook("ldr-m-recs"):
+                                                _inline_ok = bool(
+                                                    render_rec_interactive_widgets(
+                                                        st,
+                                                        st.session_state,
+                                                        room,
+                                                        fmt_rate_4=fmt_rate_4,
+                                                        fmt_int=fmt_int,
+                                                    )
                                                 )
-                                            )
                                             st.session_state["_live_draft_rec_cards_inline"] = _inline_ok
                                             st.session_state[
                                                 "_live_draft_rec_queue_interactive_owner"
@@ -28860,19 +28919,21 @@ elif active_page == "Live Draft Room":
                 # Early Solo path already painted Manual Draft under Recommendations —
                 # skip the duplicate widget tree (StreamlitDuplicateElementKey).
                 if not bool(st.session_state.get("_live_draft_manual_panel_early")):
-                    if render_live_manual_draft_panel(
-                        st,
-                        st.session_state,
-                        room,
-                        user_team=user_team,
-                        multiplayer=_multiplayer_draft,
-                    ):
-                        try:
-                            from live_draft_safe_mode import request_live_draft_rerun
+                    # Phone CSS hook (M3): primary draft action raised under the clock.
+                    with _ldr_m_hook("ldr-m-action"):
+                        if render_live_manual_draft_panel(
+                            st,
+                            st.session_state,
+                            room,
+                            user_team=user_team,
+                            multiplayer=_multiplayer_draft,
+                        ):
+                            try:
+                                from live_draft_safe_mode import request_live_draft_rerun
 
-                            request_live_draft_rerun(st, st.session_state, "manual_pick", room=room)
-                        except ImportError:
-                            st.rerun()
+                                request_live_draft_rerun(st, st.session_state, "manual_pick", room=room)
+                            except ImportError:
+                                st.rerun()
                 else:
                     st.session_state.pop("_live_draft_manual_panel_early", None)        # Active Live Draft: skip "Continue analysis / settings on another page" nav.
         # Quick Draft Tools in the Decision Panel cover Assistant / Sleepers / Queue.

@@ -34,6 +34,16 @@ _QUICK_GUIDE_CSS = f"""<style>
     .page-guide > summary::after {{ display: none; }}
     .page-guide > *:not(summary) {{ display: block !important; }}
 }}
+/* Current Chromium hides a closed disclosure's content via the ::details-content slot
+   (content-visibility), not display:none on children — so the rule above alone left
+   the desktop card showing only its header. Separate rule: a selector list containing
+   an unsupported pseudo-element would make older browsers drop the whole rule. */
+@media (min-width: {PHONE_MAX_PX + 1}px) {{
+    .page-guide::details-content {{
+        content-visibility: visible !important; display: block !important;
+        block-size: auto !important; height: auto !important;
+    }}
+}}
 </style>"""
 
 

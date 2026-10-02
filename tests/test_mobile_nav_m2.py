@@ -103,6 +103,29 @@ class RenderMobileQuickNavTests(unittest.TestCase):
         # Current page banner shows the resolved label somewhere in the markdown.
         self.assertTrue(any("[Live Draft Room]" in m for m in st.markdown_calls))
 
+    def test_quick_nav_is_a_single_page_element_styles_inside_container(self) -> None:
+        """M3 regression: a separate style-only st.markdown plus a hidden-but-present
+        layout wrapper each cost a 16px flex gap on EVERY desktop page. Styles now ride
+        inside the keyed container's label markdown — one hidden item on desktop."""
+        src = (ROOT / "mobile_nav_m2.py").read_text(encoding="utf-8")
+        body = src[src.index("def render_mobile_quick_nav"):]
+        before_container = body[: body.index("with st.container(key=QUICK_NAV_ROOT_KEY)")]
+        self.assertNotIn("st.markdown(", before_container)
+        st = _FakeSt()
+        nav.render_mobile_quick_nav(
+            st,
+            active_page="Live Draft Room",
+            page_options=["Historical Explorer", "Live Draft Room"],
+            page_option_label=self._label,
+            main_sidebar_page_key="main_sidebar_page",
+            on_sidebar_page_change=lambda: None,
+        )
+        self.assertEqual(len(st.markdown_calls), 1)
+        md = st.markdown_calls[0]
+        self.assertTrue(md.startswith("<style>"))
+        self.assertIn("</style>\n<style>", md)  # each style block on its own line
+        self.assertIn('</style>\n<div class="m-quick-nav-current">', md)
+
     def test_selectbox_state_syncs_to_active_page_each_rerun(self) -> None:
         """Regression: without this sync, navigating via the sidebar/deep-link
         would leave the quick-nav selectbox showing a stale prior page, because
@@ -171,8 +194,19 @@ class RenderMobileQuickNavTests(unittest.TestCase):
 class CssScopingTests(unittest.TestCase):
     def test_quick_nav_hidden_above_phone_breakpoint(self) -> None:
         css = nav._quick_nav_css()
-        self.assertIn(f".st-key-{nav.QUICK_NAV_ROOT_KEY} {{ display: none; }}", css)
+        desktop = css.split(f"@media (min-width: {nav.PHONE_MAX_PX + 1}px)", 1)[1].split("@media", 1)[0]
+        self.assertIn(f".st-key-{nav.QUICK_NAV_ROOT_KEY}", desktop)
+        self.assertIn("display: none", desktop)
         self.assertIn(f"max-width: {nav.PHONE_MAX_PX}px", css)
+
+    def test_quick_nav_keeps_native_flex_layout_on_phone(self) -> None:
+        """M3 regression: forcing ``display: block`` on the keyed stVerticalBlock collapsed
+        the label's element container (~7px) so the selectbox overlapped the label —
+        observed live on Live Draft at 390px. Phone rules must not override display."""
+        css = nav._quick_nav_css()
+        phone = css.split(f"@media (max-width: {nav.PHONE_MAX_PX}px)", 1)[1]
+        self.assertNotIn("display: block", phone)
+        self.assertNotIn("display:block", phone)
 
     def test_hero_subtitle_hidden_only_on_phone(self) -> None:
         css = nav.mobile_header_compaction_css()

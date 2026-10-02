@@ -91,12 +91,20 @@ def grouped_page_options(page_options: list[str]) -> list[str]:
 
 
 def _quick_nav_css() -> str:
+    # Hide only ABOVE the phone breakpoint. On phones keep Streamlit's own flex-column
+    # layout for this keyed stVerticalBlock: forcing ``display: block`` (M2) collapsed
+    # the label's element container to ~7px and the selectbox overlapped the label.
     return f"""<style>
-.st-key-{QUICK_NAV_ROOT_KEY} {{ display: none; }}
+@media (min-width: {PHONE_MAX_PX + 1}px) {{
+    .st-key-{QUICK_NAV_ROOT_KEY},
+    [data-testid="stLayoutWrapper"]:has(> .st-key-{QUICK_NAV_ROOT_KEY}) {{ display: none; }}
+}}
 @media (max-width: {PHONE_MAX_PX}px) {{
-    .st-key-{QUICK_NAV_ROOT_KEY} {{
-        display: block; margin-bottom: 10px;
-    }}
+    .st-key-{QUICK_NAV_ROOT_KEY} {{ gap: 4px; }}
+    /* Streamlit pulls every markdown container up by -1rem to cancel a trailing <p>
+       margin; this label is a <div> with no such margin, so that collapsed its row
+       and the selectbox overlapped the label. */
+    .st-key-{QUICK_NAV_ROOT_KEY} [data-testid="stMarkdownContainer"] {{ margin-bottom: 0 !important; }}
     .m-quick-nav-current {{
         font-size: 12px; font-weight: 700; color: #0b3d6e;
         text-transform: uppercase; letter-spacing: 0.04em;
@@ -136,8 +144,11 @@ def render_mobile_quick_nav(
 
     No-op visually on desktop (CSS-hidden); still mounts the same two elements
     every run so Streamlit's widget identity stays stable across reruns.
+
+    The stylesheet rides inside the label's markdown (inside the keyed container), so
+    on desktop the whole quick-nav — styles included — is one hidden layout item and
+    costs no flex gap. A ``<style>`` still applies inside a ``display: none`` parent.
     """
-    st.markdown(_quick_nav_css() + mobile_header_compaction_css(), unsafe_allow_html=True)
     ordered = grouped_page_options(page_options)
     try:
         current_index = ordered.index(active_page)
@@ -163,8 +174,14 @@ def render_mobile_quick_nav(
         on_sidebar_page_change()
 
     with st.container(key=QUICK_NAV_ROOT_KEY):
+        # Each <style> block and the label start on their own line (CommonMark HTML
+        # blocks end on the line containing </style>).
         st.markdown(
-            f'<div class="m-quick-nav-current">\U0001f4cd {page_option_label(active_page)}</div>',
+            _quick_nav_css()
+            + "\n"
+            + mobile_header_compaction_css()
+            + "\n"
+            + f'<div class="m-quick-nav-current">\U0001f4cd {page_option_label(active_page)}</div>',
             unsafe_allow_html=True,
         )
         st.selectbox(
