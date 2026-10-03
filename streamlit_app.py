@@ -831,6 +831,12 @@ try:
     _MOBILE_FOUNDATION_STYLE += "\n" + live_draft_mobile_style_tag()
 except Exception:
     pass
+try:
+    from fantasy_mobile_layout import fantasy_mobile_style_tag
+
+    _MOBILE_FOUNDATION_STYLE += "\n" + fantasy_mobile_style_tag()
+except Exception:
+    pass
 
 
 try:
@@ -2617,8 +2623,12 @@ def render_output_table(
     display_rows=MAX_TABLE_DISPLAY_ROWS,
     style_cols=None,
     highlight_last_row: bool = False,
+    pin_columns=None,
 ):
     """Render a table quickly and add a CSV export button that opens cleanly in Excel.
+
+    ``pin_columns`` (opt-in, Mobile M4): identity columns to freeze while wide stat
+    columns scroll on phones. Only a leading run is pinned, so column order is unchanged.
 
     Callers must pass a pandas DataFrame (empty is fine). Non-DataFrame inputs are
     logged and coerced — the Live Draft board previously passed a Styler after a pick,
@@ -2652,6 +2662,14 @@ def render_output_table(
         display_df = table_df
 
     style_cols = [c for c in (style_cols or []) if c in display_df.columns]
+    _pinned_cfg = {}
+    if pin_columns:
+        try:
+            from fantasy_mobile_layout import pinned_identity_column_config
+
+            _pinned_cfg = pinned_identity_column_config(st, display_df.columns, pin_columns)
+        except ImportError:
+            _pinned_cfg = {}
 
     if highlight_last_row and not display_df.empty:
         try:
@@ -2734,11 +2752,14 @@ def render_output_table(
                     "Interpretation": st.column_config.TextColumn(
                         "Interpretation",
                         width="large"
-                    )
+                    ),
+                    **_pinned_cfg,
                 }
             )
         except Exception:
             st.dataframe(styled_df, width="stretch", hide_index=True)
+    elif _pinned_cfg:
+        st.dataframe(display_df, width="stretch", hide_index=True, column_config=_pinned_cfg)
     else:
         st.dataframe(display_df, width="stretch", hide_index=True)
 
@@ -30035,6 +30056,7 @@ elif active_page == "Fantasy Standings Tracker":
                     format_fantasy_table(clean_ui_columns(roster_stats[[c for c in show_cols if c in roster_stats.columns]]))
                 ),
                 key="standings_roster_current_stats",
+                pin_columns=("Fantasy Team", "Team", "Player"),
                 file_name="fantasy_rosters_current_stats.csv",
                 display_rows=300,
             )
@@ -30051,6 +30073,7 @@ elif active_page == "Fantasy Standings Tracker":
                     render_output_table(
                         format_fantasy_standings_table(format_fantasy_table(clean_ui_columns(_wk_df))),
                         key="fantasy_weekly_hitter_standings",
+                pin_columns=("Fantasy Team", "Team", "Player"),
                         file_name="fantasy_weekly_hitter_standings.csv",
                         display_rows=50,
                     )
@@ -30072,6 +30095,7 @@ elif active_page == "Fantasy Standings Tracker":
             render_output_table(
                 format_fantasy_standings_table(format_fantasy_table(clean_ui_columns(standings))),
                 key="fantasy_live_standings",
+                pin_columns=("Fantasy Team", "Team", "Player"),
                 file_name="fantasy_live_standings.csv",
                 display_rows=50,
                 style_cols=["Total Roto Points", "Estimated Points"],

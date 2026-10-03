@@ -914,7 +914,16 @@ def render_fantasy_page_navigation(
     nav_error = session.pop("_fantasy_nav_error", None)
     if nav_error:
         st.warning(str(nav_error))
-    cols = st.columns(len(targets))
+    try:
+        from fantasy_mobile_layout import phone_wrap_row
+    except ImportError:  # pragma: no cover
+        from contextlib import nullcontext
+
+        def phone_wrap_row(_st, _key):
+            return nullcontext()
+
+    with phone_wrap_row(st, "fantasy-nav"):
+        cols = st.columns(len(targets))
     for col, page_key in zip(cols, targets):
         with col:
             label = _fantasy_nav_button_label(page_key, page_label_fn)

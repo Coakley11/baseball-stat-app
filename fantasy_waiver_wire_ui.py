@@ -116,6 +116,16 @@ def _photo_helpers(st: Any) -> tuple[bool, Any, Any]:
         return False, None, None
 
 
+def _card_key(key_prefix: str, name: str) -> str | None:
+    """Mobile M4 class hook for the card (phone CSS keeps it one compact row)."""
+    try:
+        from fantasy_mobile_layout import fantasy_card_key
+
+        return fantasy_card_key(key_prefix, name)
+    except ImportError:
+        return None
+
+
 def _render_player_card(
     st: Any,
     row: pd.Series,
@@ -130,7 +140,7 @@ def _render_player_card(
     team = str(row.get("MLB Team") or row.get("Team") or "—")
     pos = str(row.get("Primary Position") or row.get("Position") or "—")
 
-    with st.container(border=True):
+    with st.container(border=True, key=_card_key(key_prefix, name)):
         c_photo, c_body, c_action = st.columns([1, 3, 1])
         with c_photo:
             if use_photos and get_photo and render_photo:
@@ -169,7 +179,7 @@ def _render_add_player_card(
     team = str(row.get("MLB Team") or row.get("Team") or "—")
     pos = str(row.get("Primary Position") or row.get("Position") or "—")
 
-    with st.container(border=True):
+    with st.container(border=True, key=_card_key(key_prefix, name)):
         c_photo, c_body, c_action = st.columns([1, 3, 1])
         with c_photo:
             if use_photos and get_photo and render_photo:
@@ -207,7 +217,7 @@ def _render_drop_player_card(
     team = str(row.get("MLB Team") or row.get("Team") or "—")
     pos = str(row.get("Primary Position") or row.get("Position") or "—")
 
-    with st.container(border=True):
+    with st.container(border=True, key=_card_key(key_prefix, name)):
         c_photo, c_body, c_action = st.columns([1, 3, 1])
         with c_photo:
             if use_photos and get_photo and render_photo:

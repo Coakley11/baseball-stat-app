@@ -203,6 +203,17 @@ def build_open_slot_prompts(
     return rows
 
 
+def _phone_inline_row(st: Any, key: str):
+    try:
+        from fantasy_mobile_layout import phone_inline_row
+
+        return phone_inline_row(st, key)
+    except ImportError:  # pragma: no cover
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+
 def _inject_open_slots_styles(st: Any) -> None:
     emit_html_block(
         st,
@@ -244,18 +255,20 @@ def _render_open_slots_and_validation(
     open_rows = build_open_slot_prompts(slot_labels, assignments)
     if open_rows:
         _inject_open_slots_styles(st)
-        for idx, row in enumerate(open_rows):
-            text_col, btn_col = st.columns([5, 2], gap="small")
-            with text_col:
-                st.markdown(f"**{row['text']}**")
-            with btn_col:
-                if on_open_waiver_wire is not None:
-                    st.button(
-                        str(row.get("button_label") or "Open Waiver Wire"),
-                        key=f"{prefix}_waiver_{row['waiver_label']}_{idx}_{int(selected_week)}",
-                        on_click=on_open_waiver_wire,
-                        args=(row["waiver_label"],),
-                    )
+        # Phones: keep "Missing X" and its waiver button on one line (desktop unchanged).
+        with _phone_inline_row(st, "fl-open-slots"):
+            for idx, row in enumerate(open_rows):
+                text_col, btn_col = st.columns([5, 2], gap="small")
+                with text_col:
+                    st.markdown(f"**{row['text']}**")
+                with btn_col:
+                    if on_open_waiver_wire is not None:
+                        st.button(
+                            str(row.get("button_label") or "Open Waiver Wire"),
+                            key=f"{prefix}_waiver_{row['waiver_label']}_{idx}_{int(selected_week)}",
+                            on_click=on_open_waiver_wire,
+                            args=(row["waiver_label"],),
+                        )
 
     return validation
 
@@ -598,7 +611,8 @@ def render_weekly_lineup_section(
 
     save_key = f"{scope.fingerprint}|save_btn" if scope else f"{prefix}_save_btn"
     reset_key = f"{scope.fingerprint}|reset_btn" if scope else f"{prefix}_reset_btn"
-    save_col, _reset_col = st.columns(2)
+    with _phone_inline_row(st, "fl-save-reset"):
+        save_col, _reset_col = st.columns(2)
     with save_col:
         save_disabled = not validation.get("ok")
         if st.button("Save Lineup", key=save_key, type="primary", disabled=bool(save_disabled)):
