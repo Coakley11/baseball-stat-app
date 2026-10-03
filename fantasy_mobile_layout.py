@@ -6,10 +6,9 @@ Presentation only: no roster, scoring, standings, waiver, transaction or trade l
   (photo | details | action columns). On phones the card stays one compact row —
   small photo on the left, details beside it, action button under the details —
   instead of stacking a full-width photo, text block and button per player.
-- ``pinned_identity_column_config``: freezes the leading identity columns of a wide
-  table (e.g. Team, Player) so they stay visible while category columns scroll.
-  Only a contiguous leading run is pinned, so column order never changes (pinned
-  columns are always drawn first) and desktop tables that fit look the same.
+- ``pinned_identity_column_config`` / ``leading_identity_columns``: re-exported from
+  ``mobile_table_layout`` (Mobile M5), which generalized this beyond Fantasy tables.
+  Kept importable from here too so M4 call sites and tests are unaffected.
 
 Row compaction (nav buttons, trade actions, open lineup slots) reuses the M1
 ``mobile_wrap_row`` / ``mobile_inline_row`` helpers rather than new CSS.
@@ -18,6 +17,8 @@ Row compaction (nav buttons, trade actions, open lineup slots) reuses the M1
 from __future__ import annotations
 
 from typing import Any, Iterable
+
+from mobile_table_layout import leading_identity_columns, pinned_identity_column_config
 
 try:
     from mobile_foundation import PHONE_MAX_PX
@@ -46,27 +47,6 @@ __all__ = (
 def fantasy_card_key(key_prefix: str, name: str) -> str:
     safe = "".join(ch if (ch.isalnum() or ch in "-_") else "_" for ch in f"{key_prefix}_{name}")[:80]
     return f"{CARD_KEY_PREFIX}{safe}"
-
-
-def leading_identity_columns(columns: Iterable[Any], identity: Iterable[str]) -> list[str]:
-    """The run of ``identity`` columns at the very start of ``columns`` (order kept)."""
-    wanted = {str(c) for c in identity}
-    out: list[str] = []
-    for col in columns:
-        if str(col) not in wanted:
-            break
-        out.append(str(col))
-    return out
-
-
-def pinned_identity_column_config(st: Any, columns: Iterable[Any], identity: Iterable[str]) -> dict[str, Any]:
-    cfg: dict[str, Any] = {}
-    for col in leading_identity_columns(columns, identity):
-        try:
-            cfg[col] = st.column_config.Column(pinned=True)
-        except Exception:  # pragma: no cover - older Streamlit without pinned columns
-            return {}
-    return cfg
 
 
 def _row(st: Any, key: str, *, inline: bool):

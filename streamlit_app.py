@@ -2559,16 +2559,19 @@ def top_bar_chart(df, name_col, value_col, title, top_n=10):
         return
     except ImportError:
         pass
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.barh(chart_df[name_col], chart_df[value_col])
-    ax.set_title(title)
-    ax.set_xlabel(value_col)
-    ax.invert_yaxis()
-    try:
-        st.pyplot(fig, clear_figure=True)
-    except TypeError:
-        st.pyplot(fig)
-    plt.close(fig)
+    from mobile_chart_layout import legible_matplotlib_chart
+
+    with legible_matplotlib_chart():
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.barh(chart_df[name_col], chart_df[value_col])
+        ax.set_title(title)
+        ax.set_xlabel(value_col)
+        ax.invert_yaxis()
+        try:
+            st.pyplot(fig, clear_figure=True)
+        except TypeError:
+            st.pyplot(fig)
+        plt.close(fig)
 
 def format_display_table(df, count_cols=None, rate_cols=None, score_cols=None, count_decimals=0, rate_decimals=3):
     """Return a plain DataFrame for maximum Streamlit Cloud stability.
@@ -2627,7 +2630,7 @@ def render_output_table(
 ):
     """Render a table quickly and add a CSV export button that opens cleanly in Excel.
 
-    ``pin_columns`` (opt-in, Mobile M4): identity columns to freeze while wide stat
+    ``pin_columns`` (opt-in, Mobile M4/M5): identity columns to freeze while wide stat
     columns scroll on phones. Only a leading run is pinned, so column order is unchanged.
 
     Callers must pass a pandas DataFrame (empty is fine). Non-DataFrame inputs are
@@ -2665,7 +2668,7 @@ def render_output_table(
     _pinned_cfg = {}
     if pin_columns:
         try:
-            from fantasy_mobile_layout import pinned_identity_column_config
+            from mobile_table_layout import pinned_identity_column_config
 
             _pinned_cfg = pinned_identity_column_config(st, display_df.columns, pin_columns)
         except ImportError:
@@ -7198,21 +7201,24 @@ def plot_single_player_multi_stat_dashboard(player_df, player_name, stats, mode=
         else:
             y_plot = y
 
-        fig, ax = plt.subplots(figsize=(9, 4))
-        ax.plot(player_df["yearID"], y_plot, marker="o", label=f"{stat} — {mode}")
-        trend_years = sorted(pd.to_numeric(player_df["yearID"], errors="coerce").dropna().astype(int).unique())
-        ax.set_xticks(trend_years)
-        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.set_xlabel("Year")
-        ax.set_ylabel(stat)
-        ax.set_title(f"{player_name} — {stat} Trend")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        try:
-            st.pyplot(fig, clear_figure=True)
-        except TypeError:
-            st.pyplot(fig)
-        plt.close(fig)
+        from mobile_chart_layout import legible_matplotlib_chart
+
+        with legible_matplotlib_chart():
+            fig, ax = plt.subplots(figsize=(9, 4))
+            ax.plot(player_df["yearID"], y_plot, marker="o", label=f"{stat} — {mode}")
+            trend_years = sorted(pd.to_numeric(player_df["yearID"], errors="coerce").dropna().astype(int).unique())
+            ax.set_xticks(trend_years)
+            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+            ax.set_xlabel("Year")
+            ax.set_ylabel(stat)
+            ax.set_title(f"{player_name} — {stat} Trend")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            try:
+                st.pyplot(fig, clear_figure=True)
+            except TypeError:
+                st.pyplot(fig)
+            plt.close(fig)
 
 
 def render_player_trend_chart_section(source_df, label_map, label_options, *, key_prefix, title="Player Trend Charts"):
@@ -7253,20 +7259,23 @@ def render_player_trend_chart_section(source_df, label_map, label_options, *, ke
         if chart_df.empty:
             st.info("No valid values found for the selected player/stat.")
             return
-        fig, ax = plt.subplots(figsize=(10, 4.5))
-        for player, g in chart_df.groupby("Player"):
-            ax.plot(g["Year"], g["Value"], marker="o", label=player)
-        ax.set_title(chart_title)
-        ax.set_xlabel("Season")
-        ax.set_ylabel(chart_stat)
-        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.grid(True, alpha=0.25)
-        ax.legend()
-        try:
-            st.pyplot(fig, clear_figure=True)
-        except TypeError:
-            st.pyplot(fig)
-        plt.close(fig)
+        from mobile_chart_layout import legible_matplotlib_chart
+
+        with legible_matplotlib_chart():
+            fig, ax = plt.subplots(figsize=(10, 4.5))
+            for player, g in chart_df.groupby("Player"):
+                ax.plot(g["Year"], g["Value"], marker="o", label=player)
+            ax.set_title(chart_title)
+            ax.set_xlabel("Season")
+            ax.set_ylabel(chart_stat)
+            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+            ax.grid(True, alpha=0.25)
+            ax.legend()
+            try:
+                st.pyplot(fig, clear_figure=True)
+            except TypeError:
+                st.pyplot(fig)
+            plt.close(fig)
 
     _plot_trend([single_player], f"{fullname_base_from_label(single_player)} - {chart_stat} Trend")
 
@@ -16367,7 +16376,8 @@ if active_page == "Historical Explorer":
     except ImportError:
         pass
 
-    hc1, hc2, hc3 = st.columns([2.2, 1.2, 1.2])
+    with mobile_wrap_row(st, "historical-top-filters"):
+        hc1, hc2, hc3 = st.columns([2.2, 1.2, 1.2])
     sort_options_hist = [
         "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"
     ]
@@ -16419,7 +16429,8 @@ if active_page == "Historical Explorer":
             )
 
     with st.expander("Advanced filters", expanded=False):
-        c2, c_mode, c3, c4 = st.columns([1.0, 1.25, 1.0, 1.35])
+        with mobile_wrap_row(st, "historical-advanced-filters"):
+            c2, c_mode, c3, c4 = st.columns([1.0, 1.25, 1.0, 1.35])
         with c2:
             bats_options = sorted([x for x in batting_df["bats"].dropna().unique() if str(x).strip() != ""])
             prepare_historical_multiselect_filter(
@@ -16598,7 +16609,7 @@ if active_page == "Historical Explorer":
     if developer_mode_enabled():
         render_stat_filter_summary_developer_diagnostics(st, st.session_state, mode="historical")
     hist_table = format_display_table(clean_ui_columns(hist_display), count_cols=["Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
-    render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv")
+    render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv", pin_columns=("Year", "Player"))
     try:
         from baseball_activity import log_historical_analysis
 
@@ -16798,7 +16809,8 @@ elif active_page == "Career Totals":
     else:
         career_hof_filter = HOF_FILTER_ALL
     career_sort_options = ["HR", "RBI", "SB", "R", "H", "2B", "3B", "BB", "BA", "OBP", "SLG", "OPS", "AB"]
-    cc1, cc2 = st.columns([2.5, 1.5])
+    with mobile_wrap_row(st, "career-top-filters"):
+        cc1, cc2 = st.columns([2.5, 1.5])
     with cc1:
         prepare_career_year_range(
             st.session_state,
@@ -16823,7 +16835,8 @@ elif active_page == "Career Totals":
         )
 
     with st.expander("Advanced filters", expanded=False):
-        c2, c3, c4 = st.columns(3)
+        with mobile_wrap_row(st, "career-advanced-filters"):
+            c2, c3, c4 = st.columns(3)
         with c2:
             bats_options_career = sorted([x for x in batting_df["bats"].dropna().unique() if str(x).strip() != ""])
             bats_options_career = prepare_career_multiselect_filter(
@@ -17408,7 +17421,7 @@ elif active_page == "Career Totals":
                 developer_mode=True,
             )
     career_table = format_display_table(clean_ui_columns(career_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
-    render_output_table(career_table, key="career_totals", file_name="career_totals.csv")
+    render_output_table(career_table, key="career_totals", file_name="career_totals.csv", pin_columns=("Player",))
 
     try:
         from applied_math_context import cache_page_context
@@ -17493,7 +17506,8 @@ elif active_page == "Leaderboards":
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     leaders_sort_options = ["score", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
-    c1, c2, c3 = st.columns([2, 1, 1])
+    with mobile_wrap_row(st, "leaderboards-top-filters"):
+        c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         prepare_leaderboards_year_range(
             st.session_state,
@@ -17541,7 +17555,8 @@ elif active_page == "Leaderboards":
     weight_values = {}
     with st.expander("Custom stat weights (defaults: HR / RBI / SB at 1.0; others 0)", expanded=False):
         st.caption("Weights feed the Score column only; raw counting and rate stats in the table are unchanged.")
-        weight_cols = st.columns(4)
+        with mobile_wrap_row(st, "leaderboards-weights"):
+            weight_cols = st.columns(4)
         for i, stat in enumerate(weight_stats):
             with weight_cols[i % 4]:
                 weight_values[stat] = st.number_input(
@@ -17584,7 +17599,7 @@ elif active_page == "Leaderboards":
 
     st.divider()
     leaderboard_table = format_display_table(clean_ui_columns(leaderboard_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"], score_cols=["Score"])
-    render_output_table(leaderboard_table, key="leaderboards", file_name="leaderboards.csv")
+    render_output_table(leaderboard_table, key="leaderboards", file_name="leaderboards.csv", pin_columns=("Player",))
     _lb_xfer_df = (
         leaderboard.sort_values(sort_stat_leaders, ascending=False).head(top_n_leaders)
         if not leaderboard.empty
@@ -17780,7 +17795,8 @@ elif active_page == "Comparison Tool":
 
     if selected_labels_compare:
         st.caption("Context-aware actions: historical players keep Compare and Trends; active players also get fantasy workflow actions.")
-        action_cols = st.columns(min(3, len(selected_labels_compare)))
+        with mobile_wrap_row(st, "comparison-action-cols"):
+            action_cols = st.columns(min(3, len(selected_labels_compare)))
         for i, label in enumerate(selected_labels_compare):
             with action_cols[i % len(action_cols)]:
                 render_contextual_player_actions(
@@ -17915,7 +17931,7 @@ elif active_page == "Comparison Tool":
         st.subheader("Year-by-Year Comparison")
         compare_display = compare[[c for c in ["yearID", "fullName", "Age", "R", "H", "2B", "3B", "HR", "RBI", "SB", "AB", "BA", "OBP", "SLG", "OPS"] if c in compare.columns]].sort_values(["fullName", "yearID"]).rename(columns={"yearID": "Year", "fullName": "Player"})
         compare_table = format_display_table(clean_ui_columns(compare_display), count_cols=["Year", "R", "H", "2B", "3B", "HR", "RBI", "SB", "AB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
-        render_output_table(compare_table, key="comparison_yearly", file_name="comparison_year_by_year.csv")
+        render_output_table(compare_table, key="comparison_yearly", file_name="comparison_year_by_year.csv", pin_columns=("Year", "Player"))
 
         st.subheader("Career Totals")
         career_compare = compare.groupby(["fullName"], as_index=False)[["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"]].sum()
@@ -17923,57 +17939,60 @@ elif active_page == "Comparison Tool":
         career_compare = safe_round_rate_stats(career_compare)
         career_compare_display = career_compare[["fullName", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BA", "OBP", "SLG", "OPS"]].sort_values("HR", ascending=False).rename(columns={"fullName": "Player"})
         career_compare_table = format_display_table(clean_ui_columns(career_compare_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
-        render_output_table(career_compare_table, key="comparison_career", file_name="comparison_career_totals.csv")
+        render_output_table(career_compare_table, key="comparison_career", file_name="comparison_career_totals.csv", pin_columns=("Player",))
 
         st.subheader(f"{stat_choice_compare} Trends")
-        fig, ax = plt.subplots(figsize=(10, 5))
+        from mobile_chart_layout import legible_matplotlib_chart
 
-        if compare_x_axis_mode == "Player Age":
-            compare_age_df = compare.copy()
-            compare_age_df["Age"] = pd.to_numeric(compare_age_df["Age"], errors="coerce")
+        with legible_matplotlib_chart():
+            fig, ax = plt.subplots(figsize=(10, 5))
 
-            for pid in selected_ids_compare:
-                subset = compare_age_df[compare_age_df["playerID"] == pid].sort_values("Age").copy()
-                if subset.empty or stat_choice_compare not in subset.columns:
-                    continue
-                player_name = subset["fullName"].iloc[0]
-                y = pd.to_numeric(subset[stat_choice_compare], errors="coerce")
-                if compare_trend_mode == "Smoothed Moving Average":
-                    y = y.rolling(window=int(compare_smooth_window), min_periods=1).mean()
-                    label = f"{player_name} — smoothed"
-                else:
-                    label = player_name
-                ax.plot(subset["Age"], y, marker="o", label=label)
+            if compare_x_axis_mode == "Player Age":
+                compare_age_df = compare.copy()
+                compare_age_df["Age"] = pd.to_numeric(compare_age_df["Age"], errors="coerce")
 
-            ax.set_xlabel("Player Age")
-            ax.set_title(f"{stat_choice_compare} by Player Age — {compare_age_range[0]} to {compare_age_range[1]}")
-            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        else:
-            plot_player_stat_trends(
-                ax,
-                compare,
-                selected_ids_compare,
-                stat_choice_compare,
-                mode=compare_trend_mode,
-                smooth_window=compare_smooth_window
-            )
-            all_compare_years = sorted(pd.to_numeric(compare["yearID"], errors="coerce").dropna().astype(int).unique())
-            ax.set_xticks(all_compare_years)
-            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-            ax.set_xlabel("Year")
-            ax.set_title(f"{stat_choice_compare} Trends — {compare_trend_mode}")
+                for pid in selected_ids_compare:
+                    subset = compare_age_df[compare_age_df["playerID"] == pid].sort_values("Age").copy()
+                    if subset.empty or stat_choice_compare not in subset.columns:
+                        continue
+                    player_name = subset["fullName"].iloc[0]
+                    y = pd.to_numeric(subset[stat_choice_compare], errors="coerce")
+                    if compare_trend_mode == "Smoothed Moving Average":
+                        y = y.rolling(window=int(compare_smooth_window), min_periods=1).mean()
+                        label = f"{player_name} — smoothed"
+                    else:
+                        label = player_name
+                    ax.plot(subset["Age"], y, marker="o", label=label)
 
-        ax.set_ylabel(stat_choice_compare)
-        if ax.lines:
-            ax.legend()
-        else:
-            st.warning("No selected player has seasons in the selected range for this chart.")
-        ax.grid(True, alpha=0.3)
-        try:
-            st.pyplot(fig, clear_figure=True)
-        except TypeError:
-            st.pyplot(fig)
-        plt.close(fig)
+                ax.set_xlabel("Player Age")
+                ax.set_title(f"{stat_choice_compare} by Player Age — {compare_age_range[0]} to {compare_age_range[1]}")
+                ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+            else:
+                plot_player_stat_trends(
+                    ax,
+                    compare,
+                    selected_ids_compare,
+                    stat_choice_compare,
+                    mode=compare_trend_mode,
+                    smooth_window=compare_smooth_window
+                )
+                all_compare_years = sorted(pd.to_numeric(compare["yearID"], errors="coerce").dropna().astype(int).unique())
+                ax.set_xticks(all_compare_years)
+                ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+                ax.set_xlabel("Year")
+                ax.set_title(f"{stat_choice_compare} Trends — {compare_trend_mode}")
+
+            ax.set_ylabel(stat_choice_compare)
+            if ax.lines:
+                ax.legend()
+            else:
+                st.warning("No selected player has seasons in the selected range for this chart.")
+            ax.grid(True, alpha=0.3)
+            try:
+                st.pyplot(fig, clear_figure=True)
+            except TypeError:
+                st.pyplot(fig)
+            plt.close(fig)
 
         st.subheader("Advanced Trend Intelligence")
         compare_intel = build_advanced_trend_intelligence(compare, selected_ids_compare, stat_choice_compare)
@@ -18077,7 +18096,8 @@ elif active_page == "Comparison Tool":
         )
         st.markdown(f"**Comparison mode:** {_sig_axis_mode}")
         st.caption(_sig_sync_caption)
-        sig_col1, sig_col2 = st.columns(2)
+        with mobile_wrap_row(st, "comparison-sig-players"):
+            sig_col1, sig_col2 = st.columns(2)
         clean_label_map_sig = clean_label_map_compare
         all_player_options_sig = compare_player_options
 
@@ -18193,7 +18213,8 @@ elif active_page == "Comparison Tool":
             pid_a = clean_label_map_sig[sig_player_a_label]
             pid_b = clean_label_map_sig[sig_player_b_label]
             st.caption("Actions for significance-test players")
-            sig_action_cols = st.columns(2)
+            with mobile_wrap_row(st, "comparison-sig-actions"):
+                sig_action_cols = st.columns(2)
             with sig_action_cols[0]:
                 render_contextual_player_actions(
                     sig_player_a_label,
@@ -18419,7 +18440,8 @@ elif active_page == "Trend Value":
     except Exception:
         pass
     _trend_lag_options = [3, 4, 5]
-    c1, c2, c3 = st.columns(3)
+    with mobile_wrap_row(st, "trend-top-filters"):
+        c1, c2, c3 = st.columns(3)
     with c1:
         validate_state_option("trend_lag", _trend_lag_options, 3)
         lag_trend = st.selectbox(
@@ -18671,11 +18693,11 @@ elif active_page == "Trend Value":
     with c3:
         st.subheader("🔥 Top Breakout Players")
         breakout_table = format_display_table(top_breakouts_display, count_cols=["HR Δ", "2B+3B Δ", "RBI Δ", "SB Δ"], rate_cols=["OPS Δ"], count_decimals=2, rate_decimals=2)
-        render_output_table(breakout_table, key="top_breakouts", file_name="top_breakouts.csv", style_cols=[c for c in breakout_table.columns if "Δ" in c])
+        render_output_table(breakout_table, key="top_breakouts", file_name="top_breakouts.csv", style_cols=[c for c in breakout_table.columns if "Δ" in c], pin_columns=("Player", "Position"))
     with c4:
         st.subheader("❄️ Biggest Declines")
         declines_table = format_display_table(biggest_declines_display, count_cols=["HR Δ", "2B+3B Δ", "RBI Δ", "SB Δ"], rate_cols=["OPS Δ"], count_decimals=2, rate_decimals=2)
-        render_output_table(declines_table, key="biggest_declines", file_name="biggest_declines.csv", style_cols=[c for c in declines_table.columns if "Δ" in c])
+        render_output_table(declines_table, key="biggest_declines", file_name="biggest_declines.csv", style_cols=[c for c in declines_table.columns if "Δ" in c], pin_columns=("Player", "Position"))
 
     breakout_decline_players = []
     if "Player" in top_breakouts_display.columns:
@@ -18824,7 +18846,8 @@ elif active_page == "Trend Value":
         on_change=trend_settings_changed,
     )
 
-    dash_mode_col1, dash_mode_col2 = st.columns(2)
+    with mobile_wrap_row(st, "trend-dash-mode"):
+        dash_mode_col1, dash_mode_col2 = st.columns(2)
     with dash_mode_col1:
         single_dashboard_mode = st.radio(
             "Single-Player Dashboard Mode",
@@ -18941,7 +18964,8 @@ elif active_page == "Trend Value":
                 key="single_player_trend_snapshot",
                 file_name="single_player_trend_snapshot.csv",
                 display_rows=3,
-                style_cols=[c for c in trend_snapshot.columns if "Δ" in c]
+                style_cols=[c for c in trend_snapshot.columns if "Δ" in c],
+                pin_columns=("Player",)
             )
 
         if dashboard_stats:
@@ -19043,28 +19067,31 @@ elif active_page == "Trend Value":
         player_trend = recent_span_df[recent_span_df["playerID"].isin(selected_ids_trend)].sort_values(["fullName", "yearID"])
         player_trend = safe_round_rate_stats(player_trend)
 
-        fig, ax = plt.subplots(figsize=(10, 5))
-        plot_player_stat_trends(
-            ax,
-            player_trend,
-            selected_ids_trend,
-            stat_choice_trend,
-            mode=trend_chart_mode,
-            smooth_window=trend_smooth_window
-        )
-        trend_years = sorted(pd.to_numeric(player_trend["yearID"], errors="coerce").dropna().astype(int).unique())
-        ax.set_xticks(trend_years)
-        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.set_xlabel("Year")
-        ax.set_ylabel(stat_choice_trend)
-        ax.set_title(f"{stat_choice_trend} Trend Comparison over {lag_trend} Years — {trend_chart_mode}")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        try:
-            st.pyplot(fig, clear_figure=True)
-        except TypeError:
-            st.pyplot(fig)
-        plt.close(fig)
+        from mobile_chart_layout import legible_matplotlib_chart
+
+        with legible_matplotlib_chart():
+            fig, ax = plt.subplots(figsize=(10, 5))
+            plot_player_stat_trends(
+                ax,
+                player_trend,
+                selected_ids_trend,
+                stat_choice_trend,
+                mode=trend_chart_mode,
+                smooth_window=trend_smooth_window
+            )
+            trend_years = sorted(pd.to_numeric(player_trend["yearID"], errors="coerce").dropna().astype(int).unique())
+            ax.set_xticks(trend_years)
+            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+            ax.set_xlabel("Year")
+            ax.set_ylabel(stat_choice_trend)
+            ax.set_title(f"{stat_choice_trend} Trend Comparison over {lag_trend} Years — {trend_chart_mode}")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            try:
+                st.pyplot(fig, clear_figure=True)
+            except TypeError:
+                st.pyplot(fig)
+            plt.close(fig)
 
         _trend_compare_err = ""
         if len(selected_labels_trend) >= 2:
@@ -19181,7 +19208,8 @@ elif active_page == "Fantasy Sleepers & Busts":
 
     _fantasy_window_options = [3, 4, 5]
     _fantasy_format_options = ["5x5 Roto", "Points League"]
-    c1, c2, c3, c4 = st.columns(4)
+    with mobile_wrap_row(st, "sleepers-top-filters"):
+        c1, c2, c3, c4 = st.columns(4)
     with c1:
         validate_state_option("fantasy_market_window", _fantasy_window_options, 3)
         fantasy_window = st.selectbox("Projection Window (Years)", _fantasy_window_options, key="fantasy_market_window", on_change=fantasy_filter_changed)
@@ -19255,7 +19283,8 @@ elif active_page == "Fantasy Sleepers & Busts":
         tab_rank, tab_draft = st.tabs(["Rank cutoffs", "Draft Room sync"])
         with tab_rank:
             st.caption("Narrow the player pool; loosen if tables look empty.")
-            sf1, sf2, sf3, sf4 = st.columns(4)
+            with mobile_wrap_row(st, "sleepers-rank-cutoffs"):
+                sf1, sf2, sf3, sf4 = st.columns(4)
             with sf1:
                 validate_number_state("sleeper_max_market_rank", 350, min_value=1, max_value=1000)
                 st.number_input(
@@ -19478,13 +19507,15 @@ elif active_page == "Fantasy Sleepers & Busts":
         ) / 5
     else:
         with st.expander("Points League Scoring Settings"):
-            p1, p2, p3, p4, p5 = st.columns(5)
+            with mobile_wrap_row(st, "sleepers-points-p1"):
+                p1, p2, p3, p4, p5 = st.columns(5)
             with p1: pts_r = st.number_input("Run", value=1.0, step=0.5, key="fantasy_pts_r")
             with p2: pts_rbi = st.number_input("RBI", value=1.0, step=0.5, key="fantasy_pts_rbi")
             with p3: pts_hr = st.number_input("HR", value=4.0, step=0.5, key="fantasy_pts_hr")
             with p4: pts_sb = st.number_input("SB", value=2.0, step=0.5, key="fantasy_pts_sb")
             with p5: pts_bb = st.number_input("BB", value=1.0, step=0.5, key="fantasy_pts_bb")
-            p6, p7, p8 = st.columns(3)
+            with mobile_wrap_row(st, "sleepers-points-p2"):
+                p6, p7, p8 = st.columns(3)
             with p6: pts_h = st.number_input("Hit", value=1.0, step=0.5, key="fantasy_pts_h")
             with p7: pts_2b3b = st.number_input("2B+3B Bonus", value=1.0, step=0.5, key="fantasy_pts_xbh")
             with p8: pts_ab_penalty = st.number_input("AB Penalty", value=0.0, step=0.1, key="fantasy_pts_ab_penalty")
@@ -19537,7 +19568,8 @@ elif active_page == "Fantasy Sleepers & Busts":
 
     with st.expander("Position & age filters", expanded=False):
         _sleepers_canon = read_sleepers_canonical_filters(st.session_state)
-        pa1, pa2 = st.columns(2)
+        with mobile_wrap_row(st, "sleepers-pos-age"):
+            pa1, pa2 = st.columns(2)
         with pa1:
             standard_fantasy_positions = ["C", "1B", "2B", "3B", "SS", "OF", "DH", "P"]
             existing_fantasy_positions = sorted([
@@ -19867,7 +19899,8 @@ elif active_page == "Fantasy Sleepers & Busts":
                         key="fantasy_curve_adjusted_sleepers",
                         file_name="fantasy_curve_adjusted_sleepers.csv",
                         display_rows=15,
-                        style_cols=["Fantasy Edge", "Curve Edge"]
+                        style_cols=["Fantasy Edge", "Curve Edge"],
+                        pin_columns=("Player", "Team", "Primary Position")
                     )
                     if "Player" in curve_display.columns:
                         compact_player_action_center(
@@ -19955,6 +19988,7 @@ elif active_page == "Fantasy Sleepers & Busts":
                 key="fantasy_market_sleepers",
                 file_name="fantasy_market_sleepers.csv",
                 style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score"],
+                pin_columns=("Player", "Team", "Primary Position"),
             )
         with c9:
             st.subheader("⚠️ Market Bust Risks")
@@ -19963,6 +19997,7 @@ elif active_page == "Fantasy Sleepers & Busts":
                 key="fantasy_market_busts",
                 file_name="fantasy_market_busts.csv",
                 style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score"],
+                pin_columns=("Player", "Team", "Primary Position"),
             )
 
         compact_player_action_center(
@@ -30585,7 +30620,8 @@ elif active_page == "Valuation":
     apply_pending_page_transfer(active_page)
 
     _value_lag_options = [3, 4, 5]
-    c1, c2, c3 = st.columns(3)
+    with mobile_wrap_row(st, "valuation-top-filters"):
+        c1, c2, c3 = st.columns(3)
     with c1:
         validate_state_option("value_lag", _value_lag_options, 3)
         lag_value = st.selectbox("Valuation Window (Years)", _value_lag_options, key="value_lag", on_change=valuation_filter_changed)
@@ -30705,7 +30741,8 @@ elif active_page == "Valuation":
 
     with st.expander("Valuation blend weights", expanded=False):
         st.caption("These weights only scale how much current vs trend contributes to Valuation Score below.")
-        c5, c6 = st.columns(2)
+        with mobile_wrap_row(st, "valuation-weights"):
+            c5, c6 = st.columns(2)
         with c5:
             w_current = st.number_input("Weight: Current Score", 0.0, 10.0, 1.0, key="value_w_current", on_change=valuation_filter_changed)
         with c6:
@@ -30809,7 +30846,7 @@ elif active_page == "Valuation":
         rate_cols=["BA", "OBP", "SLG", "OPS"],
         score_cols=["Trend Score", "Current Score", "Valuation Score"],
     )
-    render_output_table(valuation_table, key="valuation", file_name="valuation.csv")
+    render_output_table(valuation_table, key="valuation", file_name="valuation.csv", pin_columns=("Player", "Position"))
     if not valuation_table.empty:
         compact_player_action_center(
             valuation_table["Player"].dropna().astype(str).tolist(),
@@ -30952,7 +30989,8 @@ elif active_page == "ML Predictions":
         init_state_once("ml_position_filter", "All positions")
         init_state_once("ml_sort_by", "Predicted OPS")
 
-        c1, c2, c3 = st.columns(3)
+        with mobile_wrap_row(st, "ml-top-filters"):
+            c1, c2, c3 = st.columns(3)
         with c1:
             ml_lookback = st.selectbox("Lookback Window", [3, 4, 5], index=0, key="ml_lookback", on_change=projections_filter_changed)
         with c2:
@@ -30983,7 +31021,8 @@ elif active_page == "ML Predictions":
                 ),
                 on_change=projections_filter_changed,
             )
-            a1, a2, a3, a4 = st.columns(4)
+            with mobile_wrap_row(st, "ml-tuning"):
+                a1, a2, a3, a4 = st.columns(4)
             with a1:
                 regression_strength = st.slider("Regression to Mean", 0.00, 0.60, 0.20, 0.05, key="ml_regression_strength", on_change=projections_filter_changed)
             with a2:
@@ -31157,7 +31196,8 @@ elif active_page == "ML Predictions":
                     render_output_table(metrics_table, key="ml_accuracy", file_name="ml_model_accuracy.csv")
 
         st.subheader("Next-Season ML Projections")
-        _ml_tbl_c1, _ml_tbl_c2 = st.columns(2)
+        with mobile_wrap_row(st, "ml-table-controls"):
+            _ml_tbl_c1, _ml_tbl_c2 = st.columns(2)
         with _ml_tbl_c1:
             try:
                 from fantasy_position_sync import (
@@ -31266,7 +31306,7 @@ elif active_page == "ML Predictions":
                     ml_display["Model Rank"] = pd.to_numeric(ml_display["Model Rank"], errors="coerce").round(0).astype("Int64")
                 if "Age" in ml_display.columns:
                     ml_display["Age"] = pd.to_numeric(ml_display["Age"], errors="coerce").round(0)
-                render_output_table(ml_display, key="ml_predictions", file_name="ml_predictions.csv")
+                render_output_table(ml_display, key="ml_predictions", file_name="ml_predictions.csv", pin_columns=("Player", "Position", "Team"))
 
                 if not ml_display.empty:
                     selected_ml_row = _select_insight_row(

@@ -978,7 +978,19 @@ def render_waiver_wire_page(
         for c in extra_cols:
             if c not in disp_cols:
                 disp_cols.insert(0, c)
-        st.dataframe(pool_view[disp_cols].head(150), use_container_width=True, hide_index=True)
+        _pool_view_display = pool_view[disp_cols].head(150)
+        _pool_pin_cfg = {}
+        try:
+            from mobile_table_layout import pinned_identity_column_config
+
+            _pool_pin_cfg = pinned_identity_column_config(
+                st, _pool_view_display.columns, ("Player", "MLB Team", "Team", "Primary Position", "Position")
+            )
+        except ImportError:
+            pass
+        st.dataframe(
+            _pool_view_display, use_container_width=True, hide_index=True, column_config=_pool_pin_cfg or None
+        )
 
     st.markdown("##### 4. Manual Add / Drop Actions")
     st.caption("Pick an add and a drop below, or use **Plan Add** / **Plan Drop** cards above.")
