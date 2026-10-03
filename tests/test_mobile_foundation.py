@@ -57,7 +57,12 @@ def test_wide_column_shrink_rule_does_not_override_phone_stacking():
 
 def test_css_does_not_blanket_hide_content():
     css = mf.mobile_foundation_css()
-    assert "display: none" not in css
+    # M6: one narrow, justified exception — a components.html() carrier rendered at
+    # height=0 (confirmed empty; never a human-visible iframe) still costs a flex gap.
+    # Assert the exception is exactly that selector, not a general display:none creeping in.
+    none_rules = re.findall(r"([^{}]+)\{\s*display:\s*none;?\s*\}", css)
+    assert len(none_rules) == 1, f"unexpected display:none rule(s): {none_rules}"
+    assert 'iframe[height="0"]' in none_rules[0] or 'style*="height: 0px"' in none_rules[0]
     assert "visibility: hidden" not in css
     assert "overflow-x: hidden" not in css
     assert "overflow: hidden" not in css

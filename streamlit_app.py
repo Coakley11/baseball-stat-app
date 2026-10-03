@@ -20170,7 +20170,8 @@ elif active_page == "Draft Assistant Simulator":
                 force_save=False,
             )
 
-        d1, d2, d3 = st.columns(3)
+        with mobile_wrap_row(st, "draft-assistant-top-filters"):
+            d1, d2, d3 = st.columns(3)
         with d1:
             validate_state_option("draft_window", _draft_window_options, 3)
             draft_window = st.selectbox("Projection Window", _draft_window_options, key="draft_window",
@@ -21523,7 +21524,8 @@ elif active_page == "Draft Room Simulator":
 
         _room_format_options = ["5x5 Roto", "Points League"]
         _room_window_options = [3, 4, 5]
-        dr1, dr2, dr3, dr4 = st.columns(4)
+        with mobile_wrap_row(st, "draft-room-setup-filters"):
+            dr1, dr2, dr3, dr4 = st.columns(4)
         with dr1:
             ensure_number_state("room_team_count", 2, min_value=2, max_value=16)
             room_team_count = st.number_input(
@@ -21690,7 +21692,8 @@ elif active_page == "Draft Room Simulator":
         except Exception:
             pass
 
-        reset_col, delete_live_col, undo_col, _sp = st.columns([1, 1, 1, 1])
+        with mobile_wrap_row(st, "draft-room-action-buttons"):
+            reset_col, delete_live_col, undo_col, _sp = st.columns([1, 1, 1, 1])
         with undo_col:
             st.button(
                 "Undo Last Pick",
@@ -21807,7 +21810,8 @@ elif active_page == "Draft Room Simulator":
                     matches = [n for n in _assign_pool_names if q in n.lower()][:30]
 
                 with st.form("dr_board_assign_form", clear_on_submit=False):
-                    pick_col, player_col = st.columns([1, 2])
+                    with mobile_wrap_row(st, "draft-room-board-assign"):
+                        pick_col, player_col = st.columns([1, 2])
                     with pick_col:
                         st.selectbox(
                             "Pick",
@@ -22007,7 +22011,8 @@ elif active_page == "Draft Room Simulator":
         except ImportError:
             pass
 
-        view_col1, view_col2 = st.columns([1, 2])
+        with mobile_wrap_row(st, "draft-room-roster-view"):
+            view_col1, view_col2 = st.columns([1, 2])
         try:
             from draft_room_state import simulator_roster_view_team_options
 
@@ -22223,7 +22228,8 @@ elif active_page == DRAFT_LAB_PAGE:
         prepare_draft_lab_page_widgets(st.session_state)
     except ImportError:
         pass
-    lc1, lc2, lc3, lc4 = st.columns(4)
+    with mobile_wrap_row(st, "draft-lab-top-filters"):
+        lc1, lc2, lc3, lc4 = st.columns(4)
     with lc1:
         def _draft_sim_setting_changed():
             try:
@@ -23076,7 +23082,7 @@ elif active_page == "Live Draft Room":
         pass
     _page_perf_start(active_page)
     try:
-        from suite_identity_guard import render_mp_identity_diagnostics
+        from suite_identity_guard import build_mp_identity_snapshot, render_mp_identity_diagnostics
 
         _suppress_mp_diag = False
         try:
@@ -23087,12 +23093,20 @@ elif active_page == "Live Draft Room":
             _suppress_mp_diag = False
         if not _suppress_mp_diag:
             _mp_room = st.session_state.get("live_draft_room")
-            render_mp_identity_diagnostics(
-                st,
-                st.session_state,
-                room=_mp_room if isinstance(_mp_room, dict) else None,
-                temporary=True,
-            )
+            _mp_room = _mp_room if isinstance(_mp_room, dict) else None
+            # Mobile M6: this probe's own title says "TEMPORARY" and it was rendering to
+            # every user on every Live Draft visit. Only surface it when there's an
+            # actual identity problem to see (still shown to everyone then — it's
+            # actionable), or when developer mode is explicitly on.
+            _mp_verdict = str(build_mp_identity_snapshot(st.session_state, room=_mp_room).get("identity_verdict") or "")
+            _mp_bad = _mp_verdict.startswith("WORKSPACE_RESOLUTION_BUG") or _mp_verdict.startswith("OWNED_MISMATCH")
+            if _mp_bad or developer_mode_enabled():
+                render_mp_identity_diagnostics(
+                    st,
+                    st.session_state,
+                    room=_mp_room,
+                    temporary=True,
+                )
     except Exception:
         pass
     try:
@@ -25458,7 +25472,6 @@ elif active_page == "Live Draft Room":
         # Picks per Team / Start New Live Draft). Not nested in an expander —
         # expanded=True expanders still intermittently hide labels from a11y.
         st.markdown("### Draft Setup / Configuration")
-        st.caption("live-draft-setup-anchor")
         try:
             from live_draft_setup_ui import (
                 render_guest_join_from_setup,
@@ -28595,7 +28608,13 @@ elif active_page == "Live Draft Room":
                                 # Placement: immediately above Quick Draft Tools (only layout move).
                                 # Tables expanded by default — lower-right scarcity duplicate removed
                                 # so Recommendation Rankings can use the freed vertical space.
-                                with st.expander("Recommendation Rankings", expanded=True):
+                                # Mobile M6: no server-side viewport signal exists in this app (every
+                                # earlier mobile slice stayed CSS/media-query only for the same reason),
+                                # so an expanded-on-desktop/collapsed-on-phone default isn't available
+                                # without either a client-width signal or losing the desktop toggle —
+                                # type="compact" is the one Streamlit-native density reduction that's
+                                # safe to apply uniformly (tighter chrome, same open/closed semantics).
+                                with st.expander("Recommendation Rankings", expanded=True, type="compact"):
                                     rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
                                     # Product-facing columns — Position always visible for Manual Draft lookup.
                                     rec_cols = [
@@ -31306,7 +31325,37 @@ elif active_page == "ML Predictions":
                     ml_display["Model Rank"] = pd.to_numeric(ml_display["Model Rank"], errors="coerce").round(0).astype("Int64")
                 if "Age" in ml_display.columns:
                     ml_display["Age"] = pd.to_numeric(ml_display["Age"], errors="coerce").round(0)
-                render_output_table(ml_display, key="ml_predictions", file_name="ml_predictions.csv", pin_columns=("Player", "Position", "Team"))
+
+                # Mobile M6: ~24 columns is wide enough that pinning itself stops holding
+                # under scroll (confirmed in M5). Phones get a narrower "primary columns"
+                # table instead — same values/rows/order, just fewer columns, so pinning
+                # works reliably again — while desktop keeps the exact full table below,
+                # untouched. CSS toggles which one is visible; both render every run.
+                try:
+                    from mobile_table_layout import dual_width_table_css
+
+                    st.markdown(dual_width_table_css(compact_key="ml-pred-compact", full_key="ml-pred-full"), unsafe_allow_html=True)
+                    _ml_compact_cols = [
+                        c for c in (
+                            "Player", "Position", "Team", "Model Rank", "Predicted HR", "Predicted RBI",
+                            "Predicted SB", "Predicted OPS", "Expected Fantasy Value", "Projection Confidence",
+                        ) if c in ml_display.columns
+                    ]
+                    with st.container(key="ml-pred-compact"):
+                        st.caption(
+                            "Compact phone view — Player, Position, Team, Model Rank, and headline "
+                            "projections. Full column set: Export CSV below, or view on a wider screen."
+                        )
+                        render_output_table(
+                            ml_display[_ml_compact_cols],
+                            key="ml_predictions_compact",
+                            file_name="ml_predictions_compact.csv",
+                            pin_columns=("Player", "Position"),
+                        )
+                    with st.container(key="ml-pred-full"):
+                        render_output_table(ml_display, key="ml_predictions", file_name="ml_predictions.csv", pin_columns=("Player", "Position", "Team"))
+                except ImportError:
+                    render_output_table(ml_display, key="ml_predictions", file_name="ml_predictions.csv", pin_columns=("Player", "Position", "Team"))
 
                 if not ml_display.empty:
                     selected_ml_row = _select_insight_row(

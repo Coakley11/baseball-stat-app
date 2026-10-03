@@ -131,6 +131,10 @@ def mobile_foundation_css() -> str:
     {_MAIN} h2 {{ font-size: 1.4rem; }}
     {_MAIN} h3 {{ font-size: 1.2rem; }}
 
+    /* M6: alerts (session-restore banners, warnings, etc.) use desktop-generous
+       padding everywhere; every page can show one, so a little tightening adds up. */
+    {_MAIN} [data-testid="stAlert"] {{ padding: 0.6rem 0.85rem; font-size: 0.92rem; }}
+
     /* 4. Touch targets: buttons >= 44px, radio/checkbox rows >= 40px. */
     [data-testid^="stBaseButton-"] {{ min-height: 2.75rem; }}
     [data-testid="stBaseButton-headerNoPadding"], [data-testid="stBaseButton-header"],
@@ -181,6 +185,19 @@ def mobile_foundation_css() -> str:
     /* Streamlit action buttons only: a bare ``button`` selector also stretched the
        select (react-aria ComboBox) chevron and number-input steppers over the field. */
     {_WRAP} [data-testid="stColumn"] [data-testid^="stBaseButton-"] {{ width: 100%; }}
+}}
+
+/* 8. A components.html() carrier rendered with height=0 (invisible sync/diagnostic
+      iframes, several in Live Draft) is itself 0px tall, but its element-container
+      still costs one flex `gap` — on a phone, with many such carriers stacked, that
+      adds up to real wasted vertical space. Collapse only the genuinely zero-height
+      case; anything with real height (may render content later) is left untouched. */
+{media_phone()} {{
+    {_MAIN} [data-testid="stElementContainer"]:has(> [data-testid="stIFrame"] > iframe[height="0"]),
+    {_MAIN} [data-testid="stElementContainer"]:has(> [data-testid="stIFrame"][style*="height: 0px"]),
+    {_MAIN} [data-testid="stElementContainer"]:has(> [data-testid="stIFrame"] > iframe[style*="height: 0px"]) {{
+        display: none;
+    }}
 }}
 """
 
