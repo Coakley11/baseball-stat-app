@@ -53,24 +53,37 @@ Streamlit widgets/markup, not static HTML — a CSS-only "fake collapse" would
 either not match the actual rendering mechanism or would remove desktop's
 ability to interact with it. See §4 for the same constraint on Rankings.
 
-## 3. Waiver list length
+## 3. Waiver list length — reverted, deferred to M7
 
-`fantasy_waiver_wire_ui.py`'s "Top Recommended Adds" / "Recommended Drops" each
-unconditionally rendered all 15 full player cards. Added
-`_render_card_list_with_show_more()`: shows the first 5, with a "Show 10 more
-(N left)" button that reveals the rest in batches via a plain session-state
-counter — no new selection/eligibility/transaction semantics, purely a display
-slice of the exact same, already-sorted `adds`/`drops` DataFrames. Confirmed in
-the browser: 5 cards + button initially; clicking "Show more" once revealed 10
-more cards.
+An earlier pass in this slice added a "show 5 + Show 10 more" progressive
+disclosure (`_render_card_list_with_show_more()`) to `fantasy_waiver_wire_ui.py`'s
+"Top Recommended Adds" / "Recommended Drops" lists (15 full cards each). It
+worked, but it was a **Python-level** change — this app has no client-width
+signal (every M1–M6 slice stayed CSS/media-query only for exactly that reason)
+— so it reduced the default visible count on **desktop too**, not just phones.
+That's a cross-platform product change the mobile project doesn't make without
+explicit approval, so **it's been reverted**: `fantasy_waiver_wire_ui.py`'s
+Waiver section is now byte-identical to the M5 checkpoint (`17128af`) except
+for the duplicate "My team" caption removal in §2, which is kept.
 
-This is a Python-level change (not CSS-gated), so it affects desktop too —
-flagged here deliberately rather than claimed as phone-only, since reusing the
-established card components with a server-side-only split would have meant
-forcing full desktop content to be invisible-but-present via CSS on a
-*different* subset than what phones compute, which isn't achievable without a
-viewport signal (same constraint as §2/§4). Scrolling through 30 un-collapsed
-cards was poor on any screen size; this is a net improvement everywhere.
+**Verified in the browser (fresh `test_user` fixture, real CSV-uploaded current
+stats, real league rosters):**
+
+| Width | Plan Add buttons | Plan Drop buttons | "Show more" button | Page overflow |
+|---|---|---|---|---|
+| 390px | 15 | 7 | absent | 0 |
+| 1280px | 15 | 7 | absent | 0 |
+
+Identical counts at both widths — the full, uninterrupted list, exactly as in
+M5 and every earlier checkpoint (7 drop candidates, not 15, is correct: it's
+how many roster players actually qualified as drop candidates for this
+fixture's roster, same at both widths). The 390px page is long — this is an
+accepted, documented limitation, not silently dropped: a phone-only version
+would need either a real client-width signal (a scope this project has
+consistently avoided as fragile) or accepting the same desktop change again
+(not approved). `tests/test_mobile_m6_cleanup.py` now pins the M5-identical
+behavior so it can't silently regress back without a deliberate, reviewed
+change. Deferred to M7 — see §13.
 
 ## 4. ML Predictions ultra-wide table phone fallback
 
@@ -163,22 +176,23 @@ pattern as M5's Historical Explorer fix.
 
 0 horizontal overflow, 0 offending elements, 0 exceptions at 360/390/430/1280
 across all captured pages (Waiver, ML Predictions, Live Draft, Draft Assistant
-Simulator — representative pages for each area touched). Desktop 1280
-unaffected for every CSS-gated change; the two Python-level changes that do
-touch both screens (Waiver show-more, alert padding is CSS-only so excluded)
-are called out explicitly in §3 rather than claimed as phone-only.
+Simulator — representative pages for each area touched). Desktop 1280 is
+unaffected by every change in this slice — the Waiver list (§3) is
+byte-identical to M5 on both screens; everything else is CSS-gated to phones
+only, the same pattern as every earlier mobile checkpoint.
 
 ## 10. Tests
 
-- **New:** `tests/test_mobile_m6_cleanup.py` — 24 tests covering every change
+- **New:** `tests/test_mobile_m6_cleanup.py` — 21 tests covering every change
   in this slice (stray-text removal, MP-diagnostics gating, Rankings
   `type="compact"`, the empty-iframe CSS rule, the tutorial-bar inline row, the
-  duplicate-caption removal, the waiver show-more helper's own logic, the
-  ML Predictions dual-width wiring and CSS, and the 6 new filter-row wraps).
+  duplicate-caption removal, the ML Predictions dual-width wiring and CSS, the
+  6 new filter-row wraps) plus three tests that pin the Waiver section's revert
+  to byte-identical M5 behavior (§3), so it can't silently regress back in.
 - Updated `tests/test_mobile_foundation.py`'s blanket-hide guardrail to name
   and allow exactly the one new `display:none` exception (§6) instead of
   forbidding `display:none` outright.
-- **M1–M6 mobile suite:** 128 tests, all passing.
+- **M1–M6 mobile suite:** 125 tests, all passing.
 - **Regression set:** 36 files (waiver/draft-assistant/draft-room-sim/draft-lab/
   saved-draft-library/tutorial/identity-guard state tests + every M1–M6 mobile
   test), run on M6 and on the M5 checkpoint `17128af` from a temporary detached
@@ -201,7 +215,7 @@ are called out explicitly in §3 rather than claimed as phone-only.
 ## 12. Regression results
 
 37-file set (36 workflow/mobile files + the new M6 test file) run on M6
-(345 test cases) and on the M5 checkpoint `17128af` from a temporary detached
+(342 test cases) and on the M5 checkpoint `17128af` from a temporary detached
 worktree (321 test cases). **Identical failure set on both — 21 pre-existing
 failures**, none touching any file this slice changed:
 
@@ -218,12 +232,21 @@ failures**, none touching any file this slice changed:
   fails on an unrelated sidebar-rendering call needing a live Streamlit script
   run — an existing test-isolation artifact of running this file inside a
   larger suite, not something this slice touches (passes standalone; see the
-  128/128 M1–M6 mobile-suite run in §10, run as its own, smaller invocation).
+  125/125 M1–M6 mobile-suite run in §10, run as its own, smaller invocation).
 
-The 24 extra M6 test cases are the new file. **No regressions.**
+The 21 extra M6 test cases are the new file. **No regressions.**
 
 ## 13. Deferred to M7
 
+- **Waiver list length (§3).** 15 un-collapsed cards per section stays the
+  phone experience, same as M5 and every earlier checkpoint — reverted from a
+  Python-level "show 5 + more" disclosure that correctly shortened the list but
+  changed desktop's default visible count too, which wasn't approved. A phone-
+  only version needs a real client-width signal; M7 is the place to decide
+  whether that's worth introducing, or to find a CSS-only approach that holds
+  up (the earlier pass already ruled out a pure-CSS fake-collapse on these
+  interactive, bordered card containers — see the git history on this file for
+  that reasoning if picked back up).
 - The Live Draft setup default mismatch (§11).
 - A true phone-collapsed/desktop-expanded default for Rankings and the Fantasy
   header chrome (§2, §5) — needs either a client-width signal this app has

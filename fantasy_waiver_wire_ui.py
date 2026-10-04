@@ -242,42 +242,6 @@ def _render_drop_player_card(
             )
 
 
-_CARD_LIST_INITIAL = 5
-_CARD_LIST_STEP = 10
-
-
-def _on_show_more_cards_click(state_key: str, *_args, **_kwargs) -> None:
-    import streamlit as st
-
-    st.session_state[state_key] = int(st.session_state.get(state_key) or _CARD_LIST_INITIAL) + _CARD_LIST_STEP
-
-
-def _render_card_list_with_show_more(
-    st: Any,
-    session: dict[str, Any],
-    rows: pd.DataFrame,
-    *,
-    state_key: str,
-    render_one,
-) -> None:
-    """Mobile M6: 15 full player cards (Plan Add / Plan Drop) is a long scroll on
-    any screen. Shows the first 5, with a "Show N more" button revealing the rest
-    in batches — pure display slicing, same rows/order/eligibility as before.
-    """
-    total = len(rows)
-    shown = min(int(session.get(state_key) or _CARD_LIST_INITIAL), total)
-    for i, (_, row) in enumerate(rows.head(shown).iterrows()):
-        render_one(i, row)
-    remaining = total - shown
-    if remaining > 0:
-        st.button(
-            f"Show {min(remaining, _CARD_LIST_STEP)} more ({remaining} left)",
-            key=f"{state_key}_btn",
-            on_click=_on_show_more_cards_click,
-            args=(state_key,),
-        )
-
-
 def _on_waiver_filter_changed(*_args, **_kwargs) -> None:
     """Persist waiver global filter toggle to baseball workspace state."""
     try:
@@ -970,13 +934,8 @@ def render_waiver_wire_page(
     if adds.empty:
         st.info("No waiver recommendations yet — load current-season stats and check your league context.")
     else:
-        _render_card_list_with_show_more(
-            st,
-            session,
-            adds.head(15),
-            state_key="_waiver_adds_shown",
-            render_one=lambda i, row: _render_add_player_card(st, row, key_prefix=f"waiver_rec_{i}"),
-        )
+        for i, (_, row) in enumerate(adds.head(15).iterrows()):
+            _render_add_player_card(st, row, key_prefix=f"waiver_rec_{i}")
 
     st.markdown("##### 2. Recommended Drops")
     if drops.empty:
@@ -984,18 +943,15 @@ def render_waiver_wire_page(
     else:
         selected_drop = str(session.get(WAIVER_PLANNER_DROP_KEY) or "").strip()
 
-        def _render_drop_row(i: int, row: pd.Series) -> None:
+        for i, (_, row) in enumerate(drops.head(15).iterrows()):
             name = str(row.get("Player") or row.get("fullName") or "")
             label = "Selected To Drop" if name == selected_drop else "Plan Drop"
-            _render_drop_player_card(st, row, key_prefix=f"waiver_drop_{i}", button_label=label)
-
-        _render_card_list_with_show_more(
-            st,
-            session,
-            drops.head(15),
-            state_key="_waiver_drops_shown",
-            render_one=_render_drop_row,
-        )
+            _render_drop_player_card(
+                st,
+                row,
+                key_prefix=f"waiver_drop_{i}",
+                button_label=label,
+            )
 
     st.markdown("##### 3. Available Player Pool")
     st.caption(

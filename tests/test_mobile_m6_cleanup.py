@@ -85,56 +85,43 @@ class WaiverDuplicateTeamCaptionTests(unittest.TestCase):
         self.assertIn("resolve_account_fantasy_team(session, context)", WAIVER_SRC)
 
 
-class WaiverShowMoreTests(unittest.TestCase):
-    def test_both_card_lists_use_the_show_more_helper(self) -> None:
-        self.assertEqual(WAIVER_SRC.count("_render_card_list_with_show_more("), 3)  # 1 def + 2 call sites
+class WaiverListLengthUnchangedFromM5Tests(unittest.TestCase):
+    """The "show 5 + Show 10 more" progressive disclosure tried in an earlier M6
+    pass was reverted: it changed desktop behavior (fewer cards shown by default
+    there too), and this app has no viewport signal to make it phone-only without
+    either a fragile client-width hack or losing desktop parity. Both are against
+    the mobile project's constraints, so the long list is an accepted, documented
+    M7+ limitation (see docs/MOBILE_M6_CLEANUP.md) rather than forced. These tests
+    pin the M5 behavior so it can't silently regress back without a deliberate
+    test update."""
 
-    def test_adds_and_drops_have_distinct_state_keys(self) -> None:
-        self.assertIn('state_key="_waiver_adds_shown"', WAIVER_SRC)
-        self.assertIn('state_key="_waiver_drops_shown"', WAIVER_SRC)
+    def test_show_more_helper_does_not_exist(self) -> None:
+        self.assertFalse(hasattr(waiver_ui, "_render_card_list_with_show_more"))
+        self.assertFalse(hasattr(waiver_ui, "_on_show_more_cards_click"))
+        self.assertNotIn("_render_card_list_with_show_more", WAIVER_SRC)
+        self.assertNotIn("Show more", WAIVER_SRC)
+        self.assertNotIn('"_waiver_adds_shown"', WAIVER_SRC)
+        self.assertNotIn('"_waiver_drops_shown"', WAIVER_SRC)
 
-    def test_initial_count_smaller_than_the_full_15(self) -> None:
-        self.assertLess(waiver_ui._CARD_LIST_INITIAL, 15)
-        self.assertGreater(waiver_ui._CARD_LIST_INITIAL, 0)
+    def test_both_lists_iterate_the_full_head_15_unconditionally(self) -> None:
+        self.assertEqual(WAIVER_SRC.count("adds.head(15).iterrows()"), 1)
+        self.assertEqual(WAIVER_SRC.count("drops.head(15).iterrows()"), 1)
 
-    def test_show_more_renders_only_the_shown_slice(self) -> None:
-        import pandas as pd
+    def test_waiver_section_matches_the_m5_checkpoint_exactly(self) -> None:
+        import subprocess
 
-        rows = pd.DataFrame({"n": range(12)})
-        rendered = []
-
-        class _FakeSt:
-            def button(self, *_a, **_k):
-                return False
-
-        waiver_ui._render_card_list_with_show_more(
-            _FakeSt(), {}, rows, state_key="_test_shown", render_one=lambda i, row: rendered.append(row["n"])
+        diff = subprocess.run(
+            ["git", "diff", "17128af", "--", "fantasy_waiver_wire_ui.py"],
+            cwd=ROOT, capture_output=True, text=True, check=False,
         )
-        self.assertEqual(len(rendered), waiver_ui._CARD_LIST_INITIAL)
-        self.assertEqual(list(rendered), list(range(waiver_ui._CARD_LIST_INITIAL)))
-
-    def test_show_more_click_advances_by_one_step(self) -> None:
-        import streamlit as st
-
-        st.session_state.pop("_test_counter2", None)
-        waiver_ui._on_show_more_cards_click("_test_counter2")
-        self.assertEqual(st.session_state["_test_counter2"], waiver_ui._CARD_LIST_INITIAL + waiver_ui._CARD_LIST_STEP)
-
-    def test_no_more_button_once_all_rows_shown(self) -> None:
-        import pandas as pd
-
-        rows = pd.DataFrame({"n": range(3)})
-        buttons = []
-
-        class _FakeSt:
-            def button(self, label, **_k):
-                buttons.append(label)
-                return False
-
-        waiver_ui._render_card_list_with_show_more(
-            _FakeSt(), {}, rows, state_key="_test_shown2", render_one=lambda i, row: None
-        )
-        self.assertEqual(buttons, [])  # 3 rows, initial 5 -> everything already shown
+        if diff.returncode != 0 or diff.stdout is None:
+            self.skipTest("git diff against 17128af unavailable in this environment")
+        changed = diff.stdout
+        # The only sanctioned difference from M5 is the duplicate "My team" caption
+        # removal (kept — approved separately); nothing else in this file should differ.
+        self.assertIn("My team", changed)
+        self.assertNotIn("show_more", changed.lower())
+        self.assertNotIn("_waiver_adds_shown", changed)
 
 
 class MLPredictionsDualWidthTests(unittest.TestCase):
