@@ -46,27 +46,53 @@ class _FakeSt:
         return options[index] if options else None
 
 
+def live_page_options() -> list[str]:
+    """Read PAGE_OPTIONS from source instead of importing streamlit_app.
+
+    Mobile M7 (determinism): ``import streamlit_app`` executes the whole app
+    script. In a bare pytest process that succeeds on its own but can fail when
+    an earlier test in the same run has already touched Streamlit's session
+    state — these three tests were the M1–M6 suite's only order-dependent mobile
+    failures. The contract being tested is a module-level list literal, so
+    reading it statically tests exactly the same thing, deterministically (and
+    much faster).
+    """
+    import ast
+
+    tree = ast.parse((ROOT / "streamlit_app.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "PAGE_OPTIONS" for t in node.targets
+        ):
+            return list(ast.literal_eval(node.value))
+    raise AssertionError("PAGE_OPTIONS not found as a module-level literal in streamlit_app.py")
+
+
 class PageGroupCoverageTests(unittest.TestCase):
     def test_every_live_page_option_has_a_group(self) -> None:
         """Pulls the real PAGE_OPTIONS list so a newly added page that forgets
         to register a mobile-nav group fails this test immediately."""
-        import streamlit_app as app
-
-        missing = [p for p in app.PAGE_OPTIONS if p not in nav.PAGE_GROUPS]
+        missing = [p for p in live_page_options() if p not in nav.PAGE_GROUPS]
         self.assertEqual(missing, [], f"pages missing from mobile PAGE_GROUPS: {missing}")
 
     def test_no_stale_groups_for_removed_pages(self) -> None:
-        import streamlit_app as app
-
-        stale = [p for p in nav.PAGE_GROUPS if p not in app.PAGE_OPTIONS]
+        options = live_page_options()
+        stale = [p for p in nav.PAGE_GROUPS if p not in options]
         self.assertEqual(stale, [], f"mobile PAGE_GROUPS references removed pages: {stale}")
 
-    def test_grouped_page_options_preserves_every_page_reorders_by_group(self) -> None:
+    def test_page_options_source_read_matches_the_imported_module(self) -> None:
+        """Guards the static read itself: if PAGE_OPTIONS ever stops being a
+        module-level literal, this fails loudly instead of silently testing
+        stale data."""
         import streamlit_app as app
 
-        ordered = nav.grouped_page_options(app.PAGE_OPTIONS)
-        self.assertEqual(set(ordered), set(app.PAGE_OPTIONS))
-        self.assertEqual(len(ordered), len(app.PAGE_OPTIONS))
+        self.assertEqual(live_page_options(), list(app.PAGE_OPTIONS))
+
+    def test_grouped_page_options_preserves_every_page_reorders_by_group(self) -> None:
+        options = live_page_options()
+        ordered = nav.grouped_page_options(options)
+        self.assertEqual(set(ordered), set(options))
+        self.assertEqual(len(ordered), len(options))
         # Group order fixed, e.g. Live Draft Room must sit after every
         # "Explore & Analyze" page and before every "Fantasy Team" page.
         i_live = ordered.index("Live Draft Room")
@@ -124,7 +150,28 @@ class RenderMobileQuickNavTests(unittest.TestCase):
         md = st.markdown_calls[0]
         self.assertTrue(md.startswith("<style>"))
         self.assertIn("</style>\n<style>", md)  # each style block on its own line
-        self.assertIn('</style>\n<div class="m-quick-nav-current">', md)
+        # M7: the label element became a <nav> landmark; the "own line" contract
+        # (what this test is really pinning) is unchanged.
+        self.assertIn('</style>\n<nav class="m-quick-nav-current"', md)
+
+    def test_quick_nav_exposes_a_navigation_landmark(self) -> None:
+        """M7 (a11y): the app exposes no <nav> landmark otherwise, so the phone page
+        switcher is the one place a screen-reader user can reliably jump to."""
+        st = _FakeSt()
+        nav.render_mobile_quick_nav(
+            st,
+            active_page="Live Draft Room",
+            page_options=["Historical Explorer", "Live Draft Room"],
+            page_option_label=self._label,
+            main_sidebar_page_key="main_sidebar_page",
+            on_sidebar_page_change=lambda: None,
+        )
+        md = st.markdown_calls[0]
+        self.assertIn('<nav class="m-quick-nav-current" aria-label="Current page">', md)
+        self.assertIn('<span aria-hidden="true">', md)  # decorative pin not announced
+        self.assertIn("</nav>", md)
+        # The select keeps its accessible name even though the label is collapsed.
+        self.assertEqual(st.selectbox_calls[0]["label"], "Jump to page")
 
     def test_selectbox_state_syncs_to_active_page_each_rerun(self) -> None:
         """Regression: without this sync, navigating via the sidebar/deep-link

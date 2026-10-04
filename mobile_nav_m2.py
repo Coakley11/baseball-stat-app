@@ -181,7 +181,13 @@ def render_mobile_quick_nav(
             + "\n"
             + mobile_header_compaction_css()
             + "\n"
-            + f'<div class="m-quick-nav-current">\U0001f4cd {page_option_label(active_page)}</div>',
+            # Mobile M7 (a11y): a real <nav> landmark, so a screen-reader user can jump
+            # straight to the phone page switcher — the app otherwise exposes no <nav>
+            # landmark at all. Same class, so M2's styling and layout are unchanged;
+            # <nav> is a CommonMark block tag like <div>, so parsing is unchanged too.
+            # The pin emoji is decorative and hidden from the accessibility tree.
+            + f'<nav class="m-quick-nav-current" aria-label="Current page">'
+            + f'<span aria-hidden="true">\U0001f4cd</span> {page_option_label(active_page)}</nav>',
             unsafe_allow_html=True,
         )
         st.selectbox(

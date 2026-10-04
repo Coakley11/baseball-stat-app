@@ -13809,8 +13809,17 @@ def _consume_scheduled_navigation():
     if target and target in _PAGE_OPTION_SET:
         # Ignore sticky same-page schedules left by older restore paths — they skip
         # sidebar align and can trap the UI on Historical Explorer after a click.
-        current = get_sidebar_page_value(st.session_state.get("active_page"))
-        if target == current:
+        #
+        # Mobile M7: only when active_page is genuinely set. On a fresh session it is
+        # unset, and get_sidebar_page_value() coerces that to PAGE_OPTIONS[0] — so a
+        # real deep link to the default page looked identical to a redundant same-page
+        # schedule, got dropped here, and never set active_page/main_sidebar_page. The
+        # workspace restore further down then applied its stale saved page instead.
+        # (Deep links to any *other* page were unaffected, which is why this only ever
+        # showed up as "?active_page=Historical%20Explorer is ignored".)
+        _current_raw = str(st.session_state.get("active_page") or "").strip()
+        current = get_sidebar_page_value(_current_raw)
+        if _current_raw and target == current:
             try:
                 from nav_page_trace import log_nav_event
 
