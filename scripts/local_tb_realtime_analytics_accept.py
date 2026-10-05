@@ -89,6 +89,24 @@ def _body(page) -> str:
         return ""
 
 
+def _selectboxes(page):
+    """All Streamlit selectbox widgets.
+
+    This build renders selectboxes WITHOUT ``div[data-baseweb='select']`` --
+    measured live: that selector returns 0 while ``[data-testid="stSelectbox"]``
+    returns 3 (Sort recommendations by / Position filter / Draft candidate).
+    The old selector is why manual_filter always recorded zero samples. Keep it
+    as a fallback so older Streamlit builds still work.
+    """
+    loc = page.locator('[data-testid="stSelectbox"]')
+    try:
+        if loc.count():
+            return loc
+    except Exception:
+        pass
+    return page.locator("div[data-baseweb='select']")
+
+
 def _click_end(page) -> None:
     for name in (
         r"End Draft",
@@ -106,11 +124,15 @@ def _click_end(page) -> None:
             pass
 
 
-def _nav_live_draft(page) -> None:
+def _nav_live_draft(page, *, accept_short_timer: bool = False) -> None:
     # Prefer deep-link first — product now consumes ?active_page=.
+    # Keep accept_short_timer on the URL when requested so Setup can offer 8/10s.
     try:
+        q = "suite_workspace=daniel&active_page=Live%20Draft%20Room&ux_latency=1"
+        if accept_short_timer:
+            q += "&accept_short_timer=1"
         page.goto(
-            "http://127.0.0.1:8511/?suite_workspace=daniel&active_page=Live%20Draft%20Room&ux_latency=1",
+            f"http://127.0.0.1:8511/?{q}",
             wait_until="domcontentloaded",
             timeout=120000,
         )
@@ -209,14 +231,20 @@ def _create_ready_solo(
     picks_per_team: int = 5,
     timer_seconds: int = 8,
 ) -> bool:
-    _nav_live_draft(page)
+    # Short clocks (8/10s) are hidden from the normal Setup selectbox. Opt in via
+    # query param so accept timers never stick as the human product default.
+    short_timer = int(timer_seconds) > 0 and int(timer_seconds) < 30
+    if short_timer:
+        _nav_live_draft(page, accept_short_timer=True)
+    else:
+        _nav_live_draft(page)
     page.wait_for_timeout(2500)
     # If a prior run left an active draft, end it before create/ready checks.
     body_pre = _body(page)
     if "Pause Draft" in body_pre or "Resume Draft" in body_pre:
         _click_end(page)
         page.wait_for_timeout(2000)
-        _nav_live_draft(page)
+        _nav_live_draft(page, accept_short_timer=short_timer)
         page.wait_for_timeout(2000)
     body0 = _body(page)
     # Already in Solo Ready lobby — require the Start Draft button, not just copy.
@@ -268,7 +296,7 @@ def _create_ready_solo(
                     page.wait_for_timeout(900)
                 except Exception:
                     pass
-            _nav_live_draft(page)
+            _nav_live_draft(page, accept_short_timer=short_timer)
             page.wait_for_timeout(1500)
             body_clr = _body(page)
             if "Start New Live Draft" in body_clr or "Number of Teams" in body_clr:
@@ -347,12 +375,30 @@ def _create_ready_solo(
                 }
                 want = label_map.get(int(timer_seconds), "30 sec")
                 timer.first.click(timeout=5000)
-                page.get_by_text(want, exact=True).first.click(timeout=5000)
+                page.wait_for_timeout(400)
+                chose = False
+                for sel in (
+                    page.get_by_role("option", name=re.compile(rf"^{re.escape(want)}$", re.I)),
+                    page.locator(f'[role="option"]:has-text("{want}")'),
+                    page.get_by_text(want, exact=True),
+                ):
+                    try:
+                        if sel.count():
+                            sel.first.click(timeout=5000)
+                            chose = True
+                            break
+                    except Exception:
+                        continue
+                if not chose:
+                    raise RuntimeError(f"timer_option_missing:{want}")
                 report["timer_set"] = int(
                     {v: k for k, v in label_map.items()}.get(want, 30)
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            report["timer_set_err"] = str(exc)[:160]
+            if short_timer:
+                # Short option missing usually means query param was dropped.
+                return False
         page.wait_for_timeout(800)
         report["teams_picks_set"] = True
         report["setup_teams"] = int(num_teams)
@@ -859,12 +905,47 @@ def main() -> int:
         )
         report["checks"]["recommended"] = "Recommended Players" in body or "Why Recommended" in body
 
-        # --- Latency: Add to Queue (multiple) ---
-        # Wait for interactive controls after Start Draft.
-        for _ in range(30):
-            if page.get_by_role("button", name=re.compile(r"Add to Queue", re.I)).count():
+        # --- Recommendation-ready gate ---------------------------------------
+        # Measure interaction latency only AFTER the recommendation surface is
+        # genuinely interactive. "Add to Queue" appears well before the Manual
+        # Draft position filter and the Draft Player buttons, so waiting on it
+        # alone used to start measuring too early: manual_filter / draft_player
+        # then recorded zero samples and the accept failed for the wrong reason.
+        #
+        # Deterministic condition (not a fixed sleep): the first-paint
+        # placeholders are gone AND all three controls the latency blocks below
+        # actually use are mounted. rec_ready_ms is reported separately because
+        # first paint has been observed at 20-35s, which is itself worth tracking.
+        _ready_t0 = time.perf_counter()
+        _rec_ready = False
+        _ready_detail: dict[str, object] = {}
+        for _ in range(90):
+            _b = _body(page)
+            placeholders = bool(
+                re.search(r"Loading recommendation cards|Updating recommendations", _b, re.I)
+            )
+            n_queue = page.get_by_role("button", name=re.compile(r"Add(?:\s+to)?\s+Queue", re.I)).count()
+            n_draft = page.get_by_role("button", name=re.compile(r"^Draft Player$", re.I)).count()
+            n_sel = _selectboxes(page).count()
+            _ready_detail = {
+                "placeholders_visible": placeholders,
+                "add_to_queue_buttons": n_queue,
+                "draft_player_buttons": n_draft,
+                "baseweb_selects": n_sel,
+            }
+            if not placeholders and n_queue and n_draft and n_sel:
+                _rec_ready = True
                 break
             page.wait_for_timeout(1000)
+        report["rec_ready"] = bool(_rec_ready)
+        report["rec_ready_ms"] = round((time.perf_counter() - _ready_t0) * 1000.0, 1)
+        report["rec_ready_detail"] = _ready_detail
+        if not _rec_ready:
+            # Not a latency failure — an explicit readiness blocker, so the
+            # latency verdicts below are not misread as slow interactions.
+            report["failed"].append("rec_surface_never_ready")
+
+        # --- Latency: Add to Queue (multiple) ---
         queue_lat: list[float] = []
         for i in range(3):
             qbtn = page.get_by_role("button", name=re.compile(r"Add(?:\s+to)?\s+Queue", re.I))
@@ -896,22 +977,40 @@ def main() -> int:
                     pos_lab.first.scroll_into_view_if_needed(timeout=3000)
                 except Exception:
                     pass
-            # Prefer baseweb select widgets; change All -> C.
-            selects = page.locator("div[data-baseweb='select']")
-            for si in range(min(selects.count(), 8)):
+            # Target the Position filter selectbox by its own label. Matching on
+            # the displayed value ("All"/"C"/...) also hit "Sort recommendations
+            # by" and "Draft candidate", so the wrong widget could be driven.
+            selects = _selectboxes(page)
+            order = list(range(min(selects.count(), 10)))
+            texts: dict[int, str] = {}
+            for si in order:
                 try:
-                    txt = (selects.nth(si).inner_text(timeout=800) or "").strip()
+                    texts[si] = re.sub(
+                        r"\s+", " ", selects.nth(si).inner_text(timeout=800) or ""
+                    ).strip()
                 except Exception:
-                    txt = ""
-                if txt in {"All", "C", "SS", "OF", "1B", "2B", "3B"} or not txt:
+                    texts[si] = ""
+            order.sort(key=lambda i: 0 if re.search(r"Position filter", texts.get(i, ""), re.I) else 1)
+            for si in order:
+                txt = texts.get(si, "")
+                if re.search(r"Position filter", txt, re.I) or re.search(
+                    r"\b(All|C|SS|OF|1B|2B|3B|DH|SP|RP)\b", txt
+                ):
                     selects.nth(si).click(timeout=4000, force=True)
                     page.wait_for_timeout(350)
                     opt = page.get_by_role("option", name=re.compile(r"^C$", re.I))
-                    if opt.count():
-                        opt.first.click(timeout=4000, force=True)
-                        clicked = True
-                        break
-                    page.keyboard.press("Escape")
+                    if not opt.count():
+                        opt = page.get_by_role("option")
+                        opt = opt.nth(1) if opt.count() > 1 else opt.first
+                        if page.get_by_role("option").count() > 1:
+                            opt.click(timeout=4000, force=True)
+                            clicked = True
+                            break
+                        page.keyboard.press("Escape")
+                        continue
+                    opt.first.click(timeout=4000, force=True)
+                    clicked = True
+                    break
             if clicked:
                 page.wait_for_timeout(400)
                 filter_lat.append(time.perf_counter() - t0)
@@ -1007,12 +1106,18 @@ def main() -> int:
                 report["failed"].append(f"latency_{key}_{med:.2f}s")
         med_f = (report["latency"].get("manual_filter") or {}).get("median")
         if med_f is None:
-            if report.get("manual_filter_present") or "Position filter" in _body(page):
+            if not report.get("rec_ready"):
+                # Blocked upstream by the readiness gate, not a slow interaction.
+                report["latency"]["manual_filter"]["note"] = "blocked_rec_surface_not_ready"
+            elif report.get("manual_filter_present") or "Position filter" in _body(page):
                 report["latency"]["manual_filter"]["note"] = "control_present_unmeasured"
             else:
                 report["failed"].append("latency_missing_manual_filter")
         elif float(med_f) > LIGHT_HARD_S:
             report["failed"].append(f"latency_manual_filter_{med_f:.2f}s")
+        med_d = (report["latency"].get("draft_player") or {}).get("median")
+        if med_d is None and not report.get("rec_ready"):
+            report["latency"]["draft_player"]["note"] = "blocked_rec_surface_not_ready"
 
         if not report.get("ranks_believable"):
             report["failed"].append("ranks_not_believable")

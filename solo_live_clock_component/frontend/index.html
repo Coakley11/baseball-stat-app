@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Solo Live Clock</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      color: #f8fafc;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+    #root { box-sizing: border-box; width: 100%; }
+    .live-draft-on-clock {
+      background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 55%, #1d4ed8 100%);
+      color: #f8fafc;
+      border-radius: 12px;
+      padding: 16px 18px;
+      margin: 0;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.35);
+      box-sizing: border-box;
+      width: 100%;
+    }
+    .live-draft-on-clock.ld-on-clock-flash {
+      animation: ldFlash 0.9s ease-in-out 2;
+    }
+    @keyframes ldFlash {
+      0%, 100% { filter: brightness(1); }
+      50% { filter: brightness(1.18); }
+    }
+    .ld-title {
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      opacity: 0.85;
+      margin-bottom: 4px;
+    }
+    .ld-team-name {
+      font-size: 28px;
+      font-weight: 800;
+      line-height: 1.1;
+      margin-bottom: 10px;
+    }
+    .ld-pick-pills { display: flex; gap: 8px; flex-wrap: wrap; }
+    .ld-pill {
+      background: rgba(248, 250, 252, 0.14);
+      border: 1px solid rgba(248, 250, 252, 0.22);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .ld-next-pick {
+      margin-top: 10px;
+      font-size: 13px;
+      opacity: 0.92;
+    }
+    .ld-meta {
+      margin-top: 14px;
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+    }
+    .ld-clock-label {
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      opacity: 0.8;
+    }
+    .live-draft-timer {
+      font-size: 36px;
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      color: #f8fafc;
+      min-width: 2.4ch;
+    }
+    .live-draft-timer.warn { color: #fbbf24; }
+    .live-draft-timer.danger { color: #f87171; }
+  </style>
+</head>
+<body>
+  <div
+    id="root"
+    data-testid="solo-live-clock-root"
+    data-live-clock-ready="0"
+    data-live-clock-frontend="1"
+    data-live-clock-props="0"
+    data-live-clock-running="0"
+  >
+    <div
+      class="live-draft-on-clock"
+      id="card"
+      data-testid="live-draft-on-clock"
+      data-live-draft-timer-root="1"
+      data-solo-live-clock="1"
+      data-pick-index=""
+      data-room-id=""
+      data-timer-key=""
+    >
+      <div class="ld-title">On the clock</div>
+      <div class="ld-team-name" id="team" data-testid="live-draft-team">—</div>
+      <div class="ld-pick-pills">
+        <span class="ld-pill" id="pillRound">Round —</span>
+        <span class="ld-pill" id="pillPick" data-testid="live-draft-pick" data-pick-index="" data-pick-number="">Pick —</span>
+      </div>
+      <div class="ld-next-pick" id="nextPick" hidden></div>
+      <div class="ld-meta">
+        <span class="ld-clock-label">Time remaining</span>
+        <span
+          class="live-draft-timer"
+          id="timer"
+          data-testid="live-draft-timer"
+          data-authoritative="1"
+          data-remaining=""
+          data-pick-index=""
+          data-deadline=""
+          data-deadline-version=""
+          data-expire-token=""
+          data-room-id=""
+          data-timer-key=""
+        >—</span>
+      </div>
+    </div>
+  </div>
+  <script>
+(function () {
+  var DIAG_KEY = "__soloLiveClockDiag";
+  var props = {
+    expire_token: "",
+    deadline: 0,
+    pick_index: 0,
+    pick_number: 1,
+    team: "—",
+    round_label: "—",
+    next_pick: 0,
+    has_next_pick: false,
+    room_id: "",
+    clock_seconds: 60,
+    flash: false,
+    widget_key: "",
+    running: true,
+  };
+  var tickTimer = null;
+  var firedToken = "";
+  var lastExpireToken = "";
+  var lastDeadline = 0;
+  var widgetKeyArg = "";
+  var propsReceived = false;
+  var intervalStarted = false;
+
+  function diag(stage, extra) {
+    try {
+      var row = {
+        ts: Date.now(),
+        stage: String(stage || ""),
+        extra: extra == null ? "" : String(extra).slice(0, 800),
+      };
+      if (!window[DIAG_KEY]) window[DIAG_KEY] = [];
+      window[DIAG_KEY].push(row);
+      if (window[DIAG_KEY].length > 200) {
+        window[DIAG_KEY] = window[DIAG_KEY].slice(-200);
+      }
+      var root = document.getElementById("root");
+      if (root) {
+        root.setAttribute("data-live-clock-last", row.stage);
+        root.setAttribute(
+          "data-live-clock-chain",
+          window[DIAG_KEY]
+            .map(function (r) {
+              return r.stage;
+            })
+            .join("|")
+            .slice(-1800)
+        );
+      }
+      try {
+        console.log("[solo_live_clock]", row.stage, row.extra);
+      } catch (_c) {}
+    } catch (_e) {}
+  }
+
+  function setReadyFlags() {
+    var root = document.getElementById("root");
+    if (!root) return;
+    root.setAttribute("data-live-clock-frontend", "1");
+    root.setAttribute("data-live-clock-props", propsReceived ? "1" : "0");
+    root.setAttribute("data-live-clock-running", intervalStarted ? "1" : "0");
+    var ready = propsReceived && Number(props.deadline) > 0 ? "1" : "0";
+    root.setAttribute("data-live-clock-ready", ready);
+  }
+
+  function sendMessage(type, data) {
+    var payload = Object.assign({ isStreamlitMessage: true, type: type }, data || {});
+    window.parent.postMessage(payload, "*");
+  }
+
+  function setFrameHeight() {
+    try {
+      var h = Math.max(document.documentElement.scrollHeight || 0, 160);
+      sendMessage("streamlit:setFrameHeight", { height: h });
+    } catch (_e) {}
+  }
+
+  function remainingSeconds(deadline) {
+    var dl = Number(deadline);
+    if (!Number.isFinite(dl) || dl <= 0) return 0;
+    return Math.max(0, Math.ceil(dl - Date.now() / 1000));
+  }
+
+  function paint(sec) {
+    var timer = document.getElementById("timer");
+    var teamEl = document.getElementById("team");
+    var pillPick = document.getElementById("pillPick");
+    var pillRound = document.getElementById("pillRound");
+    var nextEl = document.getElementById("nextPick");
+    var card = document.getElementById("card");
+    if (!timer) return;
+
+    var pickIndex = Number(props.pick_index) || 0;
+    var pickNo = Number(props.pick_number) || (pickIndex + 1);
+    var team = String(props.team || "—");
+    var rnd = String(props.round_label || "—");
+    var dl = Number(props.deadline) || 0;
+    var token = String(props.expire_token || "");
+    var rid = String(props.room_id || "");
+    var timerKey = rid + "|" + String(pickIndex) + "|" + (dl ? dl.toFixed(3) : "none");
+
+    if (teamEl) teamEl.textContent = team;
+    if (pillPick) {
+      pillPick.textContent = "Pick " + String(pickNo);
+      pillPick.setAttribute("data-pick-index", String(pickIndex));
+      pillPick.setAttribute("data-pick-number", String(pickNo));
+    }
+    if (pillRound) pillRound.textContent = "Round " + rnd;
+    if (nextEl) {
+      if (props.has_next_pick) {
+        nextEl.hidden = false;
+        nextEl.textContent = "Your next pick: #" + String(props.next_pick);
+      } else {
+        nextEl.hidden = true;
+        nextEl.textContent = "";
+      }
+    }
+
+    timer.textContent = String(sec);
+    timer.setAttribute("data-remaining", String(sec));
+    timer.setAttribute("data-pick-index", String(pickIndex));
+    timer.setAttribute("data-deadline", dl ? dl.toFixed(3) : "");
+    timer.setAttribute("data-deadline-version", dl ? dl.toFixed(3) : "none");
+    timer.setAttribute("data-expire-token", token);
+    timer.setAttribute("data-room-id", rid);
+    timer.setAttribute("data-timer-key", timerKey);
+    timer.classList.remove("warn", "danger");
+    if (sec <= 5) timer.classList.add("danger");
+    else if (sec <= 10) timer.classList.add("warn");
+
+    if (card) {
+      card.setAttribute("data-pick-index", String(pickIndex));
+      card.setAttribute("data-room-id", rid);
+      card.setAttribute("data-timer-key", timerKey);
+      if (props.flash) card.classList.add("ld-on-clock-flash");
+      else card.classList.remove("ld-on-clock-flash");
+    }
+    setReadyFlags();
+    setFrameHeight();
+  }
+
+  function clickWakeButton() {
+    try {
+      var doc = (window.top || window.parent || window).document;
+      var buttons = doc.querySelectorAll("button");
+      for (var i = 0; i < buttons.length; i++) {
+        var b = buttons[i];
+        var title = (
+          (b.getAttribute("title") || "") +
+          " " +
+          (b.getAttribute("aria-label") || "")
+        ).toLowerCase();
+        var text = ((b.innerText || "") + "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (title.indexOf("solo-timer-wake") >= 0 || text === "solo-timer-wake") {
+          b.click();
+          return true;
+        }
+      }
+    } catch (_e) {}
+    return false;
+  }
+
+  function emitExpire(token) {
+    var t = String(token || "").trim();
+    if (!t) return;
+    if (t === firedToken) return;
+    firedToken = t;
+    diag("expiration_event_sent", t);
+    // Prefer Streamlit component value (no navigation).
+    try {
+      sendMessage("streamlit:setComponentValue", {
+        value: t,
+        widget_key: widgetKeyArg || String(props.widget_key || ""),
+      });
+    } catch (_e) {}
+    try {
+      clickWakeButton();
+    } catch (_e2) {}
+    window.setTimeout(function () {
+      clickWakeButton();
+    }, 200);
+    window.setTimeout(function () {
+      clickWakeButton();
+    }, 600);
+  }
+
+  function clearTick() {
+    if (tickTimer != null) {
+      clearTimeout(tickTimer);
+      tickTimer = null;
+    }
+    intervalStarted = false;
+    setReadyFlags();
+  }
+
+  function scheduleTick() {
+    clearTick();
+    intervalStarted = true;
+    setReadyFlags();
+    tickTimer = window.setTimeout(function () {
+      tick();
+    }, 250);
+  }
+
+  function tick() {
+    var token = String(props.expire_token || "");
+    var dl = Number(props.deadline) || 0;
+    if (token !== lastExpireToken) return;
+    var running = !(
+      props.running === false ||
+      props.running === 0 ||
+      props.running === "0" ||
+      props.running === "false"
+    );
+    if (!running) {
+      paint(Math.max(0, Number(props.clock_seconds) || 0));
+      clearTick();
+      return;
+    }
+    var sec = remainingSeconds(dl);
+    paint(sec);
+    if (sec <= 0 && token) {
+      emitExpire(token);
+      clearTick();
+      return;
+    }
+    scheduleTick();
+  }
+
+  function applyProps(next) {
+    var prevToken = lastExpireToken;
+    var prevDeadline = lastDeadline;
+    props = Object.assign({}, props, next || {});
+    widgetKeyArg = String(props.widget_key || "");
+    var token = String(props.expire_token || "");
+    var dl = Number(props.deadline) || 0;
+    propsReceived = true;
+
+    diag(
+      "render_props_received",
+      JSON.stringify({
+        expire_token: token,
+        deadline: dl,
+        pick_index: props.pick_index,
+        clock_seconds: props.clock_seconds,
+        running: props.running,
+        room_id: props.room_id,
+      }).slice(0, 700)
+    );
+    diag("parsed_deadline", String(dl));
+    var initialRem = remainingSeconds(dl);
+    diag("initial_remaining_sec", String(initialRem));
+
+    if (token && token !== prevToken) {
+      firedToken = "";
+    }
+    lastExpireToken = token;
+    lastDeadline = dl;
+
+    // Paint immediately on first valid render — never leave "—" after props.
+    paint(initialRem);
+
+    var running = !(
+      props.running === false ||
+      props.running === 0 ||
+      props.running === "0" ||
+      props.running === "false"
+    );
+    if (!running || !token || !Number.isFinite(dl) || dl <= 0) {
+      clearTick();
+      return;
+    }
+
+    if (token !== prevToken || dl !== prevDeadline || tickTimer == null) {
+      diag("interval_started", "rem=" + String(initialRem));
+      clearTick();
+      tick();
+    }
+  }
+
+  function onRenderArgs(args) {
+    diag("streamlit_render_event", "keys=" + Object.keys(args || {}).join(","));
+    applyProps(args || {});
+  }
+
+  window.addEventListener("message", function (event) {
+    var data = event.data;
+    if (!data || typeof data !== "object") return;
+    if (data.type === "streamlit:render" || data.type === "streamlit:componentRender") {
+      onRenderArgs(data.args || {});
+      return;
+    }
+    if (data.isStreamlitMessage && data.type && String(data.type).indexOf("render") >= 0) {
+      onRenderArgs(data.args || data);
+    }
+  });
+
+  diag("component_script_loaded", String(location.href || "").slice(0, 220));
+  setReadyFlags();
+  sendMessage("streamlit:componentReady", { apiVersion: 1 });
+  diag("component_ready_signal", "apiVersion=1");
+  setFrameHeight();
+  window.setTimeout(function () {
+    sendMessage("streamlit:componentReady", { apiVersion: 1 });
+    setFrameHeight();
+  }, 50);
+})();
+  </script>
+</body>
+</html>

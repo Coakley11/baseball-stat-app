@@ -127,11 +127,25 @@ def solo_ready_contract(room: dict[str, Any] | None, session: dict[str, Any] | N
     if session.get("_live_draft_start_in_flight") or session.get("_live_draft_manual_pick_in_flight"):
         result["reasons"].append("start_in_flight")
 
-    # Ready UI may show while projections warm; Start requires canonical projections.
+    # Product-ready Pick-1 snapshot (recs / needs / rankings / manual) — not just pool.
+    pick1_ready = False
+    try:
+        from live_draft_ready_prewarm import pick1_snapshot_is_ready
+
+        pick1_ready = bool(pick1_snapshot_is_ready(session, room))
+    except ImportError:
+        # Older trees without prewarm: fall back to projections-only Ready.
+        pick1_ready = bool(result["pool_has_projections"])
+    result["pick1_snapshot_ready"] = bool(pick1_ready)
+    if result["pool_has_projections"] and not pick1_ready:
+        result["reasons"].append("pick1_snapshot_pending")
+
+    # Ready UI may show while projections / Pick-1 snapshot warm; Start requires both.
     result["can_show_ready"] = bool(result["structurally_valid"])
     result["can_start"] = bool(
         result["structurally_valid"]
         and result["pool_has_projections"]
+        and pick1_ready
         and "start_in_flight" not in result["reasons"]
         and "pool_missing" not in result["reasons"]
     )

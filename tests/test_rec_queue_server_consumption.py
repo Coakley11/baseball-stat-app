@@ -126,12 +126,21 @@ class InteractivePaintCacheMissTests(unittest.TestCase):
         session: dict[str, Any] = {HEAVY_PAINT_DONE_KEY: True, "_solo_stage1_script_run_seq": 22}
         calls: list[str] = []
 
+        room = {"draft_room_id": "CBA003B1", "current_pick_index": 0, "status": "paused"}
+
         def paint_body() -> None:
+            from live_draft_rec_live_paint import rec_paint_state_version
+
             calls.append("body")
             store_prepared_rec_interactive(
                 session, room_id="CBA003B1", gaps=[], category_needs=[], max_cards=1
             )
-            session[REC_CACHE_KEY] = {"top_rec": _lindor_df()}
+            # "key" mirrors every production REC_CACHE_KEY writer; without a
+            # matching paint fingerprint the rows are (correctly) distrusted.
+            session[REC_CACHE_KEY] = {
+                "top_rec": _lindor_df(),
+                "key": rec_paint_state_version(session, room),
+            }
 
         interactive_calls = {"n": 0}
 
@@ -139,11 +148,7 @@ class InteractivePaintCacheMissTests(unittest.TestCase):
             interactive_calls["n"] += 1
             if interactive_calls["n"] == 1:
                 return False
-            return render_rec_interactive_widgets(
-                st,
-                session,
-                {"draft_room_id": "CBA003B1", "current_pick_index": 0, "status": "paused"},
-            )
+            return render_rec_interactive_widgets(st, session, room)
 
         with patch("live_draft_room_ui.render_live_draft_rec_summary_banner"):
             with patch("live_draft_room_ui.render_live_draft_rec_cards") as cards:

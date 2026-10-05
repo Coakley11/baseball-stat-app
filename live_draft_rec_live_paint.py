@@ -221,19 +221,132 @@ def store_interactive_top_rec_snapshot(
     top_rec: Any,
     *,
     room_id: str,
+    room: dict[str, Any] | None = None,
 ) -> None:
-    """Keep last-good recommendation rows for same-run button re-registration after cache clear."""
+    """Keep last-good recommendation rows for same-run button re-registration after cache clear.
+
+    Snapshots are versioned by pick/board so a post-expire paint cannot reuse Pick-N
+    cards as though they belong to Pick N+1.
+    """
     if top_rec is None or getattr(top_rec, "empty", True):
         return
     try:
         snap_df = top_rec.copy()
     except Exception:
         snap_df = top_rec
+    pick_index = None
+    board_len = None
+    cache_key = None
+    if isinstance(room, dict):
+        try:
+            pick_index = int(room.get("current_pick_index") or 0)
+            board_len = len(room.get("draft_board") or [])
+        except Exception:
+            pick_index = None
+            board_len = None
+        try:
+            from live_draft_ui_cache import live_draft_ui_cache_key
+
+            cache_key = live_draft_ui_cache_key(session, room, top_n=8, team=None)
+        except Exception:
+            cache_key = None
     session[INTERACTIVE_TOP_REC_SNAPSHOT_KEY] = {
         "room_id": str(room_id or "").strip(),
         "top_rec": snap_df,
         "snap_ts": time.time(),
+        "pick_index": pick_index,
+        "board_len": board_len,
+        "cache_key": cache_key,
     }
+
+
+def rec_paint_state_version(session: dict[str, Any], room: dict[str, Any]) -> tuple[Any, ...]:
+    """Authoritative fingerprint for full-product recommendation paint."""
+    try:
+        from live_draft_ui_cache import live_draft_ui_cache_key
+
+        return live_draft_ui_cache_key(session, room, top_n=8, team=None)
+    except Exception:
+        return (
+            str(room.get("draft_room_id") or ""),
+            int(room.get("current_pick_index") or 0),
+            len(room.get("draft_board") or []),
+        )
+
+
+def _rec_cache_entry_current(session: dict[str, Any], room: dict[str, Any]) -> bool:
+    try:
+        from live_draft_ui_cache import REC_CACHE_KEY
+
+        entry = session.get(REC_CACHE_KEY)
+    except ImportError:
+        entry = session.get("_live_draft_rec_cache")
+    if not isinstance(entry, dict) or entry.get("top_rec") is None:
+        return False
+    if getattr(entry.get("top_rec"), "empty", True):
+        return False
+    # Optimistic post-pick filter only removes drafted players — not eligibility-fresh.
+    if entry.get("optimistic_hold") or entry.get("eligibility_pending"):
+        return False
+    # Ready-prewarm / Start-rebind rows are authoritative for Pick 1 empty board.
+    if entry.get("prewarm_pick1") or entry.get("rebound_after_start"):
+        if int(room.get("current_pick_index") or 0) == 0 and len(room.get("draft_board") or []) == 0:
+            return True
+    want = rec_paint_state_version(session, room)
+    got = entry.get("key")
+    if got == want:
+        return True
+    # Heavy path uses top_n=10; interactive version uses top_n=8 — accept either.
+    alt = entry.get("key_top_n_8")
+    return alt == want
+
+
+def rebuild_recs_into_cache_only(
+    session: dict[str, Any],
+    room: dict[str, Any],
+    *,
+    reason: str = "pre_timer_seed",
+) -> bool:
+    """Score recommendations into REC_CACHE without painting widgets.
+
+    Call this *before* mounting the Solo timer fragment so scoring cannot starve
+    ``st.fragment`` ticks on the same ScriptRun.
+    """
+    prep = ensure_prepared_rec_interactive(session, room)
+    note_rec_run_stage(session, "pre_timer_rebuild_start", reason=str(reason)[:64])
+    top = _rebuild_top_rec_into_cache(session, room, prep)
+    ok = top is not None and not getattr(top, "empty", True)
+    if ok:
+        try:
+            store_interactive_top_rec_snapshot(
+                session,
+                top,
+                room_id=str(room.get("draft_room_id") or "").strip(),
+                room=room,
+            )
+        except Exception:
+            pass
+        session.pop("_solo_allow_one_rec_rebuild", None)
+        session.pop("_live_draft_recs_pending_after_pick", None)
+        try:
+            session["_solo_rec_paint_version"] = list(rec_paint_state_version(session, room))
+        except Exception:
+            pass
+        session["_solo_rec_rebuild_attempt_version"] = session.get("_solo_rec_paint_version")
+        note_rec_run_stage(session, "pre_timer_rebuild_ok", top_rec_count=int(len(top)))
+    else:
+        note_rec_run_stage(session, "pre_timer_rebuild_empty")
+    return bool(ok)
+
+
+def mark_recs_pending_for_new_pick(session: dict[str, Any], *, reason: str = "") -> None:
+    """Allow exactly one recommendation rebuild after a pick transition."""
+    session["_live_draft_recs_pending_after_pick"] = True
+    session["_solo_allow_one_rec_rebuild"] = True
+    session["_solo_rec_pending_reason"] = str(reason or "pick_transition")[:64]
+    session.pop("_solo_rec_paint_version", None)
+    session.pop("_solo_rec_rebuild_attempt_version", None)
+
 
 
 _PATCH_RANK_COLS = (
@@ -375,26 +488,58 @@ def heavy_rec_compute_done(session: dict[str, Any]) -> bool:
     return bool(session.get(HEAVY_REC_COMPUTE_DONE_KEY))
 
 
-def _top_rec_from_cache(session: dict[str, Any]) -> Any:
+def _top_rec_from_cache(session: dict[str, Any], room: dict[str, Any] | None = None) -> Any:
     try:
         from live_draft_ui_cache import REC_CACHE_KEY
 
         entry = session.get(REC_CACHE_KEY)
     except ImportError:
         entry = session.get("_live_draft_rec_cache")
-    if isinstance(entry, dict):
-        return entry.get("top_rec")
-    return None
+    if not isinstance(entry, dict):
+        return None
+    if room is not None and not _rec_cache_entry_current(session, room):
+        return None
+    return entry.get("top_rec")
+
+
+def _snapshot_matches_room(session: dict[str, Any], room: dict[str, Any], snap: dict[str, Any]) -> bool:
+    """Reject Pick-N snapshot rows when the room has already advanced to Pick N+1."""
+    rid = str(room.get("draft_room_id") or "").strip()
+    snap_rid = str(snap.get("room_id") or "").strip()
+    if rid and snap_rid and snap_rid != rid:
+        return False
+    want_pick = int(room.get("current_pick_index") or 0)
+    want_board = len(room.get("draft_board") or [])
+    snap_pick = snap.get("pick_index")
+    snap_board = snap.get("board_len")
+    pending = bool(
+        session.get("_solo_allow_one_rec_rebuild")
+        or session.get("_live_draft_recs_pending_after_pick")
+    )
+    if snap_pick is None or snap_board is None:
+        # Legacy unversioned snapshot: never reuse across a pick transition.
+        return not pending
+    try:
+        if int(snap_pick) != want_pick or int(snap_board) != want_board:
+            return False
+    except Exception:
+        return False
+    ck = snap.get("cache_key")
+    if ck is not None:
+        try:
+            return ck == rec_paint_state_version(session, room)
+        except Exception:
+            return False
+    return True
 
 
 def _top_rec_from_snapshot(session: dict[str, Any], room: dict[str, Any]) -> Any:
     snap = session.get(INTERACTIVE_TOP_REC_SNAPSHOT_KEY)
     if not isinstance(snap, dict):
         return None
-    rid = str(room.get("draft_room_id") or "").strip()
-    snap_rid = str(snap.get("room_id") or "").strip()
-    if rid and snap_rid and snap_rid != rid:
+    if not _snapshot_matches_room(session, room, snap):
         return None
+    rid = str(room.get("draft_room_id") or "").strip()
     top = snap.get("top_rec")
     if top is None or getattr(top, "empty", True):
         return top
@@ -404,7 +549,9 @@ def _top_rec_from_snapshot(session: dict[str, Any], room: dict[str, Any]) -> Any
         filtered = filter_df_excluding_drafted(top, room)
         if filtered is not None and not getattr(filtered, "empty", True):
             if len(filtered) != len(top):
-                store_interactive_top_rec_snapshot(session, filtered, room_id=rid)
+                store_interactive_top_rec_snapshot(
+                    session, filtered, room_id=rid, room=room
+                )
             return filtered
         return filtered
     except ImportError:
@@ -427,13 +574,14 @@ def _republish_top_rec_into_cache(session: dict[str, Any], room: dict[str, Any],
     if top_rec is None or getattr(top_rec, "empty", True):
         return
     try:
-        from live_draft_ui_cache import REC_CACHE_KEY
+        from live_draft_ui_cache import REC_CACHE_KEY, live_draft_ui_cache_key
 
         entry = session.get(REC_CACHE_KEY)
         if not isinstance(entry, dict):
             entry = {}
         entry = dict(entry)
         entry["top_rec"] = top_rec
+        entry["key"] = live_draft_ui_cache_key(session, room, top_n=8, team=None)
         entry["restored_for_interactive"] = True
         entry["restored_ts"] = time.time()
         session[REC_CACHE_KEY] = entry
@@ -534,9 +682,47 @@ def render_rec_interactive_widgets(
     layout: str = "horizontal",
     max_cards_override: int | None = None,
     skip_summary_banner: bool = False,
+    cache_only: bool = False,
 ) -> bool:
-    """Render recommendation card Streamlit widgets from prepared cache (live path)."""
+    """Render recommendation card Streamlit widgets from prepared cache (live path).
+
+    When ``cache_only`` is True (Solo on-clock ScriptRun with timer fragment mounted),
+    never rebuild/score mid-countdown — reuse cache/snapshot only so the parent
+    ScriptRun finishes quickly and ``st.fragment`` can tick while the full product
+    UI stays visible.
+
+    Exception: after a real pick transition, ``_solo_allow_one_rec_rebuild`` permits
+    exactly one scoring rebuild so Pick N+1 cards replace stale Pick-N cache.
+    """
     note_rec_run_stage(session, "interactive_invoked")
+    allow_one_rebuild = bool(session.get("_solo_allow_one_rec_rebuild"))
+    # Seed only when there are no recommendation rows at all. Do NOT re-score on
+    # every pool-fingerprint drift while the timer owns the ScriptRun — that
+    # starves st.fragment and freezes TIME REMAINING at the armed value.
+    if not allow_one_rebuild and cache_only:
+        try:
+            from live_draft_ui_cache import REC_CACHE_KEY
+
+            entry = session.get(REC_CACHE_KEY)
+        except ImportError:
+            entry = session.get("_live_draft_rec_cache")
+        has_rows = bool(
+            isinstance(entry, dict)
+            and entry.get("top_rec") is not None
+            and not getattr(entry.get("top_rec"), "empty", True)
+        )
+        if not has_rows:
+            try:
+                ver = rec_paint_state_version(session, room)
+            except Exception:
+                ver = None
+            attempted = session.get("_solo_rec_rebuild_attempt_version")
+            if ver is not None and attempted != ver:
+                allow_one_rebuild = True
+                session["_solo_rec_rebuild_attempt_version"] = ver
+                session["_solo_allow_one_rec_rebuild"] = True
+                note_rec_run_stage(session, "seed_rec_rebuild_for_empty_cache")
+    effective_cache_only = bool(cache_only) and not allow_one_rebuild
     status: dict[str, Any] = {
         "ts": time.time(),
         "ok": False,
@@ -545,18 +731,37 @@ def render_rec_interactive_widgets(
         "cache_rebuilt": False,
         "snapshot_used": False,
         "prepared_synthesized": False,
+        "cache_only": bool(cache_only),
+        "effective_cache_only": bool(effective_cache_only),
+        "allow_one_rebuild": bool(allow_one_rebuild),
+        "paint_version": None,
         "script_run_seq": int(session.get("_solo_stage1_script_run_seq") or 0),
         "dense": bool(dense),
     }
+    try:
+        status["paint_version"] = list(rec_paint_state_version(session, room))
+    except Exception:
+        status["paint_version"] = None
     rid = str(room.get("draft_room_id") or "").strip()
     had_prep = isinstance(session.get(PREPARED_REC_INTERACTIVE_KEY), dict)
     prep = ensure_prepared_rec_interactive(session, room)
     status["prepared_synthesized"] = bool(prep.get("synthesized")) and not had_prep
-    top_rec = _top_rec_from_cache(session)
+    # After a pick transition, always rescore once — patched cache only strips drafted
+    # players and can leave wrong-position recommendations for the new roster needs.
+    if allow_one_rebuild:
+        top_rec = None
+        note_rec_run_stage(session, "post_pick_force_rebuild")
+    else:
+        top_rec = _top_rec_from_cache(session, room)
     # Pool upgrade: patch Model/Market/Edge onto the frozen interactive identity.
     # Never wipe the snapshot here — that remounts Add-to-Queue keys and orphans clicks.
-    if session.pop("_solo_force_rec_rebuild_after_pool_upgrade", None) or session.pop(
-        "_solo_patch_ranks_after_pool_upgrade", None
+    # On-clock effective_cache_only runs must not rebuild/score — keep showing the last cards.
+    if (
+        not effective_cache_only
+        and (
+            session.pop("_solo_force_rec_rebuild_after_pool_upgrade", None)
+            or session.pop("_solo_patch_ranks_after_pool_upgrade", None)
+        )
     ):
         status["force_rebuild_after_pool_upgrade"] = True
         status["rank_patch_preferred"] = True
@@ -582,21 +787,53 @@ def render_rec_interactive_widgets(
             # Snapshot missing — fall back to one rebuild (keys may change once).
             top_rec = None
             note_rec_run_stage(session, "rank_patch_fallback_rebuild")
+    elif effective_cache_only and (
+        session.get("_solo_force_rec_rebuild_after_pool_upgrade")
+        or session.get("_solo_patch_ranks_after_pool_upgrade")
+    ):
+        # Defer upgrade scoring until a quiet ScriptRun; leave flags for later.
+        status["cache_only_deferred_pool_upgrade"] = True
+        session["_solo_deferred_pool_after_clock"] = True
     if top_rec is not None and not getattr(top_rec, "empty", True):
         status["cache_hit"] = True
         note_rec_run_stage(session, "cache_hit", top_rec_count=int(len(top_rec)))
+        # Current cache already matches this pick — consume the one-shot token.
+        if allow_one_rebuild:
+            session.pop("_solo_allow_one_rec_rebuild", None)
+            session.pop("_live_draft_recs_pending_after_pick", None)
+            session["_solo_rec_paint_version"] = status.get("paint_version")
     else:
         note_rec_run_stage(session, "cache_miss")
-        # Prefer last-good snapshot over expensive rebuild so the consuming ScriptRun
-        # re-registers the same buttons without requiring an extra rerun.
-        top_rec = _top_rec_from_snapshot(session, room)
+        # Prefer last-good *current-pick* snapshot over expensive rebuild so the
+        # consuming ScriptRun re-registers the same buttons without an extra rerun.
+        # After a pick transition, never restore — eligibility may have changed.
+        if allow_one_rebuild:
+            top_rec = None
+        else:
+            top_rec = _top_rec_from_snapshot(session, room)
         if top_rec is not None and not getattr(top_rec, "empty", True):
             status["snapshot_used"] = True
             _republish_top_rec_into_cache(session, room, top_rec)
             note_rec_run_stage(session, "snapshot_restored", top_rec_count=int(len(top_rec)))
+        elif effective_cache_only:
+            # On-clock path: do not score here — keep shell visible while a quiet
+            # rebuild is scheduled. Never paint a stale prior-pick snapshot.
+            status["fail_reason"] = "top_rec_missing_cache_only"
+            session["_solo_deferred_pool_after_clock"] = True
+            session["_solo_deferred_full_rerun_pending"] = True
+            session[INTERACTIVE_PAINT_STATUS_KEY] = status
+            note_rec_run_stage(session, "interactive_cache_only_miss")
+            st.caption("Updating recommendations…")
+            return False
         else:
             top_rec = _rebuild_top_rec_into_cache(session, room, prep)
             status["cache_rebuilt"] = top_rec is not None and not getattr(top_rec, "empty", True)
+            status["post_pick_rebuild"] = bool(allow_one_rebuild)
+            if allow_one_rebuild:
+                session.pop("_solo_allow_one_rec_rebuild", None)
+                session.pop("_live_draft_recs_pending_after_pick", None)
+                if status["cache_rebuilt"]:
+                    session["_solo_rec_paint_version"] = status.get("paint_version")
             if top_rec is None or getattr(top_rec, "empty", True):
                 status["fail_reason"] = "top_rec_missing_after_rebuild"
                 try:
@@ -685,7 +922,10 @@ def render_rec_interactive_widgets(
     if top_rec is not None and not getattr(top_rec, "empty", True):
         try:
             store_interactive_top_rec_snapshot(
-                session, top_rec, room_id=str(room.get("draft_room_id") or "").strip()
+                session,
+                top_rec,
+                room_id=str(room.get("draft_room_id") or "").strip(),
+                room=room,
             )
         except Exception:
             pass
@@ -716,11 +956,12 @@ def render_rec_interactive_widgets(
             gaps=gaps,
             category_needs=category_needs,
         )
-        store_interactive_top_rec_snapshot(session, top_rec, room_id=rid)
+        store_interactive_top_rec_snapshot(session, top_rec, room_id=rid, room=room)
         status["ok"] = True
         status["fail_reason"] = ""
         status["top_rec_count"] = int(len(top_rec)) if hasattr(top_rec, "__len__") else 0
         session[INTERACTIVE_PAINT_STATUS_KEY] = status
+        session["_solo_rec_paint_version"] = status.get("paint_version")
         try:
             from shared_draft_local_pool import clear_shared_rec_pool_pending
 

@@ -193,7 +193,10 @@ def _handle_solo_wake_delivery(
     if not need_rerun:
         return
     # Banner fragment already painted the next pick — do not full-ScriptRun remount.
-    if bool(session.get("_solo_server_timer_active")):
+    # Live clock (browser countdown) needs a full rerun so the next pick paints.
+    if bool(session.get("_solo_server_timer_active")) and not bool(
+        session.get("_solo_live_clock_active")
+    ):
         session["_solo_needs_post_expire_board_sync"] = True
         return
     live = _resolve_tick_room(session) or room
@@ -401,7 +404,12 @@ def render_solo_countdown_wake_component(
         return False
     draft_id = str(room.get("draft_room_id") or room.get("draft_id") or "solo").strip()
     pick_index = int(room.get("current_pick_index") or 0)
-    key = f"solo_countdown_wake_{draft_id}_{pick_index}"
+    # With the visible live clock mounted, keep a stable height-0 wake key so we do
+    # not thrash iframe remounts every pick (expire token still updates via props).
+    if bool(session.get("_solo_live_clock_active")):
+        key = f"solo_countdown_wake_{draft_id}_live"
+    else:
+        key = f"solo_countdown_wake_{draft_id}_{pick_index}"
 
     def _on_component_change() -> None:
         try:
@@ -485,14 +493,42 @@ def process_solo_wake_query(st: Any, session: dict[str, Any], room: dict[str, An
         _clear_solo_wake_query(st)
         return False
     session[SOLO_WAKE_QUERY_SEEN_KEY] = token
+    expire_token = ""
+    try:
+        from live_draft_cloud_diagnostics import _qp_get
+
+        expire_token = str(_qp_get(st, "solo_expire_token") or "").strip()
+    except ImportError:
+        try:
+            expire_token = str(st.query_params.get("solo_expire_token") or "").strip()
+        except Exception:
+            expire_token = ""
     _clear_solo_wake_query(st)
+    try:
+        qp = getattr(st, "query_params", None)
+        if qp is not None and "solo_expire_token" in qp:
+            del qp["solo_expire_token"]
+    except Exception:
+        pass
     try:
         from live_draft_solo_expire_chain import note_solo_expire_chain
 
-        note_solo_expire_chain(session, "url_wake_triggered", source="wake_or_backup", token=token)
+        note_solo_expire_chain(
+            session,
+            "url_wake_triggered",
+            source="wake_or_backup",
+            token=token,
+            expire_token=expire_token or "",
+        )
     except ImportError:
         pass
-    _handle_solo_wake_delivery(st, session, room, via="query")
+    # If the live clock supplied an expire token, prefer the validated component path.
+    if expire_token:
+        if process_solo_component_wake(
+            st, session, room, expire_token, delivery_via="url_wake_token"
+        ):
+            return True
+    _handle_solo_wake_delivery(st, session, room, via="query", expire_token=expire_token)
     return True
 
 
@@ -649,6 +685,22 @@ def render_solo_expire_owner(st: Any, session: dict[str, Any], room: dict[str, A
         from live_draft_solo_expire_chain import solo_expire_owner
     except ImportError:
         solo_expire_owner = lambda _s: "fragment"  # type: ignore[assignment,misc]
+    # Visible live clock owns presentation. Mount height-0 wake for expire
+    # delivery only AFTER the live clock has stamped live-ready — otherwise a
+    # Start-armed deadline that expired during the slow first product paint can
+    # make the wake iframe fire expire before the clock re-arms.
+    if bool(session.get("_solo_live_clock_active")):
+        live = room if isinstance(room, dict) else session.get("live_draft_room")
+        live_ready = False
+        try:
+            from live_draft_timer_logic import TIMER_LIVE_READY_AT_KEY
+
+            live_ready = bool(isinstance(live, dict) and live.get(TIMER_LIVE_READY_AT_KEY))
+        except ImportError:
+            live_ready = bool(session.get("_solo_live_clock_ready_once"))
+        if live_ready:
+            render_solo_countdown_wake_component(st, session, room)
+        return
     owner = solo_expire_owner(session)
     if owner == "wake":
         render_solo_countdown_wake_component(st, session, room)

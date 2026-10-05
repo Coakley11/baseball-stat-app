@@ -814,6 +814,15 @@ def render_solo_draft_ready_card(
     if not is_solo_lobby(session, room=room):
         return
 
+    # Hard pre-Start invariants: no deadline, empty board, Pick 1 pending.
+    try:
+        from live_draft_ready_contract import enforce_prestart_invariants
+
+        enforce_prestart_invariants(room, session)
+        session["live_draft_room"] = room
+    except ImportError:
+        pass
+
     try:
         from live_draft_ready_contract import (
             PHASE_PREPARING,
@@ -823,20 +832,137 @@ def render_solo_draft_ready_card(
         )
 
         contract = solo_ready_contract(room, session)
-        # Never attach/mutate the heavy canonical pool under this Ready card paint.
-        # Schedule Preparing → warm on the next quiet ScriptRun (end-of-page / deferred).
-        if not contract.get("pool_has_projections"):
+        # Build Pick-1 product snapshot *before* painting Start so the button can
+        # enable on this ScriptRun (or the immediate rerun after prep finishes).
+        if not contract.get("can_start"):
+            set_prestart_phase(session, PHASE_PREPARING)
             session["_solo_needs_projection_player_grades"] = True
             session["_solo_deferred_pool_next_run"] = True
-            session["_solo_ready_pool_warm"] = {"ok": False, "reason": "deferred_next_run"}
-            set_prestart_phase(session, PHASE_PREPARING)
+            snap: dict[str, Any] = {"ok": False, "reason": "not_run"}
+            try:
+                from live_draft_ready_prewarm import ensure_ready_pick1_product_snapshot
+
+                snap = ensure_ready_pick1_product_snapshot(
+                    session, session.get("live_draft_room") or room
+                )
+                session["_solo_ready_pool_warm"] = {
+                    "ok": bool(snap.get("ok")),
+                    "reason": str(snap.get("reason") or "")[:80],
+                    "pick1_snapshot": {
+                        "ok": bool(snap.get("ok")),
+                        "timings_ms": dict(snap.get("timings_ms") or {}),
+                    },
+                }
+                room = session.get("live_draft_room") or room
+            except Exception as exc:
+                session["_solo_ready_pool_warm"] = {
+                    "ok": False,
+                    "reason": f"snap_exc:{type(exc).__name__}:{exc}"[:120],
+                }
+                try:
+                    from live_draft_ready_contract import ensure_ready_pool_warm
+
+                    warm = ensure_ready_pool_warm(session, room)
+                    session["_solo_ready_pool_warm"] = warm
+                except Exception:
+                    pass
+            try:
+                from pathlib import Path
+                import json as _json
+                import time as _time
+
+                proof = {
+                    "pick1_snapshot": snap if isinstance(snap, dict) else {},
+                    "warm": dict(session.get("_solo_ready_pool_warm") or {}),
+                    "ts": _time.time(),
+                    "site": "ready_card_before_start_btn",
+                }
+                out = (
+                    Path(__file__).resolve().parent
+                    / "data"
+                    / "tb_probe"
+                    / "ready_pool_warm_proof.json"
+                )
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(_json.dumps(proof, indent=2, default=str), encoding="utf-8")
+            except Exception:
+                pass
+            # Re-evaluate after prep so Start can unlock on this paint.
+            live_now = session.get("live_draft_room") or room
+            contract = solo_ready_contract(live_now, session)
+            if not contract.get("can_start") and isinstance(snap, dict) and snap.get("ok"):
+                # Fingerprint race after pool attach — trust the just-built snapshot.
+                try:
+                    from live_draft_ready_prewarm import (
+                        PICK1_READY_FLAG,
+                        PICK1_SNAPSHOT_KEY,
+                        pick1_snapshot_is_ready,
+                    )
+
+                    meta = session.get(PICK1_SNAPSHOT_KEY)
+                    if isinstance(meta, dict):
+                        meta = dict(meta)
+                        meta["room_id"] = str((live_now or {}).get("draft_room_id") or meta.get("room_id") or "")
+                        meta["ok"] = True
+                        session[PICK1_SNAPSHOT_KEY] = meta
+                    session[PICK1_READY_FLAG] = True
+                    contract = dict(contract)
+                    contract["can_start"] = True
+                    contract["pick1_snapshot_ready"] = True
+                    contract["ok"] = True
+                    contract["phase"] = PHASE_READY
+                    reasons = [r for r in (contract.get("reasons") or []) if r != "pick1_snapshot_pending"]
+                    contract["reasons"] = reasons
+                except Exception:
+                    pass
+            if contract.get("can_start"):
+                session.pop("_solo_needs_projection_player_grades", None)
+                session.pop("_solo_pick1_prep_fail_runs", None)
+                set_prestart_phase(session, PHASE_READY)
+            else:
+                set_prestart_phase(session, PHASE_PREPARING)
+            room = live_now if isinstance(live_now, dict) else room
         else:
             set_prestart_phase(session, PHASE_READY)
         session["_solo_ready_contract"] = contract
+        try:
+            from pathlib import Path
+            import json as _json
+            import time as _time
+
+            _probe = {
+                "can_start": bool(contract.get("can_start")),
+                "pick1_snapshot_ready": bool(contract.get("pick1_snapshot_ready")),
+                "pool_has_projections": bool(contract.get("pool_has_projections")),
+                "reasons": list(contract.get("reasons") or []),
+                "phase": str(contract.get("phase") or ""),
+                "room_id": str((room or {}).get("draft_room_id") or ""),
+                "pick_index": int((room or {}).get("current_pick_index") or 0),
+                "board_len": len((room or {}).get("draft_board") or []),
+                "ts": _time.time(),
+            }
+            try:
+                from live_draft_ready_prewarm import PICK1_SNAPSHOT_KEY, pick1_snapshot_is_ready
+
+                _snap = session.get(PICK1_SNAPSHOT_KEY)
+                _probe["snap_ok"] = bool(isinstance(_snap, dict) and _snap.get("ok"))
+                _probe["snap_room_id"] = str((_snap or {}).get("room_id") or "") if isinstance(_snap, dict) else ""
+                _probe["is_ready_direct"] = bool(pick1_snapshot_is_ready(session, room))
+            except Exception as _exc:
+                _probe["snap_probe_err"] = f"{type(_exc).__name__}:{_exc}"[:80]
+            (
+                Path(__file__).resolve().parent
+                / "data"
+                / "tb_probe"
+                / "solo_ready_contract_probe.json"
+            ).write_text(_json.dumps(_probe, indent=2), encoding="utf-8")
+        except Exception:
+            pass
     except ImportError:
         contract = {
             "can_start": True,
             "pool_has_projections": True,
+            "pick1_snapshot_ready": True,
             "timer_seconds": 60,
             "phase": "ready",
         }
@@ -851,18 +977,14 @@ def render_solo_draft_ready_card(
         or 60
     )
     projections_ready = bool(contract.get("pool_has_projections"))
-    phase = str(contract.get("phase") or ("ready" if projections_ready else "preparing"))
-    # Hard pre-Start invariants: no deadline, empty board, Pick 1 pending.
-    try:
-        from live_draft_ready_contract import enforce_prestart_invariants
-
-        enforce_prestart_invariants(room, session)
-        session["live_draft_room"] = room
-    except ImportError:
-        pass
-    if not projections_ready:
+    product_ready = bool(contract.get("can_start"))
+    phase = str(contract.get("phase") or ("ready" if product_ready else "preparing"))
+    if not product_ready:
         start_disabled = True
-        start_help = "Getting your player rankings ready… Start Draft unlocks in a moment."
+        if not projections_ready:
+            start_help = "Getting your player rankings ready… Start Draft unlocks in a moment."
+        else:
+            start_help = "Preparing Pick 1 recommendations and draft tools… Start unlocks shortly."
 
     first_team = ""
     try:
@@ -873,37 +995,45 @@ def render_solo_draft_ready_card(
         first_team = ""
 
     with st.container(border=True):
-        if projections_ready:
+        if product_ready:
             st.markdown("### Your draft is ready")
             st.markdown(
                 f"**{len(teams) or '—'} teams · {total or '—'} picks · "
                 f"{timer_sec}-second clock**"
             )
             st.success(
-                "Your rankings and player projections are ready. "
+                "Your draft board, recommendations, and player tools are ready. "
                 f"The clock will start at **{timer_sec} seconds** when you press **Start Draft**."
             )
         else:
             st.markdown("### Preparing your draft")
             st.info(
-                "Your draft room is set up. Loading rankings and player projections… "
-                "Start Draft unlocks when everything is ready (the clock stays off)."
+                "Your draft room is set up. Preparing recommendations, team needs, "
+                "and draft tools… Start Draft unlocks when everything is ready "
+                "(the clock stays off)."
             )
             st.caption(
                 f"{len(teams) or '—'} teams · {total or '—'} picks · {timer_sec}-second clock"
             )
-        if start_help and not projections_ready:
+        if start_help and not product_ready:
             st.caption(str(start_help))
-        if first_team and projections_ready:
+        if first_team and product_ready:
             st.caption(f"First up after Start: **{first_team}** on the clock.")
 
         def _on_solo_start_draft() -> None:
             """on_click fires before ScriptRun body — survives Ready-chrome races."""
             # Guard: Streamlit may keep the callback registered while disabled flips.
             try:
+                from live_draft_ready_prewarm import pick1_snapshot_is_ready
                 from live_draft_ready_contract import solo_ready_contract as _src
 
-                if not _src(session.get("live_draft_room") or room, session).get("can_start"):
+                _live = session.get("live_draft_room") or room
+                _ok = bool(_src(_live, session).get("can_start"))
+                if not _ok and pick1_snapshot_is_ready(session, _live):
+                    _ok = True
+                if not _ok and session.get("_solo_pick1_product_ready"):
+                    _ok = True
+                if not _ok:
                     session["_solo_start_draft_blocked_click"] = True
                     return
             except Exception:
@@ -1006,45 +1136,11 @@ def render_solo_draft_ready_card(
                 pass
             return
 
-        # After Start is painted (still disabled): attach parquet/canonical on this
-        # Preparing ScriptRun *after* widgets exist, then rerun into Ready.
-        if not projections_ready:
-            session["_solo_needs_projection_player_grades"] = True
-            session["_solo_deferred_pool_next_run"] = True
-            warm = {"ok": False, "reason": "deferred_next_run"}
-            try:
-                from live_draft_ready_contract import ensure_ready_pool_warm as _warm_fn
-
-                warm = _warm_fn(session, session.get("live_draft_room") or room)
-                session["_solo_ready_pool_warm"] = warm
-            except Exception as exc:
-                warm = {"ok": False, "reason": f"warm_exc:{type(exc).__name__}:{exc}"[:120]}
-                session["_solo_ready_pool_warm"] = warm
-            try:
-                from pathlib import Path
-                import json as _json
-                import time as _time
-
-                proof = {
-                    "warm": warm,
-                    "ts": _time.time(),
-                    "phase": phase,
-                    "site": "ready_card_after_start_btn",
-                }
-                out = (
-                    Path(__file__).resolve().parent
-                    / "data"
-                    / "tb_probe"
-                    / "ready_pool_warm_proof.json"
-                )
-                out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_text(_json.dumps(proof, indent=2, default=str), encoding="utf-8")
-            except Exception:
-                pass
-            if warm.get("ok"):
-                session.pop("_solo_needs_projection_player_grades", None)
-                # Immediate Ready paint — Solo Ready must not fall through into
-                # ACTIVE_DRAFT chrome (that kept Streamlit Running and ate Start clicks).
+        # Still Preparing after pre-button prep — ask Streamlit for another quiet run.
+        if not product_ready:
+            fails = int(session.get("_solo_pick1_prep_fail_runs") or 0) + 1
+            session["_solo_pick1_prep_fail_runs"] = fails
+            if fails <= 8:
                 try:
                     st.rerun()
                 except Exception:

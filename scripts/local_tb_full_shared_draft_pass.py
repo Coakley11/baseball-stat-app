@@ -138,30 +138,43 @@ def wait_app(page, url: str, timeout_s: float = 90.0) -> str:
     return text
 
 
-def open_live_draft(page) -> bool:
+_LDR_SURFACE = r"Draft Mode|Waiting for Start|Room\s+[A-Z0-9]{6}|Create Shared|Add to Queue|Number of Teams"
+
+
+def open_live_draft(page, settle_s: float = 75.0) -> bool:
+    """Navigate to Live Draft Room and WAIT for the surface to actually paint.
+
+    ``wait_app`` only requires len(body) >= 80, which the sidebar alone exceeds,
+    so it returns well before the main pane renders. Combined with a fixed
+    3500ms sleep here, select_shared/set_picks/create could all run against an
+    unpainted main container and fail for no product reason. Poll the same
+    success markers instead of sleeping a fixed amount -- this app has been
+    measured at 25s+ to Ready and 40-75s to a settled recommendation surface.
+    """
     text = body(page)
-    if re.search(r"Draft Mode|Waiting for Start|Room\s+[A-Z0-9]{6}|Create Shared|Add to Queue", text, re.I):
+    if re.search(_LDR_SURFACE, text, re.I):
         return True
     for _ in range(2):
-        try:
-            page.get_by_role("radio", name=re.compile(r"Live Draft Room", re.I)).check(timeout=8000)
-            page.wait_for_timeout(3500)
-            break
-        except Exception:
+        clicked = False
+        for attempt in (
+            lambda: page.get_by_role("radio", name=re.compile(r"Live Draft Room", re.I)).check(timeout=8000),
+            lambda: page.get_by_role("radio", name=re.compile(r"Live Draft Room", re.I)).click(timeout=8000),
+            lambda: page.locator("label", has_text=re.compile(r"Live Draft Room", re.I)).first.click(timeout=8000),
+        ):
             try:
-                page.get_by_role("radio", name=re.compile(r"Live Draft Room", re.I)).click(timeout=8000)
-                page.wait_for_timeout(3500)
+                attempt()
+                clicked = True
                 break
             except Exception:
-                try:
-                    page.locator("label", has_text=re.compile(r"Live Draft Room", re.I)).first.click(timeout=8000)
-                    page.wait_for_timeout(3500)
-                    break
-                except Exception:
-                    pass
-    return bool(
-        re.search(r"Draft Mode|Waiting for Start|Room\s+[A-Z0-9]{6}|Create Shared|Add to Queue", body(page), re.I)
-    )
+                continue
+        if clicked:
+            break
+    deadline = time.time() + settle_s
+    while time.time() < deadline:
+        if re.search(_LDR_SURFACE, body(page), re.I):
+            return True
+        page.wait_for_timeout(1500)
+    return bool(re.search(_LDR_SURFACE, body(page), re.I))
 
 
 def leave_any_room(page) -> None:
@@ -215,17 +228,36 @@ def select_shared(page) -> bool:
 
 
 def set_picks(page, n: int = 15) -> bool:
+    """Set Picks per Team, verifying the value landed in the RIGHT field.
+
+    The old third tier grabbed ``stNumberInput input`` .nth(0) -- the first
+    number input on the page, which is "Number of Teams" -- and still returned
+    True. That silently set the wrong field, left picks at its default, and the
+    product then correctly refused to create with "Draft picks per team must be
+    greater than or equal to the number of required roster positions" while the
+    harness reported host_picks_set=True. Only label-targeted fields are used
+    now, and the value is read back so a miss reports False instead of a false
+    success.
+    """
     for loc in (
+        page.get_by_label(re.compile(r"Picks per Team", re.I)),
         page.get_by_label(re.compile(r"picks per team|Draft picks", re.I)),
         page.locator("input[aria-label*='picks' i]"),
-        page.locator("div[data-testid='stNumberInput'] input").nth(0),
     ):
         try:
             el = loc.first
+            if not el.count():
+                continue
             el.click(timeout=3000)
             el.fill(str(n), timeout=3000)
-            page.wait_for_timeout(1000)
-            return True
+            el.press("Tab")
+            page.wait_for_timeout(1200)
+            try:
+                if str(el.input_value(timeout=2000)).strip() == str(n):
+                    return True
+            except Exception:
+                # Could not read back; treat as unverified rather than success.
+                pass
         except Exception:
             continue
     return False
@@ -307,23 +339,90 @@ def page_btn_enabled(page, pat: str) -> bool:
 
 
 def extract_code(text: str) -> str:
+    """Room code from visible copy.
+
+    A digit must NOT be required: real room codes can be all letters (observed
+    ``XNFHBV`` for a genuine shared room whose draft_room_id was 91E279FF). The
+    old ``any(ch.isdigit())`` guard rejected it and produced a false
+    "BLOCKED - CREATE" verdict while the room existed on disk.
+
+    But a deny-list alone is NOT enough: ``r"Room\\s+([A-Z0-9]{6})"`` happily
+    matches "...Draft Room Create Shared..." and returned the word "CREATE",
+    which then never resolved to a room file. Every room in this local harness
+    writes ``data/draft_rooms/<CODE>.json``, so disk-backing is authoritative --
+    a candidate is only a room code if its room file exists. That accepts
+    all-letter codes and cannot return an English word.
+    """
     for pat in (
         r"Join code:\s*([A-Z0-9]{6})",
-        r"Room\s+([A-Z0-9]{6})\b",
         r"Room Code[:\s]+`?([A-Z0-9]{6})",
+        r"Room\s+([A-Z0-9]{6})\b",
     ):
-        m = re.search(pat, text, re.I)
-        if m:
+        for m in re.finditer(pat, text, re.I):
             c = m.group(1).upper()
-            if c not in _CODE_DENY and any(ch.isdigit() for ch in c):
+            if c in _CODE_DENY:
+                continue
+            if (ROOM_DIR / f"{c}.json").is_file():
                 return c
     return ""
 
 
 def in_lobby(text: str, code: str) -> bool:
+    """DOM-scraped lobby check. Deliberately unchanged.
+
+    NOTE: this is a *rendering* witness, not a routing witness. Measured: the
+    product persists the guest's routed state at ~12s while this scrape only
+    turns true at 15-40s+ later (51.5s in one trial). Use
+    ``guest_routed_authoritative`` for "did the guest actually route".
+    """
     if not code or code not in text.upper():
         return False
     return bool(re.search(r"Waiting for Start|Join code:|Shared Draft Room Ready|Waiting to Start", text, re.I))
+
+
+def guest_routed_authoritative(code: str, workspace: str = "guest") -> dict:
+    """Did the guest really route into ``code``? Asks the APP, not the DOM.
+
+    Two app-written sources, neither of which depends on how far the guest's
+    page has painted:
+
+    * the shared room file's participant membership
+    * the guest's persisted workspace blob (``active_shared_draft_room_code`` /
+      ``draft_room_participant_team`` are in baseball_persistent_state's
+      persisted key list)
+
+    Scraping alone made guest-join look intermittently broken when the product
+    had in fact routed; the page just had not repainted yet.
+    """
+    out = {"routed": False, "member": False, "ws_code": None, "team": None, "participants": []}
+    try:
+        parts = room_participants(code)
+        out["participants"] = parts
+        out["member"] = any(str(p).endswith(f":{workspace}") or p == workspace for p in parts)
+    except Exception:
+        pass
+    blob_path = ROOT / "data" / "workspaces" / workspace / "baseball_user_state.json"
+    try:
+        raw = json.loads(blob_path.read_text(encoding="utf-8"))
+    except Exception:
+        raw = {}
+    if isinstance(raw, dict):
+        found = {}
+        for key in ("active_shared_draft_room_code", "draft_room_participant_team"):
+            if key in raw:
+                found[key] = raw.get(key)
+            else:
+                for container in ("state", "session", "baseball_workspace_state", "pfs"):
+                    sub = raw.get(container)
+                    if isinstance(sub, dict) and key in sub:
+                        found[key] = sub.get(key)
+                        break
+        out["ws_code"] = found.get("active_shared_draft_room_code")
+        out["team"] = found.get("draft_room_participant_team")
+    out["routed"] = bool(
+        out["member"] and str(out["ws_code"] or "").upper() == str(code or "").upper()
+    )
+    return out
 
 
 def room_participants(code: str) -> list[str]:
@@ -465,6 +564,33 @@ def draft_board_players(raw: dict) -> list[str]:
     return out
 
 
+def _live_git_head() -> str:
+    """Actual HEAD of the tree under test.
+
+    This was a hardcoded "da682e1" literal, so every report claimed a commit
+    that had nothing to do with the code being exercised -- which made the
+    report actively misleading when diagnosing whether a failure came from the
+    working tree or an older revision.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=15,
+        )
+        head = (out.stdout or "").strip()
+        if head:
+            dirty = subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=no"],
+                cwd=str(ROOT), capture_output=True, text=True, timeout=20,
+            )
+            return head + ("+dirty" if (dirty.stdout or "").strip() else "")
+    except Exception as exc:
+        return "unknown:%s" % type(exc).__name__
+    return "unknown"
+
+
 def pool_diag_summary() -> dict:
     if not DIAG.is_file():
         return {"lines": 0}
@@ -530,12 +656,25 @@ def click_resume_authoritative(page, *, timeout: int = 12000) -> dict:
             out["enabled"] = False
             return out
         out["click_at"] = time.time()
+        # force=True must be the PRIMARY method, not an exception fallback.
+        # Resume is type="primary" WITH help=, so Streamlit renders two matching
+        # buttons: the real 236x40 one inside stTooltipHoverTarget, and a 0x0
+        # clone with offsetParent == null. Measured on a live paused room:
+        #   plain .click()            -> returns OK, callback never fires, room stays paused (rev 8->8)
+        #   .click(force=True)        -> callback fires, room resumes (rev 8->9)
+        # Because the plain click does not raise, the old
+        # `except Exception: click(force=True)` fallback never ran, so Resume
+        # looked like a product defect when it was a click-targeting artifact.
+        # This is the same trap the repo documents for the Solo Start button
+        # ("Streamlit clones a hidden primary button into the tooltip hover
+        # target, and Playwright often clicks the invisible twin").
         try:
-            target.click(timeout=timeout)
-        except Exception:
             target.click(timeout=timeout, force=True)
+            out["method"] = "get_by_role_resume_draft_force"
+        except Exception:
+            target.click(timeout=timeout)
+            out["method"] = "get_by_role_resume_draft"
         out["ok"] = True
-        out["method"] = "get_by_role_resume_draft"
     except Exception as exc:
         out["error"] = f"{type(exc).__name__}:{exc}"[:200]
     return out
@@ -601,7 +740,7 @@ def main() -> int:
             f.unlink()
 
     report: dict = {
-        "git_head": "da682e1",
+        "git_head": _live_git_head(),
         "http_host": http_status(8511),
         "http_guest": http_status(8512),
         "timeline": [],
@@ -660,10 +799,16 @@ def main() -> int:
         for i in range(60):
             ht = body(host)
             code = extract_code(ht)
-            files = sorted(ROOM_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+            files = sorted(
+                (f for f in ROOM_DIR.glob("*.json") if not f.name.startswith("_archive")),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
             if files:
+                # The filename IS the room code, so no digit heuristic is needed
+                # (and requiring one rejected all-letter codes like XNFHBV).
                 disk_code = files[0].stem.upper()
-                if disk_code and any(ch.isdigit() for ch in disk_code):
+                if re.fullmatch(r"[A-Z0-9]{6}", disk_code):
                     code = disk_code
             starting = bool(re.search(r"Starting…|Starting\.\.\.", ht))
             if code and (ROOM_DIR / f"{code}.json").is_file() and in_lobby(ht, code) and not starting:
@@ -712,10 +857,32 @@ def main() -> int:
         report["guest_join_click"] = click_btn(guest, "Join Room", timeout=15000) or click_btn(
             guest, "Join as Guest", timeout=8000
         )
-        for i in range(30):
+        # Wait on the APP's routed state, not on how far the page has painted.
+        # Measured: the product persists routed state at ~12s, while the scraped
+        # lobby surface only appears 15-40s later (51.5s in one trial) -- right at
+        # this loop's old ~54s budget, which is what made guest-join look
+        # intermittently broken when it was actually fine.
+        report["guest_route_authoritative"] = {}
+        for i in range(40):
             guest.wait_for_timeout(1800)
             gt_now = body(guest)
-            if in_lobby(gt_now, code) and extract_code(gt_now) == code:
+            auth = guest_routed_authoritative(code)
+            report["guest_route_authoritative"] = auth
+            scraped = in_lobby(gt_now, code) and extract_code(gt_now) == code
+            if scraped:
+                report["guest_route_detected_by"] = "scrape"
+                break
+            if auth.get("routed"):
+                # Routed per the app. Nudge the page so the visible surface catches
+                # up, then stop waiting on paint as if it were routing.
+                report["guest_route_detected_by"] = "authoritative_state"
+                try:
+                    guest.reload(wait_until="domcontentloaded", timeout=120000)
+                    wait_app(guest, GUEST_URL)
+                    open_live_draft(guest)
+                    guest.wait_for_timeout(2500)
+                except Exception:
+                    pass
                 break
             # Membership can land before the first paint routes; one soft reload mid-wait
             # mirrors the product refresh contract without abandoning Join.
@@ -753,7 +920,19 @@ def main() -> int:
             (report.get("guest_refresh_pre_start") or {}).get("in_lobby")
             and (report.get("guest_refresh_pre_start") or {}).get("same_code")
         )
-        if not (report["route_after_join_immediate"] or report["route_after_join_after_refresh"]):
+        # The app's own routed state is authoritative. A scrape that has not caught
+        # up is an observer lag (measured 15-40s behind), not a routing failure, and
+        # must not be reported as a product block.
+        report["route_after_join_authoritative"] = guest_routed_authoritative(code)
+        if report["route_after_join_authoritative"].get("routed"):
+            report["route_after_join_confirmed"] = True
+            if not (report["route_after_join_immediate"] or report["route_after_join_after_refresh"]):
+                report["defects"].append("ROUTE_AFTER_JOIN_PAINT_LAGGED_BEHIND_STATE")
+        if not (
+            report["route_after_join_immediate"]
+            or report["route_after_join_after_refresh"]
+            or report["route_after_join_authoritative"].get("routed")
+        ):
             report["verdict"] = "LOCAL SHARED DRAFT BLOCKED — GUEST_JOIN_SAME_ROOM"
             REPORT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
             print(json.dumps({k: report[k] for k in ("verdict", "code", "guest_lobby_code", "disk_participants_after_join", "route_after_join_immediate", "route_after_join_after_refresh") if k in report}, indent=2))

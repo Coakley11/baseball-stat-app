@@ -1,6 +1,7 @@
 """Live-updating On-the-Clock banner — shares countdown with live_draft_timer_ui.
 
-Solo: one server-driven ``st.fragment`` + ordinary Streamlit/HTML markup.
+Solo: browser-owned ``solo_live_clock`` bidirectional component (absolute deadline;
+no ``st.fragment(run_every=…)`` for the visible countdown).
 Shared: ``components.html`` iframe countdown (unchanged).
 """
 
@@ -764,6 +765,24 @@ def _solo_on_clock_fragment_tick() -> None:
             board_len=board_len,
         )
     )
+    # After the clock is ticking, request one quiet full paint for Rankings/Board
+    # that were deferred so this fragment could own the ScriptRun.
+    if (
+        session.get("_solo_pending_full_product_tail")
+        and not session.get("_solo_full_product_tail_painted")
+        and not session.get("_solo_tail_paint_rerun_sent")
+        and int(session.get(SOLO_TIMER_FRAGMENT_RUNS_KEY) or 0) >= 2
+    ):
+        try:
+            from live_draft_safe_mode import request_live_draft_rerun
+
+            session["_solo_tail_paint_rerun_sent"] = True
+            session.pop("_solo_request_tail_paint", None)
+            request_live_draft_rerun(st, session, "solo_product_tail", room=tick_room)
+            life["tail_paint_rerun"] = True
+        except Exception as _tail_exc:
+            life["tail_paint_err"] = f"{type(_tail_exc).__name__}"[:80]
+            session.pop("_solo_tail_paint_rerun_sent", None)
     # After the new pick has painted a few times, schedule exactly one warm worker.
     if session.get("_solo_schedule_warm") and int(session.get("_solo_warm_schedule_pick") or -1) == pidx:
         left = int(session.get("_solo_warm_schedule_after_paints") or 0) - 1
@@ -1129,33 +1148,69 @@ def render_live_on_clock_banner(
     except ImportError:
         _solo_draft = False
 
-    # Solo: one server-driven fragment + ordinary HTML markup (no components.html).
-    # Deadline is the only clock authority. Zero is an event: expire before paint,
-    # then render the NEW pick at full clock — never sit on TIME REMAINING 0.
-    if _solo_draft and use_fragment and deadline is not None:
-        session[SOLO_SERVER_TIMER_ACTIVE_KEY] = True
-        try:
-            fragment = st.fragment
-        except AttributeError:
-            fragment = None
-        if fragment is not None:
-            _room_id = str(
-                live_room.get("draft_room_id")
-                or live_room.get("draft_id")
-                or live_room.get("id")
-                or "solo"
-            ).strip() or "solo"
-            mount_solo_on_clock_fragment(
-                st,
-                session,
-                room_id=_room_id,
-                next_pick=next_pick_view,
-                slot_view=slot_view,
-            )
-            _mark_on_clock_done()
-            return
+    # Solo: browser-owned live clock component (absolute deadline). No run_every
+    # fragment for the visible countdown — full product UI must coexist.
+    # Do NOT gate on timer_should_run/use_fragment: when the deadline is already
+    # past those flags can be false and would skip the mount that advances the
+    # pick and paints the next full clock (sticky zero).
+    _draft_done = False
+    try:
+        from live_draft_safe_mode import is_draft_truly_complete
 
-    # Solo fallback: one-shot markdown paint (no fragment support).
+        _draft_done = bool(is_draft_truly_complete(live_room))
+    except ImportError:
+        _draft_done = str(live_room.get("status") or "") == "complete"
+    if (
+        _solo_draft
+        and str(live_room.get("status") or "") == "in_progress"
+        and not _draft_done
+        and deadline is not None
+    ):
+        try:
+            from solo_live_clock_component import (
+                component_frontend_ready,
+                render_solo_live_clock,
+            )
+
+            if component_frontend_ready():
+                # Clear any prior fragment latch so wake delivery can full-rerun.
+                session.pop(SOLO_SERVER_TIMER_ACTIVE_KEY, None)
+                render_solo_live_clock(
+                    st,
+                    session,
+                    live_room,
+                    slot_view,
+                    next_pick=next_pick_view,
+                    flash=clock_flash,
+                )
+                _mark_on_clock_done()
+                return
+        except ImportError:
+            pass
+        # Legacy fallback only if the live-clock component is unavailable.
+        if use_fragment:
+            try:
+                fragment = st.fragment
+            except AttributeError:
+                fragment = None
+            if fragment is not None:
+                _room_id = str(
+                    live_room.get("draft_room_id")
+                    or live_room.get("draft_id")
+                    or live_room.get("id")
+                    or "solo"
+                ).strip() or "solo"
+                mount_solo_on_clock_fragment(
+                    st,
+                    session,
+                    room_id=_room_id,
+                    next_pick=next_pick_view,
+                    slot_view=slot_view,
+                )
+                _mark_on_clock_done()
+                return
+
+    # Solo fallback: one-shot markdown paint (no component / fragment support).
     if _solo_draft and deadline is not None:
         try:
             from live_draft_solo_timer import get_solo_display_snapshot, install_solo_display_snapshot
@@ -1366,6 +1421,15 @@ def render_live_on_clock_banner(
                                 )
                             except ImportError:
                                 pass
+                            try:
+                                from live_draft_rec_live_paint import mark_recs_pending_for_new_pick
+
+                                mark_recs_pending_for_new_pick(
+                                    session, reason="solo_expire_fragment"
+                                )
+                            except ImportError:
+                                session["_live_draft_recs_pending_after_pick"] = True
+                                session["_solo_allow_one_rec_rebuild"] = True
                             try:
                                 from live_draft_safe_mode import request_live_draft_rerun
 

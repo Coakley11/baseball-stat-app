@@ -782,6 +782,24 @@ def start_prepared_solo_room(session: dict[str, Any], st_obj: Any) -> dict[str, 
 
         contract = solo_ready_contract(room, session)
         if not contract.get("can_start"):
+            # Accept a just-prepared Pick-1 snapshot even if contract fingerprint races.
+            try:
+                from live_draft_ready_prewarm import pick1_snapshot_is_ready
+
+                if pick1_snapshot_is_ready(session, room) or session.get("_solo_pick1_product_ready"):
+                    contract = dict(contract)
+                    contract["can_start"] = True
+                    contract["pick1_snapshot_ready"] = True
+                    contract["ok"] = True
+                    reasons = [
+                        r
+                        for r in (contract.get("reasons") or [])
+                        if r != "pick1_snapshot_pending"
+                    ]
+                    contract["reasons"] = reasons
+            except Exception:
+                pass
+        if not contract.get("can_start"):
             result["handled"] = True
             result["error"] = "ready_contract:" + ",".join(contract.get("reasons") or ["incomplete"])
             session["_solo_start_draft_blocked"] = dict(contract)
@@ -799,6 +817,32 @@ def start_prepared_solo_room(session: dict[str, Any], st_obj: Any) -> dict[str, 
             session["_solo_deferred_pool_next_run"] = True
     except ImportError:
         pass
+    pick1_ready = False
+    try:
+        from live_draft_ready_prewarm import (
+            PICK1_READY_FLAG,
+            PICK1_SNAPSHOT_KEY,
+            pick1_snapshot_is_ready,
+        )
+
+        pick1_ready = bool(pick1_snapshot_is_ready(session, room))
+        if not pick1_ready and bool(session.get(PICK1_READY_FLAG)):
+            snap = session.get(PICK1_SNAPSHOT_KEY)
+            if isinstance(snap, dict) and snap.get("ok"):
+                pick1_ready = True
+        if not pick1_ready:
+            snap = session.get(PICK1_SNAPSHOT_KEY)
+            rec = session.get("_live_draft_rec_cache")
+            if (
+                isinstance(snap, dict)
+                and snap.get("ok")
+                and isinstance(rec, dict)
+                and rec.get("top_rec") is not None
+                and not getattr(rec.get("top_rec"), "empty", True)
+            ):
+                pick1_ready = True
+    except ImportError:
+        pick1_ready = False
     # Deterministic Pick 1 handoff — never inherit a stale board / deadline / index.
     try:
         from live_draft_ready_contract import enforce_prestart_invariants
@@ -850,19 +894,44 @@ def start_prepared_solo_room(session: dict[str, Any], st_obj: Any) -> dict[str, 
         )
     except ImportError:
         pass
-    try:
-        from live_draft_state import commit_live_draft_room
+    # Start click must stay sub-second. Keep the room in session only; durable
+    # persist is scheduled for a quiet follow-up ScriptRun.
+    session["_solo_start_persist_pending"] = True
+    session["_solo_start_persist_mode"] = "session_only"
+    # Rebind Pick-1 caches to post-Start room fingerprints (no rescoring).
+    if pick1_ready:
+        try:
+            from live_draft_ready_prewarm import rebind_pick1_snapshot_cache_keys
 
-        commit_live_draft_room(st_obj, session, room, reason="start_solo_draft")
-    except ImportError:
-        pass
-    try:
-        from live_draft_rerun_scope import force_live_draft_expensive_recompute
+            session["_solo_pick1_rebind"] = rebind_pick1_snapshot_cache_keys(session, room)
+        except Exception as exc:
+            session["_solo_pick1_rebind"] = {"ok": False, "error": str(exc)[:120]}
+        # Lightweight Start: keep prewarmed caches; do NOT force a full scoring rebuild.
+        session["_solo_start_uses_pick1_snapshot"] = True
+        session.pop("_solo_allow_one_rec_rebuild", None)
+        session.pop("_live_draft_recs_pending_after_pick", None)
+        # Do not mark LIGHT_RERUN — that path can skip Solo product chrome.
+        try:
+            from live_draft_rerun_scope import EXPENSIVE_WORK_KEY
 
-        force_live_draft_expensive_recompute(session)
-    except ImportError:
-        pass
+            session.pop(EXPENSIVE_WORK_KEY, None)
+        except ImportError:
+            session.pop("_live_draft_expensive_work", None)
+        try:
+            from live_draft_fast_solo_start import clear_defer_heavy_first_paint
+
+            clear_defer_heavy_first_paint(session)
+        except Exception:
+            session.pop("_live_draft_defer_heavy_first_paint", None)
+    else:
+        try:
+            from live_draft_rerun_scope import force_live_draft_expensive_recompute
+
+            force_live_draft_expensive_recompute(session)
+        except ImportError:
+            pass
     result["ok"] = True
+    result["pick1_snapshot_used"] = bool(pick1_ready)
     if first_on_clock:
         session["_live_draft_start_feedback"] = (
             f"Draft started — **{first_on_clock}** is on the clock."
@@ -877,6 +946,7 @@ def start_prepared_solo_room(session: dict[str, Any], st_obj: Any) -> dict[str, 
         "current_pick_index": 0,
         "board_len": 0,
         "deadline": None,
+        "pick1_snapshot_used": bool(pick1_ready),
         "ts": __import__("time").time(),
     }
     return result

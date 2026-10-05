@@ -12,6 +12,59 @@ _REPO = Path(__file__).resolve().parents[1]
 
 
 class LiveDraftCoreInteractionContractTests(unittest.TestCase):
+    def test_start_paint_probe_writes_are_developer_only(self) -> None:
+        """Normal users must not pay probe disk I/O on the Solo Start path.
+
+        ``start_paint_marks.jsonl`` is opened in append mode, so an ungated write
+        grew a file without bound on every Start. The in-memory session marks stay
+        unconditional; only the tb_probe writes are gated.
+        """
+        import ast
+
+        src = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        parents: dict[int, ast.AST] = {}
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                parents[id(child)] = node
+
+        def gated(node: ast.AST) -> bool:
+            """True when some enclosing `if developer_mode_enabled():` guards this node."""
+            cur = node
+            while True:
+                parent = parents.get(id(cur))
+                if parent is None:
+                    return False
+                if (
+                    isinstance(parent, ast.If)
+                    and cur in parent.body
+                    and isinstance(parent.test, ast.Call)
+                    and isinstance(parent.test.func, ast.Name)
+                    and parent.test.func.id == "developer_mode_enabled"
+                ):
+                    return True
+                cur = parent
+
+        found = 0
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and node.value == "start_paint_marks.json":
+                found += 1
+                self.assertTrue(
+                    gated(node),
+                    msg="ungated start_paint_marks probe write at line %d" % node.lineno,
+                )
+            if isinstance(node, ast.Constant) and node.value == "start_paint_marks.jsonl":
+                found += 1
+                self.assertTrue(
+                    gated(node),
+                    msg="ungated append-only probe write at line %d" % node.lineno,
+                )
+        self.assertGreaterEqual(found, 2, "expected start_paint_marks probe writes to exist")
+        # The prewarm probe dump is gated at its single writer.
+        prewarm = (_REPO / "live_draft_ready_prewarm.py").read_text(encoding="utf-8")
+        body = prewarm.split("def _probe_write(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("developer_mode_checkbox_enabled", body)
+
     def test_solo_early_viewport_does_not_rerun_mid_page_after_cards(self) -> None:
         src = (_REPO / "streamlit_app.py").read_text(encoding="utf-8")
         marker = "Solo first-viewport landing: full player recommendation cards"
@@ -176,7 +229,8 @@ class LiveDraftCoreInteractionContractTests(unittest.TestCase):
         self.assertIn("live_draft_light_rerun_active", src)
         self.assertIn("Never run the blocking projection rebuild on the same ScriptRun", src)
 
-    def test_patch_after_pick_filters_interactive_snapshot(self) -> None:
+    def test_patch_after_pick_clears_interactive_snapshot(self) -> None:
+        """Post-pick filter is not eligibility-correct; clear snapshot so rebuild paints."""
         from live_draft_rec_live_paint import INTERACTIVE_TOP_REC_SNAPSHOT_KEY
         from live_draft_ui_cache import patch_live_draft_caches_after_pick
 
@@ -206,12 +260,16 @@ class LiveDraftCoreInteractionContractTests(unittest.TestCase):
             "draft_room_id": "R1",
             "draft_board": [{"Player": "Aaron Judge", "playerID": "judge"}],
             "config": {},
+            "current_pick_index": 1,
+            "rosters": {},
         }
         patch_live_draft_caches_after_pick(
             session, room, player_id="judge", player_name="Aaron Judge"
         )
-        snap = session.get(INTERACTIVE_TOP_REC_SNAPSHOT_KEY) or {}
-        top = snap.get("top_rec")
+        self.assertNotIn(INTERACTIVE_TOP_REC_SNAPSHOT_KEY, session)
+        entry = session.get("_live_draft_rec_cache") or {}
+        self.assertTrue(entry.get("eligibility_pending"))
+        top = entry.get("top_rec")
         self.assertIsNotNone(top)
         names = [str(x).lower() for x in top["fullName"].tolist()]
         self.assertNotIn("aaron judge", names)

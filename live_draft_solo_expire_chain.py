@@ -19,7 +19,17 @@ MAX_CHAIN = 120
 
 
 def solo_expire_owner(session: dict[str, Any]) -> str:
-    """Single server expiration owner: wake on Cloud, fragment locally."""
+    """Single expiration trigger owner.
+
+    Solo live clock (browser countdown): always ``wake`` so the bidirectional
+    component expire event is accepted. Legacy fallback: wake on Cloud,
+    fragment locally — but product Solo path arms live clock and forces wake.
+    """
+    if session.get("_solo_live_clock_active") or str(
+        session.get("_solo_live_clock_expire_owner") or ""
+    ).strip() == "wake":
+        session[SOLO_EXPIRE_OWNER_KEY] = "wake"
+        return "wake"
     cached = str(session.get(SOLO_EXPIRE_OWNER_KEY) or "").strip()
     if cached in ("wake", "fragment"):
         return cached

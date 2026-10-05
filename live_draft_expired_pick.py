@@ -443,6 +443,13 @@ def _mark_autopick_success(session: dict[str, Any], room: dict[str, Any], messag
                 session, reason="expired_autopick"
             )
             invalidate_draft_assistant_scoring_cache(session)
+            try:
+                from live_draft_rec_live_paint import mark_recs_pending_for_new_pick
+
+                mark_recs_pending_for_new_pick(session, reason="expired_autopick")
+            except ImportError:
+                session["_live_draft_recs_pending_after_pick"] = True
+                session["_solo_allow_one_rec_rebuild"] = True
         except ImportError:
             session.pop("_live_draft_rec_cache", None)
     except ImportError:

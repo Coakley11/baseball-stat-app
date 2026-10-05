@@ -764,7 +764,13 @@ def finalize_live_draft_pick_transition(
         except ImportError:
             session.pop("_live_draft_rerun_count", None)
         session["_live_draft_local_pick_paint_pending"] = True
-        session["_live_draft_recs_pending_after_pick"] = True
+        try:
+            from live_draft_rec_live_paint import mark_recs_pending_for_new_pick
+
+            mark_recs_pending_for_new_pick(session, reason=f"pick_commit:{source}")
+        except ImportError:
+            session["_live_draft_recs_pending_after_pick"] = True
+            session["_solo_allow_one_rec_rebuild"] = True
 
     result = PickCommitResult(
         ok=True,

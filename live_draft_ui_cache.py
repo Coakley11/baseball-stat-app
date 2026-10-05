@@ -228,6 +228,7 @@ def patch_live_draft_caches_after_pick(
             "pos_fit": pos,
             "value_sleep": sleep,
             "optimistic_hold": True,
+            "eligibility_pending": True,
         }
         session[REC_CACHE_KEY] = patched
     else:
@@ -249,25 +250,14 @@ def patch_live_draft_caches_after_pick(
     session.pop(WHY_COLUMN_CACHE_KEY, None)
 
     # Keep interactive card snapshot in sync so Solo early paint cannot re-show drafted rows.
+    # Do NOT re-version the snapshot to the new pick fingerprint — filtered prior-pick
+    # rows are not eligibility-correct (e.g. C+1B → Alonso → must rescore for C-only).
     try:
-        from live_draft_rec_live_paint import (
-            INTERACTIVE_TOP_REC_SNAPSHOT_KEY,
-            store_interactive_top_rec_snapshot,
-        )
+        from live_draft_rec_live_paint import INTERACTIVE_TOP_REC_SNAPSHOT_KEY
 
-        snap = session.get(INTERACTIVE_TOP_REC_SNAPSHOT_KEY)
-        if isinstance(snap, dict):
-            filtered_snap = filter_df_excluding_drafted(snap.get("top_rec"), room)
-            filtered_snap = _filter_player_from_df(
-                filtered_snap, player_id=player_id, player_name=player_name
-            )
-            rid = str(room.get("draft_room_id") or snap.get("room_id") or "").strip()
-            if filtered_snap is not None and not getattr(filtered_snap, "empty", True):
-                store_interactive_top_rec_snapshot(session, filtered_snap, room_id=rid)
-            else:
-                session.pop(INTERACTIVE_TOP_REC_SNAPSHOT_KEY, None)
+        session.pop(INTERACTIVE_TOP_REC_SNAPSHOT_KEY, None)
     except ImportError:
-        pass
+        session.pop("_live_draft_rec_interactive_top_rec_snapshot", None)
 
 
 def invalidate_draft_assistant_scoring_cache(session: dict[str, Any] | None) -> None:

@@ -45,6 +45,11 @@ class RecLiveInteractiveCallbackTests(unittest.TestCase):
         }
         store_prepared_rec_interactive(session, room_id="ROOM1", gaps=[], category_needs=[], max_cards=1)
         room = session["live_draft_room"]
+        # Cached rows must carry the current paint fingerprint to be trusted
+        # (every production REC_CACHE_KEY writer sets "key").
+        from live_draft_rec_live_paint import rec_paint_state_version
+
+        session["_live_draft_rec_cache"]["key"] = rec_paint_state_version(session, room)
         with patch(
             "live_draft_solo_component_diagnostics.solo_component_diag_enabled",
             return_value=True,

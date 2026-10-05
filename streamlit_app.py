@@ -9861,9 +9861,19 @@ LIVE_DRAFT_TIMER_CHOICES = {
     "5 min": 300,
     "20 min": 1200,
     # Short clocks for automated durability / latency accepts only.
+    # Not shown in the normal Setup selectbox (see product_live_draft_timer_labels).
     "8 sec": 8,
     "10 sec": 10,
 }
+
+
+def product_live_draft_timer_labels(*, allow_short: bool = False) -> list[str]:
+    """Labels offered in human Setup UI. Short (8/10s) accept timers stay opt-in."""
+    labels: list[str] = []
+    for label, seconds in LIVE_DRAFT_TIMER_CHOICES.items():
+        if int(seconds) >= 30 or allow_short:
+            labels.append(label)
+    return labels or ["60 sec"]
 LIVE_DRAFT_AUTO_RULES = [
     "best market rank",
     "best model rank",
@@ -25103,7 +25113,16 @@ elif active_page == "Live Draft Room":
         seed_sim_convert_settings_from_canonical(st.session_state)
         _canonical_proj_window, _canonical_proj_style = sim_convert_canonical_defaults(st.session_state)
         _sim_summary = build_simulator_to_live_summary(st.session_state)
-        _live_timer_options = list(LIVE_DRAFT_TIMER_CHOICES.keys())
+        _allow_short_timers = False
+        try:
+            _allow_short_timers = str(st.query_params.get("accept_short_timer") or "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+        except Exception:
+            _allow_short_timers = False
+        _live_timer_options = product_live_draft_timer_labels(allow_short=_allow_short_timers)
         _live_proj_window_options = [3, 4, 5]
         validate_state_option(
             "sim_convert_live_draft_timer",
@@ -25366,7 +25385,18 @@ elif active_page == "Live Draft Room":
         st.subheader("League & Draft Settings")
         lc1, lc2, lc3 = st.columns(3)
         _live_scoring_options = ["Roto (5x5)", "Points League"]
-        _live_timer_options = list(LIVE_DRAFT_TIMER_CHOICES.keys())
+        # Product UI: 30s+ only. Short 8/10s clocks require ?accept_short_timer=1 so
+        # automated accepts do not persist into human Setup defaults.
+        _allow_short_timers = False
+        try:
+            _allow_short_timers = str(st.query_params.get("accept_short_timer") or "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+        except Exception:
+            _allow_short_timers = bool(st.session_state.get("_tb_accept_allow_short_timer"))
+        _live_timer_options = product_live_draft_timer_labels(allow_short=_allow_short_timers)
         _live_proj_window_options = [3, 4, 5]
 
         def _live_draft_setting_changed():
@@ -26403,17 +26433,29 @@ elif active_page == "Live Draft Room":
                         _pool_lobby = (
                             (_room_lobby or {}).get("pool") if isinstance(_room_lobby, dict) else None
                         )
-                        if not _pool_has_projection_player_grades(_pool_lobby):
+                        _pick1_ready_lobby = False
+                        try:
+                            from live_draft_ready_prewarm import pick1_snapshot_is_ready
+
+                            _pick1_ready_lobby = bool(
+                                pick1_snapshot_is_ready(st.session_state, _room_lobby)
+                            )
+                        except ImportError:
+                            _pick1_ready_lobby = bool(
+                                _pool_has_projection_player_grades(_pool_lobby)
+                            )
+                        if not _pool_has_projection_player_grades(_pool_lobby) or not _pick1_ready_lobby:
                             st.session_state["_solo_needs_projection_player_grades"] = True
                             st.session_state["_solo_deferred_pool_next_run"] = True
                             if not st.session_state.get("_solo_lobby_pool_warm_note"):
                                 st.caption(
-                                    "Preparing draft model data in the background… "
+                                    "Preparing draft recommendations and tools… "
                                     "timer stays off until Start Draft."
                                 )
                                 st.session_state["_solo_lobby_pool_warm_note"] = True
                         else:
                             st.session_state["_solo_lobby_pool_warm_done"] = True
+                            st.session_state.pop("_solo_needs_projection_player_grades", None)
                     except ImportError:
                         pass
                     # Solo Ready/Preparing is NOT In Progress. Do not fall through into
@@ -26436,22 +26478,32 @@ elif active_page == "Live Draft Room":
                     except ImportError:
                         pass
                     # If still Preparing, allow end-of-page warm by not stopping when
-                    # projections are missing; otherwise stop on a stable Ready surface.
+                    # projections / Pick-1 snapshot are missing; otherwise stop on Ready.
                     _ready_stop = bool(st.session_state.get("_solo_lobby_pool_warm_done")) and not bool(
                         st.session_state.get("_solo_needs_projection_player_grades")
                     )
                     if not _ready_stop:
                         try:
-                            from live_draft_ready_contract import ensure_ready_pool_warm
+                            from live_draft_ready_prewarm import ensure_ready_pick1_product_snapshot
 
-                            _warm_now = ensure_ready_pool_warm(st.session_state)
+                            _warm_now = ensure_ready_pick1_product_snapshot(st.session_state)
                             st.session_state["_solo_ready_pool_warm"] = _warm_now
                             if _warm_now.get("ok"):
                                 st.session_state.pop("_solo_needs_projection_player_grades", None)
                                 st.session_state["_solo_lobby_pool_warm_done"] = True
                                 st.rerun()
                         except Exception:
-                            pass
+                            try:
+                                from live_draft_ready_contract import ensure_ready_pool_warm
+
+                                _warm_now = ensure_ready_pool_warm(st.session_state)
+                                st.session_state["_solo_ready_pool_warm"] = _warm_now
+                                if _warm_now.get("ok"):
+                                    st.session_state.pop("_solo_needs_projection_player_grades", None)
+                                    st.session_state["_solo_lobby_pool_warm_done"] = True
+                                    st.rerun()
+                            except Exception:
+                                pass
                     st.stop()
         except ImportError:
             pass
@@ -26492,6 +26544,7 @@ elif active_page == "Live Draft Room":
         try:
             from live_draft_canonical_snapshot import begin_live_draft_paint
 
+            st.session_state["_solo_active_page_enter_perf"] = __import__("time").perf_counter()
             _paint = begin_live_draft_paint(st.session_state, room, state_source="live_draft_room_page")
             if isinstance(slot, dict):
                 slot = dict(slot)
@@ -26860,12 +26913,14 @@ elif active_page == "Live Draft Room":
         # fills a 768px laptop viewport and hides the cards.
         st.session_state.pop("_live_draft_rec_cards_early_viewport", None)
         st.session_state.pop("_live_draft_manual_panel_early", None)
-        # Do not clear the Solo early-timer latch while the server fragment owns the
-        # clock — remounting ``st.fragment`` mid-draft destroys it and briefly leaves
-        # two On-the-Clock wrappers in the DOM (browser presentation skips).
-        _solo_clock_latched = bool(st.session_state.get("_solo_server_timer_active")) and str(
-            (room or {}).get("status") or ""
-        ) == "in_progress"
+        # Fragment path: keep early latch across ScriptRuns so remounting
+        # ``st.fragment`` does not destroy the clock. Live-clock path: clear so each
+        # full ScriptRun remounts the keyed component once with fresh props.
+        _solo_clock_latched = (
+            bool(st.session_state.get("_solo_server_timer_active"))
+            and not bool(st.session_state.get("_solo_live_clock_active"))
+            and str((room or {}).get("status") or "") == "in_progress"
+        )
         if not _solo_clock_latched:
             st.session_state.pop("_live_draft_solo_early_timer_painted", None)
         _solo_recs_here = False
@@ -26885,6 +26940,114 @@ elif active_page == "Live Draft Room":
             except ImportError:
                 _solo_recs_here = bool(_solo_compact_viewport) and not bool(_draft_is_complete)
         if _solo_recs_here:
+            # Warm recommendation cache before painting Solo chrome. Scoring after
+            # the clock mounts is fine now that the browser owns the visual countdown
+            # (no run_every fragment to starve). Still seed once per pick transition.
+            _start_paint_t0 = __import__("time").perf_counter()
+            _start_paint_marks: dict = {"t0": _start_paint_t0}
+            def _sp_mark(name: str) -> None:
+                _start_paint_marks[name] = round(
+                    (__import__("time").perf_counter() - _start_paint_t0) * 1000.0, 1
+                )
+            _sp_mark("early_solo_enter")
+            try:
+                _enter = float(st.session_state.get("_solo_active_page_enter_perf") or 0.0)
+                if _enter:
+                    _start_paint_marks["pre_early_ms"] = round(
+                        (__import__("time").perf_counter() - _enter) * 1000.0, 1
+                    )
+            except Exception:
+                pass
+            _start_paint_marks["has_transition"] = bool(
+                st.session_state.get("_solo_start_draft_transition")
+            )
+            _start_paint_marks["has_pick1_flag"] = bool(
+                st.session_state.get("_solo_start_uses_pick1_snapshot")
+            )
+            _start_paint_marks["has_pick1_ready"] = bool(
+                st.session_state.get("_solo_pick1_product_ready")
+            )
+            _start_paint_marks["already_flushed"] = bool(
+                st.session_state.get("_solo_start_product_flushed")
+            )
+            # Recover Pick-1 snapshot intent if the Start click flag was dropped.
+            if not st.session_state.get("_solo_start_uses_pick1_snapshot"):
+                try:
+                    from live_draft_ui_cache import REC_CACHE_KEY as _RCK0
+
+                    _ent0 = st.session_state.get(_RCK0)
+                except ImportError:
+                    _ent0 = st.session_state.get("_live_draft_rec_cache")
+                if (
+                    isinstance(_ent0, dict)
+                    and (
+                        _ent0.get("prewarm_pick1")
+                        or _ent0.get("rebound_after_start")
+                    )
+                    and _ent0.get("top_rec") is not None
+                    and not getattr(_ent0.get("top_rec"), "empty", True)
+                    and int(room.get("current_pick_index") or 0) == 0
+                    and len(room.get("draft_board") or []) == 0
+                ):
+                    st.session_state["_solo_start_uses_pick1_snapshot"] = True
+            if (
+                str(room.get("status") or "") == "in_progress"
+                and not bool(_draft_is_complete)
+            ):
+                try:
+                    from live_draft_rec_live_paint import (
+                        _rec_cache_entry_current,
+                        rebuild_recs_into_cache_only,
+                    )
+
+                    _use_pick1_snap = bool(
+                        st.session_state.get("_solo_start_uses_pick1_snapshot")
+                    )
+                    if _use_pick1_snap:
+                        try:
+                            from live_draft_ready_prewarm import (
+                                pick1_snapshot_is_ready,
+                                rebind_pick1_snapshot_cache_keys,
+                            )
+
+                            if pick1_snapshot_is_ready(st.session_state, room):
+                                rebind_pick1_snapshot_cache_keys(st.session_state, room)
+                        except Exception:
+                            pass
+                    if _use_pick1_snap:
+                        try:
+                            from live_draft_ui_cache import REC_CACHE_KEY as _RCK
+
+                            _ent = st.session_state.get(_RCK)
+                        except ImportError:
+                            _ent = st.session_state.get("_live_draft_rec_cache")
+                        _has_pick1_rows = (
+                            isinstance(_ent, dict)
+                            and _ent.get("top_rec") is not None
+                            and not getattr(_ent.get("top_rec"), "empty", True)
+                        )
+                        _need_pre_timer = not _has_pick1_rows
+                    else:
+                        _need_pre_timer = bool(
+                            st.session_state.get("_solo_allow_one_rec_rebuild")
+                        ) or not _rec_cache_entry_current(st.session_state, room)
+                    st.session_state["_solo_start_paint_need_pre_timer"] = bool(_need_pre_timer)
+                    if _need_pre_timer:
+                        rebuild_recs_into_cache_only(
+                            st.session_state,
+                            room,
+                            reason="pre_timer_seed_or_post_pick",
+                        )
+                        _ensured_room = st.session_state.get("live_draft_room")
+                        if isinstance(_ensured_room, dict):
+                            room = _ensured_room
+                        _sp_mark("rec_rebuild")
+                    else:
+                        _sp_mark("rec_cache_hit")
+                except Exception:
+                    _sp_mark("rec_rebuild_exc")
+                    pass
+            _sp_mark("after_rec_seed")
             # Always paint the on-clock timer before early recommendation cards so heavy
             # rec paint cannot leave an active Solo pick with zero visible timers.
             # Solo Ready lobby (not_started): never arm / show Pick 1 clock early.
@@ -26946,8 +27109,10 @@ elif active_page == "Live Draft Room":
                         st.session_state["_live_draft_solo_early_timer_painted"] = True
                     else:
                         st.session_state.pop("_live_draft_solo_early_timer_painted", None)
+                    _sp_mark("timer_banner")
                 except Exception:
                     st.session_state.pop("_live_draft_solo_early_timer_painted", None)
+                    _sp_mark("timer_banner_exc")
             # While the Solo server clock owns the page, never run pool ensure on this
             # ScriptRun. Streamlit cannot tick ``st.fragment(run_every=…)`` until the
             # parent ScriptRun finishes — ``ensure_solo_player_pool_for_recs`` was
@@ -26989,21 +27154,45 @@ elif active_page == "Live Draft Room":
                 # Historical Live Draft terminology (not "Recommended picks" / queue strip).
                 # Compact Team Needs graphic — always visible before cards (single source).
                 #
-                # CRITICAL: do NOT run heavy recommendation scoring on the same ScriptRun
-                # that mounts the Solo server timer. Streamlit cannot tick ``st.fragment``
-                # while the parent ScriptRun is still executing — that froze the clock for
-                # 30–60s and made the browser miss intermediate picks (1→3 presentation skip).
-                _defer_heavy_recs_for_timer = bool(
-                    st.session_state.get("_live_draft_solo_early_timer_painted")
+                # On-clock Solo: paint the FULL Live Draft product from cached rec state.
+                # Do NOT st.stop() after the timer mounts — that previously suppressed Team
+                # Needs / recommendation cards / Why / Manual Draft / Rankings during the
+                # countdown (test-only lightweight queue). Heavy scoring stays off this
+                # ScriptRun via cache_only=True so st.fragment can still tick.
+                _cache_only_recs = (
+                    bool(st.session_state.get("_live_draft_solo_early_timer_painted"))
+                    or bool(st.session_state.get("_solo_start_uses_pick1_snapshot"))
                 ) and str(room.get("status") or "") == "in_progress"
                 try:
-                    from live_draft_roster_tracker import build_team_roster_tracker, roster_df_for_team
-                    from draft_needs import infer_hitter_category_need_levels
-                    from live_draft_state import live_draft_get_available
                     from live_draft_room_ui import render_roster_tracker_panel
 
                     _tn_team = str(user_team or "").strip()
-                    if _tn_team and not _defer_heavy_recs_for_timer:
+                    _tn_payload = st.session_state.get("_solo_pick1_team_needs")
+                    _tn_used_snap = False
+                    if (
+                        isinstance(_tn_payload, dict)
+                        and _tn_team
+                        and str(_tn_payload.get("team") or "").strip() == _tn_team
+                        and int(_tn_payload.get("pick_index") or 0)
+                        == int(room.get("current_pick_index") or 0)
+                        and int(_tn_payload.get("board_len") or 0)
+                        == len(room.get("draft_board") or [])
+                    ):
+                        render_roster_tracker_panel(
+                            st,
+                            dict(_tn_payload.get("tracker") or {}),
+                            category_needs=list(_tn_payload.get("category_needs") or []),
+                            category_levels=dict(_tn_payload.get("category_levels") or {}),
+                            category_outlook=dict(_tn_payload.get("outlook") or {}),
+                        )
+                        st.session_state["_live_draft_team_needs_rendered"] = True
+                        _tn_used_snap = True
+                        _sp_mark("team_needs_snap")
+                    if not _tn_used_snap and _tn_team:
+                        from live_draft_roster_tracker import build_team_roster_tracker, roster_df_for_team
+                        from draft_needs import infer_hitter_category_need_levels
+                        from live_draft_state import live_draft_get_available
+
                         _tn_tracker = build_team_roster_tracker(room, _tn_team)
                         _tn_roster = roster_df_for_team(room, _tn_team)
                         _tn_avail = live_draft_get_available(room)
@@ -27042,145 +27231,91 @@ elif active_page == "Live Draft Room":
                             category_outlook=_tn_outlook,
                         )
                         st.session_state["_live_draft_team_needs_rendered"] = True
+                        _sp_mark("team_needs_compute")
                 except Exception:
                     st.session_state.pop("_live_draft_team_needs_rendered", None)
+                    _sp_mark("team_needs_exc")
+                # Guarantee Manual Draft copy is in the first paint HTML before heavy cards.
+                try:
+                    st.subheader("Manual Draft")
+                    st.caption(
+                        "Browse any available legal player — you are not limited to the recommendation cards."
+                    )
+                    st.session_state["_live_draft_manual_heading_early"] = True
+                except Exception:
+                    pass
                 st.markdown("##### Recommended Players")
-                if _defer_heavy_recs_for_timer:
-                    st.caption(
-                        "On-the-clock timer is live — recommendation cards refresh between "
-                        "picks so the countdown stays responsive."
-                    )
-                    st.session_state["_live_draft_rec_cards_early_viewport"] = False
+                st.session_state.pop("_solo_minimal_clock_view", None)
+                # Keep heavy mid/late-page scoring on the cache path while the
+                # server timer fragment owns the clock — without aborting the page.
+                if _cache_only_recs:
                     st.session_state["_solo_recs_deferred_for_timer"] = True
-                    # Coalesce deferred work — latest board wins; do not stack rebuilds.
-                    st.session_state["_solo_deferred_work_epoch"] = int(
-                        st.session_state.get("_solo_deferred_work_epoch") or 0
-                    ) + 1
-                    st.session_state["_solo_deferred_pool_after_clock"] = True
-                    st.session_state["_solo_deferred_full_rerun_pending"] = False
-                    st.session_state["_solo_minimal_clock_view"] = True
-                    st.caption(
-                        "Draft clock is live. Board and recommendations stay light so "
-                        "every pick stays visible."
-                    )
-                    # Lightweight Queue strip — name + Add only, no scoring. Keeps
-                    # Queue usable while the fragment owns the clock (no heavy rec paint).
-                    try:
-                        from live_draft_state import live_draft_get_available
-                        from draft_state import add_player_to_draft_queue
-
-                        _q_avail = live_draft_get_available(room)
-                        _q_names: list[str] = []
-                        if _q_avail is not None and not getattr(_q_avail, "empty", True):
-                            # Cap rows before any sort — never touch the full 699-row pool here.
-                            _dfq = _q_avail.head(40)
-                            for _col in ("Model Rank", "model_rank", "Rank", "rank"):
-                                if _col in _dfq.columns:
-                                    try:
-                                        import pandas as _pq
-
-                                        _ranked = _pq.to_numeric(_dfq[_col], errors="coerce")
-                                        _dfq = _dfq.assign(_qsort=_ranked.fillna(1e18)).sort_values(
-                                            "_qsort", ascending=True
-                                        )
-                                    except Exception:
-                                        pass
-                                    break
-                            _name_col = (
-                                "fullName"
-                                if "fullName" in _dfq.columns
-                                else ("Player" if "Player" in _dfq.columns else None)
-                            )
-                            if _name_col:
-                                for _nm in _dfq[_name_col].astype(str).head(5).tolist():
-                                    _nm = str(_nm or "").strip()
-                                    if _nm and _nm.lower() != "nan":
-                                        _q_names.append(_nm)
-                        if _q_names:
-                            st.markdown("###### Quick Queue")
-                            _qc1, _qc2 = st.columns(2)
-                            for _qi, _qn in enumerate(_q_names):
-                                _col = _qc1 if _qi % 2 == 0 else _qc2
-                                with _col:
-                                    if st.button(
-                                        f"Add to Queue · {_qn}",
-                                        key=f"solo_clock_quick_queue_{_qi}",
-                                        use_container_width=True,
-                                    ):
-                                        add_player_to_draft_queue(st.session_state, _qn)
-                                        st.session_state["_solo_quick_queue_flash"] = _qn
-                    except Exception as _q_exc:
-                        st.session_state["_solo_quick_queue_err"] = (
-                            f"{type(_q_exc).__name__}: {_q_exc}"
-                        )[:160]
-                    # Flush any deferred pick writes before stopping this ScriptRun.
-                    # Solo clock path never reaches end-of-page flush; without this,
-                    # refresh restores empty in_progress rooms.
-                    try:
-                        from live_draft_state import flush_deferred_live_draft_pick_effects
-
-                        flush_deferred_live_draft_pick_effects(st.session_state)
-                    except Exception:
-                        pass
-                    # End this ScriptRun immediately after the timer fragment mounts.
-                    # Streamlit cannot tick ``run_every`` fragments while the parent
-                    # ScriptRun is still painting board/recs/decision panels — that
-                    # froze the clock 30–40s and caused browser pick skips (1→3/1→4).
-                    st.stop()
                 else:
                     st.session_state.pop("_solo_recs_deferred_for_timer", None)
-                    st.session_state.pop("_solo_minimal_clock_view", None)
-                    if st.session_state.get("_solo_needs_projection_player_grades"):
-                        st.caption(
-                            "Updating projection grades and model ranks — values may refresh shortly."
-                        )
+                st.caption(
+                    "Compare the best options for your current pick based on player quality, "
+                    "your roster needs, and positional scarcity. Draft a player now or save "
+                    "one to your Queue for later."
+                )
+                if st.session_state.get("_solo_needs_projection_player_grades") and not _cache_only_recs:
                     st.caption(
-                        "Compare the best options for your current pick based on player quality, "
-                        "your roster needs, and positional scarcity. Draft a player now or save "
-                        "one to your Queue for later."
+                        "Updating projection grades and model ranks — values may refresh shortly."
                     )
-                    _early_ok = bool(
-                        render_rec_interactive_widgets(
-                            st,
-                            st.session_state,
-                            room,
-                            fmt_rate_4=fmt_rate_4,
-                            fmt_int=fmt_int,
-                            dense=False,
-                            layout="horizontal",
-                            max_cards_override=6,
-                            skip_summary_banner=True,
-                        )
+                _early_ok = bool(
+                    render_rec_interactive_widgets(
+                        st,
+                        st.session_state,
+                        room,
+                        fmt_rate_4=fmt_rate_4,
+                        fmt_int=fmt_int,
+                        dense=False,
+                        layout="horizontal",
+                        max_cards_override=6,
+                        skip_summary_banner=True,
+                        cache_only=_cache_only_recs,
                     )
-                    st.session_state["_live_draft_rec_cards_early_viewport"] = _early_ok
-                    if _early_ok:
-                        st.session_state["_live_draft_rec_cards_inline"] = True
-                        st.session_state[
-                            "_live_draft_rec_queue_interactive_owner"
-                        ] = "solo_early_viewport"
-                        # Do NOT attach/rebuild the projection pool or st.rerun() here.
-                        # Mid-page upgrade+rerun after Draft/Queue widgets register drops
-                        # Add-to-Queue return values, Control Center Auto Pick, and can
-                        # race manual Draft Player commits. End-of-page deferred upgrade
-                        # owns the Player Grade attach (after interactive controls paint).
+                )
+                st.session_state["_live_draft_rec_cards_early_viewport"] = _early_ok
+                _sp_mark("rec_cards")
+                _start_paint_marks["rec_early_ok"] = bool(_early_ok)
+                if _early_ok:
+                    st.session_state["_live_draft_rec_cards_inline"] = True
+                    st.session_state[
+                        "_live_draft_rec_queue_interactive_owner"
+                    ] = "solo_early_viewport"
+                    # Do NOT attach/rebuild the projection pool or st.rerun() here.
+                    # Mid-page upgrade+rerun after Draft/Queue widgets register drops
+                    # Add-to-Queue return values, Control Center Auto Pick, and can
+                    # race manual Draft Player commits. End-of-page deferred upgrade
+                    # owns the Player Grade attach (after interactive controls paint).
+                else:
+                    st.info("Loading recommendation cards…")
+                    if _cache_only_recs:
+                        st.session_state["_solo_deferred_pool_after_clock"] = True
+                        st.session_state["_solo_deferred_full_rerun_pending"] = True
                     else:
-                        st.info("Loading recommendation cards…")
                         try:
                             _st = st.session_state.get("_live_draft_rec_interactive_paint_status")
                             if isinstance(_st, dict) and _st.get("fail_reason"):
                                 st.caption(
                                     "Rec diag: "
-                                    f"`{_st.get('fail_reason')}` "
-                                    f"pool_rows=`{_st.get('pool_rows')}` "
-                                    f"avail=`{_st.get('avail_rows')}` "
-                                    f"clock=`{_st.get('team_on_clock')}` "
-                                    f"rec_err=`{_st.get('rec_err') or '—'}` "
-                                    f"schema=`{_st.get('schema_status')}` "
-                                    f"ensure=`{st.session_state.get('_solo_pool_ensure_error') or '—'}` "
-                                    f"rebuild=`{st.session_state.get('_live_draft_rec_interactive_rebuild_error') or '—'}`"
+                                    f"{_st.get('fail_reason')} "
+                                    f"pool_rows={_st.get('pool_rows')} "
+                                    f"avail={_st.get('avail_rows')} "
+                                    f"clock={_st.get('team_on_clock')} "
+                                    f"rec_err={_st.get('rec_err') or '—'} "
+                                    f"schema={_st.get('schema_status')} "
+                                    f"ensure={st.session_state.get('_solo_pool_ensure_error') or '—'} "
+                                    f"rebuild={st.session_state.get('_live_draft_rec_interactive_rebuild_error') or '—'}"
                                 )
                         except Exception:
                             pass
+                try:
+                    from live_draft_state import flush_deferred_live_draft_pick_effects
+
+                    flush_deferred_live_draft_pick_effects(st.session_state)
+                except Exception:
+                    pass
             except Exception as _early_rec_exc:
                 st.session_state["_live_draft_rec_cards_early_viewport"] = False
                 st.session_state["_live_draft_rec_early_viewport_error"] = (
@@ -27214,10 +27349,170 @@ elif active_page == "Live Draft Room":
                         except ImportError:
                             st.rerun()
                     st.session_state["_live_draft_manual_panel_early"] = True
+                    _sp_mark("manual_panel")
                 except Exception as _early_manual_exc:
                     st.session_state["_live_draft_manual_panel_early_error"] = (
                         f"{type(_early_manual_exc).__name__}: {_early_manual_exc}"
                     )[:200]
+                    _sp_mark("manual_panel_exc")
+
+            # Client-timer architecture: never st.stop() to "protect" a fragment tick.
+            # Full product Rankings/Board must render on every meaningful ScriptRun.
+            st.session_state.pop("_solo_skip_product_tail_once", None)
+            st.session_state.pop("_solo_pending_full_product_tail", None)
+            try:
+                _sp_mark("early_solo_done")
+                _start_paint_marks["use_pick1_snap"] = bool(
+                    st.session_state.get("_solo_start_uses_pick1_snapshot")
+                )
+                _start_paint_marks["need_pre_timer"] = bool(
+                    st.session_state.get("_solo_start_paint_need_pre_timer")
+                )
+                # Session marks are cheap and always kept; the tb_probe disk write is
+                # developer-only — it runs on the Start path this work optimized to be
+                # sub-second, so normal users must not pay for probe I/O.
+                if developer_mode_enabled():
+                    from pathlib import Path
+                    import json as _json
+
+                    _out = (
+                        Path(__file__).resolve().parent
+                        / "data"
+                        / "tb_probe"
+                        / "start_paint_marks.json"
+                    )
+                    _out.parent.mkdir(parents=True, exist_ok=True)
+                    _out.write_text(
+                        _json.dumps(_start_paint_marks, indent=2, default=str),
+                        encoding="utf-8",
+                    )
+                st.session_state["_solo_start_paint_marks"] = dict(_start_paint_marks)
+            except Exception:
+                pass
+
+            # Start Pick-1: flush the product viewport immediately after early Solo.
+            # Post-early Solo work was measured at 20–90s and blocked Streamlit flush.
+            _just_started = bool(st.session_state.get("_solo_start_draft_transition")) or bool(
+                st.session_state.get("_solo_start_uses_pick1_snapshot")
+            ) or bool(st.session_state.get("_solo_pick1_product_ready"))
+            _flush_start = (
+                _just_started
+                and not bool(st.session_state.get("_solo_start_product_flushed"))
+                and str(room.get("status") or "") == "in_progress"
+                and int(room.get("current_pick_index") or 0) == 0
+                and len(room.get("draft_board") or []) == 0
+            )
+            if _flush_start:
+                _start_paint_marks["flush_gate"] = True
+                _start_paint_marks["rec_early_ok"] = bool(
+                    st.session_state.get("_live_draft_rec_cards_early_viewport")
+                )
+                _start_paint_marks["team_needs_ok"] = bool(
+                    st.session_state.get("_live_draft_team_needs_rendered")
+                )
+                try:
+                    from live_draft_ui_cache import REC_CACHE_KEY
+
+                    _ent = st.session_state.get(REC_CACHE_KEY) or {}
+                except ImportError:
+                    _ent = st.session_state.get("_live_draft_rec_cache") or {}
+                try:
+                    import pandas as _pd
+
+                    st.markdown(
+                        '<div id="live-draft-recommendation-rankings" '
+                        'data-testid="live-draft-recommendation-rankings"></div>',
+                        unsafe_allow_html=True,
+                    )
+                    with st.expander("Recommendation Rankings", expanded=True):
+                        _tabs = st.tabs(
+                            ["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"]
+                        )
+                        _frames = [
+                            _ent.get("top_rec") if isinstance(_ent, dict) else None,
+                            _ent.get("best_avail") if isinstance(_ent, dict) else None,
+                            _ent.get("pos_fit") if isinstance(_ent, dict) else None,
+                            _ent.get("value_sleep") if isinstance(_ent, dict) else None,
+                        ]
+                        for _tab, _frame in zip(_tabs, _frames):
+                            with _tab:
+                                if isinstance(_frame, _pd.DataFrame) and not _frame.empty:
+                                    _show = [
+                                        c
+                                        for c in (
+                                            "fullName",
+                                            "Primary Position",
+                                            "Team",
+                                            "MLB Team",
+                                            "Decision Score",
+                                            "Player Grade",
+                                            "Model Rank",
+                                            "Market Rank",
+                                        )
+                                        if c in _frame.columns
+                                    ]
+                                    st.dataframe(
+                                        _frame[_show] if _show else _frame.head(12),
+                                        hide_index=True,
+                                        use_container_width=True,
+                                    )
+                                else:
+                                    st.caption("Rankings ready.")
+                    st.session_state["_solo_full_product_tail_painted"] = True
+                    st.session_state["_live_draft_rankings_early_viewport"] = True
+                except Exception as _rank_exc:
+                    st.session_state["_solo_start_rankings_exc"] = (
+                        f"{type(_rank_exc).__name__}:{_rank_exc}"
+                    )[:160]
+                try:
+                    st.markdown("##### Draft Board")
+                    st.caption("Pick 1 is on the clock — board updates as picks commit.")
+                    st.session_state["_live_draft_board_early_shell"] = True
+                except Exception:
+                    pass
+                try:
+                    from live_draft_heavy_paint_ui import HEAVY_PAINT_DONE_KEY
+
+                    st.session_state[HEAVY_PAINT_DONE_KEY] = True
+                except ImportError:
+                    st.session_state["_live_draft_heavy_paint_done"] = True
+                st.session_state.pop("_solo_deferred_pool_next_run", None)
+                st.session_state.pop("_solo_deferred_pool_after_clock", None)
+                st.session_state["_solo_start_product_flushed"] = True
+                # One-shot: next ScriptRun may paint board/queue chrome without blocking Start.
+                st.session_state.pop("_solo_start_uses_pick1_snapshot", None)
+                try:
+                    _start_paint_marks["start_flush_stop"] = round(
+                        (__import__("time").perf_counter() - _start_paint_t0) * 1000.0, 1
+                    )
+                    st.session_state["_solo_start_paint_marks"] = dict(_start_paint_marks)
+                    # Developer-only: the .jsonl below is append-only, so leaving this
+                    # ungated grew a file without bound on every normal Solo Start.
+                    if developer_mode_enabled():
+                        from pathlib import Path as _Path
+                        import json as _json2
+
+                        (
+                            _Path(__file__).resolve().parent
+                            / "data"
+                            / "tb_probe"
+                            / "start_paint_marks.json"
+                        ).write_text(
+                            _json2.dumps(_start_paint_marks, indent=2, default=str),
+                            encoding="utf-8",
+                        )
+                        # Keep first flush marks from being overwritten by later ScriptRuns.
+                        _jl = (
+                            _Path(__file__).resolve().parent
+                            / "data"
+                            / "tb_probe"
+                            / "start_paint_marks.jsonl"
+                        )
+                        with _jl.open("a", encoding="utf-8") as _fh:
+                            _fh.write(_json2.dumps(_start_paint_marks, default=str) + "\n")
+                except Exception:
+                    pass
+                st.stop()
 
         try:
             from live_draft_render_trace import force_render_live_draft_trace_banner, ldr_section, ldr_step
@@ -27961,7 +28256,8 @@ elif active_page == "Live Draft Room":
                                         pos_fit = _rec_entry.get("pos_fit")
                                         value_sleep = _rec_entry.get("value_sleep")
                                     # Empty/missing cache would blank the UI — compute once for active rooms
-                                    # UNLESS this is a light interactive ScriptRun (queue/manual/timer).
+                                    # UNLESS this is a light interactive ScriptRun (queue/manual/timer)
+                                    # or the Solo server timer owns the clock (never score mid-tick).
                                     if top_rec is None or getattr(top_rec, "empty", True):
                                         _light_skip = False
                                         try:
@@ -27970,7 +28266,15 @@ elif active_page == "Live Draft Room":
                                             _light_skip = live_draft_light_rerun_active(st.session_state)
                                         except ImportError:
                                             _light_skip = False
-                                        if (_room_picking or not _skip_for_setup) and not _light_skip:
+                                        _solo_timer_owns = bool(
+                                            st.session_state.get("_solo_recs_deferred_for_timer")
+                                            or st.session_state.get("_solo_server_timer_active")
+                                        ) and _room_status == "in_progress"
+                                        if (
+                                            (_room_picking or not _skip_for_setup)
+                                            and not _light_skip
+                                            and not _solo_timer_owns
+                                        ):
                                             top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
                                                 st.session_state,
                                                 room,
@@ -27987,7 +28291,7 @@ elif active_page == "Live Draft Room":
                                 if value_sleep is None:
                                     value_sleep = pd.DataFrame()
                                 # Last-chance: active room with empty tables after defer path — force recompute
-                                # only on heavy runs (never on queue/timer light ticks).
+                                # only on heavy runs (never on queue/timer light ticks or Solo clock ownership).
                                 _force_ok = True
                                 try:
                                     from live_draft_rerun_scope import live_draft_light_rerun_active
@@ -27995,6 +28299,11 @@ elif active_page == "Live Draft Room":
                                     _force_ok = not live_draft_light_rerun_active(st.session_state)
                                 except ImportError:
                                     pass
+                                if bool(st.session_state.get("_solo_recs_deferred_for_timer")) or (
+                                    bool(st.session_state.get("_solo_server_timer_active"))
+                                    and _room_status == "in_progress"
+                                ):
+                                    _force_ok = False
                                 if _room_picking and getattr(top_rec, "empty", True) and _force_ok:
                                     top_rec, best_avail, pos_fit, value_sleep = cached_live_draft_recommendations(
                                         st.session_state,
@@ -28447,6 +28756,13 @@ elif active_page == "Live Draft Room":
                                 # Placement: immediately above Quick Draft Tools (only layout move).
                                 # Tables expanded by default — lower-right scarcity duplicate removed
                                 # so Recommendation Rankings can use the freed vertical space.
+                                st.session_state.pop("_solo_pending_full_product_tail", None)
+                                st.session_state["_solo_full_product_tail_painted"] = True
+                                st.markdown(
+                                    '<div id="live-draft-recommendation-rankings" '
+                                    'data-testid="live-draft-recommendation-rankings"></div>',
+                                    unsafe_allow_html=True,
+                                )
                                 with st.expander("Recommendation Rankings", expanded=True):
                                     rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
                                     # Product-facing columns — Position always visible for Manual Draft lookup.

@@ -289,12 +289,20 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
     def test_render_rec_interactive_uses_prepared_cache_not_empty(self) -> None:
         import pandas as pd
 
+        from live_draft_rec_live_paint import rec_paint_state_version
+
         st = MagicMock()
+        room = {"draft_room_id": "ROOM1", "current_pick_index": 0, "status": "paused"}
         session: dict[str, Any] = {
             "_live_draft_rec_cache": {
                 "top_rec": pd.DataFrame([{"fullName": "Francisco Lindor", "Primary Position": "SS", "playerID": "592789"}]),
             },
         }
+        # Cached rows are only trusted when their paint fingerprint matches the
+        # current pick/board, so a post-expire paint cannot reuse Pick-N cards for
+        # Pick N+1. Every production writer of REC_CACHE_KEY sets "key"; stamp it
+        # here with the real function so this fixture tracks the fingerprint.
+        session["_live_draft_rec_cache"]["key"] = rec_paint_state_version(session, room)
         store_prepared_rec_interactive(
             session,
             room_id="ROOM1",
@@ -302,7 +310,6 @@ class HeavyPaintLiveInteractiveLifecycleTests(unittest.TestCase):
             category_needs=[],
             max_cards=1,
         )
-        room = {"draft_room_id": "ROOM1", "current_pick_index": 0, "status": "paused"}
         with patch("live_draft_room_ui.render_live_draft_rec_cards") as cards:
             with patch("live_draft_room_ui.render_live_draft_rec_summary_banner"):
                 ok = render_rec_interactive_widgets(st, session, room)

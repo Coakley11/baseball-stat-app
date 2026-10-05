@@ -44,12 +44,40 @@ def _valid_room(**overrides):
     return room
 
 
+def _ready_session(room: dict | None = None) -> dict:
+    """Session whose Pick-1 product snapshot is already prepared.
+
+    ``can_start`` now additionally requires the prewarmed Pick-1 snapshot, so
+    Start only ever enables when pressing it is immediate. Production always
+    passes a session (setup_mode.py / setup_ui.py); a sessionless call is not a
+    real path, so these tests supply the prepared state explicitly.
+    """
+    from live_draft_ready_prewarm import PICK1_READY_FLAG, PICK1_SNAPSHOT_KEY
+
+    rid = str((room or {}).get("draft_room_id") or "ABC123")
+    return {
+        PICK1_SNAPSHOT_KEY: {"ok": True, "room_id": rid},
+        PICK1_READY_FLAG: True,
+    }
+
+
 class ReadyContractTests(unittest.TestCase):
     def test_valid_room_can_start(self) -> None:
-        c = solo_ready_contract(_valid_room())
+        room = _valid_room()
+        c = solo_ready_contract(room, _ready_session(room))
         self.assertTrue(c["can_show_ready"])
         self.assertTrue(c["can_start"])
         self.assertTrue(c["ok"])
+        self.assertTrue(c["pick1_snapshot_ready"])
+
+    def test_start_gated_until_pick1_snapshot_is_prepared(self) -> None:
+        """Ready may show while Pick 1 warms; Start must not enable until it is done."""
+        room = _valid_room()
+        c = solo_ready_contract(room, {})
+        self.assertTrue(c["can_show_ready"])
+        self.assertFalse(c["can_start"])
+        self.assertFalse(c["pick1_snapshot_ready"])
+        self.assertIn("pick1_snapshot_pending", c["reasons"])
 
     def test_empty_teams_is_uninhabitable_stub(self) -> None:
         room = _valid_room(teams=[], pick_order=[])
@@ -81,12 +109,12 @@ class ReadyContractTests(unittest.TestCase):
         pool = pd.DataFrame({"fullName": ["A"], "Market Rank": [1]})
         pool.attrs[POOL_VALUE_KIND_KEY] = POOL_KIND_FAST_MARKET_FALLBACK
         room = _valid_room(pool=pool)
-        c = solo_ready_contract(room)
+        c = solo_ready_contract(room, _ready_session(room))
         self.assertEqual(c["phase"], PHASE_PREPARING)
         self.assertTrue(c["can_show_ready"])
         self.assertFalse(c["can_start"])
         room2 = _valid_room()
-        c2 = solo_ready_contract(room2)
+        c2 = solo_ready_contract(room2, _ready_session(room2))
         self.assertEqual(c2["phase"], PHASE_READY)
 
     def test_timer_armed_blocks_ready(self) -> None:
