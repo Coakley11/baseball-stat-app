@@ -14,6 +14,25 @@ __all__ = ("render_baseball_account_workspace_control",)
 
 _APP_ID = "baseball"
 
+# One header in every normal-mode state (Music parity). It used to read "Login"
+# even on deploys where sign-in is switched off, implying a local workspace was a
+# real account; who you are and which workspace you are in now live inside.
+ACCOUNT_WORKSPACE_HEADER = "Account & Workspace"
+
+
+def _workspace_label(ctx: dict[str, Any]) -> str:
+    return str(ctx.get("active_workspace_label") or "Workspace").strip() or "Workspace"
+
+
+def _shared_drafts_require_sign_in() -> bool:
+    """What the stabilized product enforces -- the copy must never claim more."""
+    try:
+        from draft_room_membership import shared_room_requires_auth
+
+        return bool(shared_room_requires_auth())
+    except Exception:
+        return False
+
 
 def _signed_in_email(ctx: dict[str, Any], session_state: dict[str, Any]) -> str:
     try:
@@ -125,7 +144,9 @@ def _render_consolidated_body(
     if email:
         st.markdown(f"Signed in as **{email}**")
     else:
-        st.caption("Shared suite profile (no individual sign-in on this deploy).")
+        # Local/shared profile: say plainly that this is not an authenticated account.
+        st.caption("Local workspace — sign-in isn't available on this deploy.")
+    st.caption(f"Workspace: **{_workspace_label(ctx)}**")
 
     st.markdown("**Command Center**")
     _render_command_center_entry(st)
@@ -181,7 +202,6 @@ def render_baseball_account_workspace_control(
 
     try:
         from suite_account_settings import (
-            account_workspace_expander_label,
             build_account_settings_context,
             init_suite_workspace,
             render_account_settings_panel,
@@ -215,8 +235,23 @@ def render_baseball_account_workspace_control(
     # Logged out: one clear Login entry (auth panel), no separate CC/Saved chrome.
     if auth_on and not signed_in:
         open_login = bool(st.session_state.pop("_baseball_account_expander_open", False))
-        with st.sidebar.expander("Login", expanded=open_login or True, key="suite_account_workspace_expander"):
-            st.caption("Sign in to sync Shared Draft rooms and suite data across devices.")
+        with st.sidebar.expander(
+            ACCOUNT_WORKSPACE_HEADER,
+            expanded=open_login or True,
+            key="suite_account_workspace_expander",
+        ):
+            st.markdown("**Not signed in**")
+            if _shared_drafts_require_sign_in():
+                st.caption(
+                    f"Solo work saves to the **{_workspace_label(ctx)}** workspace on this "
+                    "device. Sign in with a Real Account to create or join Shared Draft "
+                    "rooms and sync across devices."
+                )
+            else:
+                st.caption(
+                    f"Working in the local **{_workspace_label(ctx)}** workspace. Sign in "
+                    "with a Real Account to sync suite data across devices."
+                )
             render_auth_panel(st, expanded=True, show_signed_in_status=False, flat_sidebar=True)
             st.divider()
             st.markdown("**Command Center**")
@@ -235,8 +270,9 @@ def render_baseball_account_workspace_control(
     # Label as Login when there is no signed-in identity so the human path matches
     # the requested top-left entry point.
     if not auth_on:
-        with st.sidebar.expander("Login", expanded=False, key="suite_account_workspace_expander"):
-            st.caption("Local workspace mode (suite auth off on this deploy).")
+        with st.sidebar.expander(
+            ACCOUNT_WORKSPACE_HEADER, expanded=False, key="suite_account_workspace_expander"
+        ):
             _render_consolidated_body(
                 st,
                 st.session_state,
@@ -270,11 +306,14 @@ def render_baseball_account_workspace_control(
             )
         return
 
-    header = account_workspace_expander_label(ctx)
     open_account = bool(st.session_state.pop("_baseball_account_expander_open", False))
     with st.sidebar.expander(
-        header, expanded=open_account, key="suite_account_workspace_expander"
+        ACCOUNT_WORKSPACE_HEADER, expanded=open_account, key="suite_account_workspace_expander"
     ):
+        # Single Log out lives in the body. The auth panel used to be appended here
+        # "for password/session management", but when signed in render_auth_panel
+        # renders only its own Log out button -- a duplicate. Password tabs exist
+        # only in its signed-out branch, which the signed-out view above still uses.
         _render_consolidated_body(
             st,
             st.session_state,
@@ -284,16 +323,3 @@ def render_baseball_account_workspace_control(
             reset_label=reset_label,
             reset_help=reset_help,
         )
-        # Keep Real Accounts auth panel available for password/session management.
-        try:
-            from suite_auth import render_auth_panel
-
-            st.divider()
-            render_auth_panel(
-                st,
-                expanded=False,
-                show_signed_in_status=False,
-                flat_sidebar=True,
-            )
-        except Exception:
-            pass

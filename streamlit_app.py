@@ -866,6 +866,17 @@ st.markdown("""
 .block-container {padding-top: 1.2rem; padding-bottom: 2rem; padding-left: 2rem; padding-right: 2rem;}
 .title-box {background: linear-gradient(90deg, #0b1f3a, #1f4e79); padding: 22px; border-radius: 16px; margin-bottom: 20px; box-shadow: 0 4px 14px rgba(0,0,0,0.18);}
 .title-text {color: white; font-size: 36px; font-weight: 800; margin: 0;}
+/* Brand logo: sized in em so ONE rule scales across the full hero (36px), the
+   compact draft-page hero (28px) and the phone clamp() in mobile_foundation.
+   Explicit width/height attrs reserve the box, so there is no layout shift. */
+.title-text {display: flex; align-items: center; gap: 0.4em;}
+.title-text .brand-logo {height: 1.5em; width: 1.5em; flex: 0 0 auto; object-fit: contain; border-radius: 0.3em;}
+.title-text .brand-name {min-width: 0;}
+/* st.logo also paints a small copy in the top header bar whenever the sidebar is
+   collapsed -- which is the default on phones, where it stacked directly above
+   the hero logo. Branding is the hero + the compact sidebar mark only. The
+   sidebar expand chevron is a separate element and is unaffected. */
+[data-testid="stHeaderLogo"] {display: none !important;}
 .subtitle-text {color: #dbe8f5; font-size: 16px; margin-top: 6px;}
 .section-card {background-color: #f7f9fc; padding: 16px; border-radius: 12px; border: 1px solid #d9e2ec; margin-bottom: 16px;}
 .section-card-draft {background-color: #f7f9fc; padding: 10px 14px; border-radius: 12px; border: 1px solid #d9e2ec; margin-top: 4px; margin-bottom: 10px;}
@@ -974,13 +985,13 @@ def render_global_app_chrome(active_page: str) -> None:
         if compact:
             st.markdown("""
 <div class="title-box" style="padding:14px 18px;margin-bottom:12px;">
-    <div class="title-text" style="font-size:28px;">⚾ Daniel Cohen Baseball Explorer</div>
+    <div class="title-text" style="font-size:28px;"><img class="brand-logo" src="app/static/brand/dcbe_logo_128.png" alt="" aria-hidden="true" width="128" height="128"><span class="brand-name">Daniel Cohen Baseball Explorer</span></div>
 </div>
 """, unsafe_allow_html=True)
         else:
             st.markdown("""
 <div class="title-box">
-    <div class="title-text">⚾ Daniel Cohen Baseball Explorer</div>
+    <div class="title-text"><img class="brand-logo" src="app/static/brand/dcbe_logo_128.png" alt="" aria-hidden="true" width="128" height="128"><span class="brand-name">Daniel Cohen Baseball Explorer</span></div>
     <div class="subtitle-text">
         Explore MLB history, compare players, spot trends, run drafts, and manage your fantasy season — pick a page in the sidebar or tap <strong>Start Tutorial</strong> below.
     </div>
@@ -15230,9 +15241,28 @@ try:
 except Exception:
     pass
 
+# Compact sidebar brand mark. st.logo is Streamlit's own slot: top of the sidebar,
+# and a small header icon while the sidebar is collapsed. It is the only placement
+# besides the hero title -- the logo is not repeated on individual pages.
+try:
+    _brand_logo = Path(__file__).resolve().parent / "static" / "brand" / "dcbe_logo_128.png"
+    if _brand_logo.is_file():
+        st.logo(str(_brand_logo), size="large")
+except Exception:
+    pass
+
 _render_baseball_sidebar_chrome(st)
 
-pp.render_sidebar_toggle(st)
+# Portfolio Screenshot / Demo Mode are developer tools, not user-facing features.
+if developer_mode_enabled():
+    pp.render_sidebar_toggle(st)
+else:
+    # Hidden from normal UI, so nobody may be left inside a capture mode with no
+    # toggle to leave it: capture mode also skips background persistence
+    # (pp.skip_background_persistence), which would silently stop their saves.
+    # The toggles are these keys' only setters, so clearing them is lossless.
+    st.session_state.pop(pp.SESSION_KEY, None)
+    st.session_state.pop(pp.DEMO_SESSION_KEY, None)
 render_developer_mode_sidebar_toggle()
 try:
     from baseball_monetization_ui import render_development_plan_control
