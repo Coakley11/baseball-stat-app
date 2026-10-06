@@ -9,7 +9,7 @@ def billing_ui_state(session,environ=None):
     if c.rollout is RolloutMode.OFF: return {"action":"disabled","message":"Purchasing is not enabled yet."}
     if c.rollout is RolloutMode.PREVIEW: return {"action":"disabled","message":"Billing preview only — Checkout remains disabled."}
     if not authenticated: return {"action":"signin","message":"Sign in with your Baseball account before purchasing Pro."}
-    if not c.checkout_enabled or not c.billing_service_url: return {"action":"disabled","message":"Checkout is not ready. No charge can be created."}
+    if not c.client_checkout_enabled: return {"action":"disabled","message":"Checkout is not ready. No charge can be created."}
     return {"action":"checkout","message":"Stripe test Checkout is available." if c.test_mode else "Checkout is available."}
 
 def create_checkout_url(session,environ=None):

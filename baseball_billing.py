@@ -1,6 +1,6 @@
 """Trusted Stripe subscription domain; contains no Streamlit state."""
 from __future__ import annotations
-import hashlib,hmac,json,time
+import hashlib,hmac,json,secrets,time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any,Mapping,Protocol
@@ -11,7 +11,7 @@ class BillingError(RuntimeError): pass
 class AuthenticationRequired(BillingError): pass
 class BillingUnavailable(BillingError): pass
 class InvalidWebhookSignature(BillingError): pass
-class EventClaim(str,Enum): NEW="new"; RETRY="retry"; IN_PROGRESS="in_progress"; DUPLICATE="duplicate"
+class EventClaim(str,Enum): NEW="new"; RETRY="retry"; IN_PROGRESS="in_progress"; DUPLICATE="duplicate"; COLLISION="collision"
 LEASE_SECONDS=300
 SUPPORTED_EVENTS=frozenset({"checkout.session.completed","customer.subscription.created","customer.subscription.updated","customer.subscription.deleted","invoice.paid","invoice.payment_failed"})
 
@@ -23,6 +23,9 @@ class CustomerRecord: app_user_id:str; stripe_customer_id:str
 class SubscriptionRecord:
     app_user_id:str; customer_id:str; subscription_id:str; price_id:str; provider_status:str
     period_end:int; cancel_at_period_end:bool; event_id:str; event_created:int
+@dataclass(frozen=True)
+class EventLease:
+    claim:EventClaim; token:str=""
 
 class Store(Protocol):
     def customer_for_user(self,user_id:str): ...
@@ -31,12 +34,12 @@ class Store(Protocol):
     def claim_event(self,event_id,event_type,created,fingerprint,livemode): ...
     def apply_subscription_if_newer(self,row): ...
     def save_entitlement(self,user_id,snapshot,event_id,event_created,subscription_id): ...
-    def mark_event_processed(self,event_id): ...
-    def mark_event_failed(self,event_id,error): ...
+    def mark_event_processed(self,event_id,lease_token): ...
+    def mark_event_failed(self,event_id,lease_token,error): ...
 
 class StripeGateway(Protocol):
     def create_customer(self,*,app_user_id,email): ...
-    def create_checkout(self,*,customer_id,price_id,app_user_id,success_url,cancel_url): ...
+    def create_checkout(self,*,customer_id,price_id,app_user_id,success_url,cancel_url,idempotency_key): ...
     def create_portal(self,*,customer_id,return_url): ...
     def retrieve_subscription(self,subscription_id): ...
 
@@ -51,11 +54,12 @@ class InMemoryStore:
     def claim_event(self,e,t,c,f,l):
         old=self.events.get(e); now=time.time()
         if old:
-            if (old["type"],old["created"],old["fingerprint"],old["livemode"])!=(t,c,f,l): raise BillingError("Webhook event id collision")
-            if old["state"]=="processed": return EventClaim.DUPLICATE
-            if old["state"]=="processing" and now-old["updated"]<LEASE_SECONDS: return EventClaim.IN_PROGRESS
-            old.update(state="processing",updated=now,attempts=old["attempts"]+1); return EventClaim.RETRY
-        self.events[e]={"type":t,"created":c,"fingerprint":f,"livemode":l,"state":"processing","updated":now,"attempts":1}; return EventClaim.NEW
+            if (old["type"],old["created"],old["fingerprint"],old["livemode"])!=(t,c,f,l):
+                old["collision_count"]=old.get("collision_count",0)+1; return EventLease(EventClaim.COLLISION)
+            if old["state"]=="processed": return EventLease(EventClaim.DUPLICATE)
+            if old["state"]=="processing" and now-old["updated"]<LEASE_SECONDS: return EventLease(EventClaim.IN_PROGRESS)
+            token=secrets.token_urlsafe(24); old.update(state="processing",updated=now,attempts=min(100,old["attempts"]+1),lease_token=token); return EventLease(EventClaim.RETRY,token)
+        token=secrets.token_urlsafe(24); self.events[e]={"type":t,"created":c,"fingerprint":f,"livemode":l,"state":"processing","updated":now,"attempts":1,"collision_count":0,"lease_token":token}; return EventLease(EventClaim.NEW,token)
     def apply_subscription_if_newer(self,row):
         old=self.subscriptions.get(row.subscription_id)
         if old and (old.event_created,old.event_id)>=(row.event_created,row.event_id): return False
@@ -64,8 +68,12 @@ class InMemoryStore:
         old=self.entitlements.get(u)
         if old and (old[1],old[2])>(c,e): return
         self.entitlements[u]=(s,c,e,sub)
-    def mark_event_processed(self,e): self.events[e].update(state="processed",updated=time.time())
-    def mark_event_failed(self,e,error): self.events[e].update(state="failed",error=str(error)[:1000],updated=time.time())
+    def _owned(self,e,token):
+        row=self.events[e]
+        if row["state"]!="processing" or not token or not secrets.compare_digest(str(row.get("lease_token") or ""),str(token)): raise BillingError("Webhook lease ownership lost")
+        return row
+    def mark_event_processed(self,e,token): self._owned(e,token).update(state="processed",lease_token="",updated=time.time())
+    def mark_event_failed(self,e,token,error): self._owned(e,token).update(state="failed",lease_token="",error=str(error)[:1000],updated=time.time())
 
 class CheckoutService:
     def __init__(self,config,store,stripe): self.config=config; self.store=store; self.stripe=stripe
@@ -77,8 +85,10 @@ class CheckoutService:
         if not customer:
             cid=str(self.stripe.create_customer(app_user_id=user.user_id,email=user.email) or "")
             customer=CustomerRecord(user.user_id,cid); self.store.upsert_customer(customer)
+        day=int(time.time()//86400)
+        idem="baseball-checkout-"+hashlib.sha256(f"{user.user_id}:pro:{day}".encode()).hexdigest()
         return self.stripe.create_checkout(customer_id=customer.stripe_customer_id,price_id=self.config.pro_price_id,
-            app_user_id=user.user_id,success_url=self.config.public_base_url+"?billing=success",cancel_url=self.config.public_base_url+"?billing=cancelled")
+            app_user_id=user.user_id,success_url=self.config.public_base_url+"?billing=success",cancel_url=self.config.public_base_url+"?billing=cancelled",idempotency_key=idem)
     def portal(self,user:VerifiedUser):
         if not user.user_id: raise AuthenticationRequired("Sign in is required")
         customer=self.store.customer_for_user(user.user_id)
@@ -118,16 +128,17 @@ class WebhookProcessor:
         if not eid or not typ or created<=0 or not isinstance(live,bool): raise BillingError("Malformed webhook envelope")
         if live is not self.config.live_mode: raise BillingError("Webhook mode mismatch")
         fingerprint=hashlib.sha256(json.dumps(event,sort_keys=True,separators=(",",":")).encode()).hexdigest()
-        claim=self.store.claim_event(eid,typ,created,fingerprint,live)
-        if claim in {EventClaim.DUPLICATE,EventClaim.IN_PROGRESS}: return claim.value
+        lease=self.store.claim_event(eid,typ,created,fingerprint,live)
+        if lease.claim is EventClaim.COLLISION: raise BillingError("Webhook event id collision")
+        if lease.claim in {EventClaim.DUPLICATE,EventClaim.IN_PROGRESS}: return lease.claim.value
         try:
             if typ not in SUPPORTED_EVENTS:
-                self.store.mark_event_processed(eid); return "ignored"
+                self.store.mark_event_processed(eid,lease.token); return "ignored"
             obj=((event.get("data") or {}).get("object") or {})
             if typ.startswith("customer.subscription."): sub=obj
             else:
                 sid=str(obj.get("subscription") or "")
-                if not sid: self.store.mark_event_processed(eid); return "ignored"
+                if not sid: self.store.mark_event_processed(eid,lease.token); return "ignored"
                 sub=self.stripe.retrieve_subscription(sid)
             cid=str(sub.get("customer") or ""); owner=self.store.customer_by_stripe_id(cid)
             if not owner: raise BillingError("Stripe customer has no trusted owner")
@@ -136,5 +147,8 @@ class WebhookProcessor:
             items=((sub.get("items") or {}).get("data") or [{}]); price=str(((items[0].get("price") or {}).get("id") or ""))
             row=SubscriptionRecord(owner.app_user_id,cid,str(sub.get("id") or ""),price,str(sub.get("status") or ""),int(sub.get("current_period_end") or 0),bool(sub.get("cancel_at_period_end")),eid,created)
             if self.store.apply_subscription_if_newer(row): self.store.save_entitlement(row.app_user_id,project(row,self.config.pro_price_id),eid,created,row.subscription_id)
-            self.store.mark_event_processed(eid); return "processed"
-        except Exception as exc: self.store.mark_event_failed(eid,exc); raise
+            self.store.mark_event_processed(eid,lease.token); return "processed"
+        except Exception as exc:
+            try: self.store.mark_event_failed(eid,lease.token,exc)
+            except BillingError: pass
+            raise

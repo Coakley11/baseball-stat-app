@@ -4,11 +4,19 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from typing import Mapping
+from urllib.parse import urlsplit
 
 class RolloutMode(str, Enum):
     OFF="off"; PREVIEW="preview"; TEST="test"; LIVE="live"
 
 def _v(env, key): return str(env.get(key) or "").strip()
+
+def trusted_url(value: str, *, allow_loopback: bool=False) -> bool:
+    try: parsed=urlsplit(str(value or "").strip()); port=parsed.port
+    except ValueError: return False
+    if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment: return False
+    if parsed.scheme=="https": return True
+    return bool(allow_loopback and parsed.scheme=="http" and parsed.hostname.lower() in {"localhost","127.0.0.1","::1"})
 
 @dataclass(frozen=True)
 class BillingConfig:
@@ -44,15 +52,22 @@ class BillingConfig:
     def checkout_enabled(self):
         if not (self.test_mode or self.live_mode): return False
         prefix="sk_live_" if self.live_mode else "sk_test_"
-        return self.stripe_secret_key.startswith(prefix) and all((self.pro_price_id,self.public_base_url,self.supabase_url,self.supabase_service_role_key,self.supabase_anon_key))
+        urls=trusted_url(self.public_base_url,allow_loopback=self.test_mode) and trusted_url(self.supabase_url,allow_loopback=self.test_mode)
+        roles_safe=bool(self.supabase_service_role_key and self.supabase_anon_key and self.supabase_service_role_key!=self.supabase_anon_key)
+        return self.stripe_secret_key.startswith(prefix) and bool(self.pro_price_id) and urls and roles_safe
     @property
     def webhook_enabled(self):
         return self.checkout_enabled and self.stripe_webhook_secret.startswith("whsec_")
     @property
     def enforcement_enabled(self):
         return self.rollout in {RolloutMode.TEST,RolloutMode.LIVE} and self.webhook_enabled
+    @property
+    def client_checkout_enabled(self):
+        public=trusted_url(self.billing_service_url,allow_loopback=self.test_mode) and trusted_url(self.supabase_url,allow_loopback=self.test_mode) and bool(self.supabase_anon_key)
+        return public and (self.test_mode or (self.live_mode and self.webhook_enabled))
     def public_status(self):
         return {"rollout":self.rollout.value,"stripe_mode":self.stripe_mode,"checkout_enabled":self.checkout_enabled,
-            "webhook_enabled":self.webhook_enabled,"enforcement_enabled":self.enforcement_enabled,
+            "webhook_enabled":self.webhook_enabled,"enforcement_enabled":self.enforcement_enabled,"client_checkout_enabled":self.client_checkout_enabled,
+            "configuration_healthy":self.checkout_enabled and self.webhook_enabled,
             "price_configured":bool(self.pro_price_id),"billing_service_configured":bool(self.billing_service_url),
             "supabase_configured":bool(self.supabase_url and self.supabase_service_role_key and self.supabase_anon_key)}
