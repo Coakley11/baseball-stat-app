@@ -363,7 +363,7 @@ def render_condensed_team_summary(st: Any, summary: dict[str, Any]) -> None:
         biggest_weak = str(summary.get("biggest_weakness") or "").strip()
         if biggest_weak:
             weaknesses = [biggest_weak]
-    st.markdown("##### Team Summary")
+    st.markdown("#### Team Summary")
     if strengths:
         st.markdown("**Top Strengths:**")
         for cat in strengths[:3]:

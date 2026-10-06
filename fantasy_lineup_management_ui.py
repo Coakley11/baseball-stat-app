@@ -557,7 +557,7 @@ def render_lineup_management_page(
 
                 _cat_action = build_category_action_table(_needs)
                 if not _cat_action.empty:
-                    st.markdown("##### Category standings vs league")
+                    st.markdown("#### Category standings vs league")
                     st.dataframe(
                         style_category_action_table(_cat_action),
                         width="stretch",

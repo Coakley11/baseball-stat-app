@@ -142,6 +142,13 @@ def mobile_foundation_css() -> str:
     [role="radiogroup"] > label, [data-testid="stCheckbox"] > label {{
         min-height: 2.5rem; align-items: center;
     }}
+    /* M2's Quick Guide is a raw <details>/<summary>, not a Streamlit widget, so the
+       button sizing above never reaches it. Measured 21px tall on all 16 pages --
+       below the 24px minimum, and on phones it is the only control that opens the
+       card. Block layout is kept deliberately: the disclosure arrow is a floated
+       ::after, and flex would stop honouring that float. Desktop is untouched --
+       page_quick_guide.py makes the summary a non-toggle above {PHONE_MAX_PX}px. */
+    .page-guide > summary {{ min-height: 2.25rem; padding: 8px 0; margin-bottom: 0; }}
 
     /* Inputs at 16px so iOS Safari does not zoom the page on focus. */
     input, textarea, [data-baseweb="select"] input, [data-baseweb="select"] > div {{
