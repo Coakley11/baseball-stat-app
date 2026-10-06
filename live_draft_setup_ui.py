@@ -994,6 +994,21 @@ def render_solo_draft_ready_card(
     except Exception:
         first_team = ""
 
+    # Warm the Solo live-clock component's registration while the timer is still
+    # off. Streamlit serves a declared component's frontend only on its first use
+    # per server process, which left the first on-clock paint with a keyed
+    # container and no iframe child (~4.2s on a fresh process) and no reachable
+    # fallback. The mount is inert (renders nothing, height 0, never ticks, never
+    # emits an expire token), so it adds no clock and no deadline authority.
+    try:
+        from solo_live_clock_component import prewarm_solo_live_clock
+
+        prewarm_solo_live_clock(
+            st, str(room.get("draft_room_id") or room.get("draft_id") or "solo")
+        )
+    except ImportError:
+        pass
+
     with st.container(border=True):
         if product_ready:
             st.markdown("### Your draft is ready")

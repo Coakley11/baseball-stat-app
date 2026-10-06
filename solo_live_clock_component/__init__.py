@@ -36,6 +36,78 @@ def solo_live_clock_widget_key(room_id: str) -> str:
     return f"solo_live_clock_{rid[:24]}"
 
 
+def solo_live_clock_prewarm_key(room_id: str) -> str:
+    rid = str(room_id or "solo").strip().upper() or "SOLO"
+    return f"solo_live_clock_prewarm_{rid[:24]}"
+
+
+def prewarm_solo_live_clock(st: Any, room_id: str = "solo") -> bool:
+    """Warm this component's registration while the timer is still off.
+
+    Streamlit serves a declared component's frontend only on its first use in a
+    server process. Measured on a fresh process: the first on-clock paint
+    rendered the keyed container with NO iframe child at +4.2s, recovering to
+    197px later — and because ``component_frontend_ready()`` is just a
+    file-exists check, the documented legacy fallback was unreachable during
+    that window, so the user saw the "TIME REMAINING" label with no clock.
+
+    Mounting the SAME declared component once during Preparing/Ready pays the
+    registration round-trip up front. The mount is inert by construction:
+    ``prewarm=True`` makes the frontend render nothing and report height 0,
+    and ``running=False`` / empty ``expire_token`` / ``deadline=0`` mean it
+    never ticks and never emits an expire event. No second clock, no second
+    deadline authority, no legacy markup.
+    """
+    if not component_frontend_ready():
+        return False
+    try:
+        # Collapse only the prewarm container. The frontend asks for height 0, but
+        # its init calls the 160px-floored setFrameHeight() before props arrive and
+        # Streamlit's element container keeps its own box -- measured 26px, which
+        # would otherwise be a visible empty gap in the Ready card. Scoped to the
+        # prewarm key prefix so the real clock container is untouched. Height 0
+        # rather than display:none so the iframe still loads and completes the
+        # registration handshake this mount exists to perform.
+        # Emitted EVERY run, deliberately not guarded by a session flag: a
+        # st.markdown style only exists in the run that wrote it, so a once-only
+        # guard left the rule present on the first run and gone afterwards
+        # (measured container height 0 -> 40 -> 26 as the style disappeared).
+        st.markdown(
+            "<style>"
+            '[class*="st-key-solo_live_clock_prewarm_"]{'
+            "height:0!important;min-height:0!important;max-height:0!important;"
+            "margin:0!important;padding:0!important;overflow:hidden!important;"
+            "}"
+            '[class*="st-key-solo_live_clock_prewarm_"] iframe{'
+            "height:0!important;min-height:0!important;display:block!important;"
+            "}</style>",
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        pass
+    try:
+        _COMPONENT(
+            prewarm=True,
+            expire_token="",
+            deadline=0.0,
+            pick_index=0,
+            pick_number=0,
+            team="",
+            round_label="",
+            next_pick=0,
+            has_next_pick=False,
+            room_id=str(room_id or "solo"),
+            clock_seconds=0,
+            flash=False,
+            widget_key=solo_live_clock_prewarm_key(room_id),
+            key=solo_live_clock_prewarm_key(room_id),
+            default=None,
+        )
+        return True
+    except Exception:
+        return False
+
+
 def _coerce_token(value: Any) -> str:
     if value is None:
         return ""

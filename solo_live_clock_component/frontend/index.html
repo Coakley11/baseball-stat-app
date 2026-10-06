@@ -366,6 +366,24 @@
     var dl = Number(props.deadline) || 0;
     propsReceived = true;
 
+    // Registration-warming mount (Ready/prewarm). Streamlit only serves this
+    // component's frontend the first time it is used in a server process, and
+    // that round-trip left the first on-clock paint with a keyed container but
+    // no iframe child (~4.2s on a fresh process). Mounting once while the timer
+    // is off pays that cost up front. Renders nothing, claims no height, never
+    // ticks and never emits an expire token -- so it cannot become a second
+    // clock or a second deadline source.
+    if (props.prewarm === true || props.prewarm === 1 || props.prewarm === "true") {
+      clearTick();
+      var warmCard = document.getElementById("card");
+      if (warmCard) warmCard.style.display = "none";
+      try {
+        sendMessage("streamlit:setFrameHeight", { height: 0 });
+      } catch (_e) {}
+      diag("prewarm_mount", "registration warm only; no clock, no tick");
+      return;
+    }
+
     diag(
       "render_props_received",
       JSON.stringify({
