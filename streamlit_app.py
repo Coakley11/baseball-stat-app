@@ -15436,14 +15436,17 @@ except ImportError:
 _monetization_snapshot = None
 _monetization_gate_page = ""
 try:
-    from baseball_monetization import entitlement_for_page
+    from baseball_monetization import PAGE_FEATURES, entitlement_for_page
     from baseball_monetization_ui import current_entitlement, remember_paywall_context
 
     _monetization_snapshot = current_entitlement(
         st.session_state,
         developer_mode=developer_mode_enabled(),
     )
-    if not entitlement_for_page(_monetization_snapshot, active_page):
+    if active_page in PAGE_FEATURES and not _monetization_snapshot.ready:
+        _monetization_gate_page = active_page
+        active_page = "__ENTITLEMENT_LOADING__"
+    elif not entitlement_for_page(_monetization_snapshot, active_page):
         remember_paywall_context(st.session_state, active_page)
         _monetization_gate_page = active_page
         active_page = "__MONETIZATION_GATE__"
@@ -16246,7 +16249,14 @@ def projections_filter_changed():
 
 
 
-if active_page == "__MONETIZATION_GATE__":
+if active_page == "__ENTITLEMENT_LOADING__":
+    st.title("Checking your membership…")
+    st.info("Your requested page is preserved while trusted account access loads. No premium feature state has been initialized.")
+    if st.button("Retry", key="entitlement_retry"):
+        st.rerun()
+
+
+elif active_page == "__MONETIZATION_GATE__":
     from baseball_monetization_ui import render_feature_gate
 
     render_feature_gate(st, st.session_state, _monetization_gate_page)

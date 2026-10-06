@@ -10,6 +10,7 @@ from baseball_monetization import (
     Plan,
     default_entitlement,
     development_overrides_enabled,
+    resolve_trusted_entitlement,
     development_entitlement,
     feature_definition,
 )
@@ -27,7 +28,7 @@ def current_entitlement(
 ) -> EntitlementSnapshot:
     if developer_mode and development_overrides_enabled(environ):
         return development_entitlement(session.get(DEV_PLAN_KEY, Plan.FREE.value))
-    return default_entitlement()
+    return resolve_trusted_entitlement(session, environ=environ)
 
 
 def remember_paywall_context(session: MutableMapping, page: str) -> None:
@@ -79,10 +80,35 @@ def render_pricing_page(st, session: MutableMapping, snapshot: EntitlementSnapsh
         )
         st.caption("Price to be announced · billing is not active in M1")
     st.info(f"Current plan: **{snapshot.plan.value.title()}**")
-    if snapshot.plan is Plan.PRO:
-        st.success("Pro simulation is active. Premium tools are available.")
+    if not snapshot.ready:
+        st.info("Checking your membership… Premium access will not be decided until the trusted account state is ready.")
+    elif snapshot.plan is Plan.PRO:
+        st.success(f"Pro is active ({snapshot.status.value.replace('_', ' ')}). Premium tools are available.")
+        if snapshot.status.value != "development" and st.button("Manage billing", key="billing_portal_start"):
+            try:
+                from baseball_billing_client import create_portal_url
+                st.session_state["_billing_portal_url"] = create_portal_url(session)
+            except Exception as exc:
+                st.error(str(exc))
+        portal_url = str(st.session_state.pop("_billing_portal_url", "") or "")
+        if portal_url:
+            st.link_button("Continue to secure Stripe billing portal", portal_url)
     else:
-        st.warning("Checkout is not available yet. This page previews the planned Pro offering.")
+        try:
+            from baseball_billing_client import billing_ui_state
+            billing = billing_ui_state(session)
+        except Exception:
+            billing = {"action": "disabled", "message": "Billing is currently unavailable."}
+        st.warning(str(billing.get("message") or "Checkout is not available."))
+        if billing.get("action") == "checkout" and st.button("Start Stripe Checkout", type="primary", key="billing_checkout_start"):
+            try:
+                from baseball_billing_client import create_checkout_url
+                st.session_state["_billing_checkout_url"] = create_checkout_url(session)
+            except Exception as exc:
+                st.error(str(exc))
+        checkout_url = str(st.session_state.pop("_billing_checkout_url", "") or "")
+        if checkout_url:
+            st.link_button("Continue to secure Stripe Checkout", checkout_url, type="primary")
     target = pricing_return_page(session)
     if st.button(f"Back to {target}", key="monetization_pricing_back"):
         schedule_page(session, target)
