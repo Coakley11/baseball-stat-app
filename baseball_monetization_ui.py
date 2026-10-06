@@ -43,8 +43,18 @@ def pricing_return_page(session: MutableMapping, fallback: str = "Historical Exp
 
 
 def schedule_page(session: MutableMapping, page: str) -> None:
+    """Queue a page change for the next run.
+
+    Writes only the schedule key. The app applies it in
+    _consume_scheduled_navigation() at the top of the next run, before the
+    sidebar radio exists -- the same contract as streamlit_app.navigate_to_page.
+    Writing "main_sidebar_page" here directly raised StreamlitAPIException in the
+    real app: the paywall buttons render in the main area AFTER the sidebar radio
+    keyed main_sidebar_page is instantiated, so both gate buttons died before
+    st.rerun(). The isolated AppTest fixture never saw it because its radio is
+    keyed "test_page".
+    """
     session["_navigate_to_page"] = page
-    session["main_sidebar_page"] = page
     session["_suite_page_user_nav"] = True
 
 
