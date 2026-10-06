@@ -739,7 +739,17 @@ def _render_build_analyze(
         verdict = str(persisted_analysis.get("verdict") or "")
         analysis_rendered = True
 
-    c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 1, 1])
+    try:
+        from fantasy_mobile_layout import phone_wrap_row
+    except ImportError:  # pragma: no cover
+        from contextlib import nullcontext
+
+        def phone_wrap_row(_st, _key):
+            return nullcontext()
+
+    # Phones: ~2-up action tiles instead of five full-width buttons (desktop unchanged).
+    with phone_wrap_row(st, "trade-actions"):
+        c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 1, 1])
     find_ideas_btn = c1.button("Find Trade Ideas", key="tc_find_ideas", type="primary")
     analyze_btn = c2.button(
         "Analyze Exact Trade",

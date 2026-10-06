@@ -244,7 +244,19 @@ def render_tutorial_header_bar() -> None:
         return
 
     st.markdown(_tutorial_css(), unsafe_allow_html=True)
-    left, right = st.columns([3, 1])
+    try:
+        from mobile_foundation import mobile_inline_row
+    except ImportError:  # pragma: no cover - foundation module always present in-repo
+        from contextlib import nullcontext
+
+        def mobile_inline_row(_st, _key):  # type: ignore[misc]
+            return nullcontext()
+
+    # Mobile M6: keep the prompt and button on one row on phones instead of the
+    # text stacking above a full-width button (Streamlit's own <=640px stacking) —
+    # this CTA repeats on every page, so keeping it compact matters on return visits.
+    with mobile_inline_row(st, "tutorial-header-bar"):
+        left, right = st.columns([3, 1])
     left.markdown(
         '<p class="tutorial-bar-text">New here? <strong>Start Tutorial</strong> for a '
         "quick, fan-friendly walkthrough.</p>",

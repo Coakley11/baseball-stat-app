@@ -201,7 +201,6 @@ def inject_polish_css(st, *, app_slug: str = "app") -> None:
             color: #166534;
         }}
         @media (max-width: 768px) {{
-            [data-testid="column"] {{ min-width: 0 !important; }}
             .block-container {{ padding-left: 0.75rem !important; padding-right: 0.75rem !important; }}
             [data-testid="stSelectbox"] > div {{ width: 100% !important; }}
             .pp-exec-grid {{ grid-template-columns: 1fr; }}

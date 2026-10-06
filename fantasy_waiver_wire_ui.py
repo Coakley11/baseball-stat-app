@@ -116,6 +116,16 @@ def _photo_helpers(st: Any) -> tuple[bool, Any, Any]:
         return False, None, None
 
 
+def _card_key(key_prefix: str, name: str) -> str | None:
+    """Mobile M4 class hook for the card (phone CSS keeps it one compact row)."""
+    try:
+        from fantasy_mobile_layout import fantasy_card_key
+
+        return fantasy_card_key(key_prefix, name)
+    except ImportError:
+        return None
+
+
 def _render_player_card(
     st: Any,
     row: pd.Series,
@@ -130,7 +140,7 @@ def _render_player_card(
     team = str(row.get("MLB Team") or row.get("Team") or "—")
     pos = str(row.get("Primary Position") or row.get("Position") or "—")
 
-    with st.container(border=True):
+    with st.container(border=True, key=_card_key(key_prefix, name)):
         c_photo, c_body, c_action = st.columns([1, 3, 1])
         with c_photo:
             if use_photos and get_photo and render_photo:
@@ -169,7 +179,7 @@ def _render_add_player_card(
     team = str(row.get("MLB Team") or row.get("Team") or "—")
     pos = str(row.get("Primary Position") or row.get("Position") or "—")
 
-    with st.container(border=True):
+    with st.container(border=True, key=_card_key(key_prefix, name)):
         c_photo, c_body, c_action = st.columns([1, 3, 1])
         with c_photo:
             if use_photos and get_photo and render_photo:
@@ -207,7 +217,7 @@ def _render_drop_player_card(
     team = str(row.get("MLB Team") or row.get("Team") or "—")
     pos = str(row.get("Primary Position") or row.get("Position") or "—")
 
-    with st.container(border=True):
+    with st.container(border=True, key=_card_key(key_prefix, name)):
         c_photo, c_body, c_action = st.columns([1, 3, 1])
         with c_photo:
             if use_photos and get_photo and render_photo:
@@ -647,8 +657,8 @@ def render_waiver_wire_page(
         my_team = str(context.get("my_team_name") or "").strip()
     if not my_team:
         my_team = str(context.get("my_team_name") or "").strip()
-    if my_team:
-        st.caption(f"My team: **{my_team}**")
+    # Mobile M6: dropped — duplicates the "My team" line the Active League card
+    # (fantasy_workflow_using_html, rendered earlier on this same page) already shows.
 
     stats_pool = current_stats_pool.copy() if current_stats_pool is not None else pd.DataFrame()
     if stats_pool.empty:
@@ -968,7 +978,19 @@ def render_waiver_wire_page(
         for c in extra_cols:
             if c not in disp_cols:
                 disp_cols.insert(0, c)
-        st.dataframe(pool_view[disp_cols].head(150), use_container_width=True, hide_index=True)
+        _pool_view_display = pool_view[disp_cols].head(150)
+        _pool_pin_cfg = {}
+        try:
+            from mobile_table_layout import pinned_identity_column_config
+
+            _pool_pin_cfg = pinned_identity_column_config(
+                st, _pool_view_display.columns, ("Player", "MLB Team", "Team", "Primary Position", "Position")
+            )
+        except ImportError:
+            pass
+        st.dataframe(
+            _pool_view_display, use_container_width=True, hide_index=True, column_config=_pool_pin_cfg or None
+        )
 
     st.markdown("##### 4. Manual Add / Drop Actions")
     st.caption("Pick an add and a drop below, or use **Plan Add** / **Plan Drop** cards above.")

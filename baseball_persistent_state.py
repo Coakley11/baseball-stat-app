@@ -25,6 +25,13 @@ WORKSPACE_SCHEMA_VERSION = 1
 _DEFAULT_PAGE = "Historical Explorer"
 _DEFAULT_SIDEBAR_PAGE = "Historical Explorer"
 
+# Set (once, this rerun only) by the ?active_page=... deep-link handler in
+# streamlit_app.py right before it consumes the query param. Read-and-cleared here
+# so an explicit deep link always wins over a stale owned_page/blob restore, but
+# never becomes "sticky" beyond the rerun that carried it — see
+# docs/MOBILE_M2_NAV_HEADER.md (deep-link precedence) for the bug this closes.
+EXPLICIT_PAGE_NAV_KEY = "_suite_explicit_page_nav_target"
+
 _DRAFT_ROOM_SETTINGS_GLOBALS = frozenset(
     {
         "room_format",
@@ -938,8 +945,18 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     except ImportError:
         auth_preserve_page = str(ss.get("_suite_auth_preserve_page") or "").strip()
         owned_page = str(ss.get("_suite_user_owned_page") or "").strip()
+    # Explicit ?active_page=... deep link consumed earlier THIS rerun (streamlit_app.py
+    # sets this alongside _navigate_to_page). Read-and-clear: single rerun only, never
+    # persists to override later ordinary navigation. The equality check guards against
+    # a stale value from a rerun where this function was skipped entirely (warm_skip) —
+    # if active_page has since moved on, the deep link no longer applies.
+    explicit_nav_target = str(ss.pop(EXPLICIT_PAGE_NAV_KEY, "") or "").strip()
+    if explicit_nav_target and explicit_nav_target != pre_restore_session_page:
+        explicit_nav_target = ""
     preferred_page = ""
-    if auth_preserve_page:
+    if explicit_nav_target:
+        preferred_page = explicit_nav_target
+    elif auth_preserve_page:
         preferred_page = auth_preserve_page
     elif owned_page and (
         owned_page == pre_restore_session_page
@@ -961,7 +978,12 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     overwrite_source = "workspace_blob"
     if preferred_page:
         active = preferred_page
-        overwrite_source = "auth_page_preserved" if auth_preserve_page else "user_page_preserved"
+        if explicit_nav_target:
+            overwrite_source = "explicit_deep_link_preserved"
+        elif auth_preserve_page:
+            overwrite_source = "auth_page_preserved"
+        else:
+            overwrite_source = "user_page_preserved"
     elif (
         user_owns_page
         and pre_restore_session_page

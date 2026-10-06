@@ -813,6 +813,54 @@ if apply_suite_resume_launch:
     except Exception:
         pass
 
+# Responsive foundation (breakpoints, overflow containment, touch targets). Appended to
+# the base <style> markdown below — a separate st.markdown adds an empty block + gap.
+try:
+    from mobile_foundation import mobile_foundation_style_tag
+
+    _MOBILE_FOUNDATION_STYLE = mobile_foundation_style_tag()
+except Exception:
+    _MOBILE_FOUNDATION_STYLE = ""
+# Live Draft phone composition (M3) — same no-extra-element rule as the foundation.
+try:
+    from live_draft_mobile_layout import live_draft_mobile_style_tag
+
+    # Leading newline is required: a CommonMark <style> HTML block ends on the line that
+    # contains </style>, so a second <style> started on that same line is parsed as
+    # markdown text (visible CSS, rules never applied). Each block starts its own line.
+    _MOBILE_FOUNDATION_STYLE += "\n" + live_draft_mobile_style_tag()
+except Exception:
+    pass
+try:
+    from fantasy_mobile_layout import fantasy_mobile_style_tag
+
+    _MOBILE_FOUNDATION_STYLE += "\n" + fantasy_mobile_style_tag()
+except Exception:
+    pass
+
+
+try:
+    from mobile_foundation import mobile_wrap_row
+except Exception:  # pragma: no cover - foundation module always present in-repo
+
+    def mobile_wrap_row(_st, _key):  # type: ignore[misc]
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+
+def _ldr_m_hook(key: str):
+    """Keyed container around one existing Live Draft call site (phone CSS hook only)."""
+    try:
+        from live_draft_mobile_layout import keyed
+
+        return keyed(st, key)
+    except Exception:
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+
 st.markdown("""
 <style>
 .block-container {padding-top: 1.2rem; padding-bottom: 2rem; padding-left: 2rem; padding-right: 2rem;}
@@ -861,7 +909,7 @@ st.markdown("""
 .ctx-transfer-row {margin-top: 10px; padding-top: 10px; border-top: 1px dashed #d5dde5;}
 .ctx-transfer-row [data-testid="stSelectbox"] label p {font-size: 12px; color: #5a6f82; font-weight: 600;}
 </style>
-""", unsafe_allow_html=True)
+""" + _MOBILE_FOUNDATION_STYLE, unsafe_allow_html=True)
 
 DRAFT_FOCUS_PAGES = frozenset({
     "Draft Room Simulator",
@@ -892,6 +940,20 @@ def _streamlit_script_run_ctx_active() -> bool:
 
 def render_global_app_chrome(active_page: str) -> None:
     """Single app header + tutorial entry — always show explorer banner."""
+    try:
+        from mobile_nav_m2 import render_mobile_quick_nav
+
+        render_mobile_quick_nav(
+            st,
+            active_page=active_page,
+            page_options=PAGE_OPTIONS,
+            page_option_label=page_option_label,
+            main_sidebar_page_key=MAIN_SIDEBAR_PAGE_KEY,
+            on_sidebar_page_change=_on_sidebar_page_change,
+        )
+    except Exception:
+        # Mobile quick-nav is purely additive chrome — never block the page body.
+        pass
     suppress_tutorial = False
     suppress_hero = False
     if active_page == "Live Draft Room":
@@ -905,7 +967,8 @@ def render_global_app_chrome(active_page: str) -> None:
             suppress_hero = False
     if suppress_hero:
         # Active draft: do not spend the first viewport on the brand hero.
-        st.caption("⚾ Baseball Explorer · Live Draft")
+        with _ldr_m_hook("ldr-m-brand"):
+            st.caption("⚾ Baseball Explorer · Live Draft")
     else:
         compact = active_page in DRAFT_FOCUS_PAGES
         if compact:
@@ -2496,16 +2559,19 @@ def top_bar_chart(df, name_col, value_col, title, top_n=10):
         return
     except ImportError:
         pass
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.barh(chart_df[name_col], chart_df[value_col])
-    ax.set_title(title)
-    ax.set_xlabel(value_col)
-    ax.invert_yaxis()
-    try:
-        st.pyplot(fig, clear_figure=True)
-    except TypeError:
-        st.pyplot(fig)
-    plt.close(fig)
+    from mobile_chart_layout import legible_matplotlib_chart
+
+    with legible_matplotlib_chart():
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.barh(chart_df[name_col], chart_df[value_col])
+        ax.set_title(title)
+        ax.set_xlabel(value_col)
+        ax.invert_yaxis()
+        try:
+            st.pyplot(fig, clear_figure=True)
+        except TypeError:
+            st.pyplot(fig)
+        plt.close(fig)
 
 def format_display_table(df, count_cols=None, rate_cols=None, score_cols=None, count_decimals=0, rate_decimals=3):
     """Return a plain DataFrame for maximum Streamlit Cloud stability.
@@ -2560,8 +2626,12 @@ def render_output_table(
     display_rows=MAX_TABLE_DISPLAY_ROWS,
     style_cols=None,
     highlight_last_row: bool = False,
+    pin_columns=None,
 ):
     """Render a table quickly and add a CSV export button that opens cleanly in Excel.
+
+    ``pin_columns`` (opt-in, Mobile M4/M5): identity columns to freeze while wide stat
+    columns scroll on phones. Only a leading run is pinned, so column order is unchanged.
 
     Callers must pass a pandas DataFrame (empty is fine). Non-DataFrame inputs are
     logged and coerced — the Live Draft board previously passed a Styler after a pick,
@@ -2595,6 +2665,14 @@ def render_output_table(
         display_df = table_df
 
     style_cols = [c for c in (style_cols or []) if c in display_df.columns]
+    _pinned_cfg = {}
+    if pin_columns:
+        try:
+            from mobile_table_layout import pinned_identity_column_config
+
+            _pinned_cfg = pinned_identity_column_config(st, display_df.columns, pin_columns)
+        except ImportError:
+            _pinned_cfg = {}
 
     if highlight_last_row and not display_df.empty:
         try:
@@ -2677,11 +2755,14 @@ def render_output_table(
                     "Interpretation": st.column_config.TextColumn(
                         "Interpretation",
                         width="large"
-                    )
+                    ),
+                    **_pinned_cfg,
                 }
             )
         except Exception:
             st.dataframe(styled_df, width="stretch", hide_index=True)
+    elif _pinned_cfg:
+        st.dataframe(display_df, width="stretch", hide_index=True, column_config=_pinned_cfg)
     else:
         st.dataframe(display_df, width="stretch", hide_index=True)
 
@@ -7120,21 +7201,24 @@ def plot_single_player_multi_stat_dashboard(player_df, player_name, stats, mode=
         else:
             y_plot = y
 
-        fig, ax = plt.subplots(figsize=(9, 4))
-        ax.plot(player_df["yearID"], y_plot, marker="o", label=f"{stat} — {mode}")
-        trend_years = sorted(pd.to_numeric(player_df["yearID"], errors="coerce").dropna().astype(int).unique())
-        ax.set_xticks(trend_years)
-        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.set_xlabel("Year")
-        ax.set_ylabel(stat)
-        ax.set_title(f"{player_name} — {stat} Trend")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        try:
-            st.pyplot(fig, clear_figure=True)
-        except TypeError:
-            st.pyplot(fig)
-        plt.close(fig)
+        from mobile_chart_layout import legible_matplotlib_chart
+
+        with legible_matplotlib_chart():
+            fig, ax = plt.subplots(figsize=(9, 4))
+            ax.plot(player_df["yearID"], y_plot, marker="o", label=f"{stat} — {mode}")
+            trend_years = sorted(pd.to_numeric(player_df["yearID"], errors="coerce").dropna().astype(int).unique())
+            ax.set_xticks(trend_years)
+            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+            ax.set_xlabel("Year")
+            ax.set_ylabel(stat)
+            ax.set_title(f"{player_name} — {stat} Trend")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            try:
+                st.pyplot(fig, clear_figure=True)
+            except TypeError:
+                st.pyplot(fig)
+            plt.close(fig)
 
 
 def render_player_trend_chart_section(source_df, label_map, label_options, *, key_prefix, title="Player Trend Charts"):
@@ -7175,20 +7259,23 @@ def render_player_trend_chart_section(source_df, label_map, label_options, *, ke
         if chart_df.empty:
             st.info("No valid values found for the selected player/stat.")
             return
-        fig, ax = plt.subplots(figsize=(10, 4.5))
-        for player, g in chart_df.groupby("Player"):
-            ax.plot(g["Year"], g["Value"], marker="o", label=player)
-        ax.set_title(chart_title)
-        ax.set_xlabel("Season")
-        ax.set_ylabel(chart_stat)
-        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.grid(True, alpha=0.25)
-        ax.legend()
-        try:
-            st.pyplot(fig, clear_figure=True)
-        except TypeError:
-            st.pyplot(fig)
-        plt.close(fig)
+        from mobile_chart_layout import legible_matplotlib_chart
+
+        with legible_matplotlib_chart():
+            fig, ax = plt.subplots(figsize=(10, 4.5))
+            for player, g in chart_df.groupby("Player"):
+                ax.plot(g["Year"], g["Value"], marker="o", label=player)
+            ax.set_title(chart_title)
+            ax.set_xlabel("Season")
+            ax.set_ylabel(chart_stat)
+            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+            ax.grid(True, alpha=0.25)
+            ax.legend()
+            try:
+                st.pyplot(fig, clear_figure=True)
+            except TypeError:
+                st.pyplot(fig)
+            plt.close(fig)
 
     _plot_trend([single_player], f"{fullname_base_from_label(single_player)} - {chart_stat} Trend")
 
@@ -13732,8 +13819,17 @@ def _consume_scheduled_navigation():
     if target and target in _PAGE_OPTION_SET:
         # Ignore sticky same-page schedules left by older restore paths — they skip
         # sidebar align and can trap the UI on Historical Explorer after a click.
-        current = get_sidebar_page_value(st.session_state.get("active_page"))
-        if target == current:
+        #
+        # Mobile M7: only when active_page is genuinely set. On a fresh session it is
+        # unset, and get_sidebar_page_value() coerces that to PAGE_OPTIONS[0] — so a
+        # real deep link to the default page looked identical to a redundant same-page
+        # schedule, got dropped here, and never set active_page/main_sidebar_page. The
+        # workspace restore further down then applied its stale saved page instead.
+        # (Deep links to any *other* page were unaffected, which is why this only ever
+        # showed up as "?active_page=Historical%20Explorer is ignored".)
+        _current_raw = str(st.session_state.get("active_page") or "").strip()
+        current = get_sidebar_page_value(_current_raw)
+        if _current_raw and target == current:
             try:
                 from nav_page_trace import log_nav_event
 
@@ -14718,6 +14814,16 @@ if not st.session_state.get("_qp_active_page_nav_consumed"):
             st.session_state["_skip_page_restore_for"] = _qp_target
             st.session_state["_qp_active_page_nav_consumed"] = True
             st.session_state["_qp_active_page_nav_target"] = _qp_target
+            # Outranks a stale owned_page/blob restore later this same rerun — an
+            # explicit deep link must win over session restore. Single-rerun scoped
+            # (read-and-cleared in apply_baseball_disk_state); ordinary sidebar/nav
+            # afterward is unaffected.
+            try:
+                from baseball_persistent_state import EXPLICIT_PAGE_NAV_KEY
+
+                st.session_state[EXPLICIT_PAGE_NAV_KEY] = _qp_target
+            except ImportError:
+                st.session_state["_suite_explicit_page_nav_target"] = _qp_target
             if _qp_target == "Live Draft Room":
                 # Deep-link must enter the live room body, not the browse-away
                 # "Return to Live Draft" card on another page.
@@ -16289,7 +16395,8 @@ if active_page == "Historical Explorer":
     except ImportError:
         pass
 
-    hc1, hc2, hc3 = st.columns([2.2, 1.2, 1.2])
+    with mobile_wrap_row(st, "historical-top-filters"):
+        hc1, hc2, hc3 = st.columns([2.2, 1.2, 1.2])
     sort_options_hist = [
         "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"
     ]
@@ -16341,7 +16448,8 @@ if active_page == "Historical Explorer":
             )
 
     with st.expander("Advanced filters", expanded=False):
-        c2, c_mode, c3, c4 = st.columns([1.0, 1.25, 1.0, 1.35])
+        with mobile_wrap_row(st, "historical-advanced-filters"):
+            c2, c_mode, c3, c4 = st.columns([1.0, 1.25, 1.0, 1.35])
         with c2:
             bats_options = sorted([x for x in batting_df["bats"].dropna().unique() if str(x).strip() != ""])
             prepare_historical_multiselect_filter(
@@ -16520,7 +16628,7 @@ if active_page == "Historical Explorer":
     if developer_mode_enabled():
         render_stat_filter_summary_developer_diagnostics(st, st.session_state, mode="historical")
     hist_table = format_display_table(clean_ui_columns(hist_display), count_cols=["Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
-    render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv")
+    render_output_table(hist_table, key="historical_explorer", file_name="historical_explorer.csv", pin_columns=("Year", "Player"))
     try:
         from baseball_activity import log_historical_analysis
 
@@ -16720,7 +16828,8 @@ elif active_page == "Career Totals":
     else:
         career_hof_filter = HOF_FILTER_ALL
     career_sort_options = ["HR", "RBI", "SB", "R", "H", "2B", "3B", "BB", "BA", "OBP", "SLG", "OPS", "AB"]
-    cc1, cc2 = st.columns([2.5, 1.5])
+    with mobile_wrap_row(st, "career-top-filters"):
+        cc1, cc2 = st.columns([2.5, 1.5])
     with cc1:
         prepare_career_year_range(
             st.session_state,
@@ -16745,7 +16854,8 @@ elif active_page == "Career Totals":
         )
 
     with st.expander("Advanced filters", expanded=False):
-        c2, c3, c4 = st.columns(3)
+        with mobile_wrap_row(st, "career-advanced-filters"):
+            c2, c3, c4 = st.columns(3)
         with c2:
             bats_options_career = sorted([x for x in batting_df["bats"].dropna().unique() if str(x).strip() != ""])
             bats_options_career = prepare_career_multiselect_filter(
@@ -17330,7 +17440,7 @@ elif active_page == "Career Totals":
                 developer_mode=True,
             )
     career_table = format_display_table(clean_ui_columns(career_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
-    render_output_table(career_table, key="career_totals", file_name="career_totals.csv")
+    render_output_table(career_table, key="career_totals", file_name="career_totals.csv", pin_columns=("Player",))
 
     try:
         from applied_math_context import cache_page_context
@@ -17415,7 +17525,8 @@ elif active_page == "Leaderboards":
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     leaders_sort_options = ["score", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
-    c1, c2, c3 = st.columns([2, 1, 1])
+    with mobile_wrap_row(st, "leaderboards-top-filters"):
+        c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         prepare_leaderboards_year_range(
             st.session_state,
@@ -17463,7 +17574,8 @@ elif active_page == "Leaderboards":
     weight_values = {}
     with st.expander("Custom stat weights (defaults: HR / RBI / SB at 1.0; others 0)", expanded=False):
         st.caption("Weights feed the Score column only; raw counting and rate stats in the table are unchanged.")
-        weight_cols = st.columns(4)
+        with mobile_wrap_row(st, "leaderboards-weights"):
+            weight_cols = st.columns(4)
         for i, stat in enumerate(weight_stats):
             with weight_cols[i % 4]:
                 weight_values[stat] = st.number_input(
@@ -17506,7 +17618,7 @@ elif active_page == "Leaderboards":
 
     st.divider()
     leaderboard_table = format_display_table(clean_ui_columns(leaderboard_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB"], rate_cols=["BA", "OBP", "SLG", "OPS"], score_cols=["Score"])
-    render_output_table(leaderboard_table, key="leaderboards", file_name="leaderboards.csv")
+    render_output_table(leaderboard_table, key="leaderboards", file_name="leaderboards.csv", pin_columns=("Player",))
     _lb_xfer_df = (
         leaderboard.sort_values(sort_stat_leaders, ascending=False).head(top_n_leaders)
         if not leaderboard.empty
@@ -17702,7 +17814,8 @@ elif active_page == "Comparison Tool":
 
     if selected_labels_compare:
         st.caption("Context-aware actions: historical players keep Compare and Trends; active players also get fantasy workflow actions.")
-        action_cols = st.columns(min(3, len(selected_labels_compare)))
+        with mobile_wrap_row(st, "comparison-action-cols"):
+            action_cols = st.columns(min(3, len(selected_labels_compare)))
         for i, label in enumerate(selected_labels_compare):
             with action_cols[i % len(action_cols)]:
                 render_contextual_player_actions(
@@ -17837,7 +17950,7 @@ elif active_page == "Comparison Tool":
         st.subheader("Year-by-Year Comparison")
         compare_display = compare[[c for c in ["yearID", "fullName", "Age", "R", "H", "2B", "3B", "HR", "RBI", "SB", "AB", "BA", "OBP", "SLG", "OPS"] if c in compare.columns]].sort_values(["fullName", "yearID"]).rename(columns={"yearID": "Year", "fullName": "Player"})
         compare_table = format_display_table(clean_ui_columns(compare_display), count_cols=["Year", "R", "H", "2B", "3B", "HR", "RBI", "SB", "AB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
-        render_output_table(compare_table, key="comparison_yearly", file_name="comparison_year_by_year.csv")
+        render_output_table(compare_table, key="comparison_yearly", file_name="comparison_year_by_year.csv", pin_columns=("Year", "Player"))
 
         st.subheader("Career Totals")
         career_compare = compare.groupby(["fullName"], as_index=False)[["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"]].sum()
@@ -17845,57 +17958,60 @@ elif active_page == "Comparison Tool":
         career_compare = safe_round_rate_stats(career_compare)
         career_compare_display = career_compare[["fullName", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BA", "OBP", "SLG", "OPS"]].sort_values("HR", ascending=False).rename(columns={"fullName": "Player"})
         career_compare_table = format_display_table(clean_ui_columns(career_compare_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
-        render_output_table(career_compare_table, key="comparison_career", file_name="comparison_career_totals.csv")
+        render_output_table(career_compare_table, key="comparison_career", file_name="comparison_career_totals.csv", pin_columns=("Player",))
 
         st.subheader(f"{stat_choice_compare} Trends")
-        fig, ax = plt.subplots(figsize=(10, 5))
+        from mobile_chart_layout import legible_matplotlib_chart
 
-        if compare_x_axis_mode == "Player Age":
-            compare_age_df = compare.copy()
-            compare_age_df["Age"] = pd.to_numeric(compare_age_df["Age"], errors="coerce")
+        with legible_matplotlib_chart():
+            fig, ax = plt.subplots(figsize=(10, 5))
 
-            for pid in selected_ids_compare:
-                subset = compare_age_df[compare_age_df["playerID"] == pid].sort_values("Age").copy()
-                if subset.empty or stat_choice_compare not in subset.columns:
-                    continue
-                player_name = subset["fullName"].iloc[0]
-                y = pd.to_numeric(subset[stat_choice_compare], errors="coerce")
-                if compare_trend_mode == "Smoothed Moving Average":
-                    y = y.rolling(window=int(compare_smooth_window), min_periods=1).mean()
-                    label = f"{player_name} — smoothed"
-                else:
-                    label = player_name
-                ax.plot(subset["Age"], y, marker="o", label=label)
+            if compare_x_axis_mode == "Player Age":
+                compare_age_df = compare.copy()
+                compare_age_df["Age"] = pd.to_numeric(compare_age_df["Age"], errors="coerce")
 
-            ax.set_xlabel("Player Age")
-            ax.set_title(f"{stat_choice_compare} by Player Age — {compare_age_range[0]} to {compare_age_range[1]}")
-            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        else:
-            plot_player_stat_trends(
-                ax,
-                compare,
-                selected_ids_compare,
-                stat_choice_compare,
-                mode=compare_trend_mode,
-                smooth_window=compare_smooth_window
-            )
-            all_compare_years = sorted(pd.to_numeric(compare["yearID"], errors="coerce").dropna().astype(int).unique())
-            ax.set_xticks(all_compare_years)
-            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-            ax.set_xlabel("Year")
-            ax.set_title(f"{stat_choice_compare} Trends — {compare_trend_mode}")
+                for pid in selected_ids_compare:
+                    subset = compare_age_df[compare_age_df["playerID"] == pid].sort_values("Age").copy()
+                    if subset.empty or stat_choice_compare not in subset.columns:
+                        continue
+                    player_name = subset["fullName"].iloc[0]
+                    y = pd.to_numeric(subset[stat_choice_compare], errors="coerce")
+                    if compare_trend_mode == "Smoothed Moving Average":
+                        y = y.rolling(window=int(compare_smooth_window), min_periods=1).mean()
+                        label = f"{player_name} — smoothed"
+                    else:
+                        label = player_name
+                    ax.plot(subset["Age"], y, marker="o", label=label)
 
-        ax.set_ylabel(stat_choice_compare)
-        if ax.lines:
-            ax.legend()
-        else:
-            st.warning("No selected player has seasons in the selected range for this chart.")
-        ax.grid(True, alpha=0.3)
-        try:
-            st.pyplot(fig, clear_figure=True)
-        except TypeError:
-            st.pyplot(fig)
-        plt.close(fig)
+                ax.set_xlabel("Player Age")
+                ax.set_title(f"{stat_choice_compare} by Player Age — {compare_age_range[0]} to {compare_age_range[1]}")
+                ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+            else:
+                plot_player_stat_trends(
+                    ax,
+                    compare,
+                    selected_ids_compare,
+                    stat_choice_compare,
+                    mode=compare_trend_mode,
+                    smooth_window=compare_smooth_window
+                )
+                all_compare_years = sorted(pd.to_numeric(compare["yearID"], errors="coerce").dropna().astype(int).unique())
+                ax.set_xticks(all_compare_years)
+                ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+                ax.set_xlabel("Year")
+                ax.set_title(f"{stat_choice_compare} Trends — {compare_trend_mode}")
+
+            ax.set_ylabel(stat_choice_compare)
+            if ax.lines:
+                ax.legend()
+            else:
+                st.warning("No selected player has seasons in the selected range for this chart.")
+            ax.grid(True, alpha=0.3)
+            try:
+                st.pyplot(fig, clear_figure=True)
+            except TypeError:
+                st.pyplot(fig)
+            plt.close(fig)
 
         st.subheader("Advanced Trend Intelligence")
         compare_intel = build_advanced_trend_intelligence(compare, selected_ids_compare, stat_choice_compare)
@@ -17999,7 +18115,8 @@ elif active_page == "Comparison Tool":
         )
         st.markdown(f"**Comparison mode:** {_sig_axis_mode}")
         st.caption(_sig_sync_caption)
-        sig_col1, sig_col2 = st.columns(2)
+        with mobile_wrap_row(st, "comparison-sig-players"):
+            sig_col1, sig_col2 = st.columns(2)
         clean_label_map_sig = clean_label_map_compare
         all_player_options_sig = compare_player_options
 
@@ -18115,7 +18232,8 @@ elif active_page == "Comparison Tool":
             pid_a = clean_label_map_sig[sig_player_a_label]
             pid_b = clean_label_map_sig[sig_player_b_label]
             st.caption("Actions for significance-test players")
-            sig_action_cols = st.columns(2)
+            with mobile_wrap_row(st, "comparison-sig-actions"):
+                sig_action_cols = st.columns(2)
             with sig_action_cols[0]:
                 render_contextual_player_actions(
                     sig_player_a_label,
@@ -18341,7 +18459,8 @@ elif active_page == "Trend Value":
     except Exception:
         pass
     _trend_lag_options = [3, 4, 5]
-    c1, c2, c3 = st.columns(3)
+    with mobile_wrap_row(st, "trend-top-filters"):
+        c1, c2, c3 = st.columns(3)
     with c1:
         validate_state_option("trend_lag", _trend_lag_options, 3)
         lag_trend = st.selectbox(
@@ -18593,11 +18712,11 @@ elif active_page == "Trend Value":
     with c3:
         st.subheader("🔥 Top Breakout Players")
         breakout_table = format_display_table(top_breakouts_display, count_cols=["HR Δ", "2B+3B Δ", "RBI Δ", "SB Δ"], rate_cols=["OPS Δ"], count_decimals=2, rate_decimals=2)
-        render_output_table(breakout_table, key="top_breakouts", file_name="top_breakouts.csv", style_cols=[c for c in breakout_table.columns if "Δ" in c])
+        render_output_table(breakout_table, key="top_breakouts", file_name="top_breakouts.csv", style_cols=[c for c in breakout_table.columns if "Δ" in c], pin_columns=("Player", "Position"))
     with c4:
         st.subheader("❄️ Biggest Declines")
         declines_table = format_display_table(biggest_declines_display, count_cols=["HR Δ", "2B+3B Δ", "RBI Δ", "SB Δ"], rate_cols=["OPS Δ"], count_decimals=2, rate_decimals=2)
-        render_output_table(declines_table, key="biggest_declines", file_name="biggest_declines.csv", style_cols=[c for c in declines_table.columns if "Δ" in c])
+        render_output_table(declines_table, key="biggest_declines", file_name="biggest_declines.csv", style_cols=[c for c in declines_table.columns if "Δ" in c], pin_columns=("Player", "Position"))
 
     breakout_decline_players = []
     if "Player" in top_breakouts_display.columns:
@@ -18746,7 +18865,8 @@ elif active_page == "Trend Value":
         on_change=trend_settings_changed,
     )
 
-    dash_mode_col1, dash_mode_col2 = st.columns(2)
+    with mobile_wrap_row(st, "trend-dash-mode"):
+        dash_mode_col1, dash_mode_col2 = st.columns(2)
     with dash_mode_col1:
         single_dashboard_mode = st.radio(
             "Single-Player Dashboard Mode",
@@ -18863,7 +18983,8 @@ elif active_page == "Trend Value":
                 key="single_player_trend_snapshot",
                 file_name="single_player_trend_snapshot.csv",
                 display_rows=3,
-                style_cols=[c for c in trend_snapshot.columns if "Δ" in c]
+                style_cols=[c for c in trend_snapshot.columns if "Δ" in c],
+                pin_columns=("Player",)
             )
 
         if dashboard_stats:
@@ -18965,28 +19086,31 @@ elif active_page == "Trend Value":
         player_trend = recent_span_df[recent_span_df["playerID"].isin(selected_ids_trend)].sort_values(["fullName", "yearID"])
         player_trend = safe_round_rate_stats(player_trend)
 
-        fig, ax = plt.subplots(figsize=(10, 5))
-        plot_player_stat_trends(
-            ax,
-            player_trend,
-            selected_ids_trend,
-            stat_choice_trend,
-            mode=trend_chart_mode,
-            smooth_window=trend_smooth_window
-        )
-        trend_years = sorted(pd.to_numeric(player_trend["yearID"], errors="coerce").dropna().astype(int).unique())
-        ax.set_xticks(trend_years)
-        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.set_xlabel("Year")
-        ax.set_ylabel(stat_choice_trend)
-        ax.set_title(f"{stat_choice_trend} Trend Comparison over {lag_trend} Years — {trend_chart_mode}")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        try:
-            st.pyplot(fig, clear_figure=True)
-        except TypeError:
-            st.pyplot(fig)
-        plt.close(fig)
+        from mobile_chart_layout import legible_matplotlib_chart
+
+        with legible_matplotlib_chart():
+            fig, ax = plt.subplots(figsize=(10, 5))
+            plot_player_stat_trends(
+                ax,
+                player_trend,
+                selected_ids_trend,
+                stat_choice_trend,
+                mode=trend_chart_mode,
+                smooth_window=trend_smooth_window
+            )
+            trend_years = sorted(pd.to_numeric(player_trend["yearID"], errors="coerce").dropna().astype(int).unique())
+            ax.set_xticks(trend_years)
+            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+            ax.set_xlabel("Year")
+            ax.set_ylabel(stat_choice_trend)
+            ax.set_title(f"{stat_choice_trend} Trend Comparison over {lag_trend} Years — {trend_chart_mode}")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            try:
+                st.pyplot(fig, clear_figure=True)
+            except TypeError:
+                st.pyplot(fig)
+            plt.close(fig)
 
         _trend_compare_err = ""
         if len(selected_labels_trend) >= 2:
@@ -19103,7 +19227,8 @@ elif active_page == "Fantasy Sleepers & Busts":
 
     _fantasy_window_options = [3, 4, 5]
     _fantasy_format_options = ["5x5 Roto", "Points League"]
-    c1, c2, c3, c4 = st.columns(4)
+    with mobile_wrap_row(st, "sleepers-top-filters"):
+        c1, c2, c3, c4 = st.columns(4)
     with c1:
         validate_state_option("fantasy_market_window", _fantasy_window_options, 3)
         fantasy_window = st.selectbox("Projection Window (Years)", _fantasy_window_options, key="fantasy_market_window", on_change=fantasy_filter_changed)
@@ -19177,7 +19302,8 @@ elif active_page == "Fantasy Sleepers & Busts":
         tab_rank, tab_draft = st.tabs(["Rank cutoffs", "Draft Room sync"])
         with tab_rank:
             st.caption("Narrow the player pool; loosen if tables look empty.")
-            sf1, sf2, sf3, sf4 = st.columns(4)
+            with mobile_wrap_row(st, "sleepers-rank-cutoffs"):
+                sf1, sf2, sf3, sf4 = st.columns(4)
             with sf1:
                 validate_number_state("sleeper_max_market_rank", 350, min_value=1, max_value=1000)
                 st.number_input(
@@ -19400,13 +19526,15 @@ elif active_page == "Fantasy Sleepers & Busts":
         ) / 5
     else:
         with st.expander("Points League Scoring Settings"):
-            p1, p2, p3, p4, p5 = st.columns(5)
+            with mobile_wrap_row(st, "sleepers-points-p1"):
+                p1, p2, p3, p4, p5 = st.columns(5)
             with p1: pts_r = st.number_input("Run", value=1.0, step=0.5, key="fantasy_pts_r")
             with p2: pts_rbi = st.number_input("RBI", value=1.0, step=0.5, key="fantasy_pts_rbi")
             with p3: pts_hr = st.number_input("HR", value=4.0, step=0.5, key="fantasy_pts_hr")
             with p4: pts_sb = st.number_input("SB", value=2.0, step=0.5, key="fantasy_pts_sb")
             with p5: pts_bb = st.number_input("BB", value=1.0, step=0.5, key="fantasy_pts_bb")
-            p6, p7, p8 = st.columns(3)
+            with mobile_wrap_row(st, "sleepers-points-p2"):
+                p6, p7, p8 = st.columns(3)
             with p6: pts_h = st.number_input("Hit", value=1.0, step=0.5, key="fantasy_pts_h")
             with p7: pts_2b3b = st.number_input("2B+3B Bonus", value=1.0, step=0.5, key="fantasy_pts_xbh")
             with p8: pts_ab_penalty = st.number_input("AB Penalty", value=0.0, step=0.1, key="fantasy_pts_ab_penalty")
@@ -19459,7 +19587,8 @@ elif active_page == "Fantasy Sleepers & Busts":
 
     with st.expander("Position & age filters", expanded=False):
         _sleepers_canon = read_sleepers_canonical_filters(st.session_state)
-        pa1, pa2 = st.columns(2)
+        with mobile_wrap_row(st, "sleepers-pos-age"):
+            pa1, pa2 = st.columns(2)
         with pa1:
             standard_fantasy_positions = ["C", "1B", "2B", "3B", "SS", "OF", "DH", "P"]
             existing_fantasy_positions = sorted([
@@ -19789,7 +19918,8 @@ elif active_page == "Fantasy Sleepers & Busts":
                         key="fantasy_curve_adjusted_sleepers",
                         file_name="fantasy_curve_adjusted_sleepers.csv",
                         display_rows=15,
-                        style_cols=["Fantasy Edge", "Curve Edge"]
+                        style_cols=["Fantasy Edge", "Curve Edge"],
+                        pin_columns=("Player", "Team", "Primary Position")
                     )
                     if "Player" in curve_display.columns:
                         compact_player_action_center(
@@ -19877,6 +20007,7 @@ elif active_page == "Fantasy Sleepers & Busts":
                 key="fantasy_market_sleepers",
                 file_name="fantasy_market_sleepers.csv",
                 style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score"],
+                pin_columns=("Player", "Team", "Primary Position"),
             )
         with c9:
             st.subheader("⚠️ Market Bust Risks")
@@ -19885,6 +20016,7 @@ elif active_page == "Fantasy Sleepers & Busts":
                 key="fantasy_market_busts",
                 file_name="fantasy_market_busts.csv",
                 style_cols=["Fantasy Edge", "Player Grade", "Roster Fit Score"],
+                pin_columns=("Player", "Team", "Primary Position"),
             )
 
         compact_player_action_center(
@@ -20057,7 +20189,8 @@ elif active_page == "Draft Assistant Simulator":
                 force_save=False,
             )
 
-        d1, d2, d3 = st.columns(3)
+        with mobile_wrap_row(st, "draft-assistant-top-filters"):
+            d1, d2, d3 = st.columns(3)
         with d1:
             validate_state_option("draft_window", _draft_window_options, 3)
             draft_window = st.selectbox("Projection Window", _draft_window_options, key="draft_window",
@@ -21410,7 +21543,8 @@ elif active_page == "Draft Room Simulator":
 
         _room_format_options = ["5x5 Roto", "Points League"]
         _room_window_options = [3, 4, 5]
-        dr1, dr2, dr3, dr4 = st.columns(4)
+        with mobile_wrap_row(st, "draft-room-setup-filters"):
+            dr1, dr2, dr3, dr4 = st.columns(4)
         with dr1:
             ensure_number_state("room_team_count", 2, min_value=2, max_value=16)
             room_team_count = st.number_input(
@@ -21577,7 +21711,8 @@ elif active_page == "Draft Room Simulator":
         except Exception:
             pass
 
-        reset_col, delete_live_col, undo_col, _sp = st.columns([1, 1, 1, 1])
+        with mobile_wrap_row(st, "draft-room-action-buttons"):
+            reset_col, delete_live_col, undo_col, _sp = st.columns([1, 1, 1, 1])
         with undo_col:
             st.button(
                 "Undo Last Pick",
@@ -21694,7 +21829,8 @@ elif active_page == "Draft Room Simulator":
                     matches = [n for n in _assign_pool_names if q in n.lower()][:30]
 
                 with st.form("dr_board_assign_form", clear_on_submit=False):
-                    pick_col, player_col = st.columns([1, 2])
+                    with mobile_wrap_row(st, "draft-room-board-assign"):
+                        pick_col, player_col = st.columns([1, 2])
                     with pick_col:
                         st.selectbox(
                             "Pick",
@@ -21894,7 +22030,8 @@ elif active_page == "Draft Room Simulator":
         except ImportError:
             pass
 
-        view_col1, view_col2 = st.columns([1, 2])
+        with mobile_wrap_row(st, "draft-room-roster-view"):
+            view_col1, view_col2 = st.columns([1, 2])
         try:
             from draft_room_state import simulator_roster_view_team_options
 
@@ -22110,7 +22247,8 @@ elif active_page == DRAFT_LAB_PAGE:
         prepare_draft_lab_page_widgets(st.session_state)
     except ImportError:
         pass
-    lc1, lc2, lc3, lc4 = st.columns(4)
+    with mobile_wrap_row(st, "draft-lab-top-filters"):
+        lc1, lc2, lc3, lc4 = st.columns(4)
     with lc1:
         def _draft_sim_setting_changed():
             try:
@@ -22963,7 +23101,7 @@ elif active_page == "Live Draft Room":
         pass
     _page_perf_start(active_page)
     try:
-        from suite_identity_guard import render_mp_identity_diagnostics
+        from suite_identity_guard import build_mp_identity_snapshot, render_mp_identity_diagnostics
 
         _suppress_mp_diag = False
         try:
@@ -22974,12 +23112,20 @@ elif active_page == "Live Draft Room":
             _suppress_mp_diag = False
         if not _suppress_mp_diag:
             _mp_room = st.session_state.get("live_draft_room")
-            render_mp_identity_diagnostics(
-                st,
-                st.session_state,
-                room=_mp_room if isinstance(_mp_room, dict) else None,
-                temporary=True,
-            )
+            _mp_room = _mp_room if isinstance(_mp_room, dict) else None
+            # Mobile M6: this probe's own title says "TEMPORARY" and it was rendering to
+            # every user on every Live Draft visit. Only surface it when there's an
+            # actual identity problem to see (still shown to everyone then — it's
+            # actionable), or when developer mode is explicitly on.
+            _mp_verdict = str(build_mp_identity_snapshot(st.session_state, room=_mp_room).get("identity_verdict") or "")
+            _mp_bad = _mp_verdict.startswith("WORKSPACE_RESOLUTION_BUG") or _mp_verdict.startswith("OWNED_MISMATCH")
+            if _mp_bad or developer_mode_enabled():
+                render_mp_identity_diagnostics(
+                    st,
+                    st.session_state,
+                    room=_mp_room,
+                    temporary=True,
+                )
     except Exception:
         pass
     try:
@@ -23104,7 +23250,8 @@ elif active_page == "Live Draft Room":
         render_page_guide(active_page)
     else:
         # Active draft: keep a compact title only — Quick Guide pushes cards below the fold.
-        st.markdown("### 📡 Live Draft Room")
+        with _ldr_m_hook("ldr-m-active-title"):
+            st.markdown("### 📡 Live Draft Room")
     try:
         from live_draft_render_trace import ldr_post_rerun_checkpoint, ldr_section_done, ldr_step
 
@@ -25353,7 +25500,6 @@ elif active_page == "Live Draft Room":
         # Picks per Team / Start New Live Draft). Not nested in an expander —
         # expanded=True expanders still intermittently hide labels from a11y.
         st.markdown("### Draft Setup / Configuration")
-        st.caption("live-draft-setup-anchor")
         try:
             from live_draft_setup_ui import (
                 render_guest_join_from_setup,
@@ -25383,7 +25529,9 @@ elif active_page == "Live Draft Room":
         except ImportError:
             _setup_mode = "solo"
         st.subheader("League & Draft Settings")
-        lc1, lc2, lc3 = st.columns(3)
+        # Phone: 2-up wrap (M1 helper) instead of nine full-width rows. Same widgets/keys.
+        with mobile_wrap_row(st, "ldr-league-settings"):
+            lc1, lc2, lc3 = st.columns(3)
         _live_scoring_options = ["Roto (5x5)", "Points League"]
         # Product UI: 30s+ only. Short 8/10s clocks require ?accept_short_timer=1 so
         # automated accepts do not persist into human Setup defaults.
@@ -25496,7 +25644,8 @@ elif active_page == "Live Draft Room":
                 _ld_setup_default(st.session_state, _slot_key, _slot_default),
                 min_value=0,
             )
-        rs1, rs2, rs3, rs4 = st.columns(4)
+        with mobile_wrap_row(st, "ldr-roster-slots"):
+            rs1, rs2, rs3, rs4 = st.columns(4)
         with rs1:
             slot_c = st.number_input("C", min_value=0, max_value=3, step=1, key="live_slot_c", on_change=_live_draft_setting_changed)
             slot_1b = st.number_input("1B", min_value=0, max_value=3, step=1, key="live_slot_1b", on_change=_live_draft_setting_changed)
@@ -25513,7 +25662,8 @@ elif active_page == "Live Draft Room":
 
         st.caption("Rename teams (optional)")
         default_teams = _live_draft_default_teams(live_num_teams)
-        team_cols = st.columns(min(int(live_num_teams), 4))
+        with mobile_wrap_row(st, "ldr-team-names"):
+            team_cols = st.columns(min(int(live_num_teams), 4))
         team_names = []
         for i in range(int(live_num_teams)):
             with team_cols[i % len(team_cols)]:
@@ -26837,17 +26987,26 @@ elif active_page == "Live Draft Room":
             try:
                 from live_draft_room_ui import render_live_draft_room_header
 
-                render_live_draft_room_header(
-                    st,
-                    st.session_state,
-                    room,
-                    multiplayer=_multiplayer_draft,
-                    user_team=user_team,
-                    on_clock_team=on_clock_team,
-                    pick_label=pick_label,
-                    status_label=_status_label,
-                    draft_in_progress=_draft_in_progress,
-                )
+                # Phone CSS hook (M3), shared drafts only: this header card repeats the
+                # room code / role / teams already in the lobby-section summary card.
+                from contextlib import nullcontext as _ldr_nullctx
+
+                with (
+                    _ldr_m_hook("ldr-m-dup-room-header")
+                    if (_multiplayer_draft and _draft_in_progress)
+                    else _ldr_nullctx()
+                ):
+                    render_live_draft_room_header(
+                        st,
+                        st.session_state,
+                        room,
+                        multiplayer=_multiplayer_draft,
+                        user_team=user_team,
+                        on_clock_team=on_clock_team,
+                        pick_label=pick_label,
+                        status_label=_status_label,
+                        draft_in_progress=_draft_in_progress,
+                    )
             except ImportError:
                 try:
                     from live_draft_room_ui import render_live_draft_room_code_header
@@ -26889,14 +27048,16 @@ elif active_page == "Live Draft Room":
             try:
                 from live_draft_setup_ui import render_draft_status_summary_card
 
-                render_draft_status_summary_card(
-                    st,
-                    st.session_state,
-                    room,
-                    on_clock_team=on_clock_team,
-                    pick_label=pick_label,
-                    round_no=round_no,
-                )
+                # Phone CSS hook (M3): this second summary repeats the lobby-section card.
+                with _ldr_m_hook("ldr-m-dup-summary"):
+                    render_draft_status_summary_card(
+                        st,
+                        st.session_state,
+                        room,
+                        on_clock_team=on_clock_team,
+                        pick_label=pick_label,
+                        round_no=round_no,
+                    )
             except ImportError:
                 pass
         try:
@@ -27261,20 +27422,27 @@ elif active_page == "Live Draft Room":
                     st.caption(
                         "Updating projection grades and model ranks — values may refresh shortly."
                     )
-                _early_ok = bool(
-                    render_rec_interactive_widgets(
-                        st,
-                        st.session_state,
-                        room,
-                        fmt_rate_4=fmt_rate_4,
-                        fmt_int=fmt_int,
-                        dense=False,
-                        layout="horizontal",
-                        max_cards_override=6,
-                        skip_summary_banner=True,
-                        cache_only=_cache_only_recs,
+                # Phone CSS hook (M3): card rows become swipe strips. Re-applied at
+                # main's indentation — the stabilized build de-indented this block
+                # (base 20 -> 16), which is what made this a merge conflict rather
+                # than an auto-merge. All of main's behaviour is kept: cache_only,
+                # _sp_mark/_start_paint_marks instrumentation, and the deferred-pool
+                # else branch.
+                with _ldr_m_hook("ldr-m-recs-early"):
+                    _early_ok = bool(
+                        render_rec_interactive_widgets(
+                            st,
+                            st.session_state,
+                            room,
+                            fmt_rate_4=fmt_rate_4,
+                            fmt_int=fmt_int,
+                            dense=False,
+                            layout="horizontal",
+                            max_cards_override=6,
+                            skip_summary_banner=True,
+                            cache_only=_cache_only_recs,
+                        )
                     )
-                )
                 st.session_state["_live_draft_rec_cards_early_viewport"] = _early_ok
                 _sp_mark("rec_cards")
                 _start_paint_marks["rec_early_ok"] = bool(_early_ok)
@@ -27330,24 +27498,26 @@ elif active_page == "Live Draft Room":
                     from draft_ui import render_live_manual_draft_panel
 
                     # Heading owned by render_live_manual_draft_panel (avoid duplicate "Manual Draft").
-                    st.caption(
-                        "Browse any available legal player — you are not limited to the recommendation cards."
-                    )
-                    if render_live_manual_draft_panel(
-                        st,
-                        st.session_state,
-                        room,
-                        user_team=user_team,
-                        multiplayer=_multiplayer_draft,
-                    ):
-                        try:
-                            from live_draft_safe_mode import request_live_draft_rerun
+                    # Phone CSS hook (M3): the primary draft action is raised under the clock.
+                    with _ldr_m_hook("ldr-m-action-early"):
+                        st.caption(
+                            "Browse any available legal player — you are not limited to the recommendation cards."
+                        )
+                        if render_live_manual_draft_panel(
+                            st,
+                            st.session_state,
+                            room,
+                            user_team=user_team,
+                            multiplayer=_multiplayer_draft,
+                        ):
+                            try:
+                                from live_draft_safe_mode import request_live_draft_rerun
 
-                            request_live_draft_rerun(
-                                st, st.session_state, "manual_pick_early", room=room
-                            )
-                        except ImportError:
-                            st.rerun()
+                                request_live_draft_rerun(
+                                    st, st.session_state, "manual_pick_early", room=room
+                                )
+                            except ImportError:
+                                st.rerun()
                     st.session_state["_live_draft_manual_panel_early"] = True
                     _sp_mark("manual_panel")
                 except Exception as _early_manual_exc:
@@ -27424,7 +27594,11 @@ elif active_page == "Live Draft Room":
                         'data-testid="live-draft-recommendation-rankings"></div>',
                         unsafe_allow_html=True,
                     )
-                    with st.expander("Recommendation Rankings", expanded=True):
+                    # Mobile M6 density, extended to this surface: the stabilized
+                    # build added a second Rankings expander (early-paint path) that
+                    # did not exist when M6 landed. Leaving it non-compact would give
+                    # the two Rankings surfaces different density.
+                    with st.expander("Recommendation Rankings", expanded=True, type="compact"):
                         _tabs = st.tabs(
                             ["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"]
                         )
@@ -27902,7 +28076,10 @@ elif active_page == "Live Draft Room":
                 ):
                     _is_commissioner, _doc_h = _paint_live_draft_control_center()
             else:
-                _is_commissioner, _doc_h = _paint_live_draft_control_center()
+                # Phone CSS hook (M3): host controls ordered under the draft action,
+                # live chat (2nd column) ordered with supporting context.
+                with _ldr_m_hook("ldr-m-controls"):
+                    _is_commissioner, _doc_h = _paint_live_draft_control_center()
             try:
                 from live_draft_render_checkpoints import note_active_page_receipt
 
@@ -28719,15 +28896,17 @@ elif active_page == "Live Draft Room":
                                                 render_rec_interactive_widgets,
                                             )
 
-                                            _inline_ok = bool(
-                                                render_rec_interactive_widgets(
-                                                    st,
-                                                    st.session_state,
-                                                    room,
-                                                    fmt_rate_4=fmt_rate_4,
-                                                    fmt_int=fmt_int,
+                                            # Phone CSS hook (M3): card rows become swipe strips.
+                                            with _ldr_m_hook("ldr-m-recs"):
+                                                _inline_ok = bool(
+                                                    render_rec_interactive_widgets(
+                                                        st,
+                                                        st.session_state,
+                                                        room,
+                                                        fmt_rate_4=fmt_rate_4,
+                                                        fmt_int=fmt_int,
+                                                    )
                                                 )
-                                            )
                                             st.session_state["_live_draft_rec_cards_inline"] = _inline_ok
                                             st.session_state[
                                                 "_live_draft_rec_queue_interactive_owner"
@@ -28763,7 +28942,13 @@ elif active_page == "Live Draft Room":
                                     'data-testid="live-draft-recommendation-rankings"></div>',
                                     unsafe_allow_html=True,
                                 )
-                                with st.expander("Recommendation Rankings", expanded=True):
+                                # Mobile M6: no server-side viewport signal exists in this app (every
+                                # earlier mobile slice stayed CSS/media-query only for the same reason),
+                                # so an expanded-on-desktop/collapsed-on-phone default isn't available
+                                # without either a client-width signal or losing the desktop toggle —
+                                # type="compact" is the one Streamlit-native density reduction that's
+                                # safe to apply uniformly (tighter chrome, same open/closed semantics).
+                                with st.expander("Recommendation Rankings", expanded=True, type="compact"):
                                     rec_tabs = st.tabs(["Top Picks", "Best Available", "Positional Fits", "Value / Sleepers"])
                                     # Product-facing columns — Position always visible for Manual Draft lookup.
                                     rec_cols = [
@@ -29143,19 +29328,21 @@ elif active_page == "Live Draft Room":
                 # Early Solo path already painted Manual Draft under Recommendations —
                 # skip the duplicate widget tree (StreamlitDuplicateElementKey).
                 if not bool(st.session_state.get("_live_draft_manual_panel_early")):
-                    if render_live_manual_draft_panel(
-                        st,
-                        st.session_state,
-                        room,
-                        user_team=user_team,
-                        multiplayer=_multiplayer_draft,
-                    ):
-                        try:
-                            from live_draft_safe_mode import request_live_draft_rerun
+                    # Phone CSS hook (M3): primary draft action raised under the clock.
+                    with _ldr_m_hook("ldr-m-action"):
+                        if render_live_manual_draft_panel(
+                            st,
+                            st.session_state,
+                            room,
+                            user_team=user_team,
+                            multiplayer=_multiplayer_draft,
+                        ):
+                            try:
+                                from live_draft_safe_mode import request_live_draft_rerun
 
-                            request_live_draft_rerun(st, st.session_state, "manual_pick", room=room)
-                        except ImportError:
-                            st.rerun()
+                                request_live_draft_rerun(st, st.session_state, "manual_pick", room=room)
+                            except ImportError:
+                                st.rerun()
                 else:
                     st.session_state.pop("_live_draft_manual_panel_early", None)        # Active Live Draft: skip "Continue analysis / settings on another page" nav.
         # Quick Draft Tools in the Decision Panel cover Assistant / Sleepers / Queue.
@@ -30257,6 +30444,7 @@ elif active_page == "Fantasy Standings Tracker":
                     format_fantasy_table(clean_ui_columns(roster_stats[[c for c in show_cols if c in roster_stats.columns]]))
                 ),
                 key="standings_roster_current_stats",
+                pin_columns=("Fantasy Team", "Team", "Player"),
                 file_name="fantasy_rosters_current_stats.csv",
                 display_rows=300,
             )
@@ -30273,6 +30461,7 @@ elif active_page == "Fantasy Standings Tracker":
                     render_output_table(
                         format_fantasy_standings_table(format_fantasy_table(clean_ui_columns(_wk_df))),
                         key="fantasy_weekly_hitter_standings",
+                pin_columns=("Fantasy Team", "Team", "Player"),
                         file_name="fantasy_weekly_hitter_standings.csv",
                         display_rows=50,
                     )
@@ -30294,6 +30483,7 @@ elif active_page == "Fantasy Standings Tracker":
             render_output_table(
                 format_fantasy_standings_table(format_fantasy_table(clean_ui_columns(standings))),
                 key="fantasy_live_standings",
+                pin_columns=("Fantasy Team", "Team", "Player"),
                 file_name="fantasy_live_standings.csv",
                 display_rows=50,
                 style_cols=["Total Roto Points", "Estimated Points"],
@@ -30783,7 +30973,8 @@ elif active_page == "Valuation":
     apply_pending_page_transfer(active_page)
 
     _value_lag_options = [3, 4, 5]
-    c1, c2, c3 = st.columns(3)
+    with mobile_wrap_row(st, "valuation-top-filters"):
+        c1, c2, c3 = st.columns(3)
     with c1:
         validate_state_option("value_lag", _value_lag_options, 3)
         lag_value = st.selectbox("Valuation Window (Years)", _value_lag_options, key="value_lag", on_change=valuation_filter_changed)
@@ -30903,7 +31094,8 @@ elif active_page == "Valuation":
 
     with st.expander("Valuation blend weights", expanded=False):
         st.caption("These weights only scale how much current vs trend contributes to Valuation Score below.")
-        c5, c6 = st.columns(2)
+        with mobile_wrap_row(st, "valuation-weights"):
+            c5, c6 = st.columns(2)
         with c5:
             w_current = st.number_input("Weight: Current Score", 0.0, 10.0, 1.0, key="value_w_current", on_change=valuation_filter_changed)
         with c6:
@@ -31007,7 +31199,7 @@ elif active_page == "Valuation":
         rate_cols=["BA", "OBP", "SLG", "OPS"],
         score_cols=["Trend Score", "Current Score", "Valuation Score"],
     )
-    render_output_table(valuation_table, key="valuation", file_name="valuation.csv")
+    render_output_table(valuation_table, key="valuation", file_name="valuation.csv", pin_columns=("Player", "Position"))
     if not valuation_table.empty:
         compact_player_action_center(
             valuation_table["Player"].dropna().astype(str).tolist(),
@@ -31150,7 +31342,8 @@ elif active_page == "ML Predictions":
         init_state_once("ml_position_filter", "All positions")
         init_state_once("ml_sort_by", "Predicted OPS")
 
-        c1, c2, c3 = st.columns(3)
+        with mobile_wrap_row(st, "ml-top-filters"):
+            c1, c2, c3 = st.columns(3)
         with c1:
             ml_lookback = st.selectbox("Lookback Window", [3, 4, 5], index=0, key="ml_lookback", on_change=projections_filter_changed)
         with c2:
@@ -31181,7 +31374,8 @@ elif active_page == "ML Predictions":
                 ),
                 on_change=projections_filter_changed,
             )
-            a1, a2, a3, a4 = st.columns(4)
+            with mobile_wrap_row(st, "ml-tuning"):
+                a1, a2, a3, a4 = st.columns(4)
             with a1:
                 regression_strength = st.slider("Regression to Mean", 0.00, 0.60, 0.20, 0.05, key="ml_regression_strength", on_change=projections_filter_changed)
             with a2:
@@ -31355,7 +31549,8 @@ elif active_page == "ML Predictions":
                     render_output_table(metrics_table, key="ml_accuracy", file_name="ml_model_accuracy.csv")
 
         st.subheader("Next-Season ML Projections")
-        _ml_tbl_c1, _ml_tbl_c2 = st.columns(2)
+        with mobile_wrap_row(st, "ml-table-controls"):
+            _ml_tbl_c1, _ml_tbl_c2 = st.columns(2)
         with _ml_tbl_c1:
             try:
                 from fantasy_position_sync import (
@@ -31464,7 +31659,37 @@ elif active_page == "ML Predictions":
                     ml_display["Model Rank"] = pd.to_numeric(ml_display["Model Rank"], errors="coerce").round(0).astype("Int64")
                 if "Age" in ml_display.columns:
                     ml_display["Age"] = pd.to_numeric(ml_display["Age"], errors="coerce").round(0)
-                render_output_table(ml_display, key="ml_predictions", file_name="ml_predictions.csv")
+
+                # Mobile M6: ~24 columns is wide enough that pinning itself stops holding
+                # under scroll (confirmed in M5). Phones get a narrower "primary columns"
+                # table instead — same values/rows/order, just fewer columns, so pinning
+                # works reliably again — while desktop keeps the exact full table below,
+                # untouched. CSS toggles which one is visible; both render every run.
+                try:
+                    from mobile_table_layout import dual_width_table_css
+
+                    st.markdown(dual_width_table_css(compact_key="ml-pred-compact", full_key="ml-pred-full"), unsafe_allow_html=True)
+                    _ml_compact_cols = [
+                        c for c in (
+                            "Player", "Position", "Team", "Model Rank", "Predicted HR", "Predicted RBI",
+                            "Predicted SB", "Predicted OPS", "Expected Fantasy Value", "Projection Confidence",
+                        ) if c in ml_display.columns
+                    ]
+                    with st.container(key="ml-pred-compact"):
+                        st.caption(
+                            "Compact phone view — Player, Position, Team, Model Rank, and headline "
+                            "projections. Full column set: Export CSV below, or view on a wider screen."
+                        )
+                        render_output_table(
+                            ml_display[_ml_compact_cols],
+                            key="ml_predictions_compact",
+                            file_name="ml_predictions_compact.csv",
+                            pin_columns=("Player", "Position"),
+                        )
+                    with st.container(key="ml-pred-full"):
+                        render_output_table(ml_display, key="ml_predictions", file_name="ml_predictions.csv", pin_columns=("Player", "Position", "Team"))
+                except ImportError:
+                    render_output_table(ml_display, key="ml_predictions", file_name="ml_predictions.csv", pin_columns=("Player", "Position", "Team"))
 
                 if not ml_display.empty:
                     selected_ml_row = _select_insight_row(

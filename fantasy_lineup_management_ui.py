@@ -322,6 +322,7 @@ def render_lineup_management_page(
         deps.render_output_table(
             deps.format_lineup_assistant_table(deps.clean_ui_columns(starters[[c for c in starter_cols if c in starters.columns]])),
             key="lineup_recommended_starters",
+            pin_columns=("Fantasy slot", "Player"),
             file_name="lineup_recommended_starters.csv",
             display_rows=starter_disp_rows,
         )
@@ -675,6 +676,7 @@ def render_lineup_management_page(
         deps.render_output_table(
             deps.format_lineup_assistant_table(deps.clean_ui_columns(bench[[c for c in starter_cols if c in bench.columns]])),
             key="lineup_bench_watch",
+            pin_columns=("Fantasy slot", "Player"),
             file_name="lineup_bench_watch.csv",
             display_rows=bench_rows_to_show,
         )
