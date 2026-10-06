@@ -15,7 +15,11 @@ from pathlib import Path
 from typing import Any
 
 from live_draft_timer_logic import live_draft_current_slot, live_draft_display_seconds, live_draft_timer_deadline
-from live_draft_timer_ui import _resolve_live_room, record_timer_diagnostics
+from live_draft_timer_ui import (
+    EXPIRED_HINT_AFTER_SEC,
+    _resolve_live_room,
+    record_timer_diagnostics,
+)
 
 # Solo fragment cadence — 0.5s after DOM-stability work; expire paints next pick
 # in the same invocation (never an empty fragment between picks).
@@ -858,16 +862,47 @@ def _emit_banner_html(
 
         countdown_script = ""
         if deadline is not None and timer_id:
+            # Display-only countdown. This srcdoc iframe is one-way: it has no
+            # return channel, so it can never decide or report draft
+            # progression. `deadline` is the canonical room deadline, re-read
+            # from room state on every server repaint, and remains the only
+            # authority for expiry and auto-pick.
+            #
+            # Presentation fix: the loop used to `return` at zero, leaving a
+            # bare "0" under a "Time remaining" label until the next canonical
+            # repaint arrived -- on the shared path that can be tens of
+            # seconds, so the clock looked frozen/broken. It now relabels to
+            # "Time expired" and shows how far past the deadline we are, so the
+            # surface stays honest and visibly alive while the server resolves
+            # the pick. The big number stays "0" because zero really is the
+            # time remaining; the overtime is deliberately secondary text so it
+            # cannot be mistaken for a running clock.
             countdown_script = f"""
             <script>
             (function() {{
               const deadline = {float(deadline)};
               const el = document.getElementById("{timer_id}");
+              const label = document.getElementById("{timer_id}-label");
+              const root = document.querySelector('[data-live-draft-timer-root="1"]');
               function tick() {{
-                const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
+                const left = deadline - Date.now() / 1000;
+                const rem = Math.max(0, Math.ceil(left));
                 if (el) el.textContent = String(rem);
-                if (rem <= 0) return;
-                window.setTimeout(tick, 250);
+                if (rem > 0) {{
+                  window.setTimeout(tick, 250);
+                  return;
+                }}
+                const over = Math.max(0, Math.floor(-left));
+                if (root) root.setAttribute("data-expired", "1");
+                if (over >= {EXPIRED_HINT_AFTER_SEC}) {{
+                  // Past this point the overtime number stops being useful and
+                  // the useful thing to say is that a reload re-reads canonical
+                  // state. Stopping here also bounds the loop.
+                  if (label) label.textContent = "Time expired \u2022 refresh if stuck";
+                  return;
+                }}
+                if (label) label.textContent = "Time expired \u2022 +" + over + "s";
+                window.setTimeout(tick, 1000);
               }}
               tick();
             }})();
@@ -938,7 +973,7 @@ def _render_on_clock_banner_html(
             </div>
             {next_txt}
             <div class="ld-meta">
-                <span class="ld-clock-label">Time remaining</span>
+                <span class="ld-clock-label" id="{timer_id}-label">Time remaining</span>
                 {timer_html}
             </div>
         </div>

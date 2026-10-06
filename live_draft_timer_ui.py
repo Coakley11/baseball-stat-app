@@ -277,6 +277,12 @@ def render_live_draft_timer_diagnostics(st: Any, session: dict[str, Any], *, dev
             st.text(f"{key}: {val if val is not None and val != '' else '—'}")
 
 
+# Overtime seconds after which an expired countdown stops counting up and asks for
+# a reload instead. Display-only: nothing expires, advances or is persisted on this
+# threshold -- the canonical room deadline remains the single timer authority.
+EXPIRED_HINT_AFTER_SEC = 120
+
+
 def _mount_js_countdown(
     st: Any,
     deadline: float,
@@ -316,7 +322,7 @@ def _mount_js_countdown(
     components.html(
         f"""
         <div style="font-family: system-ui, sans-serif;">
-          <div style="font-size:12px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#64748b;">
+          <div id="{el_id}-label" style="font-size:12px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#64748b;">
             Time on clock
           </div>
           <div id="{el_id}" style="font-size:36px;font-weight:900;color:#0f172a;line-height:1.1;">
@@ -327,11 +333,28 @@ def _mount_js_countdown(
         (function() {{
           const deadline = {float(deadline)};
           const el = document.getElementById("{el_id}");
+          const label = document.getElementById("{el_id}-label");
           if (!el) return;
+          // Same presentation fix as the On-the-Clock banner: this block is the
+          // second countdown visible during a shared draft, and it used to stop
+          // ticking at zero, so fixing only the banner would have left a frozen
+          // "0" beside a live one. Display only -- the canonical room deadline
+          // still owns expiry and auto-pick.
           function tick() {{
-            const rem = Math.max(0, Math.ceil(deadline - Date.now() / 1000));
+            const left = deadline - Date.now() / 1000;
+            const rem = Math.max(0, Math.ceil(left));
             el.textContent = rem > 0 ? (rem + "s") : "0";
-            if (rem > 0) window.setTimeout(tick, 1000);
+            if (rem > 0) {{
+              window.setTimeout(tick, 1000);
+              return;
+            }}
+            const over = Math.max(0, Math.floor(-left));
+            if (over >= {EXPIRED_HINT_AFTER_SEC}) {{
+              if (label) label.textContent = "Expired \u2022 refresh if stuck";
+              return;
+            }}
+            if (label) label.textContent = "Expired \u2022 +" + over + "s";
+            window.setTimeout(tick, 1000);
           }}
           tick();
         }})();
