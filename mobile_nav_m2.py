@@ -50,12 +50,15 @@ PAGE_GROUPS: dict[str, str] = {
     "Fantasy Standings Tracker": "Fantasy Team",
     "Fantasy Lineup Assistant": "Fantasy Team",
     "Waiver Wire / Add-Drop Center": "Fantasy Team",
+    # Added at integration: monetization M3 registers this page in PAGE_OPTIONS,
+    # and without an entry here it fell through to the ungrouped tail on phones.
+    "Pricing & Upgrade": "Account",
 }
 
 # Fixed display order for groups; anything not in PAGE_GROUPS is appended,
 # ungrouped, at the end — so a future page that forgets to register a group
 # stays reachable (never silently dropped) instead of erroring.
-GROUP_ORDER: tuple[str, ...] = ("Explore & Analyze", "Draft Tools", "Live Draft", "Fantasy Team")
+GROUP_ORDER: tuple[str, ...] = ("Explore & Analyze", "Draft Tools", "Live Draft", "Fantasy Team", "Account")
 
 __all__ = (
     "PAGE_GROUPS",

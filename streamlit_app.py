@@ -13089,6 +13089,7 @@ PAGE_OPTIONS = [
     "Fantasy Standings Tracker",
     "Fantasy Lineup Assistant",
     "Waiver Wire / Add-Drop Center",
+    "Pricing & Upgrade",
 ]
 _PAGE_OPTION_SET = frozenset(PAGE_OPTIONS)
 
@@ -13114,6 +13115,7 @@ PAGE_OPTION_LABELS = {
     "Fantasy Standings Tracker": "📊 Fantasy Standings Tracker",
     "Fantasy Lineup Assistant": "🧠 Fantasy Lineup Assistant",
     "Waiver Wire / Add-Drop Center": "🔄 Waiver Wire / Add-Drop Center",
+    "Pricing & Upgrade": "💳 Pricing & Upgrade",
     "Trade Analyzer / Roster Move Assistant": "🔁 Trade Analyzer / Roster Move Assistant",
 }
 _PAGE_LABEL_TO_KEY = {label: key for key, label in PAGE_OPTION_LABELS.items()}
@@ -15232,6 +15234,12 @@ _render_baseball_sidebar_chrome(st)
 
 pp.render_sidebar_toggle(st)
 render_developer_mode_sidebar_toggle()
+try:
+    from baseball_monetization_ui import render_development_plan_control
+
+    render_development_plan_control(st, enabled=developer_mode_enabled())
+except ImportError:
+    pass
 if developer_mode_enabled():
     try:
         from live_draft_ux_latency import render_ux_latency_panel
@@ -15532,6 +15540,26 @@ except ImportError:
     pass
 
 # Immutable page snapshot for this run — exclusive body routing + fragment gates.
+_monetization_snapshot = None
+_monetization_gate_page = ""
+try:
+    from baseball_monetization import PAGE_FEATURES, entitlement_for_page
+    from baseball_monetization_ui import current_entitlement, remember_paywall_context
+
+    _monetization_snapshot = current_entitlement(
+        st.session_state,
+        developer_mode=developer_mode_enabled(),
+    )
+    if active_page in PAGE_FEATURES and not _monetization_snapshot.ready:
+        _monetization_gate_page = active_page
+        active_page = "__ENTITLEMENT_LOADING__"
+    elif not entitlement_for_page(_monetization_snapshot, active_page):
+        remember_paywall_context(st.session_state, active_page)
+        _monetization_gate_page = active_page
+        active_page = "__MONETIZATION_GATE__"
+except ImportError:
+    pass
+
 try:
     from app_page_generation import begin_page_run
 
@@ -16328,7 +16356,31 @@ def projections_filter_changed():
 
 
 
-if active_page == "Historical Explorer":
+if active_page == "__ENTITLEMENT_LOADING__":
+    st.title("Checking your membership…")
+    st.info("Your requested page is preserved while trusted account access loads. No premium feature state has been initialized.")
+    if st.button("Retry", key="entitlement_retry"):
+        st.rerun()
+
+
+elif active_page == "__MONETIZATION_GATE__":
+    from baseball_monetization_ui import render_feature_gate
+
+    render_feature_gate(st, st.session_state, _monetization_gate_page)
+
+
+elif active_page == "Pricing & Upgrade":
+    from baseball_monetization_ui import current_entitlement, render_pricing_page
+
+    if _monetization_snapshot is None:
+        _monetization_snapshot = current_entitlement(
+            st.session_state,
+            developer_mode=developer_mode_enabled(),
+        )
+    render_pricing_page(st, st.session_state, _monetization_snapshot)
+
+
+elif active_page == "Historical Explorer":
     try:
         from app_page_generation import note_page_renderer
 
