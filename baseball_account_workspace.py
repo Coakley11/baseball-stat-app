@@ -118,6 +118,15 @@ def _render_saved_sessions_section(
         )
 
 
+def _auth_session_active(session_state: dict[str, Any]) -> bool:
+    try:
+        from suite_auth import is_auth_enabled, is_authenticated
+
+        return bool(is_auth_enabled() and is_authenticated(session_state))
+    except ImportError:
+        return False
+
+
 def _render_logout_entry(st: Any, session_state: dict[str, Any]) -> None:
     try:
         from suite_auth import is_auth_enabled, is_authenticated, logout
@@ -158,8 +167,12 @@ def _render_consolidated_body(
         label=reset_label,
         help_text=reset_help,
     )
-    st.divider()
-    _render_logout_entry(st, session_state)
+    # Divider only when a Log out button follows it. Unconditionally it left a
+    # dangling rule and dead space at the bottom of the panel whenever nobody is
+    # signed in (always, on deploys with sign-in switched off).
+    if _signed_in_email(ctx, session_state) and _auth_session_active(session_state):
+        st.divider()
+        _render_logout_entry(st, session_state)
 
 
 def render_baseball_account_workspace_control(
