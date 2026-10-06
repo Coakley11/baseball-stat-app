@@ -195,7 +195,11 @@ def _prepare_setup(page, report: dict) -> None:
     report["solo_ok"] = solo_ok
     page.wait_for_timeout(1000)
     # Only touch known numeric setup fields — broad "Timer" fills can empty selectboxes.
-    for lab, val in (("Number of Teams", "2"), ("Picks per Team", "6")):
+    # Picks per Team must cover every required roster slot: the default roster is
+    # C/1B/2B/3B/SS=1, OF=3, DH=1, P=0, BN=5 = 14, so the old value of 6 made the
+    # product correctly REFUSE to create the room. The run then sat on Setup until
+    # it timed out and reported a start "failure" that never happened.
+    for lab, val in (("Number of Teams", "2"), ("Picks per Team", "15")):
         try:
             loc = page.get_by_label(re.compile(rf"^{lab}$|{lab}", re.I))
             if loc.count():
@@ -227,6 +231,34 @@ def _prepare_setup(page, report: dict) -> None:
     except Exception:
         pass
     report["pre_start_snip"] = _body(page)[:900]
+
+
+
+_CLOCK_JS = r"""() => {
+  const all = [...document.querySelectorAll('[class*="st-key-solo_live_clock_"]')];
+  const isWarm = c => /st-key-solo_live_clock_prewarm_/.test(c.getAttribute('class') || '');
+  const meta = c => {
+    const ifr = [...c.querySelectorAll('iframe')];
+    return {h: Math.round(c.getBoundingClientRect().height), iframes: ifr.length,
+            iframe_h: ifr.map(f => Math.round(f.getBoundingClientRect().height)),
+            titles: ifr.map(f => f.getAttribute('title')),
+            text: (c.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 50)};
+  };
+  const warm = all.filter(isWarm), live = all.filter(c => !isWarm(c));
+  return {prewarm: warm.map(meta), live: live.map(meta),
+          clock_iframes: document.querySelectorAll(
+            'iframe[title="solo_live_clock_component.solo_live_clock"]').length,
+          warm_digits: warm.some(c => /\d/.test((c.innerText || '').trim()))};
+}"""
+
+
+def _clock_state(page):
+    """Declared Solo clock component state. Prewarm and real clock are told apart by
+    the key prefix -- never by iframe title, which is module-qualified."""
+    try:
+        return page.evaluate(_CLOCK_JS)
+    except Exception:
+        return {"prewarm": [], "live": [], "clock_iframes": 0, "warm_digits": False}
 
 
 def _click_start(page) -> tuple[bool, float, dict]:
@@ -265,10 +297,44 @@ def _click_start(page) -> tuple[bool, float, dict]:
 
     stages = {"click_s": 0.0}
     saw_starting = False
-    for i in range(90):
+    ready_clicked = False
+    # Creating the room no longer starts the draft: it lands on the Solo Ready card,
+    # whose "Start Draft" button stays disabled behind the Pick-1 snapshot readiness
+    # gate. That second click is what actually arms the clock, so the loop below has
+    # to perform it -- waiting for an active draft without it can only time out.
+    for i in range(240):
         page.wait_for_timeout(500)
         text = _body(page)
         elapsed = round(time.perf_counter() - t0, 2)
+        if not ready_clicked:
+            if re.search(r"Your draft is ready|Preparing your draft", text):
+                stages.setdefault("ready_card_s", elapsed)
+                cs = _clock_state(page)
+                if cs["prewarm"]:
+                    w = cs["prewarm"][0]
+                    stages.setdefault("prewarm_first_s", elapsed)
+                    stages["prewarm_h"] = w["h"]
+                    stages["prewarm_iframes"] = w["iframes"]
+                    stages["prewarm_iframe_h"] = w["iframe_h"]
+                    stages["prewarm_titles"] = w["titles"]
+                    stages["prewarm_text"] = w["text"]
+                    stages["prewarm_digits"] = bool(cs["warm_digits"])
+                    stages["prewarm_live_clocks_present"] = len(cs["live"])
+            try:
+                sd = page.get_by_role("button", name=re.compile(r"^Start Draft$", re.I))
+                if sd.count():
+                    stages.setdefault("start_draft_seen_s", elapsed)
+                    b0 = sd.first
+                    if b0.is_enabled():
+                        stages["start_draft_enabled_s"] = elapsed
+                        # force=True: a primary button with help= renders a real button
+                        # plus a 0x0 tooltip twin, and a plain click can resolve to the
+                        # twin and silently deliver nothing.
+                        b0.click(timeout=8000, force=True)
+                        ready_clicked = True
+                        stages["start_draft_click_s"] = elapsed
+            except Exception as e:
+                stages.setdefault("ready_errs", []).append(str(e)[:80])
         if re.search(r"Starting…|Starting\.\.\.", text):
             saw_starting = True
             if "first_starting_s" not in stages:
@@ -286,12 +352,37 @@ def _click_start(page) -> tuple[bool, float, dict]:
             stages["draft_btn_s"] = elapsed
             stages["draft_btn_n"] = draft_n
         if _active(page):
+            cs = _clock_state(page)
+            stages["clock_iframes_at_active"] = cs["clock_iframes"]
+            stages["live_clock_containers_at_active"] = len(cs["live"])
+            if cs["live"]:
+                stages["live_clock_h"] = cs["live"][0]["h"]
+                stages["live_clock_iframes"] = cs["live"][0]["iframes"]
+                stages["live_clock_text"] = cs["live"][0]["text"]
+            # Measured from the Start click, so pool/Ready cost is excluded.
+            t_clock = time.perf_counter()
+            for _ in range(60):
+                cs = _clock_state(page)
+                if cs["clock_iframes"]:
+                    stages["clock_iframe_after_active_s"] = round(
+                        time.perf_counter() - t_clock, 2)
+                    stages["clock_iframe_text"] = (
+                        cs["live"][0]["text"] if cs["live"] else "")
+                    break
+                page.wait_for_timeout(500)
             stages["active_s"] = elapsed
             stages["still_starting"] = bool(re.search(r"Starting…|Starting\.\.\.", text))
             stages["saw_starting"] = saw_starting
             return True, elapsed, {**meta, "stages": stages}
-        if i > 4 and "Start New Live Draft" in text and "Solo live draft started" not in text:
-            # Start click may have been ignored; stop early.
+        if (
+            i > 4
+            and not ready_clicked
+            and "Start New Live Draft" in text
+            and "Solo live draft started" not in text
+            and not re.search(r"Your draft is ready|Preparing your draft", text)
+        ):
+            # Still on Setup with no Ready card: the create really was ignored or
+            # refused. Sitting on the Ready card is NOT no-progress.
             if "no_progress_s" not in stages and i > 10:
                 stages["no_progress_s"] = elapsed
     stages["timeout_s"] = round(time.perf_counter() - t0, 2)
@@ -331,10 +422,14 @@ def _run_interactions(page, report: dict) -> None:
     c["recommended_players"] = "Recommended Players" in text
     c["user_facing_intro"] = "Compare the best options for your current pick" in text
     c["why_recommended"] = "Why Recommended" in text
-    c["rec_rankings"] = "Recommendation rankings" in text
-    c["quick_tools"] = "Quick Draft Tools" in text
-    ri = text.find("Recommendation rankings")
-    qi = text.find("Quick Draft Tools")
+    # Case-insensitive: the product renders "Recommendation Rankings" (capital R),
+    # so the old case-sensitive `in` could never match and dragged
+    # rankings_above_quick_tools down with it.
+    _low = text.lower()
+    c["rec_rankings"] = "recommendation rankings" in _low
+    c["quick_tools"] = "quick draft tools" in _low
+    ri = _low.find("recommendation rankings")
+    qi = _low.find("quick draft tools")
     c["rankings_above_quick_tools"] = ri != -1 and qi != -1 and ri < qi
     c["draft_queue_visible"] = "Draft Queue" in text or "Draft queue" in text
     c["manual_draft"] = "Manual Draft" in text
@@ -536,11 +631,9 @@ def _run_interactions(page, report: dict) -> None:
         page.mouse.wheel(0, 1600)
         page.wait_for_timeout(300)
     final = _body(page)
-    c["rankings_above_quick_tools_final"] = (
-        final.find("Recommendation rankings") != -1
-        and final.find("Quick Draft Tools") != -1
-        and final.find("Recommendation rankings") < final.find("Quick Draft Tools")
-    )
+    _flow = final.lower()
+    _ri, _qi = _flow.find("recommendation rankings"), _flow.find("quick draft tools")
+    c["rankings_above_quick_tools_final"] = _ri != -1 and _qi != -1 and _ri < _qi
     page.screenshot(path=str(SHOT / "02_after_actions.png"), full_page=True)
 
 
