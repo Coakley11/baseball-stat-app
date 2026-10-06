@@ -147,11 +147,28 @@ class DeepLinkHandlerWiringTests(unittest.TestCase):
         self.assertIn('st.session_state["_skip_page_restore_for"] = _qp_target', block)
         self.assertIn("EXPLICIT_PAGE_NAV_KEY", block)
 
-    def test_same_page_guard_requires_a_set_active_page(self) -> None:
+    def _guard_block(self) -> str:
+        # Whole function body: the guard's explanatory comments outgrew a fixed window.
         start = self.src.index("def _consume_scheduled_navigation")
-        block = self.src[start:start + 2000]
+        return self.src[start:self.src.index("def render_scheduled_navigation_diagnostics", start)]
+
+    def test_same_page_guard_requires_a_set_active_page(self) -> None:
+        """M7: an unset active_page coerces to PAGE_OPTIONS[0], so it must never count
+        as the same page -- otherwise a deep link to the default page is dropped."""
+        block = self._guard_block()
         self.assertIn("_current_raw", block)
-        self.assertIn("if _current_raw and target == current:", block)
+        self.assertRegex(block, r"if _current_raw and .*target == current:")
+
+    def test_same_page_guard_requires_a_real_page(self) -> None:
+        """Integration: the paywall's sentinel active_page also coerces to
+        PAGE_OPTIONS[0]; it must not count as the same page, or the gate's
+        "Back to Historical Explorer" is dropped. Raw membership, because
+        normalize_page_key() coerces unknown values too."""
+        block = self._guard_block()
+        self.assertRegex(
+            block, r"if _current_raw and _current_is_real_page and target == current:")
+        self.assertIn("_current_raw in _PAGE_OPTION_SET", block)
+        self.assertNotIn("normalize_page_key(_current_raw) in", block)
 
 
 if __name__ == "__main__":

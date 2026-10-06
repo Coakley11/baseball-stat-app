@@ -13842,7 +13842,20 @@ def _consume_scheduled_navigation():
         # showed up as "?active_page=Historical%20Explorer is ignored".)
         _current_raw = str(st.session_state.get("active_page") or "").strip()
         current = get_sidebar_page_value(_current_raw)
-        if _current_raw and target == current:
+        # Only a REAL page can be "the same page". The paywall routes through the
+        # sentinels __MONETIZATION_GATE__ / __ENTITLEMENT_LOADING__, which
+        # begin_page_run() writes into active_page (deliberately: it keeps premium
+        # fragments from running behind the gate). get_sidebar_page_value() -- and
+        # normalize_page_key() under it -- coerce any unknown value to
+        # PAGE_OPTIONS[0], so a sentinel compared equal to "Historical Explorer" and
+        # the gate's "Back to Historical Explorer" was dropped here as a redundant
+        # schedule. Raw membership is checked for exactly that reason.
+        _current_is_real_page = (
+            _current_raw in _PAGE_OPTION_SET
+            or _current_raw in _PAGE_LABEL_TO_KEY
+            or _current_raw in _PAGE_LEGACY_ALIASES
+        )
+        if _current_raw and _current_is_real_page and target == current:
             try:
                 from nav_page_trace import log_nav_event
 

@@ -106,10 +106,18 @@ class DeepLinkEndToEndTests(unittest.TestCase):
         self.assertEqual(_state(at, "active_page"), "Leaderboards")
 
     def test_without_a_deep_link_the_saved_page_is_restored(self) -> None:
-        """Restore stays the fallback when nothing explicit was requested."""
+        """Restore stays the fallback when nothing explicit was requested.
+
+        Asserted on main_sidebar_page -- the restored navigation selection. Since
+        monetization, ML Predictions is a Pro page: for a Free session the gate
+        routes through begin_page_run(), which sets active_page to the internal
+        sentinel __MONETIZATION_GATE__ while the user is still, correctly, on ML
+        Predictions. The restore itself is what this test is about.
+        """
         at = _run(None)
         self.assertEqual([str(e.value)[:200] for e in at.exception], [])
-        self.assertEqual(_state(at, "active_page"), STALE_PAGE)
+        self.assertEqual(_state(at, "main_sidebar_page"), STALE_PAGE)
+        self.assertIn(_state(at, "active_page"), {STALE_PAGE, "__MONETIZATION_GATE__"})
 
     def test_invalid_deep_link_falls_back_safely(self) -> None:
         """An unknown page value must not raise and must not strand the app on a
