@@ -18,6 +18,13 @@ class Plan(str, Enum):
     FREE = "free"
     PRO = "pro"
 
+
+class EntitlementLevel(str, Enum):
+    FREE = "free"
+    PRO_ACTIVE = "pro_active"
+    PRO_INACTIVE = "pro_inactive"
+
+
 class SubscriptionStatus(str, Enum):
     ANONYMOUS="anonymous"
     AUTHENTICATED_FREE="authenticated_free"
@@ -25,6 +32,8 @@ class SubscriptionStatus(str, Enum):
     ACTIVE="active"
     CANCELED_PERIOD_END="canceled_period_end"
     PAST_DUE="past_due"
+    INACTIVE="inactive"
+    CANCELED="canceled"
     EXPIRED="expired"
     UNKNOWN="unknown"
     DEVELOPMENT="development"
@@ -54,6 +63,7 @@ class EntitlementSnapshot:
     status: SubscriptionStatus = SubscriptionStatus.ANONYMOUS
     user_id: str = ""
     current_period_end: str = ""
+    has_stripe_customer: bool = False
 
     @property
     def grants_pro(self) -> bool:
@@ -61,6 +71,14 @@ class EntitlementSnapshot:
             SubscriptionStatus.TRIALING, SubscriptionStatus.ACTIVE,
             SubscriptionStatus.CANCELED_PERIOD_END, SubscriptionStatus.DEVELOPMENT,
         }
+
+    @property
+    def entitlement(self) -> EntitlementLevel:
+        if self.grants_pro:
+            return EntitlementLevel.PRO_ACTIVE
+        if self.plan is Plan.PRO:
+            return EntitlementLevel.PRO_INACTIVE
+        return EntitlementLevel.FREE
 
 
 FEATURE_REGISTRY: Mapping[FeatureId, FeatureDefinition] = MappingProxyType(
@@ -105,6 +123,10 @@ PAGE_FEATURES: Mapping[str, FeatureId] = MappingProxyType(
     }
 )
 
+# The reusable candidates stay registered, but no product page is enforced during
+# billing acceptance. The Free-vs-Pro product split will be selected separately.
+ENFORCED_PAGE_FEATURES: Mapping[str, FeatureId] = MappingProxyType({})
+
 DEV_CONTROLS_ENV = "BASEBALL_ENTITLEMENT_DEV_CONTROLS"
 DEV_RUNTIME_ENV = "BASEBALL_ENTITLEMENT_RUNTIME"
 
@@ -140,7 +162,7 @@ def can_use_feature(snapshot: EntitlementSnapshot, feature_id: FeatureId) -> boo
 
 
 def entitlement_for_page(snapshot: EntitlementSnapshot, page: str) -> bool:
-    feature_id = PAGE_FEATURES.get(str(page))
+    feature_id = ENFORCED_PAGE_FEATURES.get(str(page))
     return True if feature_id is None else can_use_feature(snapshot, feature_id)
 
 
@@ -173,8 +195,8 @@ def resolve_trusted_entitlement(session: Mapping, *, provider=None, environ: Map
     if not authenticated:
         return EntitlementSnapshot(status=SubscriptionStatus.ANONYMOUS)
     try:
-        from baseball_billing_config import BillingConfig, RolloutMode
-        config=BillingConfig.from_environ(env)
+        from baseball_billing_config import RolloutMode, load_client_billing_config
+        config=load_client_billing_config(environ if environ is not None else None)
         if config.rollout in {RolloutMode.OFF,RolloutMode.PREVIEW}:
             return EntitlementSnapshot(status=SubscriptionStatus.AUTHENTICATED_FREE,user_id=user_id,source="billing_disabled")
         if provider is None:

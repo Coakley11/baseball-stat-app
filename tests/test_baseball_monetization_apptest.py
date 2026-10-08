@@ -8,7 +8,7 @@ def _text(elements):
     return " ".join(str(getattr(element, "value", "")) for element in elements)
 
 
-def test_rendered_free_gate_pricing_and_back_navigation():
+def test_rendered_free_pages_stay_available_during_billing_acceptance():
     from streamlit.testing.v1 import AppTest
 
     at = AppTest.from_file(str(FIXTURE), default_timeout=30).run()
@@ -17,17 +17,17 @@ def test_rendered_free_gate_pricing_and_back_navigation():
 
     at.radio(key="test_page").set_value("ML Predictions").run()
     assert not at.exception
-    assert "ML Predictions is a Pro feature" in _text(at.title)
+    assert "ALLOWED:free:ML Predictions" in _text(at.success)
     assert "ml_lookback" not in at.session_state
 
-    at.button(key="monetization_gate_pricing").click().run()
+    at.radio(key="test_page").set_value("Pricing & Upgrade").run()
     assert not at.exception
     assert "Baseball Free & Pro" in _text(at.title)
     assert "Current plan: **Free**" in _text(at.info)
 
     at.button(key="monetization_pricing_back").click().run()
     assert not at.exception
-    assert "ML Predictions is a Pro feature" in _text(at.title)
+    assert "Historical Explorer" in _text(at.title)
 
 
 def test_rendered_pro_refresh_and_navigation_consistency():

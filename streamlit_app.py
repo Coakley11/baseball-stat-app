@@ -15586,14 +15586,14 @@ except ImportError:
 _monetization_snapshot = None
 _monetization_gate_page = ""
 try:
-    from baseball_monetization import PAGE_FEATURES, entitlement_for_page
+    from baseball_monetization import ENFORCED_PAGE_FEATURES, entitlement_for_page
     from baseball_monetization_ui import current_entitlement, remember_paywall_context
 
     _monetization_snapshot = current_entitlement(
         st.session_state,
         developer_mode=developer_mode_enabled(),
     )
-    if active_page in PAGE_FEATURES and not _monetization_snapshot.ready:
+    if active_page in ENFORCED_PAGE_FEATURES and not _monetization_snapshot.ready:
         _monetization_gate_page = active_page
         active_page = "__ENTITLEMENT_LOADING__"
     elif not entitlement_for_page(_monetization_snapshot, active_page):

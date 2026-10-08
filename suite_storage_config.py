@@ -7,7 +7,7 @@ Same block on Command Center and every suite app.
 Environment fallback (local / CI):
   SUITE_SUPABASE_URL
   SUITE_SUPABASE_KEY
-  SUITE_SUPABASE_ANON_KEY  (preferred for Auth sign-in; optional — falls back to SUPABASE_KEY)
+  SUITE_SUPABASE_ANON_KEY  (required for Auth sign-in)
 """
 
 from __future__ import annotations
@@ -191,6 +191,7 @@ def cloud_storage_enabled() -> bool:
 
 def reset_cloud_config_cache() -> None:
     get_cloud_config.cache_clear()
+    get_auth_api_url.cache_clear()
     get_auth_api_key.cache_clear()
     try:
         from suite_storage_supabase import reset_supabase_client_cache
@@ -228,13 +229,45 @@ def _auth_key_from_streamlit_secrets() -> str:
         return ""
 
 
+def _auth_url_from_streamlit_secrets() -> str:
+    """Read only the public Supabase project URL from Streamlit secrets."""
+    try:
+        import streamlit as st  # noqa: WPS433
+
+        root = st.secrets
+        block = None
+        try:
+            block = root.get("suite_activity")
+        except Exception:
+            try:
+                block = root["suite_activity"]
+            except Exception:
+                block = None
+        if block is not None:
+            url = _mapping_get(block, "supabase_url", "url", "SUPABASE_URL")
+            if url:
+                return url
+        return _mapping_get(root, "supabase_url", "SUITE_SUPABASE_URL", "url")
+    except Exception:
+        return ""
+
+
+@lru_cache(maxsize=1)
+def get_auth_api_url() -> str | None:
+    """Supabase project URL for public Auth and user-scoped RLS requests."""
+    url = os.environ.get("SUITE_SUPABASE_URL", "").strip()
+    if not url:
+        url = _auth_url_from_streamlit_secrets()
+    return url.rstrip("/") if url else None
+
+
 @lru_cache(maxsize=1)
 def get_auth_api_key() -> str | None:
     """
     API key for Supabase Auth (sign-in / sign-up / reset).
 
-    Prefer the public anon key. Falls back to ``supabase_key`` (service role) for dev
-    when anon is not set — anon is recommended for production auth flows.
+    Only a public anon/publishable key is accepted. A service-role/secret key must
+    never be reused by the user-session client, even in local development.
     """
     env_anon = os.environ.get("SUITE_SUPABASE_ANON_KEY", "").strip()
     if env_anon:
@@ -242,5 +275,4 @@ def get_auth_api_key() -> str | None:
     secret_anon = _auth_key_from_streamlit_secrets()
     if secret_anon:
         return secret_anon
-    cfg = get_cloud_config()
-    return cfg.key if cfg else None
+    return None

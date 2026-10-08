@@ -157,6 +157,15 @@ def _render_consolidated_body(
         st.caption("Local workspace — sign-in isn't available on this deploy.")
     st.caption(f"Workspace: **{_workspace_label(ctx)}**")
 
+    try:
+        from baseball_monetization_ui import render_account_subscription
+
+        st.divider()
+        render_account_subscription(st, session_state)
+    except ImportError:
+        pass
+
+    st.divider()
     st.markdown("**Command Center**")
     _render_command_center_entry(st)
     st.divider()

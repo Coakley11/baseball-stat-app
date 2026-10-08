@@ -88,41 +88,106 @@ def render_pricing_page(st, session: MutableMapping, snapshot: EntitlementSnapsh
             "Add ML Predictions and Draft Lab today, with advanced draft intelligence, "
             "expanded workspaces, and premium exports planned for later phases."
         )
-        st.caption("Price to be announced · billing is not active in M1")
-    st.info(f"Current plan: **{snapshot.plan.value.title()}**")
-    if not snapshot.ready:
-        st.info("Checking your membership… Premium access will not be decided until the trusted account state is ready.")
-    elif snapshot.plan is Plan.PRO:
-        st.success(f"Pro is active ({snapshot.status.value.replace('_', ' ')}). Premium tools are available.")
-        if snapshot.status.value != "development" and st.button("Manage billing", key="billing_portal_start"):
-            try:
-                from baseball_billing_client import create_portal_url
-                st.session_state["_billing_portal_url"] = create_portal_url(session)
-            except Exception as exc:
-                st.error(str(exc))
-        portal_url = str(st.session_state.pop("_billing_portal_url", "") or "")
-        if portal_url:
-            st.link_button("Continue to secure Stripe billing portal", portal_url)
-    else:
-        try:
-            from baseball_billing_client import billing_ui_state
-            billing = billing_ui_state(session)
-        except Exception:
-            billing = {"action": "disabled", "message": "Billing is currently unavailable."}
-        st.warning(str(billing.get("message") or "Checkout is not available."))
-        if billing.get("action") == "checkout" and st.button("Start Stripe Checkout", type="primary", key="billing_checkout_start"):
-            try:
-                from baseball_billing_client import create_checkout_url
-                st.session_state["_billing_checkout_url"] = create_checkout_url(session)
-            except Exception as exc:
-                st.error(str(exc))
-        checkout_url = str(st.session_state.pop("_billing_checkout_url", "") or "")
-        if checkout_url:
-            st.link_button("Continue to secure Stripe Checkout", checkout_url, type="primary")
+        st.caption("$14.99/month · secure checkout powered by Stripe")
+    render_subscription_actions(st, session, snapshot, key_prefix="pricing")
     target = pricing_return_page(session)
     if st.button(f"Back to {target}", key="monetization_pricing_back"):
         schedule_page(session, target)
         st.rerun()
+
+
+def render_subscription_actions(
+    st,
+    session: MutableMapping,
+    snapshot: EntitlementSnapshot,
+    *,
+    key_prefix: str,
+) -> None:
+    """Render billing actions from trusted state; never mutate entitlement state."""
+    st.info(
+        f"Current plan: **{snapshot.entitlement.value.replace('_', ' ').title()}**"
+    )
+    if not snapshot.ready:
+        st.info(
+            "Checking your membership… Access will not be decided until the trusted "
+            "account state is ready."
+        )
+        return
+    if snapshot.grants_pro:
+        st.success(
+            f"Pro is active ({snapshot.status.value.replace('_', ' ')})."
+        )
+    elif snapshot.plan is Plan.PRO:
+        st.warning(
+            f"Pro is not active ({snapshot.status.value.replace('_', ' ')})."
+        )
+    try:
+        from baseball_billing_client import billing_ui_state
+
+        billing = billing_ui_state(session)
+    except Exception:
+        billing = {"action": "disabled", "message": "Billing is currently unavailable."}
+    if not snapshot.grants_pro:
+        if billing.get("action") == "signin":
+            st.caption(str(billing.get("message") or "Sign in to upgrade."))
+        elif billing.get("action") != "checkout":
+            st.caption(str(billing.get("message") or "Checkout is not available."))
+        if billing.get("action") == "checkout" and st.button(
+            "Upgrade to Pro — $14.99/month",
+            type="primary",
+            key=f"{key_prefix}_billing_checkout_start",
+            use_container_width=True,
+        ):
+            try:
+                from baseball_billing_client import create_checkout_url
+
+                st.session_state[f"_{key_prefix}_billing_checkout_url"] = (
+                    create_checkout_url(session)
+                )
+            except Exception as exc:
+                st.error(str(exc))
+        checkout_url = str(
+            st.session_state.pop(f"_{key_prefix}_billing_checkout_url", "") or ""
+        )
+        if checkout_url:
+            st.link_button(
+                "Continue to secure Stripe Checkout",
+                checkout_url,
+                type="primary",
+                key=f"{key_prefix}_billing_checkout_link",
+                use_container_width=True,
+            )
+    if snapshot.has_stripe_customer and snapshot.status.value != "development":
+        if st.button(
+            "Manage Subscription",
+            key=f"{key_prefix}_billing_portal_start",
+            use_container_width=True,
+        ):
+            try:
+                from baseball_billing_client import create_portal_url
+
+                st.session_state[f"_{key_prefix}_billing_portal_url"] = (
+                    create_portal_url(session)
+                )
+            except Exception as exc:
+                st.error(str(exc))
+        portal_url = str(
+            st.session_state.pop(f"_{key_prefix}_billing_portal_url", "") or ""
+        )
+        if portal_url:
+            st.link_button(
+                "Continue to secure Stripe billing portal",
+                portal_url,
+                key=f"{key_prefix}_billing_portal_link",
+                use_container_width=True,
+            )
+
+
+def render_account_subscription(st, session: MutableMapping) -> None:
+    """Account & Workspace subscription block for an authenticated user."""
+    st.markdown("**Subscription**")
+    snapshot = current_entitlement(session)
+    render_subscription_actions(st, session, snapshot, key_prefix="account")
 
 
 def render_feature_gate(st, session: MutableMapping, page: str) -> None:

@@ -394,6 +394,11 @@ Open `http://localhost:8501`
 
 Configure secrets in `.streamlit/secrets.toml` for Streamlit Cloud (see `.streamlit/secrets.toml.example`).
 
+Authentication and Stripe test-billing setup are documented in
+[`docs/BASEBALL_BILLING_SETUP.md`](docs/BASEBALL_BILLING_SETUP.md). Stripe and
+Supabase elevated credentials belong only on the separate billing service; the
+Streamlit billing client uses public Supabase and service URL configuration.
+
 ### Streamlit Cloud deployment
 
 - **Repository:** `Coakley11/baseball-stat-app`

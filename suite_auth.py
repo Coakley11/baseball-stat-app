@@ -506,17 +506,17 @@ def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
 
 
 def _create_fresh_supabase_client() -> Any:
-    from suite_storage_config import get_auth_api_key, get_cloud_config
+    from suite_storage_config import get_auth_api_key, get_auth_api_url
 
-    cfg = get_cloud_config()
-    if cfg is None:
-        raise RuntimeError("Supabase cloud config missing.")
+    auth_url = get_auth_api_url()
+    if not auth_url:
+        raise RuntimeError("Supabase Auth URL missing — set supabase_url.")
     auth_key = get_auth_api_key()
     if not auth_key:
         raise RuntimeError("Supabase Auth key missing — set supabase_anon_key.")
     from supabase import create_client
 
-    return create_client(cfg.url, auth_key)
+    return create_client(auth_url, auth_key)
 
 
 def _auth_api(session_state: dict[str, Any]) -> Any:

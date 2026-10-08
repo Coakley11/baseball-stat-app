@@ -29,8 +29,8 @@ def _titles(at) -> str:
     return " | ".join(t.value for t in at.title)
 
 
-class PaywallNavigationRealAppTests(unittest.TestCase):
-    def test_gate_back_and_pricing_buttons_navigate_in_the_real_app(self) -> None:
+class MonetizationAcceptanceRealAppTests(unittest.TestCase):
+    def test_candidate_pro_pages_remain_available_and_pricing_is_reachable(self) -> None:
         cwd = os.getcwd()
         os.chdir(ROOT)
         try:
@@ -38,25 +38,18 @@ class PaywallNavigationRealAppTests(unittest.TestCase):
             at.session_state["main_sidebar_page"] = "Draft Lab / Simulation"
             at.run()
             self.assertFalse(at.exception, [str(e.value)[:200] for e in at.exception])
-            self.assertIn("Draft Lab is a Pro feature", _titles(at))
-            # The sentinel really is in session -- the precondition for defect 2.
-            self.assertEqual(at.session_state["active_page"], "__MONETIZATION_GATE__")
-
-            back = [b for b in at.button if b.key == "monetization_gate_back"]
-            self.assertEqual(len(back), 1)
-            back[0].click().run()
-            self.assertFalse(at.exception, [str(e.value)[:200] for e in at.exception])
-            self.assertEqual(at.session_state["main_sidebar_page"], "Historical Explorer")
-            self.assertEqual(at.session_state["active_page"], "Historical Explorer")
+            self.assertEqual(at.session_state["main_sidebar_page"], "Draft Lab / Simulation")
+            self.assertEqual(at.session_state["active_page"], "Draft Lab / Simulation")
+            self.assertNotEqual(at.session_state["active_page"], "__MONETIZATION_GATE__")
             self.assertNotIn("is a Pro feature", _titles(at))
 
             at.radio(key="main_sidebar_page").set_value("ML Predictions").run()
             self.assertFalse(at.exception, [str(e.value)[:200] for e in at.exception])
-            self.assertIn("ML Predictions is a Pro feature", _titles(at))
+            self.assertEqual(at.session_state["active_page"], "ML Predictions")
+            self.assertNotEqual(at.session_state["active_page"], "__MONETIZATION_GATE__")
+            self.assertNotIn("is a Pro feature", _titles(at))
 
-            pricing = [b for b in at.button if b.key == "monetization_gate_pricing"]
-            self.assertEqual(len(pricing), 1)
-            pricing[0].click().run()
+            at.radio(key="main_sidebar_page").set_value("Pricing & Upgrade").run()
             self.assertFalse(at.exception, [str(e.value)[:200] for e in at.exception])
             self.assertEqual(at.session_state["main_sidebar_page"], "Pricing & Upgrade")
             self.assertIn("Baseball Free & Pro", _titles(at))

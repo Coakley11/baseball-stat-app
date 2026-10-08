@@ -26,6 +26,7 @@ _SESSION_RESTORED_PREFIX = "_suite_disk_state_restored::"
 _SESSION_BANNER_KEY = "_suite_persist_banner"
 _SESSION_SAVED_FLASH_KEY = "_suite_persist_saved_flash"
 SESSION_USER_OWNED_PAGE_KEY = "_suite_user_owned_page"
+AUTH_PAGE_PRESERVE_KEY = "_suite_auth_page_preserve"
 _SESSION_INVALID_WARN_KEY = "_suite_persist_invalid_warn"
 _SESSION_CLOUD_BANNER_KEY = "_suite_persist_cloud_banner"
 _LOCAL_DIRTY_PREFIX = "_suite_persist_local_dirty::"
@@ -34,6 +35,35 @@ _RESTORED_FP_PREFIX = "_suite_restored_state_fp::"
 _AUTOSAVE_BLOCK_PREFIX = "_suite_autosave_blocked::"
 _WORKSPACE_SYNCED_PREFIX = "_suite_workspace_synced::"
 _CLOUD_WORKSPACE_RESTORED = "_cloud_workspace_restored"
+
+
+def preserve_page_through_auth(session: dict[str, Any], *, app_id: str = "baseball") -> str:
+    """Keep the current page stable while sign-in switches account/workspace scope."""
+    active = str(session.get("active_page") or "").strip()
+    sidebar = str(session.get("main_sidebar_page") or "").strip()
+    page = sidebar or active
+    if not page:
+        return ""
+    session[AUTH_PAGE_PRESERVE_KEY] = page
+    session[SESSION_USER_OWNED_PAGE_KEY] = page
+    session["active_page"] = page
+    session["main_sidebar_page"] = page
+    session["_suite_last_persisted_page"] = page
+    session["_navigate_to_page"] = page
+    session["_skip_page_restore_for"] = page
+    session["requested_page"] = page
+    session["active_page_source"] = "auth_preserve"
+    session["_suite_workspace_force_sync"] = True
+    session.pop(_workspace_synced_key(app_id), None)
+    session.pop(f"{_SESSION_RESTORED_PREFIX}{app_id}", None)
+    session.pop(_applied_cloud_ts_key(app_id), None)
+    try:
+        from suite_cloud_state import invalidate_cloud_full_session_cache
+
+        invalidate_cloud_full_session_cache(app_id)
+    except Exception:
+        pass
+    return page
 
 
 def _utc_now_iso() -> str:
