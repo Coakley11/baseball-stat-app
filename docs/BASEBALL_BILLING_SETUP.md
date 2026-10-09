@@ -48,7 +48,7 @@ Set all of the following on the separately deployed billing service:
 - `BASEBALL_STRIPE_MODE=test`
 - `STRIPE_SECRET_KEY` — Stripe test secret key (`sk_test_...`)
 - `STRIPE_WEBHOOK_SECRET` — signing secret for this test webhook endpoint
-- `STRIPE_BASEBALL_PRO_TEST_PRICE_ID=price_1UO5FtGot4wcmURUVFW5wWiw`
+- `STRIPE_BASEBALL_PRO_TEST_PRICE_ID=price_1UOJuhKBFPikFnl8SDE6hKwc`
 - `BASEBALL_PUBLIC_BASE_URL` — Streamlit app URL used for Checkout/Portal returns
 - `BASEBALL_BILLING_SUPABASE_URL`
 - `BASEBALL_BILLING_SUPABASE_ANON_KEY` — public key used only to verify user JWTs
@@ -97,7 +97,7 @@ exist. It does not recreate the signup trigger.
 ## Stripe test-mode manual setup
 
 1. Keep Product `prod_VOt1C1y8eR5p6R` and monthly test Price
-   `price_1UO5FtGot4wcmURUVFW5wWiw` active.
+   `price_1UOJuhKBFPikFnl8SDE6hKwc` active.
 2. Enable/configure the Stripe test Billing Portal.
 3. Add an HTTPS webhook endpoint at
    `https://YOUR_BILLING_SERVICE/billing/webhooks/stripe`.
