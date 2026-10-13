@@ -216,5 +216,79 @@ class DecisionScoreCopyTests(unittest.TestCase):
         self.assertNotIn("0–100", SCORE_TOOLTIPS[DISPLAY_PICK_SCORE])
 
 
+class SharedManualPickCommitTests(unittest.TestCase):
+    """A seat's manual pick must reach the shared room document before the next poll."""
+
+    def setUp(self) -> None:
+        from unittest import mock
+
+        from draft_room_shared_state import LocalFileSharedRoomStore
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.store = LocalFileSharedRoomStore(root=Path(self._tmpdir.name))
+        self._patches = [
+            mock.patch("draft_room_shared_state.get_shared_room_store", return_value=self.store),
+            mock.patch("draft_room_membership.shared_room_requires_auth", return_value=False),
+        ]
+        for p in self._patches:
+            p.start()
+
+    def tearDown(self) -> None:
+        for p in self._patches:
+            p.stop()
+        self._tmpdir.cleanup()
+
+    def test_guest_pick_is_in_the_room_document_and_survives_the_next_poll(self) -> None:
+        import time
+
+        from draft_actions import draft_player
+        from draft_room_context import create_and_host_shared_room, join_shared_draft_room, poll_shared_draft_room
+        from draft_room_shared_state import LIVE_DRAFT_ROOM_KEY
+
+        pool = pd.DataFrame(
+            [
+                {"playerID": "p1", "fullName": "Juan Soto", "Primary Position": "OF"},
+                {"playerID": "p2", "fullName": "Aaron Judge", "Primary Position": "OF"},
+                {"playerID": "p3", "fullName": "Bobby Witt", "Primary Position": "SS"},
+            ]
+        )
+        room = {
+            "draft_room_id": "LDQPICK",
+            "status": "in_progress",
+            "current_pick_index": 0,
+            "config": {"num_teams": 2, "your_team": "Team 1", "timer_seconds": 60},
+            "teams": ["Team 1", "Team 2"],
+            "pick_order": [
+                {"Pick": 1, "Round": 1, "Team": "Team 1"},
+                {"Pick": 2, "Round": 1, "Team": "Team 2"},
+                {"Pick": 3, "Round": 2, "Team": "Team 2"},
+            ],
+            "draft_board": [],
+            "rosters": {"Team 1": [], "Team 2": []},
+            "drafted_player_ids": [],
+            "pool": pool,
+            "timer_deadline": time.time() + 45,
+        }
+        host: dict = {"draft_room_participant_id": "host-user", "room_your_team": "Team 1"}
+        guest: dict = {"draft_room_participant_id": "guest-user", "room_your_team": "Team 2"}
+        code, _ = create_and_host_shared_room(host, room, store=self.store)
+        join_shared_draft_room(guest, code, requested_team="Team 2", store=self.store)
+
+        def board(entries) -> list[str]:
+            return [str(e.get("fullName")) for e in (entries or [])]
+
+        for seat, name in ((host, "Juan Soto"), (guest, "Bobby Witt")):
+            poll_shared_draft_room(seat, force=True, store=self.store)
+            result = draft_player(seat, name, source="live_draft_room")
+            self.assertTrue(result.get("ok"), result)
+            # Durable before any deferred flush: the room document already has the pick.
+            self.assertEqual(board(self.store.load(code)["room"].get("draft_board"))[-1], name)
+
+        # Later polls must not replace either seat's board with an older one.
+        for seat in (host, guest):
+            poll_shared_draft_room(seat, force=True, store=self.store)
+            self.assertEqual(board(seat[LIVE_DRAFT_ROOM_KEY].get("draft_board")), ["Juan Soto", "Bobby Witt"])
+
+
 if __name__ == "__main__":
     unittest.main()
