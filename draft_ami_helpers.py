@@ -35,6 +35,22 @@ _POSITION_QUESTION_ALIASES: dict[str, tuple[str, ...]] = {
 def _import_baseball_app():
     """Load the Streamlit entry module (Linux deploy uses Streamlit_app.py)."""
     import importlib
+    import sys
+
+    # Under ``streamlit run`` the app executes as ``__main__``, so importing it by name
+    # compiled the 31k-line script again and re-executed its top level inside the
+    # Live Draft paint fragment. Reuse the running module when it is this app.
+    main = sys.modules.get("__main__")
+    if main is not None and all(
+        hasattr(main, attr)
+        for attr in (
+            "live_draft_current_slot",
+            "live_draft_next_pick_for_team",
+            "live_draft_recommendations",
+            "serialize_live_draft_room",
+        )
+    ):
+        return main
 
     last_exc: Exception | None = None
     for name in ("streamlit_app", "Streamlit_app"):

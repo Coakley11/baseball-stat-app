@@ -671,10 +671,12 @@ def fantasy_context_using_markdown(session: dict[str, Any]) -> str:
 
 
 def _resolve_live_room(session: dict[str, Any]) -> dict[str, Any] | None:
+    # Read-only for every caller (the fallback below already returns the live room
+    # uncopied), so peek instead of deep-copying the blob and its full player pool.
     try:
-        from live_draft_state import LIVE_DRAFT_ROOM_KEY, canonical_live_draft
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, peek_canonical_live_draft
 
-        blob = canonical_live_draft(session)
+        blob = peek_canonical_live_draft(session)
         if isinstance(blob, dict) and blob.get("draft_room_id"):
             return blob
         room = session.get(LIVE_DRAFT_ROOM_KEY) or session.get("live_draft_room")

@@ -721,7 +721,7 @@ class LocalFileSharedRoomStore:
                 "room_code_queried": code,
             }
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(_read_text_retry(path))
         except (OSError, json.JSONDecodeError) as exc:
             return {
                 "found": False,
@@ -754,7 +754,7 @@ class LocalFileSharedRoomStore:
         if not path.is_file():
             return None
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(_read_text_retry(path))
         except (OSError, json.JSONDecodeError):
             return None
         if not isinstance(raw, dict):
@@ -806,14 +806,14 @@ class LocalFileSharedRoomStore:
         path = self._path(code)
         if path.is_file():
             try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
+                raw = json.loads(_read_text_retry(path))
                 existing = raw if isinstance(raw, dict) else None
             except (OSError, json.JSONDecodeError):
                 existing = None
         payload = sanitize_shared_room_document(preserve_shared_room_sidecars(document, existing))
         payload["_storage_backend"] = "local_file"
         self.root.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        _atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True))
         return payload
 
     def save_if_revision(
@@ -833,6 +833,43 @@ class LocalFileSharedRoomStore:
             return False, current
         saved = self.save(preserve_shared_room_sidecars(document, current))
         return True, saved
+
+
+def _read_text_retry(path: Path) -> str:
+    """Read a room file, retrying Windows' transient sharing violation while a
+    writer swaps the file in; a failed read was reported as "room not found"."""
+    import time
+
+    for attempt in range(5):
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            time.sleep(0.02 * (attempt + 1))
+    return path.read_text(encoding="utf-8")
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write via a per-writer temp file + ``os.replace``.
+
+    ``write_text`` truncates then writes in place, so two writers (host and guest
+    servers, or two sessions in one process) interleaved bytes and left trailing
+    JSON. Every later load then failed to parse and the shared room stopped
+    advancing.
+    """
+    import os
+    import threading
+    import time
+
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    for attempt in range(20):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            # Windows refuses to replace a file another process has open for reading.
+            time.sleep(0.02 * (attempt + 1))
+    os.replace(tmp, path)
 
 
 _DEFAULT_STORE: SharedRoomStore | None = None

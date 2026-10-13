@@ -60,7 +60,13 @@ SCORE_TOOLTIPS: dict[str, str] = {
     DISPLAY_ROSTER_FIT: (
         "How well this player fits your current roster construction and needs."
     ),
-    DISPLAY_PICK_SCORE: "How strong this recommendation is right now (0–100).",
+    # Components are normalized within the remaining pool and survival urgency adds
+    # up to 5 points, so top values can exceed 100 — never promise a 0–100 cap.
+    DISPLAY_PICK_SCORE: (
+        "How strong this recommendation is at this pick (higher is better): mostly Player "
+        "Grade and model rank, adjusted for roster need, positional scarcity, and the risk "
+        "the player is gone before the next pick. Relative to the current pool."
+    ),
     "Fantasy Edge": "How much higher or lower the model ranks this player compared with the market.",
     DISPLAY_RELATIVE_GRADE: (
         "How this team's draft compares with other teams in the current draft room."

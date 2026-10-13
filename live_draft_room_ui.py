@@ -493,6 +493,13 @@ def inject_live_draft_room_styles(st: Any) -> None:
             color: #64748b;
             margin: 10px 0 6px 0;
         }
+        /* Slots wrap as a grid (one full-width row per slot cost ~370px). */
+        .ld-need-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 6px;
+        }
+        .ld-need-grid .ld-need-slot { margin: 0; }
         .ld-need-slot {
             display: flex;
             align-items: center;
@@ -1107,11 +1114,15 @@ def render_roster_tracker_panel(
         parts.append("</div>")
         cat_section = "".join(parts)
 
+    # Name the team: in Solo the cards can be for another team on the clock while
+    # this panel tracks yours, so an unlabeled "Team Needs" was ambiguous.
+    team_name = html.escape(str(tracker.get("team") or "").strip())
+    title = f"Team Needs — {team_name}" if team_name else "Team Needs"
     st.markdown(
         f'<div class="ld-team-needs-panel">'
-        f'<div class="ld-panel-title">Team Needs</div>'
+        f'<div class="ld-panel-title">{title}</div>'
         f'<div class="ld-panel-subtitle">Roster</div>'
-        f'{"".join(roster_html)}'
+        f'<div class="ld-need-grid">{"".join(roster_html)}</div>'
         f"{cat_section}"
         f'<div class="ld-roster-progress">{progress}</div>'
         f"</div>",
@@ -2356,6 +2367,17 @@ def render_live_draft_rec_cards(
                             show_model_rank=False,
                             show_fantasy_edge=False,
                         )
+                        # One compact rank line (rec order + model/market rank) instead of
+                        # two extra metric rows — rank was otherwise only in the tables.
+                        _rank_bits = [f"Rec #{i}"]
+                        for _rk_col, _rk_lbl in (("Model Rank", "Model"), ("Market Rank", "Market")):
+                            _rk = pd.to_numeric(r.get(_rk_col, np.nan), errors="coerce")
+                            if pd.notna(_rk):
+                                _rank_bits.append(f"{_rk_lbl} #{int(round(float(_rk)))}")
+                        metrics_html += (
+                            '<div class="ld-rec-rank-line" style="font-size:0.8rem;color:#475569;'
+                            f'margin-top:2px;">{" · ".join(_rank_bits)}</div>'
+                        )
                         strength_txt = ""
                         if strengths and not horizontal:
                             strength_txt = (
@@ -2714,9 +2736,10 @@ def render_live_draft_rec_cards(
                                 pick_idx=_pick_idx,
                                 player_id=_player_id,
                             )
-                            if _session.pop("_live_draft_queue_sidebar_rerun", None):
-                                _session["_live_draft_defer_full_rerun"] = True
-                                _session["_live_draft_queue_sidebar_rerun"] = True
+                            # on_click runs before this ScriptRun paints anything, so the
+                            # sidebar and main Queue already show the player. The follow-up
+                            # full rerun this used to request doubled every Add to Queue.
+                            _session.pop("_live_draft_queue_sidebar_rerun", None)
 
                         _rec_queue_clicked = st.button(
                             "⭐ Add to Queue",

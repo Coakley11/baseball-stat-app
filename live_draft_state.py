@@ -847,9 +847,20 @@ def canonical_live_draft(session: dict[str, Any]) -> dict[str, Any] | None:
     return copy.deepcopy(meta) if isinstance(meta, dict) and meta.get("draft_room_id") else None
 
 
+def peek_canonical_live_draft(session: dict[str, Any]) -> dict[str, Any] | None:
+    """The stored canonical blob itself — callers must treat it as read-only.
+
+    ``canonical_live_draft`` deep-copies the blob including the full player pool;
+    status/identity checks called several times per run (sidebar, fantasy context)
+    spent most of each Live Draft ScriptRun in that copy.
+    """
+    meta = session.get(LIVE_DRAFT_STATE_KEY)
+    return meta if isinstance(meta, dict) and meta.get("draft_room_id") else None
+
+
 def has_active_live_draft(session: dict[str, Any]) -> bool:
     """True when a resumable live draft exists in session (any page)."""
-    blob = canonical_live_draft(session)
+    blob = peek_canonical_live_draft(session)
     if not blob:
         room = session.get(LIVE_DRAFT_ROOM_KEY)
         if isinstance(room, dict) and room.get("draft_room_id"):
@@ -1028,7 +1039,7 @@ def _try_short_circuit_prepare(session: dict[str, Any]) -> dict[str, Any] | None
     fp = live_draft_prepare_fingerprint(room)
     if session.get(LIVE_DRAFT_PREPARE_FP_KEY) == fp and runtime_room_hydrated(room):
         return _finish_prepare(session, room)
-    canonical = canonical_live_draft(session)
+    canonical = peek_canonical_live_draft(session)  # read-only comparison
     if isinstance(canonical, dict) and canonical.get("draft_room_id"):
         if should_prefer_runtime_live_room(session, room, canonical):
             return _finish_prepare(session, room)
@@ -1703,17 +1714,22 @@ def _prepare_live_draft_state_body(session: dict[str, Any]) -> dict[str, Any] | 
     return _finish_prepare(session, final)
 
 
-def _live_draft_from_blob(state: dict[str, Any]) -> dict[str, Any] | None:
+def _peek_live_draft_blob(state: dict[str, Any]) -> dict[str, Any] | None:
+    """The live draft blob inside a saved-state dict, uncopied — read-only use only.
+
+    Presence checks and summaries on the save path deep-copied the whole blob (and
+    its player pool) just to read a few fields.
+    """
     if not isinstance(state, dict):
         return None
     meta = state.get(LIVE_DRAFT_STATE_KEY)
     if isinstance(meta, dict) and meta.get("draft_room_id"):
-        return copy.deepcopy(meta)
+        return meta
     # Top-level runtime/persist key (expire/direct saves may write this without
     # live_draft_state / page_filter yet).
     top = state.get(LIVE_DRAFT_ROOM_KEY)
     if isinstance(top, dict) and top.get("draft_room_id"):
-        return copy.deepcopy(top)
+        return top
     pf = state.get("page_filter_state")
     if isinstance(pf, dict):
         block = pf.get(LIVE_DRAFT_PAGE_BLOCK)
@@ -1722,17 +1738,22 @@ def _live_draft_from_blob(state: dict[str, Any]) -> dict[str, Any] | None:
             if is_persisted_room_blob(legacy) or (
                 isinstance(legacy, dict) and legacy.get("draft_room_id")
             ):
-                return copy.deepcopy(legacy)
+                return legacy
     ws = state.get("baseball_workspace_state")
     if isinstance(ws, dict):
         ld = ws.get("live_draft")
         if isinstance(ld, dict) and ld.get("draft_room_id"):
-            return copy.deepcopy(ld)
+            return ld
     return None
+
+
+def _live_draft_from_blob(state: dict[str, Any]) -> dict[str, Any] | None:
+    blob = _peek_live_draft_blob(state)
+    return copy.deepcopy(blob) if blob is not None else None
 
 def live_draft_restore_stats(state: dict[str, Any] | None) -> dict[str, Any]:
     """Summary stats for restore winner diagnostics."""
-    blob = _live_draft_from_blob(state or {})
+    blob = _peek_live_draft_blob(state or {})
     board = (blob.get("draft_board") or []) if isinstance(blob, dict) else []
     return {
         "has_live_draft_state": bool(isinstance(blob, dict) and blob.get("draft_room_id")),
@@ -1935,6 +1956,8 @@ def sync_live_draft_session_before_save(session: dict[str, Any]) -> None:
 def enrich_save_payload_with_live_draft(
     session: dict[str, Any],
     state: dict[str, Any],
+    *,
+    copy_input: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Inject JSON-safe live_draft_state into the workspace blob when session has a draft."""
     diag: dict[str, Any] = {
@@ -1948,7 +1971,7 @@ def enrich_save_payload_with_live_draft(
     termination_cleared = bool(session.get("_live_draft_termination_cleared"))
     if termination_cleared or (not blob or not blob.get("draft_room_id")):
         if termination_cleared or is_live_draft_locally_dirty(session):
-            out = copy.deepcopy(state)
+            out = copy.deepcopy(state) if copy_input else state
             out.pop(LIVE_DRAFT_STATE_KEY, None)
             out.pop(LIVE_DRAFT_ROOM_KEY, None)
             pf = out.get("page_filter_state")
@@ -1990,7 +2013,7 @@ def enrich_save_payload_with_live_draft(
                     draft_id=str(existing.get("draft_room_id") or ""),
                     room=existing,
                 ):
-                    out = copy.deepcopy(state)
+                    out = copy.deepcopy(state) if copy_input else state
                     out.pop(LIVE_DRAFT_STATE_KEY, None)
                     out.pop(LIVE_DRAFT_ROOM_KEY, None)
                     return out, diag
@@ -2009,7 +2032,7 @@ def enrich_save_payload_with_live_draft(
             draft_id=str((blob or {}).get("draft_room_id") or ""),
             room=blob if isinstance(blob, dict) else None,
         ):
-            out = copy.deepcopy(state)
+            out = copy.deepcopy(state) if copy_input else state
             out.pop(LIVE_DRAFT_STATE_KEY, None)
             out.pop(LIVE_DRAFT_ROOM_KEY, None)
             return out, diag
@@ -2023,8 +2046,8 @@ def enrich_save_payload_with_live_draft(
     else:
         safe_blob = copy.deepcopy(blob)
 
-    had_payload = bool(_live_draft_from_blob(state))
-    out = copy.deepcopy(state)
+    had_payload = bool(_peek_live_draft_blob(state))
+    out = copy.deepcopy(state) if copy_input else state
     out[LIVE_DRAFT_STATE_KEY] = copy.deepcopy(safe_blob)
     out[LIVE_DRAFT_ROOM_KEY] = copy.deepcopy(safe_blob)
     pf = out.setdefault("page_filter_state", {})
@@ -2047,7 +2070,7 @@ def enrich_save_payload_with_live_draft(
 
 
 def live_draft_payload_diagnostics(state: dict[str, Any]) -> dict[str, Any]:
-    blob = _live_draft_from_blob(state)
+    blob = _peek_live_draft_blob(state)
     board = (blob.get("draft_board") or []) if isinstance(blob, dict) else []
     return {
         "cloud_payload_has_live_draft_state": bool(isinstance(blob, dict) and blob.get("draft_room_id")),
@@ -2074,9 +2097,12 @@ def record_live_draft_cloud_save_diagnostics(
         session["live_draft_injected_from_session"] = enrich_diag.get("injected_from_session")
 
 
-def sanitize_state_dict_for_json(state: dict[str, Any]) -> dict[str, Any]:
+def sanitize_state_dict_for_json(state: dict[str, Any], *, copy_input: bool = True) -> dict[str, Any]:
     """Ensure full_session blob is JSON-serializable (pool as records, not DataFrame)."""
-    out = copy.deepcopy(state)
+    # copy_input=False: the caller owns ``state`` and replaces it with the return
+    # value (build_baseball_disk_state). Skips a full deep copy of the workspace
+    # state, which carries the Live Draft player pool several times over.
+    out = copy.deepcopy(state) if copy_input else state
     pf = out.get("page_filter_state")
     block = pf.get(LIVE_DRAFT_PAGE_BLOCK) if isinstance(pf, dict) else None
 
@@ -2107,7 +2133,7 @@ def sanitize_state_dict_for_json(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def live_draft_envelope_summary(state: dict[str, Any]) -> dict[str, Any] | None:
-    blob = _live_draft_from_blob(state)
+    blob = _peek_live_draft_blob(state)
     if not blob:
         return None
     board = blob.get("draft_board") or []
@@ -2229,7 +2255,7 @@ def save_live_draft_direct_to_cloud(
         cloud_before, ts_before = load_cloud_full_session("baseball")
         trace["cloud_updated_at_before"] = ts_before
         trace["cloud_existing_has_live_draft_state_before_save"] = bool(
-            _live_draft_from_blob(cloud_before or {}) and _live_draft_from_blob(cloud_before or {}).get("draft_room_id")
+            _peek_live_draft_blob(cloud_before or {}) and _peek_live_draft_blob(cloud_before or {}).get("draft_room_id")
         )
 
         if room is not None:
@@ -2279,7 +2305,7 @@ def save_live_draft_direct_to_cloud(
     trace["cloud_updated_at_after"] = ts_after
     trace["cloud_timestamp_changed"] = bool(ts_after and ts_after != ts_before)
     trace["cloud_has_live_draft_after_read"] = bool(
-        _live_draft_from_blob(cloud_after or {}) and _live_draft_from_blob(cloud_after or {}).get("draft_room_id")
+        _peek_live_draft_blob(cloud_after or {}) and _peek_live_draft_blob(cloud_after or {}).get("draft_room_id")
     )
     if ok:
         session["_suite_persist_last_save_cloud"] = True

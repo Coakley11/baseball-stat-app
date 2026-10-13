@@ -114,10 +114,10 @@ def _load_raw(
         return {}, "Saved settings were invalid; using defaults.", None
 
     saved_at = str(raw.get("saved_at") or "") or None
-    try:
-        return copy.deepcopy(state), None, saved_at
-    except Exception:
-        return {}, "Could not read saved settings; using defaults.", None
+    # ``state`` was just parsed from disk and nothing else holds it, so it is
+    # returned as-is. A deep copy here cost seconds per call on a Live Draft
+    # workspace (the blob carries the room's player pool) — on the Solo expiry path.
+    return state, None, saved_at
 
 
 def load_user_state(app_id: str) -> tuple[dict[str, Any], str | None]:

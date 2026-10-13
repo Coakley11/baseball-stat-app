@@ -2271,6 +2271,7 @@ def render_live_manual_draft_panel(
     diag_base["available_player_count"] = available_count
 
     st.subheader("Manual Draft")
+    st.caption("Browse any available legal player — you are not limited to the recommendation cards.")
 
     try:
         from live_draft_safe_mode import draft_state_error_reason, is_safe_mode_active
@@ -2491,6 +2492,8 @@ def render_live_manual_draft_panel(
                 "draft_button_disable_reason": disable_reason,
             }
         )
+        # The info box above already says why; the reason code (e.g. ``draft_paused``)
+        # stays in diagnostics only — it used to be printed under the button.
         with st.container(border=True):
             st.button(
                 "Draft Player",
@@ -2498,9 +2501,8 @@ def render_live_manual_draft_panel(
                 type="primary",
                 disabled=True,
                 use_container_width=True,
-                help=str(disable_reason)[:200],
+                help=wait_msg.replace("**", "")[:200],
             )
-            st.caption(disable_reason)
         return _finish(diag_base)
 
     widget_key = manual_draft_candidate_widget_key(room)
@@ -2610,37 +2612,31 @@ def render_live_manual_draft_panel(
 
         # Same canonical queue mutation as recommendation cards.
         _manual_queue_key = f"manual_draft_queue_{str((room or {}).get('id') or 'solo')[:12]}_{visible_id or visible_name}"
-        _manual_queue_clicked = st.button(
+
+        # on_click runs before the ScriptRun paints the sidebar, so one run shows the
+        # player in both Queue surfaces. Handling the return value mid-page needed a
+        # second full rerun to refresh the already-painted sidebar.
+        def _on_manual_queue_add() -> None:
+            name = str(session.get(widget_key) or visible_name or "").strip()
+            if not name:
+                return
+            try:
+                from draft_state import add_player_to_draft_queue
+
+                _q, _added = add_player_to_draft_queue(session, name)
+                session["_live_draft_queue_sidebar_mirror"] = list(_q)
+                session["_live_draft_queue_last_good"] = list(_q)
+            except Exception:
+                pass
+
+        st.button(
             "⭐ Add to Queue",
             key=_manual_queue_key,
             use_container_width=True,
             disabled=not bool(visible_name),
             help="Add the selected Manual Draft player to the Draft Queue (same queue as recommendation cards).",
+            on_click=_on_manual_queue_add,
         )
-        if _manual_queue_clicked and visible_name:
-            try:
-                from draft_state import add_player_to_draft_queue
-
-                _q, _added = add_player_to_draft_queue(session, visible_name)
-                session["_live_draft_queue_sidebar_mirror"] = list(_q)
-                session["_live_draft_queue_last_good"] = list(_q)
-                if _added:
-                    session["_live_draft_queue_sidebar_rerun"] = True
-                    try:
-                        from live_draft_safe_mode import request_live_draft_rerun
-
-                        if request_live_draft_rerun(
-                            st,
-                            session,
-                            "manual_panel_queue",
-                            room=room if isinstance(room, dict) else None,
-                        ):
-                            return True
-                    except ImportError:
-                        st.rerun()
-                        return True
-            except Exception:
-                pass
 
         pending = session.get(PENDING_MANUAL_PICK_KEY)
         if isinstance(pending, dict) and pending.get("player_name"):

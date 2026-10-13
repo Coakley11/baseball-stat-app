@@ -324,13 +324,20 @@ def _candidate_still_valid(
         return False
     if not pid and not name:
         return False
-    if gaps:
-        pos = str(cand.get("Primary Position") or cand.get("Pos") or "").strip().upper()
-        elig = str(cand.get("Eligible Positions") or cand.get("Positions") or "").upper()
-        gap_u = [str(g).strip().upper() for g in gaps if str(g).strip()]
-        if gap_u and pos and pos not in gap_u and not any(g in elig for g in gap_u):
-            if "Primary Position" in cand or "Eligible Positions" in cand:
+    if gaps and (
+        str(cand.get("Primary Position") or "").strip() or str(cand.get("Eligible Positions") or "").strip()
+    ):
+        # Same eligibility rule as the recommendation filter. Matching gap codes as
+        # text required a literal "DH" position for a DH gap, so once a team's only
+        # open starter slot was DH/UTIL every candidate was rejected and the draft
+        # stalled on that pick ("No eligible recommendation for auto-pick").
+        try:
+            from live_draft_roster_slots import _player_position_tokens, player_fills_open_needs
+
+            if not player_fills_open_needs(_player_position_tokens(pd.Series(cand)), list(gaps)):
                 return False
+        except ImportError:
+            pass
     return True
 
 

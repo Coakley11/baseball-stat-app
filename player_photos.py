@@ -141,12 +141,33 @@ def _save_mlbam_cache(cache: dict[str, int], base_dir: Path | str | None = None)
     path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
 
 
+_PEOPLE_LOOKUP_MEMO: dict[str, tuple[int, pd.DataFrame]] = {}
+
+
 def load_people_photo_lookup(base_dir: Path | str | None = None) -> pd.DataFrame:
-    """Lahman People.csv slice used for playerID → name / birthYear resolution."""
+    """Lahman People.csv slice used for playerID → name / birthYear resolution.
+
+    Memoized per file version: every recommendation card resolved its photo
+    through a fresh read_csv of People.csv on every Live Draft run. Callers only
+    read the returned frame.
+    """
     root = Path(base_dir) if base_dir is not None else app_base_dir()
     path = root / "People.csv"
     if not path.is_file():
         return pd.DataFrame(columns=list(_PEOPLE_PHOTO_COLS))
+    try:
+        version = path.stat().st_mtime_ns
+    except OSError:
+        version = -1
+    memo = _PEOPLE_LOOKUP_MEMO.get(str(path))
+    if memo is not None and memo[0] == version:
+        return memo[1]
+    people = _read_people_photo_lookup(path)
+    _PEOPLE_LOOKUP_MEMO[str(path)] = (version, people)
+    return people
+
+
+def _read_people_photo_lookup(path: Path) -> pd.DataFrame:
     try:
         people = pd.read_csv(path, usecols=lambda c: c in _PEOPLE_PHOTO_COLS, low_memory=False)
     except (OSError, ValueError):

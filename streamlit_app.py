@@ -2212,6 +2212,7 @@ def format_fantasy_table(df):
         "Player Value Component", "Market Edge Component", "Roster Need Component",
         "Scarcity Component", "Category Fit Component", "Availability Urgency Component",
         "Risk Component", "ML Projection Score", "Blended Projection Score",
+        "Position Scarcity Score",
     ]
     edge_cols = ["Fantasy Edge"]
     rate_cols = ["BA", "OBP", "SLG", "OPS", "Projected BA", "Projected OBP", "Projected SLG", "Projected OPS"]
@@ -24240,7 +24241,7 @@ elif active_page == "Live Draft Room":
                         live_draft_setup_number_default(st.session_state, "live_draft_team_count", 2)
                     )
                     live_picks_per_team = int(
-                        live_draft_setup_number_default(st.session_state, "live_draft_picks_per_team", 4)
+                        live_draft_setup_number_default(st.session_state, "live_draft_picks_per_team", 14)
                     )
                 except ImportError:
                     def _num(key: str, default: int) -> int:
@@ -24254,7 +24255,7 @@ elif active_page == "Live Draft Room":
 
                     live_proj_window = _num("live_draft_proj_window", 3)
                     live_num_teams = _num("live_draft_team_count", 2)
-                    live_picks_per_team = _num("live_draft_picks_per_team", 4)
+                    live_picks_per_team = _num("live_draft_picks_per_team", 14)
                 live_league_name = str(st.session_state.get("live_draft_league_name") or "My Fantasy League")
                 default_teams = _live_draft_default_teams(live_num_teams)
                 team_names = [
@@ -25676,11 +25677,11 @@ elif active_page == "Live Draft Room":
                     st.session_state, "live_draft_team_count", 2
                 )
                 _picks_default = live_draft_setup_number_default(
-                    st.session_state, "live_draft_picks_per_team", 4
+                    st.session_state, "live_draft_picks_per_team", 14
                 )
             except ImportError:
                 _team_default = 2
-                _picks_default = 4
+                _picks_default = 14
             ensure_number_state(
                 "live_draft_team_count",
                 _team_default,
@@ -26235,6 +26236,10 @@ elif active_page == "Live Draft Room":
             except ImportError:
                 _snap_is_solo = False
             _snap_status = str(_snap.get("room_status") or "").strip().lower()
+            # Natural completion ("complete") keeps the room, as Solo does, so Draft
+            # Complete renders. Popping it while the shared code stayed bound reloaded
+            # the room on the next run → pop → st.rerun() again: an endless loop on a
+            # bare "This shared draft has ended." page for host and guest.
             if (
                 not _snap_is_solo
                 and _snap.get("draft_complete")
@@ -26243,8 +26248,6 @@ elif active_page == "Live Draft Room":
                     "ended",
                     "closed",
                     "deleted",
-                    "complete",
-                    "completed",
                 )
             ):
                 try:
@@ -27179,6 +27182,7 @@ elif active_page == "Live Draft Room":
         )
         if not _solo_clock_latched:
             st.session_state.pop("_live_draft_solo_early_timer_painted", None)
+        st.session_state.pop("_live_draft_solo_early_paused_banner", None)
         _solo_recs_here = False
         try:
             from live_draft_solo_timer import is_solo_live_draft as _is_solo_fn_early
@@ -27369,6 +27373,27 @@ elif active_page == "Live Draft Room":
                 except Exception:
                     st.session_state.pop("_live_draft_solo_early_timer_painted", None)
                     _sp_mark("timer_banner_exc")
+            elif (
+                isinstance(slot, dict)
+                and not bool(_draft_is_complete)
+                and str(room.get("status") or "") == "paused"
+            ):
+                # Paused: keep the On the Clock card at the top (frozen time + paused
+                # note) instead of letting it fall to the board column below the cards.
+                # No timer sync — a paused room keeps its stored remaining time.
+                try:
+                    from live_draft_on_clock_ui import render_live_on_clock_banner
+
+                    render_live_on_clock_banner(
+                        st,
+                        st.session_state,
+                        room,
+                        slot,
+                        next_pick=live_draft_next_pick_for_team(room, user_team),
+                    )
+                    st.session_state["_live_draft_solo_early_paused_banner"] = True
+                except Exception:
+                    st.session_state.pop("_live_draft_solo_early_paused_banner", None)
             # While the Solo server clock owns the page, never run pool ensure on this
             # ScriptRun. Streamlit cannot tick ``st.fragment(run_every=…)`` until the
             # parent ScriptRun finishes — ``ensure_solo_player_pool_for_recs`` was
@@ -27491,15 +27516,9 @@ elif active_page == "Live Draft Room":
                 except Exception:
                     st.session_state.pop("_live_draft_team_needs_rendered", None)
                     _sp_mark("team_needs_exc")
-                # Guarantee Manual Draft copy is in the first paint HTML before heavy cards.
-                try:
-                    st.subheader("Manual Draft")
-                    st.caption(
-                        "Browse any available legal player — you are not limited to the recommendation cards."
-                    )
-                    st.session_state["_live_draft_manual_heading_early"] = True
-                except Exception:
-                    pass
+                # No early "Manual Draft" heading here: it painted an orphan heading with
+                # no controls above Recommended Players. The panel below owns its heading.
+                st.session_state["_live_draft_manual_heading_early"] = True
                 st.markdown("##### Recommended Players")
                 st.session_state.pop("_solo_minimal_clock_view", None)
                 # Keep heavy mid/late-page scoring on the cache path while the
@@ -27508,10 +27527,31 @@ elif active_page == "Live Draft Room":
                     st.session_state["_solo_recs_deferred_for_timer"] = True
                 else:
                     st.session_state.pop("_solo_recs_deferred_for_timer", None)
+                # Name the team the cards are scored for: they follow the team on the
+                # clock, which in Solo is often a CPU team rather than the user's team.
+                _rec_for_team = ""
+                try:
+                    from live_draft_recommendation_context import resolve_team_on_clock
+
+                    _rec_for_team = str(resolve_team_on_clock(room)[1] or "").strip()
+                except Exception:
+                    _rec_for_team = ""
+                if _rec_for_team and str(user_team or "").strip() and _rec_for_team != str(user_team).strip():
+                    st.caption(
+                        f"**{_rec_for_team}** is on the clock — these are {_rec_for_team}'s best options "
+                        "(what Auto Pick weighs). Add players to your Queue for your next pick."
+                    )
+                else:
+                    st.caption(
+                        "Compare the best options for your current pick based on player quality, "
+                        "your roster needs, and positional scarcity. Draft a player now or save "
+                        "one to your Queue for later."
+                        + (f" Scored for **{_rec_for_team}**." if _rec_for_team else "")
+                    )
                 st.caption(
-                    "Compare the best options for your current pick based on player quality, "
-                    "your roster needs, and positional scarcity. Draft a player now or save "
-                    "one to your Queue for later."
+                    "**Decision Score** (higher is better) ranks the cards: mostly Player Grade and "
+                    "model rank, adjusted for roster need, positional scarcity, and the risk the "
+                    "player is gone before the next pick. It is relative to this pick's pool."
                 )
                 if st.session_state.get("_solo_needs_projection_player_grades") and not _cache_only_recs:
                     st.caption(
@@ -27595,9 +27635,6 @@ elif active_page == "Live Draft Room":
                     # Heading owned by render_live_manual_draft_panel (avoid duplicate "Manual Draft").
                     # Phone CSS hook (M3): the primary draft action is raised under the clock.
                     with _ldr_m_hook("ldr-m-action-early"):
-                        st.caption(
-                            "Browse any available legal player — you are not limited to the recommendation cards."
-                        )
                         if render_live_manual_draft_panel(
                             st,
                             st.session_state,
@@ -27715,13 +27752,25 @@ elif active_page == "Live Draft Room":
                                             "MLB Team",
                                             "Decision Score",
                                             "Player Grade",
+                                            "Draft Fit Score",
+                                            "Position Scarcity Score",
                                             "Model Rank",
                                             "Market Rank",
                                         )
                                         if c in _frame.columns
                                     ]
+                                    # Same names and 0–100 scale as the cards and the
+                                    # post-Pick-1 tables (this path showed raw 0–1 and
+                                    # a "fullName" header).
+                                    _disp = (_frame[_show] if _show else _frame.head(12)).rename(
+                                        columns={"Primary Position": "Position"}
+                                    )
+                                    if "Team" in _disp.columns and "MLB Team" in _disp.columns:
+                                        _disp = _disp.drop(columns=["Team"])
+                                    elif "Team" in _disp.columns:
+                                        _disp = _disp.rename(columns={"Team": "MLB Team"})
                                     st.dataframe(
-                                        _frame[_show] if _show else _frame.head(12),
+                                        format_fantasy_table(clean_ui_columns(_disp)),
                                         hide_index=True,
                                         use_container_width=True,
                                     )
@@ -28422,7 +28471,9 @@ elif active_page == "Live Draft Room":
                         from live_draft_on_clock_ui import render_live_on_clock_banner
 
                         # Avoid a second Solo timer when early viewport already painted one.
-                        if not bool(st.session_state.get("_live_draft_solo_early_timer_painted")):
+                        if not bool(
+                            st.session_state.get("_live_draft_solo_early_timer_painted")
+                        ) and not bool(st.session_state.get("_live_draft_solo_early_paused_banner")):
                             try:
                                 from live_draft_timer_ui import sync_live_draft_timer_state
 

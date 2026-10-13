@@ -519,10 +519,12 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
         from draft_room_state import enrich_save_payload_with_draft_room, sanitize_state_dict_for_json as sanitize_draft_room
         from live_draft_state import enrich_save_payload_with_live_draft, sanitize_state_dict_for_json
 
-        state, _ = enrich_save_payload_with_draft_room(ss, state)
-        state, _ = enrich_save_payload_with_live_draft(ss, state)
-        state = sanitize_state_dict_for_json(state)
-        state = sanitize_draft_room(state)
+        # ``state`` is this function's own deep copy of session keys, replaced at each
+        # step — so each step may reuse it instead of deep-copying it again.
+        state, _ = enrich_save_payload_with_draft_room(ss, state, copy_input=False)
+        state, _ = enrich_save_payload_with_live_draft(ss, state, copy_input=False)
+        state = sanitize_state_dict_for_json(state, copy_input=False)
+        state = sanitize_draft_room(state, copy_input=False)
     except ImportError:
         pass
     try:
