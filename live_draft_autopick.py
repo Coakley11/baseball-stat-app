@@ -996,6 +996,28 @@ def live_draft_auto_pick(
                         i_before = idx_before
                         is_complete = str(room.get("status") or "").strip() == "complete"
 
+                        def _room_still_live() -> bool:
+                            """False once End/Delete (or a new draft) replaced this room.
+
+                            The deferred write re-read and rewrote the whole workspace;
+                            when End/Delete landed first, it wrote the deleted draft back
+                            and the next load restored it, still auto-picking.
+                            """
+                            rid_now = str(room_ref.get("draft_room_id") or "").strip()
+                            try:
+                                from live_draft_completion import is_live_draft_ended_tombstoned
+
+                                if rid_now and is_live_draft_ended_tombstoned(
+                                    sess_ref, draft_room_id=rid_now
+                                ):
+                                    return False
+                            except Exception:
+                                pass
+                            current = sess_ref.get("live_draft_room")
+                            return isinstance(current, dict) and (
+                                str(current.get("draft_room_id") or "").strip() == rid_now
+                            )
+
                         def _persist_bg() -> None:
                             try:
                                 from pathlib import Path
@@ -1023,6 +1045,8 @@ def live_draft_auto_pick(
                                     )
                             except Exception:
                                 pass
+                            if not _room_still_live():
+                                return
                             try:
                                 from live_draft_state import (
                                     room_to_persist_dict,
@@ -1037,7 +1061,7 @@ def live_draft_auto_pick(
                                 )
                                 blob = room_to_persist_dict(room_ref, compact_pool=True)
                                 rid = str(room_ref.get("draft_room_id") or "").strip()
-                                if rid and blob:
+                                if rid and blob and _room_still_live():
                                     from pathlib import Path
                                     import json as _json
 
@@ -1077,6 +1101,8 @@ def live_draft_auto_pick(
                                     if not isinstance(state, dict):
                                         state = {}
                                         payload = {"state": state}
+                                    if not _room_still_live():
+                                        return
                                     state["live_draft_room"] = blob
                                     state["live_draft_state"] = blob
                                     pfs = state.get("page_filter_state")
