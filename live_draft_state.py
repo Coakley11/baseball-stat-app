@@ -847,6 +847,63 @@ def canonical_live_draft(session: dict[str, Any]) -> dict[str, Any] | None:
     return copy.deepcopy(meta) if isinstance(meta, dict) and meta.get("draft_room_id") else None
 
 
+_POOL_PAYLOAD_KEYS = ("pool", "pool_records", "pool_columns")
+
+
+def shared_room_pool_is_rebuildable(session: dict[str, Any]) -> bool:
+    """True for a Shared room: its player pool is rebuilt from the room's pool sources
+    (session stash, local pool file, unified pool), as every guest already does, so the
+    workspace save need not carry it. Solo has no such rebuild and keeps its pool."""
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+
+        return bool(is_multiplayer_draft_active(session))
+    except ImportError:
+        return False
+
+
+def copy_room_without_pool(blob: Any) -> Any:
+    """Deep copy of a live draft room without its player pool.
+
+    The persisted-room shape is kept (empty ``pool_records`` / ``pool_columns``) so
+    ``is_persisted_room_blob`` and ``room_from_persist_dict`` still recognize it and the
+    restored room comes back with an empty pool for the Shared pool rebuild to fill.
+    """
+    if not isinstance(blob, dict):
+        return copy.deepcopy(blob)
+    if is_runtime_room(blob):
+        return room_to_persist_dict({**blob, "pool": None})
+    out = {k: copy.deepcopy(v) for k, v in blob.items() if k not in _POOL_PAYLOAD_KEYS}
+    if any(k in blob for k in _POOL_PAYLOAD_KEYS):
+        out["pool_records"] = []
+        out["pool_columns"] = []
+    return out
+
+
+def copy_page_store_for_save(store: dict[str, Any], *, drop_room_pool: bool) -> dict[str, Any]:
+    """Save copy of ``page_filter_state``.
+
+    The Live Draft block's ``live_draft_state`` is never read back (the canonical blob
+    lives at the top level) — it was a prefix-captured duplicate of the whole room and
+    pool, so it is not saved. With ``drop_room_pool`` the block's room copy carries no pool.
+    """
+    out: dict[str, Any] = {}
+    for page, block in store.items():
+        if page == LIVE_DRAFT_PAGE_BLOCK and isinstance(block, dict):
+            saved: dict[str, Any] = {}
+            for key, val in block.items():
+                if key == LIVE_DRAFT_STATE_KEY:
+                    continue
+                if key == LIVE_DRAFT_ROOM_KEY and drop_room_pool:
+                    saved[key] = copy_room_without_pool(val)
+                else:
+                    saved[key] = copy.deepcopy(val)
+            out[page] = saved
+        else:
+            out[page] = copy.deepcopy(block)
+    return out
+
+
 def peek_canonical_live_draft(session: dict[str, Any]) -> dict[str, Any] | None:
     """The stored canonical blob itself — callers must treat it as read-only.
 
@@ -1967,7 +2024,10 @@ def enrich_save_payload_with_live_draft(
         "cloud_payload_pool_count": 0,
     }
     sync_live_draft_session_before_save(session)
-    blob = canonical_live_draft(session)
+    drop_pool = shared_room_pool_is_rebuildable(session)
+    # Shared: read the blob in place and copy it without the pool below — a full deep
+    # copy of the room and its player pool was most of every autosave.
+    blob = peek_canonical_live_draft(session) if drop_pool else canonical_live_draft(session)
     termination_cleared = bool(session.get("_live_draft_termination_cleared"))
     if termination_cleared or (not blob or not blob.get("draft_room_id")):
         if termination_cleared or is_live_draft_locally_dirty(session):
@@ -2039,7 +2099,9 @@ def enrich_save_payload_with_live_draft(
     except ImportError:
         pass
 
-    if is_persisted_room_blob(blob):
+    if drop_pool:
+        safe_blob = copy_room_without_pool(blob)
+    elif is_persisted_room_blob(blob):
         safe_blob = copy.deepcopy(blob)
     elif is_runtime_room(blob):
         safe_blob = room_to_persist_dict(blob)
@@ -2057,6 +2119,9 @@ def enrich_save_payload_with_live_draft(
     block = pf.setdefault(LIVE_DRAFT_PAGE_BLOCK, {})
     if isinstance(block, dict):
         block[LIVE_DRAFT_ROOM_KEY] = copy.deepcopy(safe_blob)
+        # Never read back (restore uses the top-level canonical blob); older saves carried
+        # a full room + pool here.
+        block.pop(LIVE_DRAFT_STATE_KEY, None)
         for key in LIVE_DRAFT_SETTINGS_KEYS:
             if key in session:
                 block[key] = session[key]

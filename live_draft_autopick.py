@@ -1114,7 +1114,7 @@ def live_draft_auto_pick(
                                         block = {}
                                         pfs["Live Draft Room"] = block
                                     block["live_draft_room"] = blob
-                                    block["live_draft_state"] = blob
+                                    block.pop("live_draft_state", None)  # never read back
                                     try:
                                         save_user_state("baseball", state, workspace_id=ws_id)
                                     except Exception:

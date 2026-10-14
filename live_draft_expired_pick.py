@@ -209,6 +209,16 @@ def should_attach_timer_fragment(session: dict[str, Any], room: dict[str, Any]) 
     return True
 
 
+def _manual_pick_holds_expiry(session: dict[str, Any], room: dict[str, Any]) -> bool:
+    """A manual pick for this pick, received before its deadline, may still beat expiry."""
+    try:
+        from draft_ui import manual_pick_holds_expiry
+
+        return bool(manual_pick_holds_expiry(session, room))
+    except ImportError:
+        return bool(session.get("_live_draft_manual_pick_in_flight") or session.get("_pending_manual_draft_pick"))
+
+
 def clock_needs_autopick(session: dict[str, Any], room: dict[str, Any]) -> bool:
     """True only when the canonical deadline for the current pick has passed.
 
@@ -242,7 +252,7 @@ def should_fragment_trigger_full_rerun(session: dict[str, Any], room: dict[str, 
             return False
     except ImportError:
         pass
-    if session.get("_live_draft_manual_pick_in_flight") or session.get("_pending_manual_draft_pick"):
+    if _manual_pick_holds_expiry(session, room):
         return False
     expired = clock_needs_autopick(session, room)
     if not expired:
@@ -422,6 +432,21 @@ def _mark_autopick_failed(session: dict[str, Any], room: dict[str, Any], error: 
         pass
 
 
+def _autopick_lost_its_slot(session: dict[str, Any], room: dict[str, Any], board_before: int) -> bool:
+    """True when another pick won this slot: the shared write was refused and the room
+    that won was loaded into the session, so the slot holds a different player than the
+    one this auto-pick applied locally."""
+    live = session.get("live_draft_room")
+    if not isinstance(live, dict) or live is room:
+        return False
+    mine = (room.get("draft_board") or [])[board_before:board_before + 1]
+    theirs = (live.get("draft_board") or [])[board_before:board_before + 1]
+    if not mine or not theirs:
+        return False
+    key = lambda e: str((e or {}).get("playerID") or (e or {}).get("fullName") or "")  # noqa: E731
+    return key(mine[0]) != key(theirs[0])
+
+
 def _mark_autopick_success(session: dict[str, Any], room: dict[str, Any], message: str) -> None:
     idx_after = _pick_index(room)
     clear_autopick_state_for_pick_advance(session, idx_after)
@@ -438,7 +463,8 @@ def _mark_autopick_success(session: dict[str, Any], room: dict[str, Any], messag
 
         board_len = len(room.get("draft_board") or [])
         player_id = str((room.get("draft_board") or [{}])[-1].get("playerID") or message)
-        set_live_draft_pick_notice(session, "success", message, pick_key=f"{board_len}:{player_id}")
+        if message:
+            set_live_draft_pick_notice(session, "success", message, pick_key=f"{board_len}:{player_id}")
         try:
             from live_draft_ui_cache import (
                 invalidate_draft_assistant_scoring_cache,
@@ -765,6 +791,10 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
                 pass
 
         msg = select_msg or commit.message
+        if _autopick_lost_its_slot(session, room, board_before):
+            # The pick still advanced (someone else's commit won), but "Drafted X" would
+            # name a player who was not drafted.
+            msg = ""
         t0 = time.perf_counter()
         _mark_autopick_success(session, room, msg)
         idx_after = _pick_index(room)
@@ -860,7 +890,7 @@ def handle_expired_pick_on_page(session: dict[str, Any], room: dict[str, Any], *
     except ImportError:
         pass
 
-    if session.get("_live_draft_manual_pick_in_flight") or session.get("_pending_manual_draft_pick"):
+    if _manual_pick_holds_expiry(session, room):
         record_expired_pick_perf(session, stage="blocked_manual_pick_in_flight")
         return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
 

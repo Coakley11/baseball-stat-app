@@ -51,16 +51,30 @@ def load_local_pool_disk(room_code: str) -> Any:
         return None
 
 
+# room code -> (id, rows, columns) of the pool last written by this process.
+_DISK_SAVED_POOL_SIGNATURE: dict[str, tuple[int, int, int]] = {}
+
+
 def save_local_pool_disk(room_code: str, pool: Any) -> None:
     code = str(room_code or "").strip().upper()
     if not code or pool_is_empty(pool):
         return
     try:
+        signature = (id(pool), int(len(pool)), int(len(getattr(pool, "columns", ()) or ())))
+    except Exception:
+        signature = None
+    try:
         import pickle
 
         path = _local_pool_disk_path(code)
+        # Every ensure call re-pickled the whole pool (several times per run); skip when
+        # this exact pool is already on disk for the room.
+        if signature is not None and _DISK_SAVED_POOL_SIGNATURE.get(code) == signature and path.is_file():
+            return
         with path.open("wb") as fh:
             pickle.dump(pool, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        if signature is not None:
+            _DISK_SAVED_POOL_SIGNATURE[code] = signature
         _live_pool_diag("disk_pool_saved", room_code=code, rows=int(len(pool)))
     except Exception as exc:
         _live_pool_diag("disk_pool_save_fail", room_code=code, error=f"{type(exc).__name__}:{exc}"[:120])

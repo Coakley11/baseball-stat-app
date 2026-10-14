@@ -28925,6 +28925,17 @@ elif active_page == "Live Draft Room":
                                 )
                                 if not _solo_early_recs_done:
                                     st.markdown("##### Recommendations")
+                                    # Name the team these cards were scored for (``_rec_team``, the team
+                                    # on the clock — as in Solo's early view), so a Shared viewer waiting
+                                    # on another team does not read them as scored for their own roster.
+                                    _scored_team = str(_rec_team or "").strip()
+                                    if _scored_team and _scored_team != str(user_team or "").strip():
+                                        st.caption(
+                                            f"**{_scored_team}** is on the clock — these are {_scored_team}'s "
+                                            "best options. Add players to your Queue for your next pick."
+                                        )
+                                    elif _scored_team:
+                                        st.caption(f"Scored for **{_scored_team}** — your pick.")
                                 _rec_err = str(st.session_state.pop("_live_draft_recommendations_error", "") or "").strip()
                                 _rec_diag = dict(st.session_state.get("_recommendation_schema_diag") or {})
                                 if _rec_err or str(_rec_diag.get("status") or "") in (

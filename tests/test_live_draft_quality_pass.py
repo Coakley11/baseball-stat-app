@@ -450,8 +450,8 @@ class SharedManualPickCommitTests(_LocalSharedRoomCase):
             self.assertEqual(board(seat[LIVE_DRAFT_ROOM_KEY].get("draft_board")), ["Juan Soto", "Bobby Witt"])
 
 
-class SharedExpiryBoundaryTests(_LocalSharedRoomCase):
-    """Auto-pick only after the canonical deadline; a leftover expiry flag never steals a pick."""
+class _SharedDraftCase(_LocalSharedRoomCase):
+    """A two-seat shared room whose first pick's deadline is ``deadline_in`` seconds away."""
 
     NAMES = ["Juan Soto", "Aaron Judge", "Bobby Witt", "Jose Ramirez", "Freddie Freeman", "Mookie Betts"]
 
@@ -502,6 +502,10 @@ class SharedExpiryBoundaryTests(_LocalSharedRoomCase):
         from live_draft_expired_pick import handle_expired_pick_on_page
 
         return handle_expired_pick_on_page(seat, seat[LIVE_DRAFT_ROOM_KEY], source=source)
+
+
+class SharedExpiryBoundaryTests(_SharedDraftCase):
+    """Auto-pick only after the canonical deadline; a leftover expiry flag never steals a pick."""
 
     def test_flag_left_by_a_manual_pick_at_the_deadline_does_not_steal_the_next_pick(self) -> None:
         from draft_actions import draft_player
@@ -594,9 +598,12 @@ class SharedExpiryBoundaryTests(_LocalSharedRoomCase):
             return real_persist(session, room, **kw)
 
         with mock.patch.object(lpc, "persist_applied_pick", persist_after_guest_pick):
-            self._expire(host, source="timer_fragment_zero")
+            result = self._expire(host, source="timer_fragment_zero")
         self.assertEqual(raced, [True])
         self.assertEqual(self._board(code), [("Bobby Witt", "Live Draft Pick")])
+        # The losing auto-pick must not announce a player who was not drafted.
+        self.assertNotIn("Juan Soto", result.message)
+        self.assertNotIn("Juan Soto", str(host.get("_live_draft_pick_notice") or ""))
         host_board = [e.get("fullName") for e in host[LIVE_DRAFT_ROOM_KEY].get("draft_board") or []]
         self.assertEqual(host_board, ["Bobby Witt"])
 
@@ -631,6 +638,465 @@ class SharedExpiryBoundaryTests(_LocalSharedRoomCase):
         host[EXPIRED_PICK_PENDING_KEY] = True
         self.assertFalse(clock_needs_autopick(host, room))
         self.assertEqual(room["paused_remaining_seconds"], 12)
+
+
+
+class SharedDeadlineFairnessTests(_SharedDraftCase):
+    """A click the server received before the canonical deadline may commit after it;
+    one first received at or after the deadline is refused."""
+
+    def _deadline(self, code: str) -> float:
+        return float(self.store.load(code)["room"]["timer_deadline"])
+
+    def _queue(self, seat: dict, name: str, pid: str, received_at: float, target: int = 0) -> None:
+        from draft_ui import PENDING_MANUAL_PICK_KEY, queue_manual_draft_pick
+
+        queue_manual_draft_pick(seat, player_name=name, player_id=pid, candidate_source="rec_card", target_pick_index=target)
+        seat[PENDING_MANUAL_PICK_KEY]["queued_at"] = received_at
+
+    def _process(self, seat: dict) -> dict:
+        from unittest.mock import MagicMock
+
+        from draft_ui import process_pending_manual_draft_pick
+
+        return process_pending_manual_draft_pick(MagicMock(), seat)
+
+    def test_pre_deadline_click_commits_even_when_processed_after_the_deadline(self) -> None:
+        for before in (5.0, 2.0, 0.5):
+            with self.subTest(received_before_deadline=before):
+                code, host, guest = self._start(first="Team 2", deadline_in=-0.3)
+                self._queue(guest, "Bobby Witt", "p2", self._deadline(code) - before)
+                result = self._process(guest)
+                self.assertTrue(result["ok"], result)
+                self._expire(host)  # the timer authority's expiry runs afterwards
+                self.assertEqual(self._board(code), [("Bobby Witt", "Live Draft Pick")])
+
+    def test_click_received_at_or_after_the_deadline_is_refused(self) -> None:
+        for after in (0.0, 0.3):
+            with self.subTest(received_after_deadline=after):
+                code, host, guest = self._start(first="Team 2", deadline_in=-0.5)
+                self._queue(guest, "Bobby Witt", "p2", self._deadline(code) + after)
+                result = self._process(guest)
+                self.assertFalse(result["ok"])
+                self.assertIn("clock had run out", result["error"])
+                self.assertEqual(self._board(code), [])
+                self.assertTrue(self._expire(host).ok)
+                board = self._board(code)
+                self.assertEqual(len(board), 1, board)
+                self.assertEqual(board[0][1], "Auto Pick")
+
+    def test_expiry_waits_for_this_sessions_pre_deadline_click_but_not_a_late_one(self) -> None:
+        code, host, _guest = self._start(first="Team 1", deadline_in=-0.5)
+        self._queue(host, "Juan Soto", "p0", self._deadline(code) - 1.0)
+        self.assertFalse(self._expire(host).ok)  # held for the pending pick
+        self.assertEqual(self._board(code), [])
+        self.assertTrue(self._process(host)["ok"])
+        self._expire(host)
+        self.assertEqual(self._board(code), [("Juan Soto", "Live Draft Pick")])
+
+        code, host, _guest = self._start(first="Team 1", deadline_in=-0.5)
+        self._queue(host, "Juan Soto", "p0", self._deadline(code) + 0.2)
+        self.assertTrue(self._expire(host).ok)  # a late click does not hold the clock
+        self.assertFalse(self._process(host)["ok"])
+        board = self._board(code)
+        self.assertEqual(len(board), 1, board)
+        self.assertEqual(board[0][1], "Auto Pick")
+
+    def test_in_flight_state_from_the_previous_pick_does_not_hold_the_next_pick(self) -> None:
+        import time
+
+        from draft_actions import draft_player
+        from draft_room_context import poll_shared_draft_room
+
+        code, host, _guest = self._start(first="Team 1", deadline_in=40)
+        self.assertTrue(draft_player(host, "Juan Soto", source="live_draft_room").get("ok"))
+        doc = self.store.load(code)
+        doc["room"]["timer_deadline"] = time.time() - 0.5  # pick 2 has now expired
+        self.store.save(doc)
+        poll_shared_draft_room(host, force=True, store=self.store)
+        host["_live_draft_manual_pick_in_flight"] = True  # post-commit guard from pick 1
+        host["_live_draft_manual_pick_in_flight_idx"] = 0
+        self.assertTrue(self._expire(host).ok)
+        self.assertEqual([b[1] for b in self._board(code)], ["Live Draft Pick", "Auto Pick"])
+
+    def test_click_for_a_pick_already_expired_is_refused_not_drafted_into_the_next(self) -> None:
+        from draft_room_context import poll_shared_draft_room
+
+        code, host, guest = self._start(first="Team 2", deadline_in=-0.5)
+        dl = self._deadline(code)
+        self.assertTrue(self._expire(host).ok)
+        poll_shared_draft_room(guest, force=True, store=self.store)  # next pick already open
+        self._queue(guest, "Bobby Witt", "p2", dl - 1.0, target=0)
+        result = self._process(guest)
+        self.assertFalse(result["ok"])
+        self.assertIn("closed before", result["error"])
+        self.assertEqual(len(self._board(code)), 1)
+
+    def test_pre_deadline_click_that_loses_the_race_to_a_committed_expiry_is_refused(self) -> None:
+        code, host, guest = self._start(first="Team 2", deadline_in=-0.5)
+        dl = self._deadline(code)
+        self.assertTrue(self._expire(host).ok)  # expiry accepted first; guest has not polled
+        self._queue(guest, "Bobby Witt", "p2", dl - 1.0, target=0)
+        result = self._process(guest)
+        self.assertFalse(result["ok"])
+        board = self._board(code)
+        self.assertEqual(len(board), 1, board)
+        self.assertEqual(board[0][1], "Auto Pick")
+
+
+class SoloDeadlineFairnessTests(unittest.TestCase):
+    """Solo applies the same received-before-deadline rule; its expiry then picks once."""
+
+    def _session(self, deadline_in: float) -> dict:
+        import time
+
+        pool = pd.DataFrame(
+            [{"playerID": f"s{i}", "fullName": n, "Primary Position": "OF"}
+             for i, n in enumerate(["Juan Soto", "Aaron Judge", "Bobby Witt", "Jose Ramirez"])]
+        )
+        now = time.time()
+        room = {
+            "draft_room_id": "SOLODL",
+            "status": "in_progress",
+            "current_pick_index": 0,
+            "config": {"num_teams": 2, "your_team": "Team 1", "timer_seconds": 60},
+            "timer_seconds": 60,
+            "teams": ["Team 1", "Team 2"],
+            "pick_order": [{"Pick": 1, "Round": 1, "Team": "Team 1"}, {"Pick": 2, "Round": 1, "Team": "Team 2"}],
+            "draft_board": [],
+            "rosters": {"Team 1": [], "Team 2": []},
+            "drafted_player_ids": [],
+            "pool": pool,
+            "timer_started_at": now + deadline_in - 60,
+            "timer_deadline": now + deadline_in,
+        }
+        return {"live_draft_room": room, "room_your_team": "Team 1"}
+
+    def _click(self, session: dict, received_delta: float) -> dict:
+        from unittest.mock import MagicMock
+
+        from draft_ui import PENDING_MANUAL_PICK_KEY, process_pending_manual_draft_pick, queue_manual_draft_pick
+
+        deadline = float(session["live_draft_room"]["timer_deadline"])
+        queue_manual_draft_pick(session, player_name="Aaron Judge", player_id="s1", candidate_source="rec_card", target_pick_index=0)
+        session[PENDING_MANUAL_PICK_KEY]["queued_at"] = deadline + received_delta
+        return process_pending_manual_draft_pick(MagicMock(), session)
+
+    def _board(self, session: dict) -> list[str]:
+        return [str(e.get("fullName")) for e in session["live_draft_room"].get("draft_board") or []]
+
+    def test_pre_deadline_click_commits_after_the_deadline(self) -> None:
+        session = self._session(deadline_in=-0.3)
+        self.assertTrue(self._click(session, -0.5)["ok"])
+        self.assertEqual(self._board(session), ["Aaron Judge"])
+
+    def test_click_received_after_the_deadline_is_refused_and_expiry_picks_once(self) -> None:
+        from live_draft_solo_timer import expire_current_pick_and_advance
+
+        session = self._session(deadline_in=-0.3)
+        result = self._click(session, 0.1)
+        self.assertFalse(result["ok"])
+        self.assertIn("clock had run out", result["error"])
+        self.assertEqual(self._board(session), [])
+        self.assertTrue(expire_current_pick_and_advance(session["live_draft_room"], session=session).ok)
+        expire_current_pick_and_advance(session["live_draft_room"], session=session)  # immediate retry
+        self.assertEqual(len(self._board(session)), 1)
+
+
+def _persisted_room_blob(rows: int = 6) -> dict:
+    import time
+
+    from live_draft_state import room_to_persist_dict
+
+    pool = pd.DataFrame(
+        [{"playerID": f"q{i}", "fullName": f"Player {i}", "Primary Position": "OF", "Expected Fantasy Value": 50.0 - i}
+         for i in range(rows)]
+    )
+    room = {
+        "draft_room_id": "PERSIST1",
+        "status": "in_progress",
+        "current_pick_index": 1,
+        "config": {"num_teams": 2, "your_team": "Team 1", "timer_seconds": 60},
+        "teams": ["Team 1", "Team 2"],
+        "pick_order": [{"Pick": 1, "Round": 1, "Team": "Team 1"}, {"Pick": 2, "Round": 1, "Team": "Team 2"}],
+        "draft_board": [{"Pick": 1, "Round": 1, "Team": "Team 1", "fullName": "Player 0", "playerID": "q0"}],
+        "rosters": {"Team 1": [{"fullName": "Player 0", "playerID": "q0"}], "Team 2": []},
+        "drafted_player_ids": ["q0"],
+        "pool": pool,
+        "timer_started_at": time.time() - 10,
+        "timer_deadline": time.time() + 50,
+    }
+    return room_to_persist_dict(room)
+
+
+class WorkspacePersistenceSlimmingTests(unittest.TestCase):
+    """Shared saves carry no rebuildable pool; the unread page copy is gone; old saves still load."""
+
+    CANON_KEYS = ("draft_room_id", "status", "current_pick_index", "draft_board", "rosters", "pick_order",
+                  "drafted_player_ids", "config")
+
+    def _session_and_state(self, blob: dict) -> tuple[dict, dict]:
+        import copy
+
+        from live_draft_state import room_from_persist_dict
+
+        session = {"live_draft_state": copy.deepcopy(blob), "live_draft_room": room_from_persist_dict(blob)}
+        state = {"live_draft_state": copy.deepcopy(blob), "page_filter_state": {
+            "Live Draft Room": {"live_draft_state": copy.deepcopy(blob), "live_draft_room": copy.deepcopy(blob),
+                                "live_draft_timer": "60 sec"}}}
+        return session, state
+
+    def _enrich(self, session: dict, state: dict, *, shared: bool) -> dict:
+        from unittest import mock
+
+        import live_draft_state as lds
+
+        with mock.patch.object(lds, "shared_room_pool_is_rebuildable", return_value=shared):
+            out, _diag = lds.enrich_save_payload_with_live_draft(session, state)
+        return out
+
+    def test_shared_save_carries_no_pool_and_keeps_every_canonical_field(self) -> None:
+        from live_draft_state import is_persisted_room_blob
+
+        blob = _persisted_room_blob()
+        session, state = self._session_and_state(blob)
+        out = self._enrich(session, state, shared=True)
+        block = out["page_filter_state"]["Live Draft Room"]
+        for copy_ in (out["live_draft_state"], out["live_draft_room"], block["live_draft_room"]):
+            self.assertEqual(copy_["pool_records"], [])
+            self.assertTrue(is_persisted_room_blob(copy_))
+            for key in self.CANON_KEYS:
+                self.assertEqual(copy_.get(key), blob.get(key), key)
+            self.assertAlmostEqual(float(copy_["timer_deadline"]), float(blob["timer_deadline"]), places=3)
+        self.assertNotIn("live_draft_state", block)
+        self.assertEqual(block["live_draft_timer"], "60 sec")
+
+    def test_solo_save_keeps_its_pool_and_drops_only_the_unread_page_copy(self) -> None:
+        blob = _persisted_room_blob()
+        session, state = self._session_and_state(blob)
+        out = self._enrich(session, state, shared=False)
+        block = out["page_filter_state"]["Live Draft Room"]
+        for copy_ in (out["live_draft_state"], out["live_draft_room"], block["live_draft_room"]):
+            self.assertEqual(len(copy_["pool_records"]), 6)
+        self.assertNotIn("live_draft_state", block)
+
+    def test_old_shape_save_with_four_full_copies_still_restores(self) -> None:
+        import copy
+
+        from live_draft_state import _peek_live_draft_blob, restore_live_draft_page_filters, room_from_persist_dict
+
+        blob = _persisted_room_blob()
+        old_state = {
+            "live_draft_state": copy.deepcopy(blob),
+            "live_draft_room": copy.deepcopy(blob),
+            "page_filter_state": {"Live Draft Room": {"live_draft_state": copy.deepcopy(blob),
+                                                      "live_draft_room": copy.deepcopy(blob)}},
+        }
+        self.assertEqual(len(_peek_live_draft_blob(old_state)["pool_records"]), 6)
+        self.assertEqual(len(room_from_persist_dict(old_state["live_draft_state"])["pool"]), 6)
+        session: dict = {}
+        self.assertTrue(restore_live_draft_page_filters(session, old_state["page_filter_state"]))
+        self.assertEqual(len(session["live_draft_state"]["pool_records"]), 6)
+        self.assertEqual(session["live_draft_state"]["draft_board"], blob["draft_board"])
+
+    def test_old_shape_shared_save_is_normalized_on_the_next_save(self) -> None:
+        blob = _persisted_room_blob()
+        session, state = self._session_and_state(blob)
+        out = self._enrich(session, state, shared=True)
+        self.assertEqual(out["live_draft_room"]["pool_records"], [])
+        self.assertNotIn("live_draft_state", out["page_filter_state"]["Live Draft Room"])
+
+    def test_page_snapshot_no_longer_captures_the_canonical_blob(self) -> None:
+        import page_state as pg_state
+
+        blob = _persisted_room_blob()
+        session = {"live_draft_state": blob, "live_draft_room": blob, "live_draft_timer": "60 sec"}
+        store = {"Live Draft Room": {"live_draft_state": blob}}  # captured by an older build
+        pg_state.save_page_state(session, "Live Draft Room", store)
+        block = store["Live Draft Room"]
+        self.assertNotIn("live_draft_state", block)
+        self.assertIn("live_draft_room", block)
+        self.assertEqual(block["live_draft_timer"], "60 sec")
+
+    def test_saved_size_drops_by_more_than_ninety_percent_for_shared(self) -> None:
+        import json
+
+        blob = _persisted_room_blob(rows=400)
+        session, state = self._session_and_state(blob)
+        before = len(json.dumps(state, default=str))
+        after = len(json.dumps(self._enrich(session, state, shared=True), default=str))
+        self.assertLess(after, before * 0.1)
+
+
+class SharedPoolLessRestoreTests(_LocalSharedRoomCase):
+    """A Shared room restored from a pool-less save gets its pool back from the room's pool sources."""
+
+    def setUp(self) -> None:
+        from unittest import mock
+
+        super().setUp()
+        pool_dir = Path(self._tmpdir.name) / "pools"
+        pool_dir.mkdir()
+
+        def _path(code: str):
+            return pool_dir / f"{str(code).strip().upper()}.pkl"
+
+        patcher = mock.patch("shared_draft_local_pool._local_pool_disk_path", side_effect=_path)
+        patcher.start()
+        self._patches.append(patcher)
+
+    def test_restore_from_a_pool_less_save_rebuilds_the_same_pool(self) -> None:
+        from draft_room_context import create_and_host_shared_room
+        from draft_room_shared_state import ACTIVE_SHARED_ROOM_CODE_KEY, LIVE_DRAFT_ROOM_KEY
+        from live_draft_state import copy_room_without_pool, room_from_persist_dict, room_to_persist_dict
+        from shared_draft_local_pool import ensure_local_shared_player_pool
+
+        blob = _persisted_room_blob()
+        room = room_from_persist_dict(blob)
+        host: dict = {"draft_room_participant_id": "host-user", "room_your_team": "Team 1"}
+        code, _ = create_and_host_shared_room(host, room, store=self.store)
+        live = host[LIVE_DRAFT_ROOM_KEY]
+        original = ensure_local_shared_player_pool(host, live)
+        self.assertEqual(len(original), 6)
+
+        saved = copy_room_without_pool(room_to_persist_dict(live))  # what the workspace now keeps
+        restored = room_from_persist_dict(saved)
+        self.assertEqual(len(restored["pool"]), 0)
+        fresh: dict = {ACTIVE_SHARED_ROOM_CODE_KEY: code, "draft_room_participant_id": "host-user"}
+        pool = ensure_local_shared_player_pool(fresh, restored)
+        self.assertEqual(sorted(pool["playerID"]), sorted(original["playerID"]))
+        self.assertEqual(restored["draft_board"], blob["draft_board"])
+        self.assertEqual(restored["rosters"], blob["rosters"])
+
+
+class RecommendationTeamContextTests(unittest.TestCase):
+    """Decision Scores, needs and roster fit follow the team on the clock and move with the pick."""
+
+    def test_scores_needs_and_fit_switch_to_the_next_team_after_a_pick(self) -> None:
+        from live_draft_recommendation_context import build_live_draft_recommendation_context
+        from live_draft_recommendations import live_draft_recommendations
+        from live_draft_roster_slots import ensure_room_slot_config
+
+        def player(pid, name, pos, value, rank):
+            return {"playerID": pid, "fullName": name, "Primary Position": pos, "Eligible Positions": pos,
+                    "Expected Fantasy Value": value, "Model Rank": rank, "Market Rank": rank,
+                    "proj_HR": 20, "proj_R": 70, "proj_RBI": 70, "proj_SB": 5, "proj_BA": 0.26}
+
+        pool = pd.DataFrame([
+            player("c1", "Catcher One", "C", 60, 3), player("c2", "Catcher Two", "C", 55, 5),
+            player("o1", "Outfield One", "OF", 62, 2), player("s1", "Short One", "SS", 58, 4),
+        ])
+        room = {
+            "draft_room_id": "CTX1", "status": "in_progress", "current_pick_index": 1,
+            "config": {"num_teams": 2, "your_team": "Team 1", "slots": {"C": 1, "OF": 1, "SS": 1}},
+            "teams": ["Team 1", "Team 2"],
+            "pick_order": [{"Pick": 1, "Round": 1, "Team": "Team 2"}, {"Pick": 2, "Round": 1, "Team": "Team 1"},
+                           {"Pick": 3, "Round": 2, "Team": "Team 1"}, {"Pick": 4, "Round": 2, "Team": "Team 2"}],
+            "draft_board": [{"Pick": 1, "Round": 1, "Team": "Team 2", "fullName": "Catcher Two", "playerID": "c2"}],
+            "rosters": {"Team 1": [], "Team 2": [{"fullName": "Catcher Two", "playerID": "c2",
+                                                  "Primary Position": "C", "Eligible Positions": "C"}]},
+            "drafted_player_ids": ["c2"],
+            "pool": pool,
+        }
+        ensure_room_slot_config(room)
+
+        def snapshot():
+            ctx = build_live_draft_recommendation_context(room, {}, team_override="Team 1")
+            top = live_draft_recommendations(room, top_n=3, session={})[0]
+            return ctx, dict(zip(top["fullName"], top["Decision Score"]))
+
+        ctx, scores = snapshot()  # pick 2: Team 1 (empty roster) is on the clock
+        self.assertEqual(ctx["team_on_clock"], "Team 1")
+        self.assertEqual(ctx["team_roster"], [])
+        self.assertIn("C", ctx["needed_positions"])
+        self.assertIn("Catcher One", scores)
+
+        room["current_pick_index"] = 3  # pick 4: Team 2 already has its catcher
+        ctx2, scores2 = snapshot()
+        self.assertEqual(ctx2["team_on_clock"], "Team 2")
+        self.assertEqual([r["fullName"] for r in ctx2["team_roster"]], ["Catcher Two"])
+        self.assertNotIn("C", ctx2["needed_positions"])
+        self.assertNotIn("Catcher One", scores2)  # Team 1's catcher need does not leak across
+        self.assertNotEqual(scores["Outfield One"], scores2["Outfield One"])  # recalculated for Team 2
+
+
+class TimerLeaseRenewalCadenceTests(_SharedDraftCase):
+    """The timer authority renews its lease at the heartbeat cadence, not on every tick."""
+
+    def test_checks_within_the_heartbeat_do_not_rewrite_the_room_and_renewal_still_happens(self) -> None:
+        from unittest import mock
+
+        import live_draft_timer_authority as lta
+        from draft_room_shared_state import invalidate_shared_room_document_cache
+
+        code, host, _guest = self._start(first="Team 1", deadline_in=40)
+        self.assertTrue(lta.multiparty_may_run_autopick(host))  # host takes the lease
+        lease0 = float(self.store.load(code)["timer_authority"]["lease_expires_at"])
+
+        writes: list[int] = []
+        real_save = self.store.save_if_revision
+
+        def counting_save(doc, *, expected_revision):
+            writes.append(1)
+            return real_save(doc, expected_revision=expected_revision)
+
+        with mock.patch.object(self.store, "save_if_revision", side_effect=counting_save):
+            for _ in range(5):  # five timer ticks inside the heartbeat interval
+                invalidate_shared_room_document_cache(host, code)
+                self.assertTrue(lta.multiparty_may_run_autopick(host))
+            self.assertEqual(writes, [])
+            real_now = lta._utc_now
+            with mock.patch.object(lta, "_utc_now", lambda: real_now() + lta.TIMER_AUTHORITY_HEARTBEAT_SEC + 0.5):
+                invalidate_shared_room_document_cache(host, code)
+                self.assertTrue(lta.multiparty_may_run_autopick(host))
+        self.assertEqual(len(writes), 1)
+        self.assertGreater(float(self.store.load(code)["timer_authority"]["lease_expires_at"]), lease0)
+
+
+class SharedOnClockBannerTickTests(unittest.TestCase):
+    """The Shared banner lives in a run_every fragment, and a fragment rerun
+    drops any element it does not emit again."""
+
+    def test_every_tick_emits_banner_on_synced_deadline(self) -> None:
+        import time
+        from unittest import mock
+
+        import live_draft_on_clock_ui as ui
+
+        deadline = time.time() + 90
+        room = {
+            "status": "in_progress",
+            "current_pick_index": 3,
+            "timer_deadline": deadline,
+            "config": {"timer_seconds": 120},
+            "pick_order": [{"Team": t, "Round": 1 + i // 2, "Pick": i + 1} for i, t in enumerate("ABBAAB")],
+            "draft_board": [{"Team": "A"}, {"Team": "B"}, {"Team": "B"}],
+        }
+        session: dict = {"live_draft_room": dict(room)}
+        ticks: list = []
+        st = mock.MagicMock()
+        st.fragment = lambda **_kw: (lambda fn: ticks.append(fn) or fn)
+        painted: list = []
+        with mock.patch.object(ui, "_render_on_clock_banner_html", lambda *a, **k: painted.append((a, k))), \
+                mock.patch("app_page_generation.fragment_allowed", return_value=True), \
+                mock.patch("live_draft_safe_mode.timer_should_run", return_value=True), \
+                mock.patch("live_draft_solo_timer.is_solo_live_draft", return_value=False), \
+                mock.patch("live_draft_timer_ui._sync_room_on_timer_tick", return_value=(room, False)):
+            ui.render_live_on_clock_banner(st, session, room, room["pick_order"][3])
+            self.assertEqual(len(ticks), 1)
+            # Between full runs the session's room alias can lag the room the
+            # tick just synced (seen live: pick 0, no deadline).
+            session["live_draft_room"] = {"status": "in_progress", "current_pick_index": 0}
+            for _ in range(3):
+                ticks[0]()
+        # Initial tick plus one emission per later tick: none are skipped.
+        self.assertEqual(len(painted), 4)
+        for args, kw in painted:
+            self.assertEqual(kw["pick_index"], 3)
+            self.assertAlmostEqual(float(kw["deadline"]), deadline, places=3)
+            self.assertEqual(args[1]["Team"], "A")
+        # Same seed between repaints, so the markup (and the iframe) is unchanged.
+        self.assertEqual(len({args[2] for args, _ in painted}), 1)
 
 
 if __name__ == "__main__":

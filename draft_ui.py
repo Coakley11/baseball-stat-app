@@ -383,6 +383,48 @@ def live_draft_autopick_disabled(session: dict[str, Any]) -> bool:
     return bool(session.get(DISABLE_AUTOPICK_FOR_TESTING_KEY))
 
 
+MANUAL_PICK_IN_FLIGHT_IDX_KEY = "_live_draft_manual_pick_in_flight_idx"
+
+
+def _received_before_deadline(received_at: Any, room: dict[str, Any] | None) -> bool | None:
+    """Whether a click the server stamped at ``received_at`` beat the open pick's deadline.
+
+    None when there is nothing to judge (no stamp, no armed deadline, not in progress).
+    The canonical server deadline decides — never the browser countdown.
+    """
+    if received_at is None or not isinstance(room, dict) or str(room.get("status") or "") != "in_progress":
+        return None
+    deadline = room.get("timer_deadline")
+    if deadline is None:
+        return None
+    try:
+        return float(received_at) < float(deadline)
+    except (TypeError, ValueError):
+        return None
+
+
+def manual_pick_holds_expiry(session: dict[str, Any], room: dict[str, Any] | None) -> bool:
+    """True while this session holds a manual pick that may still beat the open pick's expiry.
+
+    Only a click for *this* pick that the server received before its deadline qualifies.
+    A click received after the deadline is refused when processed, and a pick in flight
+    for an earlier pick (the post-commit poll guard keeps that flag a few seconds) must
+    not hold off the next pick's clock.
+    """
+    idx = int(room.get("current_pick_index") or 0) if isinstance(room, dict) else None
+    pending = session.get(PENDING_MANUAL_PICK_KEY)
+    if isinstance(pending, dict):
+        target = pending.get("target_pick_index")
+        if target is None or idx is None or int(target) == idx:
+            if _received_before_deadline(pending.get("queued_at"), room) is not False:
+                return True
+    if session.get("_live_draft_manual_pick_in_flight"):
+        flight_idx = session.get(MANUAL_PICK_IN_FLIGHT_IDX_KEY)
+        if flight_idx is not None and idx is not None and int(flight_idx) == idx:
+            return True
+    return False
+
+
 def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[str, Any]:
     """
     Execute a queued manual pick at page entry — before autopick, poll, or canonical restore.
@@ -483,6 +525,27 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
                 "error": f"Pick {int(target_idx) + 1} closed before your pick of {player_name} went through.",
             }
 
+    # Deadline fairness: a click the server received before the open pick's canonical
+    # deadline may finish committing after it (save latency); one first received at or
+    # after the deadline is refused, so it can neither steal the expiring pick nor
+    # silently land in the next one.
+    open_room = session.get("live_draft_room")
+    if _received_before_deadline(pending.get("queued_at"), open_room) is False:
+        try:
+            from live_draft_pick_timer import clear_pick_submit_state
+
+            clear_pick_submit_state(session)
+        except ImportError:
+            pass
+        open_pick = int(open_room.get("current_pick_index") or 0) + 1
+        return {
+            "processed": True,
+            "ok": False,
+            "should_rerun": False,
+            "message": "",
+            "error": f"Pick {open_pick}'s clock had run out when your pick of {player_name} arrived.",
+        }
+
     try:
         from live_draft_state import LIVE_DRAFT_ROOM_KEY, is_live_draft_locally_dirty, mark_live_draft_local_edit
 
@@ -497,6 +560,7 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
         idx_before = 0
 
     session["_live_draft_manual_pick_in_flight"] = True
+    session[MANUAL_PICK_IN_FLIGHT_IDX_KEY] = idx_before
     try:
         from draft_commit_diagnostics import record_draft_commit_diagnostics
 
