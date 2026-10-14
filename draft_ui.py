@@ -384,6 +384,7 @@ def live_draft_autopick_disabled(session: dict[str, Any]) -> bool:
 
 
 MANUAL_PICK_IN_FLIGHT_IDX_KEY = "_live_draft_manual_pick_in_flight_idx"
+MANUAL_PICK_IN_FLIGHT_MAX_SEC = 15.0
 
 
 def _received_before_deadline(received_at: Any, room: dict[str, Any] | None) -> bool | None:
@@ -420,6 +421,9 @@ def manual_pick_holds_expiry(session: dict[str, Any], room: dict[str, Any] | Non
                 return True
     if session.get("_live_draft_manual_pick_in_flight"):
         flight_idx = session.get(MANUAL_PICK_IN_FLIGHT_IDX_KEY)
+        guard_until = float(session.get("_live_draft_manual_pick_guard_until") or 0)
+        if guard_until and time.time() >= guard_until:
+            return False  # an in-flight flag past its guard was left by a stopped run
         if flight_idx is not None and idx is not None and int(flight_idx) == idx:
             return True
     return False
@@ -561,6 +565,11 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
 
     session["_live_draft_manual_pick_in_flight"] = True
     session[MANUAL_PICK_IN_FLIGHT_IDX_KEY] = idx_before
+    # If this run is stopped before the flag is cleared, the page's guard expiry clears
+    # it; without a guard time it stayed set and held this pick's expiry for good.
+    session["_live_draft_manual_pick_guard_until"] = max(
+        float(session.get("_live_draft_manual_pick_guard_until") or 0), time.time() + MANUAL_PICK_IN_FLIGHT_MAX_SEC
+    )
     try:
         from draft_commit_diagnostics import record_draft_commit_diagnostics
 

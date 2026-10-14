@@ -546,16 +546,22 @@ class SharedExpiryBoundaryTests(_SharedDraftCase):
     def test_no_auto_pick_while_time_remains_even_with_the_flag_set(self) -> None:
         from live_draft_expired_pick import EXPIRED_PICK_PENDING_KEY
 
+        # The first room setup in a process is slow (imports, pool) and the clock runs
+        # from room creation; warm it so a slow machine does not expire the pick for real.
+        self._start(first="Team 2", deadline_in=60)
         for left in (15, 5, 2.5):
             with self.subTest(seconds_left=left):
                 code, host, _guest = self._start(first="Team 2", deadline_in=left)
+                deadline = float(self.store.load(code)["room"]["timer_deadline"])
+                if deadline - __import__("time").time() < 0.5:
+                    continue  # setup alone used up the clock on this machine; nothing to test
                 for _ in range(3):  # reruns near the deadline
                     host[EXPIRED_PICK_PENDING_KEY] = True
-                    self.assertFalse(self._expire(host).ok)
+                    if __import__("time").time() < deadline:
+                        self.assertFalse(self._expire(host).ok)
                 self.assertEqual(self._board(code), [])
-                self.assertAlmostEqual(
-                    float(self.store.load(code)["room"]["timer_deadline"]) - __import__("time").time(), left, delta=1.5
-                )
+                # No auto-pick and no timer reset: the pick keeps its deadline.
+                self.assertEqual(float(self.store.load(code)["room"]["timer_deadline"]), deadline)
 
     def test_manual_pick_just_before_the_deadline_wins_and_the_next_pick_keeps_its_clock(self) -> None:
         from draft_actions import draft_player
@@ -1097,6 +1103,223 @@ class SharedOnClockBannerTickTests(unittest.TestCase):
             self.assertEqual(args[1]["Team"], "A")
         # Same seed between repaints, so the markup (and the iframe) is unchanged.
         self.assertEqual(len({args[2] for args, _ in painted}), 1)
+
+
+class SharedAutoPickTransactionTests(_SharedDraftCase):
+    """The timer holder's auto-pick advances its own room before writing the shared room.
+    Whatever stops it in between, the session must end up on the shared room and the
+    expired pick must still be auto-picked exactly once (seen live: frozen at 0:00)."""
+
+    def setUp(self) -> None:
+        from unittest import mock
+
+        super().setUp()
+        patch = mock.patch("draft_room_context.get_shared_room_store", return_value=self.store)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def _next_run(self, seat: dict) -> None:
+        from draft_room_context import poll_shared_draft_room, reset_shared_draft_sync_gate
+
+        for _ in range(3):
+            reset_shared_draft_sync_gate(seat)
+            poll_shared_draft_room(seat, store=self.store)
+            self._expire(seat)
+
+    def _assert_one_auto_pick_and_in_step(self, code: str, host: dict) -> None:
+        import time
+
+        from live_draft_expired_pick import AUTOPICK_TXN_KEY
+
+        doc = self.store.load(code)["room"]
+        self.assertEqual([src for _n, src in self._board(code)], ["Auto Pick"])
+        self.assertEqual(int(doc["current_pick_index"]), 1)
+        self.assertGreater(float(doc["timer_deadline"]), time.time())
+        live = host["live_draft_room"]
+        self.assertEqual((int(live["current_pick_index"]), len(live["draft_board"])), (1, 1))
+        self.assertIsNone(host.get(AUTOPICK_TXN_KEY))
+
+    def test_rerun_between_local_apply_and_shared_write_is_undone(self) -> None:
+        from unittest import mock
+
+        from streamlit.runtime.scriptrunner_utils.exceptions import RerunException
+        from streamlit.runtime.scriptrunner_utils.script_requests import RerunData
+
+        code, host, _guest = self._start(first="Team 1", deadline_in=-0.5)
+
+        def rerun(*_a, **_k):
+            raise RerunException(RerunData())
+
+        with mock.patch("draft_room_context.commit_shared_room_state", rerun):
+            with self.assertRaises(RerunException):
+                self._expire(host, source="timer_fragment_zero")
+        # The shared room never advanced, and the timer holder no longer believes it did.
+        self.assertEqual(self._board(code), [])
+        self.assertEqual(int(host["live_draft_room"]["current_pick_index"]), 0)
+        self._next_run(host)
+        self._assert_one_auto_pick_and_in_step(code, host)
+
+    def test_shared_write_failing_quietly_leaves_no_phantom_pick(self) -> None:
+        from unittest import mock
+
+        import live_draft_expired_pick as lep
+
+        code, host, _guest = self._start(first="Team 1", deadline_in=-0.5)
+        with mock.patch("draft_room_context.commit_shared_room_state", return_value=(False, "store down", None)):
+            result = self._expire(host)
+        self.assertFalse(result.ok)
+        self.assertEqual(self._board(code), [])
+        self.assertEqual(int(host["live_draft_room"]["current_pick_index"]), 0)
+        for key in (lep.AUTOPICK_BACKOFF_INDEX_KEY, lep.AUTOPICK_BACKOFF_UNTIL_KEY, lep.AUTOPICK_ATTEMPTED_INDEX_KEY):
+            host.pop(key, None)  # the 1 s retry backoff has passed
+        self._next_run(host)
+        self._assert_one_auto_pick_and_in_step(code, host)
+
+    def test_interruption_anywhere_in_the_attempt_still_auto_picks_once(self) -> None:
+        import sys
+
+        import live_draft_expired_pick as lep
+        from streamlit.runtime.scriptrunner_utils.exceptions import RerunException
+        from streamlit.runtime.scriptrunner_utils.script_requests import RerunData
+
+        target = lep.run_expired_autopick_once.__code__
+
+        def run(host: dict, nth: int) -> int:
+            st = {"inside": 0, "count": 0}
+
+            def tracer(frame, event, _arg):
+                if event == "call" and frame.f_code is target:
+                    st["inside"] += 1
+                if st["inside"]:
+                    if event == "return" and frame.f_code is target:
+                        st["inside"] -= 1
+                    elif event == "line":
+                        st["count"] += 1
+                        if st["count"] == nth:
+                            raise RerunException(RerunData())
+                return tracer
+
+            sys.settrace(tracer)
+            try:
+                self._expire(host, source="timer_fragment_zero")
+            except RerunException:
+                pass
+            finally:
+                sys.settrace(None)
+            return st["count"]
+
+        code, host, _guest = self._start(first="Team 1", deadline_in=-0.5)
+        total = run(host, 10**9)
+        self._assert_one_auto_pick_and_in_step(code, host)
+        for nth in range(1, total, max(1, total // 12)):
+            with self.subTest(interrupted_at_line=nth):
+                code, host, _guest = self._start(first="Team 1", deadline_in=-0.5)
+                run(host, nth)
+                self._next_run(host)
+                self._assert_one_auto_pick_and_in_step(code, host)
+
+    def test_a_second_rerun_during_cleanup_cannot_freeze_the_pick(self) -> None:
+        """Streamlit's session state is itself a stop point: with another rerun pending,
+        the cleanup in ``finally`` was stopped too, the auto-pick lock stayed set, and
+        every later expiry for that pick was refused (seen live: frozen at 0:00)."""
+        import sys
+        import time
+        from unittest import mock
+
+        import live_draft_expired_pick as lep
+        from streamlit.runtime.scriptrunner_utils.exceptions import RerunException
+        from streamlit.runtime.scriptrunner_utils.script_requests import RerunData
+
+        class StoppingSession(dict):
+            armed = False
+
+            def _stop(self):
+                if self.armed:
+                    self.armed = False
+                    raise RerunException(RerunData())
+
+            def get(self, *a, **k):
+                self._stop(); return super().get(*a, **k)
+
+            def __getitem__(self, k):
+                self._stop(); return super().__getitem__(k)
+
+            def __setitem__(self, k, v):
+                self._stop(); return super().__setitem__(k, v)
+
+            def pop(self, *a, **k):
+                self._stop(); return super().pop(*a, **k)
+
+        target = lep.run_expired_autopick_once.__code__
+
+        def run(host, nth: int) -> int:
+            st = {"inside": 0, "count": 0}
+
+            def tracer(frame, event, _arg):
+                if event == "call" and frame.f_code is target:
+                    st["inside"] += 1
+                if st["inside"]:
+                    if event == "return" and frame.f_code is target:
+                        st["inside"] -= 1
+                    elif event == "line":
+                        st["count"] += 1
+                        if st["count"] == nth:
+                            host.armed = True  # the cleanup's first session access stops too
+                            raise RerunException(RerunData())
+                return tracer
+
+            sys.settrace(tracer)
+            try:
+                self._expire(host, source="timer_fragment_zero")
+            except RerunException:
+                pass
+            finally:
+                sys.settrace(None)
+                host.armed = False
+            return st["count"]
+
+        with mock.patch.object(lep, "AUTOPICK_MARKER_STALE_SEC", 0.3):
+            code, plain, _guest = self._start(first="Team 1", deadline_in=-0.5)
+            total = run(StoppingSession(plain), 10**9)
+            for nth in range(1, total, max(1, total // 10)):
+                with self.subTest(interrupted_at_line=nth):
+                    code, plain, _guest = self._start(first="Team 1", deadline_in=-0.5)
+                    host = StoppingSession(plain)
+                    run(host, nth)
+                    time.sleep(0.35)  # a later tick, after the leftover lock or claim lapsed
+                    self._next_run(host)
+                    self._assert_one_auto_pick_and_in_step(code, host)
+
+    def test_lock_left_by_a_stopped_attempt_lapses(self) -> None:
+        import time
+
+        import live_draft_expired_pick as lep
+
+        session: dict = {lep.AUTOPICK_LOCK_KEY: time.time()}
+        self.assertTrue(lep.autopick_lock_held(session))  # an attempt in progress still blocks
+        session[lep.AUTOPICK_LOCK_KEY] = time.time() - lep.AUTOPICK_MARKER_STALE_SEC - 1
+        self.assertFalse(lep.autopick_lock_held(session))
+        self.assertNotIn(lep.AUTOPICK_LOCK_KEY, session)
+        session[lep.AUTOPICK_LOCK_KEY] = True  # the pre-timestamp value can only be a leftover
+        self.assertFalse(lep.autopick_lock_held(session))
+        # A fresh lock from the previous pick (its attempt stopped while the other seat
+        # committed that pick) must not hold off this pick's expiry.
+        session.update({lep.AUTOPICK_LOCK_KEY: time.time(), lep.AUTOPICK_LOCK_PICK_KEY: 3})
+        self.assertTrue(lep.autopick_lock_held(session, {"current_pick_index": 3}))
+        self.assertFalse(lep.autopick_lock_held(session, {"current_pick_index": 4}))
+        self.assertNotIn(lep.AUTOPICK_LOCK_KEY, session)
+
+    def test_manual_pick_flag_past_its_guard_no_longer_holds_expiry(self) -> None:
+        import time
+
+        from draft_ui import MANUAL_PICK_IN_FLIGHT_IDX_KEY, manual_pick_holds_expiry
+
+        room = {"status": "in_progress", "current_pick_index": 4, "timer_deadline": time.time() - 1}
+        session = {"_live_draft_manual_pick_in_flight": True, MANUAL_PICK_IN_FLIGHT_IDX_KEY: 4,
+                   "_live_draft_manual_pick_guard_until": time.time() + 10}
+        self.assertTrue(manual_pick_holds_expiry(session, room))  # a pick still committing
+        session["_live_draft_manual_pick_guard_until"] = time.time() - 1
+        self.assertFalse(manual_pick_holds_expiry(session, room))  # left by a stopped run
 
 
 if __name__ == "__main__":

@@ -39,6 +39,121 @@ TIMER_ZERO_RERUN_LATCH_TTL_SEC = 1.5
 # Session-scoped single-flight for the current expiration token (covers duplicate Streamlit reruns).
 LAST_PROCESSED_EXPIRATION_TOKEN_SESSION_KEY = "_live_draft_last_processed_expiration_token"
 CLAIMED_EXPIRATION_TOKEN_KEY = "_live_draft_claimed_expiration_token"
+CLAIMED_EXPIRATION_TOKEN_TS_KEY = "_live_draft_claimed_expiration_token_ts"
+# Streamlit can stop a run at any st.session_state access, including inside the cleanup
+# that releases the lock and claim — a second pending rerun did, and the lock left
+# behind blocked every later expiry for that pick (frozen at 0:00 with the lease still
+# renewed). Both now lapse on their own; an expiry attempt takes a few seconds at most.
+AUTOPICK_MARKER_STALE_SEC = 15.0
+
+
+def _marker_fresh(value: Any) -> bool:
+    """A timestamp marker counts while younger than AUTOPICK_MARKER_STALE_SEC."""
+    import time
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return time.time() - float(value) < AUTOPICK_MARKER_STALE_SEC
+
+
+AUTOPICK_LOCK_PICK_KEY = "_live_draft_autopick_lock_pick"
+
+
+def autopick_lock_held(session: dict[str, Any], room: dict[str, Any] | None = None) -> bool:
+    """True while this session's auto-pick attempt for the room's open pick is running.
+
+    A session runs one script at a time, so a lock for another pick (its attempt was
+    stopped while someone else committed that pick) or an old one is a leftover.
+    """
+    if not session.get(AUTOPICK_LOCK_KEY):
+        return False
+    same_pick = room is None or session.get(AUTOPICK_LOCK_PICK_KEY) in (None, _pick_index(room))
+    if same_pick and _marker_fresh(session.get(AUTOPICK_LOCK_KEY)):
+        return True
+    session.pop(AUTOPICK_LOCK_KEY, None)  # left by an interrupted attempt
+    session.pop(AUTOPICK_LOCK_PICK_KEY, None)
+    return False
+
+
+# Open Shared auto-pick attempt: the pick is applied to the session's room before it is
+# written to the shared room. Set before that apply, cleared only once the session has
+# been checked against the shared room (see ``settle_autopick_txn``).
+AUTOPICK_TXN_KEY = "_live_draft_autopick_txn"
+
+
+def _active_shared_room_code(session: dict[str, Any]) -> str:
+    try:
+        from draft_room_context import ACTIVE_SHARED_ROOM_CODE_KEY, is_multiplayer_draft_active
+
+        if not is_multiplayer_draft_active(session):
+            return ""
+        return str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+    except Exception:
+        return ""
+
+
+def begin_autopick_txn(session: dict[str, Any], room: dict[str, Any]) -> None:
+    """Record a Shared auto-pick attempt before its pick is applied to the session's room."""
+    code = _active_shared_room_code(session)
+    if code:
+        session[AUTOPICK_TXN_KEY] = {
+            "room_code": code,
+            "pick_index": _pick_index(room),
+            "board_size": len(room.get("draft_board") or []),
+        }
+
+
+def settle_autopick_txn(session: dict[str, Any], *, store: Any = None) -> bool | None:
+    """Make the session agree with the shared room after a Shared auto-pick attempt.
+
+    The auto-pick advances the session's room in place and only then writes the shared
+    room. A rerun between the two (any click at 0:00), or a write that failed quietly,
+    left the timer holder believing the pick had advanced while the shared room still
+    sat on the expired pick — and nobody else may expire it while the holder's lease
+    lives, so the draft froze at 0:00. Whenever an attempt is open, the session takes the
+    stored room: the committed pick if the write landed, the expired pick (retried by
+    the next run) if it did not.
+
+    Returns None when no attempt is open, True once the session matches the shared room,
+    and False when the shared room could not be read (the attempt stays open and the next
+    poll or expiry settles it).
+    """
+    txn = session.get(AUTOPICK_TXN_KEY)
+    if not isinstance(txn, dict):
+        return None
+    code = str(txn.get("room_code") or "")
+    try:
+        from draft_room_context import (
+            ACTIVE_SHARED_ROOM_CODE_KEY,
+            SHARED_ROOM_META_KEY,
+            _shared_head_live_fields_diverge,
+            get_shared_room_store,
+            sync_shared_draft_room,
+        )
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY
+    except ImportError:
+        return False
+    if not code or code != str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper():
+        session.pop(AUTOPICK_TXN_KEY, None)  # left that room; nothing to reconcile
+        return True
+    backend = store if store is not None else get_shared_room_store()
+    local = session.get(LIVE_DRAFT_ROOM_KEY)
+    head = None
+    try:
+        load_head = getattr(backend, "load_head", None)
+        head = load_head(code) if callable(load_head) else None
+    except Exception:
+        head = None
+    in_step = (
+        isinstance(head, dict)
+        and isinstance(local, dict)
+        and int(head.get("revision") or 0) == int((session.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
+        and not _shared_head_live_fields_diverge(head, local)
+    )
+    if not in_step and not sync_shared_draft_room(session, store=backend, adopt_canonical=True):
+        return False
+    session.pop(AUTOPICK_TXN_KEY, None)
+    return True
 
 
 @dataclass
@@ -269,7 +384,7 @@ def should_fragment_trigger_full_rerun(session: dict[str, Any], room: dict[str, 
         return False
     if autopick_failure_backoff_active(session, room):
         return False
-    if session.get(AUTOPICK_LOCK_KEY):
+    if autopick_lock_held(session, room):
         return False
     if timer_zero_rerun_already_latched(session, room):
         return False
@@ -299,9 +414,12 @@ def claim_expiration_token(session: dict[str, Any], token: str) -> bool:
     if str(session.get(LAST_PROCESSED_EXPIRATION_TOKEN_SESSION_KEY) or "").strip() == tok:
         return False
     claimed = str(session.get(CLAIMED_EXPIRATION_TOKEN_KEY) or "").strip()
-    if claimed == tok:
+    if claimed == tok and _marker_fresh(session.get(CLAIMED_EXPIRATION_TOKEN_TS_KEY)):
         return False
+    import time
+
     session[CLAIMED_EXPIRATION_TOKEN_KEY] = tok
+    session[CLAIMED_EXPIRATION_TOKEN_TS_KEY] = time.time()
     return True
 
 
@@ -349,7 +467,10 @@ def clear_autopick_backoff_for_manual(session: dict[str, Any], room: dict[str, A
     try:
         token = str(session.get(MANUAL_PREEMPTED_EXPIRATION_TOKEN_KEY) or "").strip()
         if token:
+            import time
+
             session[CLAIMED_EXPIRATION_TOKEN_KEY] = token
+            session[CLAIMED_EXPIRATION_TOKEN_TS_KEY] = time.time()
         else:
             session.pop(CLAIMED_EXPIRATION_TOKEN_KEY, None)
     except Exception:
@@ -632,7 +753,7 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
     if autopick_attempted_for_index(session, room):
         return ExpiredPickPageResult(handled=True, ok=False, should_rerun=False, message="", error="")
 
-    if session.get(AUTOPICK_LOCK_KEY):
+    if autopick_lock_held(session, room):
         return ExpiredPickPageResult(handled=False, ok=False, should_rerun=False, message="", error="")
 
     if not claim_expiration_token(session, expiration_token):
@@ -652,7 +773,8 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
     except ImportError:
         pass
 
-    session[AUTOPICK_LOCK_KEY] = True
+    session[AUTOPICK_LOCK_KEY] = time.time()
+    session[AUTOPICK_LOCK_PICK_KEY] = idx
     record_autopick_diagnostics(session, autopick_in_progress_lock=True, autopick_commit_path=source)
 
     board_before = len(room.get("draft_board") or [])
@@ -661,6 +783,7 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
     expected_revision = sync_expected_revision(session)
     record_expired_pick_perf(session, sync_revision_ms=_perf_ms(t0))
 
+    begin_autopick_txn(session, room)
     try:
         t0 = time.perf_counter()
         # Auto-pick already finalizes + persists via the shared commit path.
@@ -671,6 +794,19 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
             recommendation_ms=_perf_ms(t0),
             recommendation_cache_hit=bool(session.get("_live_draft_autopick_used_rec_cache")),
         )
+        # Shared: the pick was applied to ``room`` (the session's room) before the shared
+        # write. Take whatever the shared room now holds before reporting anything.
+        applied_room = room
+        if settle_autopick_txn(session):
+            live = session.get("live_draft_room")
+            room = live if isinstance(live, dict) else room
+            if ok_select and len(room.get("draft_board") or []) <= board_before:
+                # The write never landed; the session is back on the expired pick.
+                session.pop(CLAIMED_EXPIRATION_TOKEN_KEY, None)
+                err = "Auto-pick did not reach the shared room — retrying."
+                _mark_autopick_failed(session, room, err)
+                record_expired_pick_perf(session, stage="not_committed_resynced", total_ms=_perf_ms(t_total), ok=False)
+                return ExpiredPickPageResult(handled=True, ok=False, should_rerun=True, message="", error=err)
         selected_name = ""
         try:
             diag = session.get(AUTOPICK_DIAG_KEY) or {}
@@ -791,7 +927,7 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
                 pass
 
         msg = select_msg or commit.message
-        if _autopick_lost_its_slot(session, room, board_before):
+        if _autopick_lost_its_slot(session, applied_room, board_before):
             # The pick still advanced (someone else's commit won), but "Drafted X" would
             # name a player who was not drafted.
             msg = ""
@@ -858,6 +994,14 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
         return ExpiredPickPageResult(handled=True, ok=True, should_rerun=True, message=msg, error="")
     finally:
         session.pop(AUTOPICK_LOCK_KEY, None)
+        # Interrupted (or failed) between the local apply and the shared write: put the
+        # session back on the shared room now. If this cannot read the shared room, the
+        # attempt stays open and the next poll or expiry settles it.
+        if session.get(AUTOPICK_TXN_KEY):
+            try:
+                settle_autopick_txn(session)
+            except Exception:
+                pass
         # A rerun (any click at 0:00) can stop this run between claim and commit. A claim
         # left behind made every retry "claim denied", so the pick sat at 0:00 and the
         # lease this session keeps renewing stopped the watchdog from taking over. Give
@@ -878,6 +1022,9 @@ def handle_expired_pick_on_page(session: dict[str, Any], room: dict[str, Any], *
       timer expired → select pick → persist/commit → revision++ → next pick → timer restart
     Soft gates (rerun budget / timer_should_run UI pause) must not skip the commit step.
     """
+    if session.get(AUTOPICK_TXN_KEY) and settle_autopick_txn(session):
+        live = session.get("live_draft_room")
+        room = live if isinstance(live, dict) else room  # an interrupted attempt was undone
     room = resolve_live_room(session, room) or room
     record_expired_pick_perf(session, stage="handle_entered", source=source)
 

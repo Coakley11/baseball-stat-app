@@ -17,6 +17,7 @@ LIVE_DRAFT_TIMER_DIAG_KEY = "_live_draft_timer_diag"
 TIMER_TICK_COUNT_KEY = "_live_draft_timer_tick_count"
 TIMER_LAST_TICK_TS_KEY = "_live_draft_timer_last_tick_ts"
 from live_draft_expired_pick import (
+    AUTOPICK_MARKER_STALE_SEC,
     EXPIRED_PICK_PENDING_KEY,
     handle_expired_pick_on_page,
     should_attach_timer_fragment,
@@ -551,8 +552,14 @@ def render_live_draft_timer_bar(st: Any, session: dict[str, Any], room: dict[str
                     return
                 session[EXPIRED_PICK_PENDING_KEY] = True
                 _render_timer_static(st, session, tick_room, source="fragment_expired_recovery")
-                # Never abort the page script that already owns expire handling.
-                if session.get("_live_draft_page_owns_expired"):
+                # Never abort the page script that already owns expire handling — but a
+                # page run stopped before it cleared this left every later tick silent.
+                _owns = session.get("_live_draft_page_owns_expired")
+                if _owns is True or (
+                    isinstance(_owns, (int, float))
+                    and not isinstance(_owns, bool)
+                    and time.time() - float(_owns) < AUTOPICK_MARKER_STALE_SEC
+                ):
                     return
                 if should_fragment_trigger_full_rerun(session, tick_room):
                     try:

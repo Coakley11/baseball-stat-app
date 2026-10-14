@@ -28120,7 +28120,9 @@ elif active_page == "Live Draft Room":
 
                 with ldr_step(st.session_state, "timer_note_page_load", st=st):
                     note_live_draft_page_load(st.session_state, room)
-                st.session_state["_live_draft_page_owns_expired"] = True
+                # A timestamp, so a run stopped before clearing it cannot silence the
+                # expired-pick recovery tick for good.
+                st.session_state["_live_draft_page_owns_expired"] = time.time()
                 with ldr_step(st.session_state, "timer_handle_expired_pick", st=st):
                     _expired_result = handle_expired_pick_on_page(
                         st.session_state, room, source="page_autopick"
