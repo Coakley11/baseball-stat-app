@@ -763,7 +763,7 @@ def render_live_draft_room_header(
     role = ""
     assigned_team = str(user_team or "").strip()
     mode_label = "Solo Draft"
-    mode_detail = "You control all teams"
+    mode_detail = "You draft for your team; the other teams auto-pick"
     solo = True
     try:
         from live_draft_setup_mode import resolve_active_live_draft_mode
@@ -779,8 +779,10 @@ def render_live_draft_room_header(
         if solo:
             mode_label = "Solo Draft"
             teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
+            others = len(teams) - 1
+            others_txt = "the other team auto-picks" if others == 1 else f"the other {others} teams auto-pick"
             mode_detail = (
-                f"You control all teams ({len(teams)} teams)" if len(teams) > 1 else "You control all teams"
+                f"You draft for {assigned_team or 'your team'}; {others_txt}" if others > 0 else "You draft for your team"
             )
         else:
             mode_label = "Shared Multiplayer"
@@ -2450,6 +2452,7 @@ def render_live_draft_rec_cards(
                         _name: str = name,
                         _pid: str = player_id,
                         _stable: str = stable_key,
+                        _pick_idx: int = pick_idx,
                     ) -> None:
                         try:
                             from live_draft_ux_latency import ACTION_DRAFT_REC, note_ux_action
@@ -2479,43 +2482,24 @@ def render_live_draft_rec_cards(
                                 candidate_source="rec_card",
                                 pool_source="recommendation_card",
                                 widget_key="",
+                                target_pick_index=_pick_idx,
                             )
                         except ImportError:
                             pass
 
                     if draft_enabled:
-                        _rec_draft_clicked = st.button(
+                        # on_click queues the pick when the click arrives, before the next
+                        # ScriptRun's body, so page entry commits it on that same run. The
+                        # inline path queued only once this card rendered again (seconds
+                        # into the run) and then needed a second full rerun; a click on a
+                        # card the next render no longer drew was silently dropped.
+                        st.button(
                             btn_label,
                             key=btn_key,
                             type="primary",
                             use_container_width=True,
+                            on_click=_on_rec_draft_click,
                         )
-                        if _rec_draft_clicked:
-                            _on_rec_draft_click()
-                            # Button clicks run one ScriptRun: queue happens here, but
-                            # process_pending_manual_draft_pick only runs at the top of
-                            # the *next* full ScriptRun. Fragment timer ticks do not
-                            # re-enter that path — without an app rerun the pick stalls
-                            # until an unrelated full rerun (often timer expire/autopick).
-                            _reran = False
-                            try:
-                                from live_draft_safe_mode import request_live_draft_rerun
-
-                                _reran = bool(
-                                    request_live_draft_rerun(
-                                        st,
-                                        session,
-                                        "rec_card_draft",
-                                        room=room,
-                                    )
-                                )
-                            except ImportError:
-                                pass
-                            if not _reran:
-                                try:
-                                    st.rerun()
-                                except Exception:
-                                    pass
                     else:
                         st.button(
                             btn_label,

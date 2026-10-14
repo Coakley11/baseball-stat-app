@@ -78,6 +78,39 @@ def sync_expected_revision(session: dict[str, Any]) -> int | None:
         return None
 
 
+def expected_revision_for_applied_pick(session: dict[str, Any], board_size_before: int) -> int | None:
+    """Revision to check against when ``live_draft_make_pick`` already ran locally.
+
+    ``sync_expected_revision`` is meant for before the pick: it treats the head as stale
+    only when the remote board has *more* picks than the local one. After make_pick the
+    local board is one longer, so another participant's pick in the same slot looked like
+    no conflict and the timer auto-pick replaced it. Judge the remote board against the
+    board this pick was made on; if the slot is already filled, expect a revision the
+    store cannot match so the write is refused and the earlier pick stands.
+    """
+    try:
+        from draft_room_context import is_multiplayer_draft_active
+        from draft_room_shared_state import (
+            ACTIVE_SHARED_ROOM_CODE_KEY,
+            load_shared_room_document,
+            shared_document_room_blob,
+        )
+
+        if not is_multiplayer_draft_active(session):
+            return None
+        room_code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
+        shared_doc = load_shared_room_document(session, room_code) if room_code else None
+        if not isinstance(shared_doc, dict):
+            return sync_expected_revision(session)
+        head_rev = int(shared_doc.get("revision") or 0)
+        remote_room = shared_document_room_blob(shared_doc) or {}
+        if len(remote_room.get("draft_board") or []) > int(board_size_before):
+            return head_rev - 1
+        return head_rev
+    except ImportError:
+        return sync_expected_revision(session)
+
+
 def persist_applied_pick(
     session: dict[str, Any],
     room: dict[str, Any],
@@ -149,7 +182,11 @@ def persist_applied_pick(
         session[LIVE_DRAFT_ROOM_KEY] = room
 
         if mp:
-            rev = expected_revision if expected_revision is not None else sync_expected_revision(session)
+            rev = (
+                expected_revision
+                if expected_revision is not None
+                else expected_revision_for_applied_pick(session, board_before)
+            )
             t_shared = time.perf_counter()
             if live_draft_perf_action is not None:
                 with live_draft_perf_action(session, "shared_commit", phase=PHASE_PICK_SHARED_COMMIT):

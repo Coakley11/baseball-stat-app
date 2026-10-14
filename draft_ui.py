@@ -228,8 +228,13 @@ def queue_manual_draft_pick(
     pool_source: str = "",
     candidate_source: str = "manual_panel",
     widget_key: str = "",
+    target_pick_index: int | None = None,
 ) -> bool:
-    """Store a manual pick from st.button on_click before any rerun/restore can drop the click."""
+    """Store a manual pick from st.button on_click before any rerun/restore can drop the click.
+
+    ``target_pick_index`` is the pick the clicked card was shown for; the pick is refused
+    if the draft has moved past it by the time the click is processed.
+    """
     try:
         from draft_commit_diagnostics import record_draft_commit_diagnostics
 
@@ -324,6 +329,7 @@ def queue_manual_draft_pick(
         "queued_at": time.time(),
         "rec_card_player_id": selected_id if from_rec_card else "",
         "rec_card_player_name": name if from_rec_card else "",
+        "target_pick_index": target_pick_index,
     }
     session[PENDING_MANUAL_PICK_KEY] = pending
     try:
@@ -454,6 +460,27 @@ def process_pending_manual_draft_pick(st: Any, session: dict[str, Any]) -> dict[
                 "should_rerun": False,
                 "message": "",
                 "error": "Recommendation card player mismatch — pick not submitted.",
+            }
+
+    target_idx = pending.get("target_pick_index")
+    if target_idx is not None:
+        live_room = session.get("live_draft_room")
+        current_idx = int(live_room.get("current_pick_index") or 0) if isinstance(live_room, dict) else None
+        if current_idx is not None and current_idx != int(target_idx):
+            # The click was made for a pick that has since closed (expired or drafted).
+            # Drafting the player into whatever pick is open now is not what was clicked.
+            try:
+                from live_draft_pick_timer import clear_pick_submit_state
+
+                clear_pick_submit_state(session)
+            except ImportError:
+                pass
+            return {
+                "processed": True,
+                "ok": False,
+                "should_rerun": False,
+                "message": "",
+                "error": f"Pick {int(target_idx) + 1} closed before your pick of {player_name} went through.",
             }
 
     try:
@@ -2552,7 +2579,9 @@ def render_live_manual_draft_panel(
     with st.container(border=True):
         diag_base["candidate_source"] = pool_source
 
-        def _on_manual_draft_click() -> None:
+        _shown_pick_idx = int((room or {}).get("current_pick_index") or 0) if isinstance(room, dict) else None
+
+        def _on_manual_draft_click(_pick_idx: int | None = _shown_pick_idx) -> None:
             snap = session.get(MANUAL_CANDIDATE_SNAPSHOT_KEY)
             snap = snap if isinstance(snap, dict) else {}
             queue_manual_draft_pick(
@@ -2562,42 +2591,21 @@ def render_live_manual_draft_panel(
                 pool_source=str(pool_source or ""),
                 candidate_source="manual_panel_selectbox_on_click",
                 widget_key=widget_key,
+                target_pick_index=_pick_idx,
             )
 
         # Always paint Draft Player — never hide it when unavailable.
-        # Same ScriptRun return-value contract as Add to Queue / Pause Draft.
+        # on_click queues the pick when the click arrives, before the next ScriptRun's
+        # body, so page entry commits it on that same run (no second full rerun, and a
+        # click is not lost when the next render no longer draws this panel).
         if button_enabled:
-            _manual_draft_clicked = st.button(
+            st.button(
                 "Draft Player",
                 key=MANUAL_DRAFT_BUTTON_KEY,
                 type="primary",
                 use_container_width=True,
+                on_click=_on_manual_draft_click,
             )
-            if _manual_draft_clicked:
-                _on_manual_draft_click()
-                # Same contract as recommendation-card Draft Player: queue on this
-                # ScriptRun, then force a full-app rerun so page-entry pending
-                # processing commits the pick (fragment ticks are not enough).
-                _reran = False
-                try:
-                    from live_draft_safe_mode import request_live_draft_rerun
-
-                    _reran = bool(
-                        request_live_draft_rerun(
-                            st,
-                            session,
-                            "manual_panel_draft",
-                            room=room if isinstance(room, dict) else None,
-                        )
-                    )
-                except ImportError:
-                    pass
-                if not _reran:
-                    try:
-                        st.rerun()
-                    except Exception:
-                        pass
-                return True
         else:
             reason_txt = disable_reason or "Cannot draft this player right now."
             st.button(

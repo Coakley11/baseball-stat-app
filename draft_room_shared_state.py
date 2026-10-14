@@ -10,9 +10,10 @@ import copy
 import json
 import random
 import string
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Iterator, Protocol, runtime_checkable
 
 from live_draft_state import (
     LIVE_DRAFT_ROOM_KEY,
@@ -802,6 +803,11 @@ class LocalFileSharedRoomStore:
         code = str(document.get("room_code") or "").strip().upper()
         if not code:
             raise ValueError("shared room document missing room_code")
+        with _room_write_lock(self._path(code)):
+            return self._save_unlocked(document)
+
+    def _save_unlocked(self, document: dict[str, Any]) -> dict[str, Any]:
+        code = str(document.get("room_code") or "").strip().upper()
         existing = None
         path = self._path(code)
         if path.is_file():
@@ -822,17 +828,65 @@ class LocalFileSharedRoomStore:
         *,
         expected_revision: int | None,
     ) -> tuple[bool, dict[str, Any] | None]:
-        """Optimistic concurrency — refuse stale writes."""
+        """Optimistic concurrency — refuse stale writes.
+
+        The check and the write happen under one cross-process lock. Host and guest
+        run in separate server processes; without it a timer-lease renewal could pass
+        its check, a pick could land, and the renewal's older room then replaced it.
+        """
         code = str(document.get("room_code") or "").strip().upper()
-        current = self.load(code)
-        if current is None:
-            saved = self.save(document)
-            return True, saved
-        current_rev = int(current.get("revision") or 0)
-        if expected_revision is not None and current_rev != int(expected_revision):
-            return False, current
-        saved = self.save(preserve_shared_room_sidecars(document, current))
-        return True, saved
+        if not code:
+            raise ValueError("shared room document missing room_code")
+        with _room_write_lock(self._path(code)):
+            current = self.load(code)
+            if current is None:
+                return True, self._save_unlocked(document)
+            current_rev = int(current.get("revision") or 0)
+            if expected_revision is not None and current_rev != int(expected_revision):
+                return False, current
+            return True, self._save_unlocked(preserve_shared_room_sidecars(document, current))
+
+
+@contextmanager
+def _room_write_lock(path: Path, *, timeout: float = 10.0, stale_after: float = 15.0) -> Iterator[None]:
+    """Exclusive lock file beside a room file, shared by every process and thread.
+
+    Created with O_EXCL so only one writer holds it. A lock older than
+    ``stale_after`` (a writer that died mid-save) is broken. If the lock cannot be
+    taken within ``timeout`` the write proceeds rather than stalling the draft.
+    """
+    import os
+    import time
+
+    lock = path.with_name(path.name + ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = None
+    deadline = time.time() + timeout
+    while fd is None:
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except (FileExistsError, PermissionError):
+            # Windows reports a lock another process is still deleting as PermissionError.
+            try:
+                if time.time() - lock.stat().st_mtime > stale_after:
+                    lock.unlink()
+                    continue
+            except OSError:
+                pass
+            if time.time() >= deadline:
+                break
+            time.sleep(0.005)
+        except OSError:
+            break
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+            try:
+                lock.unlink()
+            except OSError:
+                pass
 
 
 def _read_text_retry(path: Path) -> str:

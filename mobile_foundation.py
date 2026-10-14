@@ -198,8 +198,11 @@ def mobile_foundation_css() -> str:
       iframes, several in Live Draft) is itself 0px tall, but its element-container
       still costs one flex `gap` — on a phone, with many such carriers stacked, that
       adds up to real wasted vertical space. Collapse only the genuinely zero-height
-      case; anything with real height (may render content later) is left untouched. */
+      case; anything with real height (may render content later) is left untouched.
+      Streamlit 1.59 puts the testid on the <iframe> itself and marks the container
+      height="0px" — the last selector matches that markup. */
 {media_phone()} {{
+    {_MAIN} [data-testid="stElementContainer"][height="0px"]:has(> iframe[data-testid="stIFrame"]),
     {_MAIN} [data-testid="stElementContainer"]:has(> [data-testid="stIFrame"] > iframe[height="0"]),
     {_MAIN} [data-testid="stElementContainer"]:has(> [data-testid="stIFrame"][style*="height: 0px"]),
     {_MAIN} [data-testid="stElementContainer"]:has(> [data-testid="stIFrame"] > iframe[style*="height: 0px"]) {{

@@ -112,7 +112,8 @@ def render_live_draft_mode_selector(st: Any, session: dict[str, Any], *, disable
 
     if mode == SETUP_MODE_SOLO:
         st.info(
-            "**Solo draft:** you control all teams. No room code is created and other users cannot join."
+            "**Solo draft:** you draft for your team. The other teams are simulated — when their clock "
+            "runs out, Auto Pick drafts for them. No room code is created and no one else can join."
         )
     else:
         st.markdown(
@@ -1191,7 +1192,7 @@ def render_active_draft_mode_banner(st: Any, session: dict[str, Any], *, room: d
     if is_solo_draft_mode(session, room=room):
         teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
         team_note = f" ({len(teams)} teams)" if len(teams) > 1 else ""
-        st.caption(f"**Mode: Solo Draft** · You control all teams{team_note} · No room code")
+        st.caption(f"**Mode: Solo Draft** · You draft for your team; the others auto-pick{team_note} · No room code")
         return
     if is_shared_multiplayer_intent(session, room=room):
         code = shared_room_code(session)

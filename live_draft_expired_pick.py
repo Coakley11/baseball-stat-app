@@ -210,17 +210,23 @@ def should_attach_timer_fragment(session: dict[str, Any], room: dict[str, Any]) 
 
 
 def clock_needs_autopick(session: dict[str, Any], room: dict[str, Any]) -> bool:
-    """True when the draft clock demands a commit (expired or pending zero-cross)."""
+    """True only when the canonical deadline for the current pick has passed.
+
+    The pending flag records a zero-cross this session saw; it never authorizes an
+    expiry on its own. It is not tied to a pick, so when the pick advanced some other
+    way (a manual pick landing just after the deadline, another participant's expiry,
+    a timer-lease handover) a leftover flag auto-picked the *next* pick with its full
+    clock remaining. Drop it whenever the clock still has time.
+    """
     if str(room.get("status") or "") != "in_progress":
         return False
-    if bool(session.get(EXPIRED_PICK_PENDING_KEY)):
-        return True
     try:
-        if live_draft_seconds_remaining(room) <= 0:
-            return True
+        expired = live_draft_seconds_remaining(room) <= 0
     except Exception:
-        pass
-    return expired_pick_detected(room)
+        return False
+    if not expired:
+        session.pop(EXPIRED_PICK_PENDING_KEY, None)
+    return expired
 
 
 def should_fragment_trigger_full_rerun(session: dict[str, Any], room: dict[str, Any]) -> bool:
@@ -822,6 +828,14 @@ def run_expired_autopick_once(session: dict[str, Any], room: dict[str, Any], *, 
         return ExpiredPickPageResult(handled=True, ok=True, should_rerun=True, message=msg, error="")
     finally:
         session.pop(AUTOPICK_LOCK_KEY, None)
+        # A rerun (any click at 0:00) can stop this run between claim and commit. A claim
+        # left behind made every retry "claim denied", so the pick sat at 0:00 and the
+        # lease this session keeps renewing stopped the watchdog from taking over. Give
+        # an unfinished claim back; a duplicate write for the same slot is refused anyway.
+        if str(session.get(CLAIMED_EXPIRATION_TOKEN_KEY) or "").strip() == expiration_token and (
+            str(session.get(LAST_PROCESSED_EXPIRATION_TOKEN_SESSION_KEY) or "").strip() != expiration_token
+        ):
+            session.pop(CLAIMED_EXPIRATION_TOKEN_KEY, None)
         record_autopick_diagnostics(session, autopick_in_progress_lock=False)
         if session.get(EXPIRED_PICK_PERF_KEY) and "total_ms" not in (session.get(EXPIRED_PICK_PERF_KEY) or {}):
             record_expired_pick_perf(session, total_ms=_perf_ms(t_total))

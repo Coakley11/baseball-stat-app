@@ -24988,7 +24988,7 @@ elif active_page == "Live Draft Room":
                                 )
                             elif _arm_clock_now:
                                 st.session_state["_live_draft_start_feedback"] = (
-                                    f"Solo live draft started — you control all teams. "
+                                    f"Solo live draft started — you draft for your team; the other teams auto-pick. "
                                     f"Room ID **{new_room['draft_room_id']}**."
                                 )
                             else:
@@ -29586,7 +29586,6 @@ elif active_page == "Live Draft Room":
 
         totals_df = live_draft_team_totals(room, session=st.session_state)
         if not totals_df.empty:
-            st.markdown('<div class="live-draft-totals-panel">', unsafe_allow_html=True)
             st.subheader("Team Projected Totals")
             st.caption("Canonical projected category totals by fantasy team — updates after each pick.")
             totals_show = [
