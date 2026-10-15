@@ -29,6 +29,7 @@ SOLO_TIMER_FRAGMENT_RUNS_KEY = "_solo_timer_fragment_runs"
 SOLO_POST_EXPIRE_REFRESH_KEY = "_solo_post_expire_refresh_pending"
 SOLO_EXPIRE_GUARD_KEY = "_solo_server_expire_guard_token"
 SOLO_FRAGMENT_LIFECYCLE_SEQ_KEY = "_solo_fragment_lifecycle_seq"
+SHARED_BANNER_SEED_KEY = "_shared_on_clock_banner_seed"
 
 # Session-scoped fragment mounts. A process-global single mount survived across
 # Playwright page.goto / new websocket sessions and produced dual wrappers plus
@@ -1403,6 +1404,22 @@ def render_live_on_clock_banner(
                 tick_deadline = live_draft_timer_deadline(tick_room)
                 tick_idx = int(tick_room.get("current_pick_index") or pick_idx)
                 remaining = live_draft_display_seconds(tick_room)
+        # The paint snapshot is installed only during a full run. On a fragment
+        # tick it is rebuilt from the session's room alias, which in Shared can
+        # lag the room this tick just synced (seen: pick 0, no deadline, so the
+        # banner froze with no countdown). The synced room is the authority.
+        if str(tick_room.get("status") or "") == "in_progress":
+            _room_deadline = live_draft_timer_deadline(tick_room)
+            if _room_deadline is not None:
+                tick_deadline = float(_room_deadline)
+                tick_idx = int(tick_room.get("current_pick_index") or 0)
+                remaining = live_draft_display_seconds(tick_room)
+                _room_slot = live_draft_current_slot(tick_room)
+                if isinstance(_room_slot, dict):
+                    tick_slot = dict(tick_slot)
+                    for _k in ("Team", "Round", "Pick"):
+                        if _room_slot.get(_k) is not None:
+                            tick_slot[_k] = _room_slot[_k]
         # When at zero: Solo fragment/banner installs next pick+full timer in-place.
         # Shared rooms still poll; page/timer-authority owns multiparty CAS.
         try:
@@ -1545,12 +1562,21 @@ def render_live_on_clock_banner(
             from live_draft_solo_heartbeat import shared_banner_should_repaint
 
             force_repaint = int(remaining or 0) <= 0 and str(tick_room.get("status") or "") == "in_progress"
-            if shared_banner_should_repaint(
+            repaint = shared_banner_should_repaint(
                 session,
                 pick_index=tick_idx,
                 deadline=float(tick_deadline) if tick_deadline is not None else None,
                 force=force_repaint,
-            ):
+            )
+            # A fragment rerun drops every element it does not emit again, so
+            # the banner must be emitted on every tick or it vanishes ~1 s after
+            # each repaint. Between repaints, re-emit it with the seed from the
+            # last repaint: identical markup keeps the same iframe mounted, and
+            # its script keeps counting down from the canonical deadline.
+            if repaint:
+                session[SHARED_BANNER_SEED_KEY] = int(remaining or 0)
+            seed = int(session.get(SHARED_BANNER_SEED_KEY, int(remaining or 0)))
+            if repaint:
                 try:
                     from live_draft_cloud_diagnostics import note_fragment_owner, render_surface_stamp
 
@@ -1566,15 +1592,15 @@ def render_live_on_clock_banner(
                     )
                 except ImportError:
                     pass
-                _render_on_clock_banner_html(
-                    st,
-                    tick_slot,
-                    int(remaining or 0),
-                    next_pick=next_pick_view,
-                    pick_index=tick_idx,
-                    deadline=tick_deadline,
-                    flash=False,
-                )
+            _render_on_clock_banner_html(
+                st,
+                tick_slot,
+                seed,
+                next_pick=next_pick_view,
+                pick_index=tick_idx,
+                deadline=tick_deadline,
+                flash=False,
+            )
         except ImportError:
             _render_on_clock_banner_html(
                 st,

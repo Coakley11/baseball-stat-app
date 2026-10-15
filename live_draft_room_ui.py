@@ -493,6 +493,13 @@ def inject_live_draft_room_styles(st: Any) -> None:
             color: #64748b;
             margin: 10px 0 6px 0;
         }
+        /* Slots wrap as a grid (one full-width row per slot cost ~370px). */
+        .ld-need-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 6px;
+        }
+        .ld-need-grid .ld-need-slot { margin: 0; }
         .ld-need-slot {
             display: flex;
             align-items: center;
@@ -756,7 +763,7 @@ def render_live_draft_room_header(
     role = ""
     assigned_team = str(user_team or "").strip()
     mode_label = "Solo Draft"
-    mode_detail = "You control all teams"
+    mode_detail = "You draft for your team; the other teams auto-pick"
     solo = True
     try:
         from live_draft_setup_mode import resolve_active_live_draft_mode
@@ -772,8 +779,10 @@ def render_live_draft_room_header(
         if solo:
             mode_label = "Solo Draft"
             teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
+            others = len(teams) - 1
+            others_txt = "the other team auto-picks" if others == 1 else f"the other {others} teams auto-pick"
             mode_detail = (
-                f"You control all teams ({len(teams)} teams)" if len(teams) > 1 else "You control all teams"
+                f"You draft for {assigned_team or 'your team'}; {others_txt}" if others > 0 else "You draft for your team"
             )
         else:
             mode_label = "Shared Multiplayer"
@@ -1107,11 +1116,15 @@ def render_roster_tracker_panel(
         parts.append("</div>")
         cat_section = "".join(parts)
 
+    # Name the team: in Solo the cards can be for another team on the clock while
+    # this panel tracks yours, so an unlabeled "Team Needs" was ambiguous.
+    team_name = html.escape(str(tracker.get("team") or "").strip())
+    title = f"Team Needs — {team_name}" if team_name else "Team Needs"
     st.markdown(
         f'<div class="ld-team-needs-panel">'
-        f'<div class="ld-panel-title">Team Needs</div>'
+        f'<div class="ld-panel-title">{title}</div>'
         f'<div class="ld-panel-subtitle">Roster</div>'
-        f'{"".join(roster_html)}'
+        f'<div class="ld-need-grid">{"".join(roster_html)}</div>'
         f"{cat_section}"
         f'<div class="ld-roster-progress">{progress}</div>'
         f"</div>",
@@ -2356,6 +2369,17 @@ def render_live_draft_rec_cards(
                             show_model_rank=False,
                             show_fantasy_edge=False,
                         )
+                        # One compact rank line (rec order + model/market rank) instead of
+                        # two extra metric rows — rank was otherwise only in the tables.
+                        _rank_bits = [f"Rec #{i}"]
+                        for _rk_col, _rk_lbl in (("Model Rank", "Model"), ("Market Rank", "Market")):
+                            _rk = pd.to_numeric(r.get(_rk_col, np.nan), errors="coerce")
+                            if pd.notna(_rk):
+                                _rank_bits.append(f"{_rk_lbl} #{int(round(float(_rk)))}")
+                        metrics_html += (
+                            '<div class="ld-rec-rank-line" style="font-size:0.8rem;color:#475569;'
+                            f'margin-top:2px;">{" · ".join(_rank_bits)}</div>'
+                        )
                         strength_txt = ""
                         if strengths and not horizontal:
                             strength_txt = (
@@ -2428,6 +2452,7 @@ def render_live_draft_rec_cards(
                         _name: str = name,
                         _pid: str = player_id,
                         _stable: str = stable_key,
+                        _pick_idx: int = pick_idx,
                     ) -> None:
                         try:
                             from live_draft_ux_latency import ACTION_DRAFT_REC, note_ux_action
@@ -2457,43 +2482,24 @@ def render_live_draft_rec_cards(
                                 candidate_source="rec_card",
                                 pool_source="recommendation_card",
                                 widget_key="",
+                                target_pick_index=_pick_idx,
                             )
                         except ImportError:
                             pass
 
                     if draft_enabled:
-                        _rec_draft_clicked = st.button(
+                        # on_click queues the pick when the click arrives, before the next
+                        # ScriptRun's body, so page entry commits it on that same run. The
+                        # inline path queued only once this card rendered again (seconds
+                        # into the run) and then needed a second full rerun; a click on a
+                        # card the next render no longer drew was silently dropped.
+                        st.button(
                             btn_label,
                             key=btn_key,
                             type="primary",
                             use_container_width=True,
+                            on_click=_on_rec_draft_click,
                         )
-                        if _rec_draft_clicked:
-                            _on_rec_draft_click()
-                            # Button clicks run one ScriptRun: queue happens here, but
-                            # process_pending_manual_draft_pick only runs at the top of
-                            # the *next* full ScriptRun. Fragment timer ticks do not
-                            # re-enter that path — without an app rerun the pick stalls
-                            # until an unrelated full rerun (often timer expire/autopick).
-                            _reran = False
-                            try:
-                                from live_draft_safe_mode import request_live_draft_rerun
-
-                                _reran = bool(
-                                    request_live_draft_rerun(
-                                        st,
-                                        session,
-                                        "rec_card_draft",
-                                        room=room,
-                                    )
-                                )
-                            except ImportError:
-                                pass
-                            if not _reran:
-                                try:
-                                    st.rerun()
-                                except Exception:
-                                    pass
                     else:
                         st.button(
                             btn_label,
@@ -2714,9 +2720,10 @@ def render_live_draft_rec_cards(
                                 pick_idx=_pick_idx,
                                 player_id=_player_id,
                             )
-                            if _session.pop("_live_draft_queue_sidebar_rerun", None):
-                                _session["_live_draft_defer_full_rerun"] = True
-                                _session["_live_draft_queue_sidebar_rerun"] = True
+                            # on_click runs before this ScriptRun paints anything, so the
+                            # sidebar and main Queue already show the player. The follow-up
+                            # full rerun this used to request doubled every Add to Queue.
+                            _session.pop("_live_draft_queue_sidebar_rerun", None)
 
                         _rec_queue_clicked = st.button(
                             "⭐ Add to Queue",

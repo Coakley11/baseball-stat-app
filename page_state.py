@@ -212,6 +212,9 @@ def _is_ephemeral_widget_key(key: str) -> bool:
 
 # Session keys that must never be snapshotted (action flags / large derived data).
 _PAGE_STATE_SKIP_KEYS = frozenset({
+    # Canonical live draft blob (room + player pool); persisted at the top level, never
+    # restored from a page snapshot. The "live_draft_" prefix captured a full copy.
+    "live_draft_state",
     "ml_full_generation_requested",
     "ml_tuning_apply_requested",
     "ml_predictions_df",
@@ -295,6 +298,8 @@ def save_page_state(session, page_name: str, store: dict):
                 snapshot[key] = copy.deepcopy(existing[key])
             except Exception:
                 snapshot[key] = existing[key]
+    for key in _PAGE_STATE_SKIP_KEYS:
+        snapshot.pop(key, None)  # drop values an older snapshot captured before the skip
     if snapshot:
         store[page_name] = snapshot
 

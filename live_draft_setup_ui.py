@@ -112,7 +112,8 @@ def render_live_draft_mode_selector(st: Any, session: dict[str, Any], *, disable
 
     if mode == SETUP_MODE_SOLO:
         st.info(
-            "**Solo draft:** you control all teams. No room code is created and other users cannot join."
+            "**Solo draft:** you draft for your team. The other teams are simulated — when their clock "
+            "runs out, Auto Pick drafts for them. No room code is created and no one else can join."
         )
     else:
         st.markdown(
@@ -662,7 +663,13 @@ def render_draft_information_panel(
     """Compact room summary after shared room creation or during live draft."""
     code = shared_room_code(session)
     is_host = _is_room_host(session)
-    host_team = str((room.get("config") or {}).get("your_team") or session.get("room_your_team") or "").strip()
+    # Commissioner team from room meta — ``config.your_team`` is the viewer's own team.
+    host_team = str(
+        (room.get("meta") or {}).get("commissioner_team")
+        or (room.get("config") or {}).get("your_team")
+        or session.get("room_your_team")
+        or ""
+    ).strip()
     joined, total = count_joined_teams(session, room)
     waiting = max(0, total - joined)
     status_txt = _room_status_label(room)
@@ -1185,7 +1192,7 @@ def render_active_draft_mode_banner(st: Any, session: dict[str, Any], *, room: d
     if is_solo_draft_mode(session, room=room):
         teams = [str(t) for t in (room.get("teams") or []) if str(t).strip()]
         team_note = f" ({len(teams)} teams)" if len(teams) > 1 else ""
-        st.caption(f"**Mode: Solo Draft** · You control all teams{team_note} · No room code")
+        st.caption(f"**Mode: Solo Draft** · You draft for your team; the others auto-pick{team_note} · No room code")
         return
     if is_shared_multiplayer_intent(session, room=room):
         code = shared_room_code(session)
@@ -1314,12 +1321,17 @@ def render_draft_status_summary_card(
     """Compact commissioner / room summary — room code, managers, draft status."""
     code = shared_room_code(session)
     is_host = _is_room_host(session)
-    host_team = str((room.get("config") or {}).get("your_team") or session.get("room_your_team") or "").strip()
+    # ``config.your_team`` is the *viewer's* team on a guest session, which labelled
+    # the guest as commissioner. The room meta records the commissioner's team.
+    host_team = str(
+        (room.get("meta") or {}).get("commissioner_team")
+        or (room.get("config") or {}).get("your_team")
+        or session.get("room_your_team")
+        or ""
+    ).strip()
     joined, total = count_joined_teams(session, room)
     status_txt = _room_status_label(room)
-    commissioner_label = host_team or "You"
-    if is_host:
-        commissioner_label = "You"
+    commissioner_label = "You" if is_host else "Host"
     try:
         from live_draft_ux import format_participant_identity
 

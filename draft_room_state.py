@@ -3193,6 +3193,8 @@ def _sync_draft_room_session_before_save_body(session: dict[str, Any]) -> None:
 def enrich_save_payload_with_draft_room(
     session: dict[str, Any],
     state: dict[str, Any],
+    *,
+    copy_input: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     diag: dict[str, Any] = {
         "payload_has_draft_board": False,
@@ -3233,7 +3235,10 @@ def enrich_save_payload_with_draft_room(
             return state, diag
 
     safe_blob = copy.deepcopy(blob)
-    out = copy.deepcopy(state)
+    # copy_input=False: the caller owns ``state`` and replaces it with the return
+    # value (build_baseball_disk_state). Skips a full deep copy of the workspace
+    # state, which carries the Live Draft player pool several times over.
+    out = copy.deepcopy(state) if copy_input else state
     out[DRAFT_ROOM_STATE_KEY] = safe_blob
     out[DRAFT_ROOM_TABLE_KEY] = safe_blob
     meta = get_canonical_draft_meta(session)
@@ -3272,6 +3277,7 @@ def sanitize_state_dict_for_json(
     state: dict[str, Any],
     *,
     diag: dict[str, Any] | None = None,
+    copy_input: bool = True,
 ) -> dict[str, Any]:
     """Ensure persisted full_session has no runtime DataFrames (Supabase uses strict JSON)."""
     report: dict[str, Any] = diag if diag is not None else {}
@@ -3285,7 +3291,10 @@ def sanitize_state_dict_for_json(
     )
     _collect_dataframe_paths(state, "", report["dataframe_keys_in_payload"])
 
-    out = copy.deepcopy(state)
+    # copy_input=False: the caller owns ``state`` and replaces it with the return
+    # value (build_baseball_disk_state). Skips a full deep copy of the workspace
+    # state, which carries the Live Draft player pool several times over.
+    out = copy.deepcopy(state) if copy_input else state
     table = out.get(DRAFT_ROOM_TABLE_KEY)
     blob = out.get(DRAFT_ROOM_STATE_KEY)
     if is_runtime_table(table):
