@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from valuation_scores import add_valuation_scores
+from valuation_scores import VALUATION_MIN_AB, add_valuation_scores, valuation_hitter_pool
 
 ROOT = Path(__file__).resolve().parents[1]
 COUNTS = ["R", "H", "2B", "3B", "HR", "RBI", "SB"]
@@ -82,7 +82,40 @@ class ValuationFormulaTests(unittest.TestCase):
         self.assertEqual(df["Valuation_Score"].tolist(), [0.0, 0.0])
 
 
+class HitterPoolTests(unittest.TestCase):
+    """Pitchers' batting lines (0 AB relievers) must not enter the valuation pool."""
+
+    def _pool(self):
+        rows = [{"fullName": "Reliever", "G": 70, "AB": 0, "HR": 0, "HR_trend": np.nan},
+                {"fullName": "Starter Who Batted", "G": 60, "AB": 9, "HR": 0, "HR_trend": np.nan},
+                {"fullName": "Two-Way", "G": 140, "AB": 500, "HR": 40, "HR_trend": 2},
+                {"fullName": "Bench Bat", "G": 55, "AB": 10, "HR": 1, "HR_trend": 0}]
+        return pd.DataFrame(rows)
+
+    def test_players_below_the_at_bat_floor_are_removed(self):
+        self.assertEqual(VALUATION_MIN_AB, 10)
+        pool = valuation_hitter_pool(self._pool())
+        self.assertEqual(pool["fullName"].tolist(), ["Two-Way", "Bench Bat"])
+
+    def test_zero_trend_pitchers_no_longer_drag_down_a_hitters_trend_percentile(self):
+        # A hitter with a slightly negative trend: with 6 tied zero-trend relievers in the pool he
+        # ranks below all of them; among hitters only he is judged against hitters.
+        hitters = [_player(HR=30, HR_trend=-0.5), _player(HR=20, HR_trend=1), _player(HR=10, HR_trend=-2)]
+        relievers = [_player() for _ in range(6)]
+        frame = _frame(*hitters, *relievers)
+        frame["AB"] = [550, 500, 450] + [0] * 6
+        mixed = add_valuation_scores(frame.copy(), 1.0, 1.0)
+        clean = add_valuation_scores(valuation_hitter_pool(frame).reset_index(drop=True), 1.0, 1.0)
+        self.assertAlmostEqual(mixed.loc[0, "Trend_Pct"], 2 / 9)  # behind the six tied relievers
+        self.assertAlmostEqual(clean.loc[0, "Trend_Pct"], 2 / 3)
+        self.assertEqual(len(clean), 3)
+
+
 class WiringTests(unittest.TestCase):
+    def test_valuation_page_uses_the_hitter_pool(self):
+        src = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
+        self.assertIn('agg_value = valuation_hitter_pool(agg_value[agg_value["G"] >= min_g_value])', src)
+
     def test_valuation_page_uses_the_shared_scores(self):
         src = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
         self.assertIn("add_valuation_scores(valuation_df, w_current, w_trend)", src)

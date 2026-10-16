@@ -31405,7 +31405,10 @@ elif active_page == "Valuation":
         recent_data_value,
         ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"),
     )
-    agg_value = agg_value[agg_value["G"] >= min_g_value].copy()
+    from valuation_scores import valuation_hitter_pool
+
+    # Hitters only: pitchers' batting lines (0 AB) skewed every hitter's trend percentile.
+    agg_value = valuation_hitter_pool(agg_value[agg_value["G"] >= min_g_value])
     agg_value = apply_stat_min_filters(agg_value, "value", on_change=valuation_filter_changed)
 
     trend_value = compute_player_trend_table(
