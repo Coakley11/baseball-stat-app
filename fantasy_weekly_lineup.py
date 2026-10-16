@@ -576,6 +576,62 @@ def _player_id_from_row(row: pd.Series | dict[str, Any]) -> str:
     return ""
 
 
+def lineup_actor(session: dict[str, Any], context: dict[str, Any], team: str) -> tuple[dict[str, Any], bool]:
+    """(actor record, is_commissioner) for a lineup write on ``team``."""
+    try:
+        from fantasy_team_control import resolve_team_control
+
+        control = resolve_team_control(session, context, team)
+        return control.actor_record(), control.is_commissioner
+    except ImportError:
+        pass
+    try:
+        from fantasy_league_lineup_format import is_lineup_format_commissioner
+
+        is_commissioner = bool(is_lineup_format_commissioner(session, context))
+    except ImportError:
+        is_commissioner = False
+    try:
+        from suite_user import get_account_user_id
+
+        uid = str(get_account_user_id() or "")
+    except Exception:
+        uid = ""
+    return {"user_id": uid, "acting_as": "owner", "team": str(team or "")}, is_commissioner
+
+
+def _record_period_lineup_snapshot(
+    session: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    week: int,
+    team: str,
+    slots: list[str],
+    slot_map: dict[str, str],
+    roster_df: pd.DataFrame,
+) -> str | None:
+    """Store the period snapshot. None = league has no calendar (legacy), "" = stored, else error."""
+    try:
+        from fantasy_season_ledger import build_lineup_snapshot, ledger_initialized, save_period_lineup
+    except ImportError:
+        return None
+    if not ledger_initialized(context):
+        return None
+    owner_of = {
+        str(k): str((v or {}).get("owner_team") or "")
+        for k, v in (context.get("ownership_map") or {}).items()
+        if isinstance(v, dict)
+    }
+    snapshot = build_lineup_snapshot(
+        team=team, slots=slots, slot_assignments=slot_map, roster_df=roster_df, owner_of=owner_of
+    )
+    actor, is_commissioner = lineup_actor(session, context, team)
+    ok, err = save_period_lineup(
+        context, number=int(week), team=team, snapshot=snapshot, actor=actor, is_commissioner=is_commissioner
+    )
+    return "" if ok else (err or "Could not save the lineup for this period.")
+
+
 def save_weekly_lineup(
     session: dict[str, Any],
     *,
@@ -629,6 +685,17 @@ def save_weekly_lineup(
         "locked_at": _utc_now_iso(),
         "status": LINEUP_STATUS_LOCKED,
     }
+
+    # Season ledger: the period's lineup snapshot is what official scoring uses. When the
+    # league has a calendar, the period's lock rules decide whether this save is allowed.
+    ledger_err = _record_period_lineup_snapshot(
+        session, context, week=int(week), team=team_name, slots=slots, slot_map=slot_map, roster_df=roster_df
+    )
+    if ledger_err:
+        result["errors"].append(ledger_err)
+        return result
+    if ledger_err is not None:
+        payload["season_ledger_period"] = f"P{int(week)}"
 
     try:
         from fantasy_weekly_hitter_scoring import (

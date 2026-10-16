@@ -358,8 +358,21 @@ def render_weekly_lineup_section(
         return
     slot_labels = build_slot_key_labels(slots)
     slot_keys = slot_key_labels_as_tuples(slot_labels)
-    week_options = list_week_options()
+    from fantasy_season_ledger import current_period_number
+    from fantasy_season_ledger_ui import (
+        period_editability,
+        period_option_label,
+        period_week_options,
+        render_season_calendar_setup,
+    )
+
+    is_commissioner = bool(is_lineup_format_commissioner(session, context))
+    render_season_calendar_setup(st, session, context, is_commissioner=is_commissioner)
+    ledger_weeks = period_week_options(context)
+    week_options = ledger_weeks or list_week_options()
     prefix = "weekly_lineup"
+    if ledger_weeks and session.get(f"{prefix}_selected_week") not in ledger_weeks:
+        session[f"{prefix}_selected_week"] = current_period_number(context) or ledger_weeks[0]
 
     drop_flash = session.pop("weekly_lineup_drop_flash", None)
     if drop_flash:
@@ -378,7 +391,7 @@ def render_weekly_lineup_section(
         selected_week = st.selectbox(
             "Week",
             week_options,
-            format_func=week_label,
+            format_func=(lambda w: period_option_label(context, w)) if ledger_weeks else week_label,
             key=f"{prefix}_selected_week",
         )
 
@@ -388,10 +401,15 @@ def render_weekly_lineup_section(
     saved = get_saved_weekly_lineup(context, int(selected_week), team=active_team, session=session)
     saved_assignments = dict((saved or {}).get("assignments") or {})
 
-    edit_state, edit_message = week_editability_message(context, int(selected_week))
     lineup_locked = is_lineup_locked(context, int(selected_week), team=active_team, session=session)
-    if edit_state in ("future", "past"):
-        lineup_locked = True
+    if ledger_weeks:
+        lineup_locked, edit_message = period_editability(
+            context, int(selected_week), lineup_locked=lineup_locked, is_commissioner=is_commissioner
+        )
+    else:
+        edit_state, edit_message = week_editability_message(context, int(selected_week))
+        if edit_state in ("future", "past"):
+            lineup_locked = True
     if edit_message:
         st.info(edit_message)
 
