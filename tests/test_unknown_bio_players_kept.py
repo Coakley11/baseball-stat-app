@@ -32,12 +32,14 @@ class UnknownBioPlayersTests(unittest.TestCase):
         self.assertEqual(kept["playerID"].tolist(), ["a", "b"])
 
     def test_app_aggregations_keep_unknown_bio_players(self):
-        src = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
+        app = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
+        # The season (yearly) table is built in lahman_data, which load_data delegates to.
+        src = app + (ROOT / "lahman_data.py").read_text(encoding="utf-8")
         grouped_by_bio = re.findall(r"\.groupby\(\[[^\]]*\"bats\"[^\]]*\][^)]*\)", src)
         self.assertGreaterEqual(len(grouped_by_bio), 2)
         for call in grouped_by_bio:
             self.assertIn("dropna=False", call, call)
-        body = src[src.index("def aggregate_recent_player_totals"):src.index("def add_missing_numeric_columns")]
+        body = app[app.index("def aggregate_recent_player_totals"):app.index("def apply_stat_min_filters")]
         self.assertIn("dropna=False", body)
 
 
