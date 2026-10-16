@@ -10,6 +10,7 @@ empty board from League setup, so the banner said 0 picks and Save failed.
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -34,10 +35,18 @@ from suite_auth import AUTH_EXTERNAL_ID_KEY, AUTH_USER_ID_KEY
 WORKSPACE = "coakley11"
 
 
-def _identity(*, signed_in: bool, workspace: str = WORKSPACE, external: str = "coakley11") -> dict:
+DEVICE = "qa-device-one"
+
+
+def _identity(
+    *, signed_in: bool, workspace: str = WORKSPACE, external: str = "coakley11", device: str = DEVICE
+) -> dict:
     out = {"_suite_active_workspace_id": workspace, "_suite_owned_workspace_id": workspace}
     if signed_in:
         out.update({AUTH_USER_ID_KEY: f"user:{external}", AUTH_EXTERNAL_ID_KEY: external})
+    else:
+        # Local install (sign-in disabled): the signed-out owner is this install's device id.
+        out["_suite_device_id"] = device
     return out
 
 
@@ -199,12 +208,71 @@ class OwnershipStillIsolatesAccountsTests(unittest.TestCase):
         self.assertTrue(scrub.get("cleared"))
         self.assertEqual(table_pick_count(restored.get(DRAFT_ROOM_TABLE_KEY)), 0)
 
+    def test_signed_out_board_needs_the_same_device_not_just_workspace_and_board(self) -> None:
+        session = self._stamped_state(signed_in=False)
+        picks, scrub = self._restored_picks(session, **_identity(signed_in=False, device="another-install"))
+        self.assertEqual(picks, 0)
+        self.assertEqual(scrub.get("reason"), "foreign_board_anonymous_owner_mismatch")
+        picks, scrub = self._restored_picks(session, **_identity(signed_in=False))
+        self.assertEqual(picks, 40)
+
+    def test_signed_out_board_without_any_principal_is_not_ownable(self) -> None:
+        session = _session(signed_in=False)
+        session.pop("_suite_device_id")
+        with patch.dict("os.environ", {"BASEBALL_DEVICE_ID": ""}), patch(
+            "baseball_persistent_state._DEVICE_ID_FILE", Path("no-such-device-file.txt")
+        ):
+            _apply(session, _import_board())
+            self.assertNotIn(SIMULATOR_BOARD_OWNERSHIP_KEY, session)
+            self.assertEqual(table_pick_count(_next_rerun(session)), 0)
+
+    def test_signed_in_board_is_not_visible_once_signed_out(self) -> None:
+        picks, scrub = self._restored_picks(self._stamped_state(signed_in=True), **_identity(signed_in=False))
+        self.assertEqual(picks, 0)
+        self.assertEqual(scrub.get("reason"), "foreign_board_owner_mismatch")
+
     def test_legacy_signed_out_daniel_workspace_is_not_stamped(self) -> None:
         session = _session(signed_in=False, workspace="daniel")
         _apply(session, _import_board())
         self.assertNotIn(SIMULATOR_BOARD_OWNERSHIP_KEY, session)
         self.assertNotIn(PERSISTED_OWNERSHIP_FIELD, session[DRAFT_ROOM_STATE_KEY])
         self.assertEqual(table_pick_count(_next_rerun(session)), 40)
+
+
+
+@patch("suite_auth.is_auth_enabled", return_value=True)
+class HostedSignedOutOwnershipTests(unittest.TestCase):
+    """Sign-in enabled: signed-out visitors share a workspace, so a signed-out board belongs to
+    its browser session only — never to whoever else is signed out in that workspace."""
+
+    def _hosted_session(self) -> dict:
+        session = _session(signed_in=False)
+        session.pop("_suite_device_id")
+        return session
+
+    def test_board_survives_reruns_in_the_same_session(self, _auth) -> None:
+        session = self._hosted_session()
+        _apply(session, _import_board())
+        for _ in range(3):
+            self.assertEqual(table_pick_count(_next_rerun(session)), 40)
+
+    def test_another_signed_out_browser_does_not_inherit_it(self, _auth) -> None:
+        session = self._hosted_session()
+        _apply(session, _import_board())
+        _next_rerun(session)
+        other = _refresh(session, **{k: v for k, v in _identity(signed_in=False).items() if k != "_suite_device_id"})
+        scrub = scrub_simulator_runtime_for_current_account(other, reason="prepare_baseball_workspace")
+        self.assertEqual(scrub.get("reason"), "foreign_board_anonymous_owner_mismatch")
+        self.assertEqual(table_pick_count(other.get(DRAFT_ROOM_TABLE_KEY)), 0)
+
+    def test_signing_in_does_not_adopt_it(self, _auth) -> None:
+        session = self._hosted_session()
+        _apply(session, _import_board())
+        _next_rerun(session)
+        restored = _refresh(session, **_identity(signed_in=True))
+        scrub = scrub_simulator_runtime_for_current_account(restored, reason="prepare_baseball_workspace")
+        self.assertEqual(scrub.get("reason"), "foreign_board_owner_mismatch")
+        self.assertEqual(table_pick_count(restored.get(DRAFT_ROOM_TABLE_KEY)), 0)
 
 
 if __name__ == "__main__":
