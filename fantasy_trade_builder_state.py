@@ -137,6 +137,9 @@ def maybe_migrate_builder_schema(
     clear_legacy_lineup_trade_keys(session)
 
     state = dict(logical_state or {})
+    # Only announce a reset when there was a saved builder to reset — on a first visit
+    # there is nothing to lose and the notice read like an error.
+    had_saved_builder = stored > 0 or any(state.get(f) for f in ("give_players", "get_players", "analysis"))
     for field in (
         "give_players",
         "get_players",
@@ -152,9 +155,10 @@ def maybe_migrate_builder_schema(
     state["trade_partner"] = ANY_TRADE_PARTNER
 
     session[schema_key] = TRADE_BUILDER_STATE_SCHEMA_VERSION
-    session[f"{scope_key}|{BUILDER_FLASH_SUFFIX}"] = (
-        "Trade builder reset to a fresh editable state after a layout update."
-    )
+    if had_saved_builder:
+        session[f"{scope_key}|{BUILDER_FLASH_SUFFIX}"] = (
+            "Trade builder reset to a fresh editable state after a layout update."
+        )
     return state, True
 
 

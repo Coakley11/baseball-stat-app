@@ -395,6 +395,35 @@ def _queue_idea_builder_update(
     session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
 
 
+def render_trade_roster_warnings(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    proposer_team: str,
+    recipient_team: str,
+    proposer_gives: list[str],
+    proposer_receives: list[str],
+) -> list[str]:
+    """Show what the trade does to each roster's required lineup and roster size."""
+    try:
+        from fantasy_league_context import get_active_league_context
+        from fantasy_trade_legality import trade_roster_warnings
+
+        warnings = trade_roster_warnings(
+            get_active_league_context(session),
+            proposer_team=proposer_team,
+            recipient_team=recipient_team,
+            proposer_gives=proposer_gives,
+            proposer_receives=proposer_receives,
+            stats_pool=session.get("_fantasy_current_hitter_stats"),
+        )
+    except Exception:
+        return []
+    for message in warnings:
+        st.warning(message)
+    return warnings
+
+
 def _render_idea_card(
     st: Any,
     idea: dict[str, Any],
@@ -738,6 +767,16 @@ def _render_build_analyze(
         _render_analysis_panel(st, persisted_analysis, roster_stats)
         verdict = str(persisted_analysis.get("verdict") or "")
         analysis_rendered = True
+
+    if give_players and receive_players and other_team and other_team != ANY_TRADE_PARTNER:
+        render_trade_roster_warnings(
+            st,
+            session,
+            proposer_team=my_team,
+            recipient_team=other_team,
+            proposer_gives=list(give_players),
+            proposer_receives=list(receive_players),
+        )
 
     try:
         from fantasy_mobile_layout import phone_wrap_row
