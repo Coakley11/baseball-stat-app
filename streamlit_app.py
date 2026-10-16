@@ -1900,7 +1900,9 @@ def compute_player_trend_table(recent_data, stats_tuple):
     from trend_slopes import trend_slopes
 
     # One vectorized pass for every player (was a per-player np.polyfit, ~40 s cold).
-    return trend_slopes(recent_data[["playerID", "yearID"] + stats], stats)[cols]
+    # Plate-appearance inputs let rate-stat trends weight seasons by playing time.
+    pa_inputs = [c for c in ("AB", "BB", "HBP", "SF", "SH", "H", "2B", "3B", "HR") if c in recent_data.columns and c not in stats]
+    return trend_slopes(recent_data[["playerID", "yearID"] + stats + pa_inputs], stats)[cols]
 
 
 @st.cache_data(show_spinner=False)
@@ -18890,7 +18892,8 @@ elif active_page == "Trend Value":
     pos_note = f" · **Position: {_trend_pos_label}**" if _trend_pos_label != "All positions" else ""
     st.caption(
         f"Top 250 rows{pos_note} · **Position** uses fantasy eligibility (OF = LF/CF/RF, DH/UTIL = DH or utility bats) · "
-        "**Green** = improving · **Red** = declining. Export includes all filtered rows."
+        "**Green** = improving · **Red** = declining. Export includes all filtered rows. "
+        "Rate-stat trends (BA, OBP, SLG, OPS) weight seasons by playing time so small samples have less influence."
     )
     trend_heat_cols = [c for c in TREND_COUNT_COLS + TREND_RATE_COLS if c in trend_sorted.columns]
     trend_sorted_display = trend_sorted.head(250).copy()
@@ -31407,7 +31410,10 @@ elif active_page == "Valuation":
     )
 
     with st.expander("Valuation blend weights", expanded=False):
-        st.caption("These weights only scale how much current vs trend contributes to Valuation Score below.")
+        st.caption(
+            "Weights apply to each player's rank among the players shown — on current production and on "
+            "trend — so 1:1 gives both equal influence on Valuation Score."
+        )
         with mobile_wrap_row(st, "valuation-weights"):
             c5, c6 = st.columns(2)
         with c5:

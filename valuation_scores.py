@@ -4,8 +4,12 @@
   (BA, OBP, SLG, OPS). Rates come from the window totals.
 * Trend_Score — weighted per-season trend slopes (trend_slopes); rate slopes ×100.
   A player without a trend (one season) contributes 0.
-* Valuation_Raw = w_current·Perf + w_trend·Trend, min–max scaled to 0–1 over the players
-  being valued (Valuation_Score); all-equal or empty → 0.
+* The two components are on very different raw scales (trend swings were ~1.5× production's
+  spread), so the weights act on each player's percentile among the players being valued:
+  Valuation_Raw = (w_current·pct(Perf) + w_trend·pct(Trend)) / (w_current + w_trend).
+  At 1:1 each component has equal influence; ties share the average percentile (a player
+  without a trend sits mid-pack on Trend). Valuation_Score min–max scales that to 0–1;
+  all-equal, empty or zero total weight → 0.
 """
 
 from __future__ import annotations
@@ -27,7 +31,13 @@ def add_valuation_scores(df: pd.DataFrame, w_current: float, w_trend: float) -> 
     df["Perf_Score"] = sum(df[col] * w for col, w in PERF_COUNT_WEIGHTS.items()) + sum(
         df[col].fillna(0) * 100 * w for col, w in PERF_RATE_WEIGHTS.items()
     )
-    df["Valuation_Raw"] = w_current * df["Perf_Score"] + w_trend * df["Trend_Score"]
+    df["Perf_Pct"] = df["Perf_Score"].rank(pct=True)
+    df["Trend_Pct"] = df["Trend_Score"].rank(pct=True)
+    total = float(w_current) + float(w_trend)
+    if total > 0:
+        df["Valuation_Raw"] = (w_current * df["Perf_Pct"] + w_trend * df["Trend_Pct"]) / total
+    else:
+        df["Valuation_Raw"] = 0.0
     val_min = df["Valuation_Raw"].min()
     val_max = df["Valuation_Raw"].max()
     if pd.notna(val_min) and pd.notna(val_max) and val_max != val_min:
