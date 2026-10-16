@@ -100,34 +100,30 @@ def position_tokens_from_row(row: pd.Series | dict[str, Any]) -> list[str]:
         raw_tokens = row.get("_pos_tokens")
         if isinstance(raw_tokens, list):
             tokens.extend(str(t).strip().upper() for t in raw_tokens if str(t).strip())
-    for col in ("Primary Position", "Position", "Eligibility", "Positions"):
+    for col in ("Eligible Positions", "Primary Position", "Position", "Eligibility", "Positions"):
         tokens.extend(_split_positions(getter(col)))
     tokens = list(dict.fromkeys(t for t in tokens if t))
     return tokens or ["DH"]
 
 
 def player_eligible_for_slot(pos_tokens: list[str], slot: str) -> bool:
-    """True when hitter eligibility covers the lineup slot."""
+    """True when the player's eligible positions cover the lineup slot.
+
+    Eligibility comes from data only (fantasy_position_eligibility): a player fills a
+    position he is eligible at; OF covers LF/CF/RF; UTIL takes any hitter. There are no
+    assumed substitutions (a 1B is not a 3B unless he played there).
+    """
     slot = str(slot or "").strip().upper()
-    if slot in ("UTIL", "DH/UTIL", "DH"):
-        return not any(p in ("P", "SP", "RP") for p in pos_tokens)
-    if slot == "OF":
-        return any(p == "OF" for p in pos_tokens)
-    if slot in ("C", "1B", "2B", "3B", "SS"):
-        if pos_tokens == ["DH"] or (len(pos_tokens) == 1 and pos_tokens[0] == "DH"):
-            return False
-        if slot in pos_tokens:
-            return True
-        if slot == "1B" and "3B" in pos_tokens:
-            return True
-        if slot == "3B" and "1B" in pos_tokens:
-            return True
-        if slot == "2B" and "SS" in pos_tokens:
-            return True
-        if slot == "SS" and "2B" in pos_tokens:
-            return True
-        return False
-    return False
+    if slot == "DH/UTIL":
+        slot = "UTIL"
+    try:
+        from fantasy_lineup_fill import can_fill
+
+        return bool(can_fill(pos_tokens, slot))
+    except ImportError:
+        if slot in ("UTIL", "DH"):
+            return not all(p in ("P", "SP", "RP") for p in pos_tokens)
+        return slot in pos_tokens
 
 
 def slot_display_name(slot: str) -> str:

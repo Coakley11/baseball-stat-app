@@ -1190,6 +1190,15 @@ def resolve_context_open_position_needs(
     if not config.get("slots") and not config.get("slot_instances"):
         return []
     try:
+        from fantasy_roster_validation import missing_positions_for_roster
+        from live_draft_roster_slots import get_required_position_counts
+
+        shared = missing_positions_for_roster(roster_df, get_required_position_counts(config))
+        if shared is not None:
+            return shared
+    except ImportError:
+        pass
+    try:
         from live_draft_roster_slots import get_remaining_position_needs
 
         return list(get_remaining_position_needs(roster_df, config) or [])

@@ -14,32 +14,35 @@ import pandas as pd
 
 
 def _player_positions(player: dict[str, Any], lookup: dict[str, str]) -> list[str]:
-    positions = [str(p).strip().upper() for p in (player.get("positions") or []) if str(p).strip()]
-    if positions:
-        return positions
+    """Stored positions plus the feed's data-driven eligibility for this player."""
+    from fantasy_position_eligibility import split_positions
     from fantasy_waiver_wire import _player_identity_keys
 
+    positions = set(split_positions(player.get("positions") or []))
     for key in _player_identity_keys(player.get("player_name")):
         if key in lookup:
-            return [p.strip().upper() for p in str(lookup[key]).replace("/", ",").split(",") if p.strip()]
-    return []
+            positions.update(split_positions(lookup[key]))
+            break
+    return sorted(positions)
 
 
 def _position_lookup(stats_pool: pd.DataFrame | None) -> dict[str, str]:
+    """identity key -> eligible positions ("OF, DH") from the current stats feed."""
     if stats_pool is None or getattr(stats_pool, "empty", True):
         return {}
+    from fantasy_position_eligibility import eligible_positions_from_row, format_positions
     from fantasy_waiver_wire import _player_identity_keys, _player_name_col
 
     name_col = _player_name_col(stats_pool)
-    pos_col = "Primary Position" if "Primary Position" in stats_pool.columns else "Position"
-    if name_col not in stats_pool.columns or pos_col not in stats_pool.columns:
+    if name_col not in stats_pool.columns:
         return {}
     lookup: dict[str, str] = {}
-    for name, pos in zip(stats_pool[name_col].astype(str), stats_pool[pos_col]):
-        text = str(pos or "").strip()
-        if text and text.lower() != "nan":
-            for key in _player_identity_keys(name):
-                lookup.setdefault(key, text)
+    for _, row in stats_pool.iterrows():
+        positions = eligible_positions_from_row(row)
+        if not positions:
+            continue
+        for key in _player_identity_keys(row.get(name_col)):
+            lookup.setdefault(key, format_positions(positions))
     return lookup
 
 

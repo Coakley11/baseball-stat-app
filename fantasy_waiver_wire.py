@@ -1217,6 +1217,15 @@ _CATEGORY_WEIGHTS = {
 
 
 def _row_positions(row: pd.Series) -> set[str]:
+    """Eligible positions (shared rule: games played this or last season, plus primary)."""
+    try:
+        from fantasy_position_eligibility import eligible_positions_from_row
+
+        found = eligible_positions_from_row(row)
+        if found:
+            return found
+    except ImportError:
+        pass
     tokens: set[str] = set()
     for col in ("positions", "Primary Position", "Position", "primaryPos", "Pos"):
         if col not in row.index:
