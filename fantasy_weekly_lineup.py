@@ -644,11 +644,18 @@ def _record_period_lineup_snapshot(
         return None
     if not ledger_initialized(context):
         return None
+    from fantasy_league_context import build_ownership_map, normalize_player_key
+
+    # Rebuilt from league_rosters so a drop or trade since the page loaded is seen.
     owner_of = {
         str(k): str((v or {}).get("owner_team") or "")
-        for k, v in (context.get("ownership_map") or {}).items()
+        for k, v in build_ownership_map(context).items()
         if isinstance(v, dict)
     }
+    if (context.get("league_rosters") or {}).get(team):
+        for name in (n for n in slot_map.values() if str(n or "").strip()):
+            if owner_of.get(normalize_player_key(name), "").strip().lower() != str(team).strip().lower():
+                return f"{name} is no longer on {team}'s roster (dropped or traded). Rebuild the lineup from the current roster."
     snapshot = build_lineup_snapshot(
         team=team, slots=slots, slot_assignments=slot_map, roster_df=roster_df, owner_of=owner_of
     )

@@ -207,7 +207,7 @@ def render_completed_weeks(st: Any, context: dict[str, Any] | None) -> None:
         return
     # A plain section, not an expander: changing the week reruns the page, which folded
     # an expander away before the chosen week could be read.
-    st.markdown("#### Completed weeks")
+    st.markdown("**Completed weeks**")  # nested under the official standings heading
     options = [int(p["number"]) for p in finalized]
     number = st.selectbox(
         "Completed week",
@@ -227,7 +227,7 @@ def render_completed_weeks(st: Any, context: dict[str, Any] | None) -> None:
     week_table = period_category_table(context, number)
     if not week_table.empty:
         shown = week_table.drop(columns=[c for c in ("H", "AB") if c in week_table.columns]).copy()
-        for col in ("AVG", "OBP", "OPS"):
+        for col in ("AVG", "OBP", "SLG", "OPS"):
             if col in shown.columns:
                 shown[col] = shown[col].map(_fmt_rate)
         st.dataframe(shown, hide_index=True, use_container_width=True)

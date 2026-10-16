@@ -26,7 +26,7 @@ A context:
 | `league_rosters` | `{team_name: {team_name, is_user_team, players: [...]}}` — **the source of truth for who owns whom.** Each player: `player_name`, `player_key`, `player_id`, `positions`, `pick`, `round`, `source_row`, `team_name`. |
 | `ownership_map` | `{player_key: {owner_team, ...}}`, **derived** from `league_rosters` by `build_ownership_map` on every `upsert_league_context`. Never edit it directly. |
 | `roster_settings` | Starting positions (below). |
-| `workflow` | League history: `weekly_lineups`, `weekly_lineup_drafts`, `trade_proposals`, `trade_alerts_seen`, `league_activity` (add/drop log, last 50). |
+| `workflow` | League history: `season_ledger` (scoring periods, below), `weekly_lineups`, `weekly_lineup_drafts`, `trade_proposals`, `trade_alerts_seen`, `league_activity` (add/drop/lineup/trade log with `acting_as`, last 50). |
 | `metadata` | `source_draft_id`, `commissioner_user_id`, `shared_revision`, timestamps. |
 
 Write through `upsert_league_context(session, context)` only; it rebuilds `ownership_map`
@@ -128,7 +128,84 @@ installs without Supabase must not fail on a push: callers wrap it in `try`.
   Accept form) when the trade leaves a required lineup slot unfillable or moves a roster
   over/under capacity; it warns, it does not block.
 * **Lineup fill** — `fantasy_lineup_fill.unfilled_slots` assigns one player per slot
-  (UTIL/DH takes any hitter, BN anyone). Waiver need weights and trade warnings use it.
+  (UTIL/DH takes any hitter, BN anyone). Lineup validation, waiver need weights, roster
+  checks and trade warnings all use it.
+
+## Position eligibility
+
+`fantasy_position_eligibility` gives every player one list, `Eligible Positions`:
+the primary position plus every position with **≥ 10 games** in the current season
+(MLB Stats API fielding, cached 6 h) or the prior season (Lahman `Fielding.csv`, matched
+by exact birth date + last name + first initial). LF/CF/RF count as OF. Nothing is
+inferred from reputation; there are no blanket substitutions (the old 1B↔3B and 2B↔SS
+shortcuts are gone from the fantasy pages). A rookie with no prior-season match is
+eligible only where he has played this year or at his primary position. Lineup, Waiver
+Wire, roster checks and Trade legality read the same list.
+
+## Who may act for a team
+
+`fantasy_team_control.resolve_team_control(context, team)`:
+
+* **owner** — the team's account owner. On a local install without auth the account is
+  `local:<user>` (`suite_user.get_account_user_id`), so local lineups save. Hosted
+  installs still require a signed-in owner.
+* **commissioner_proxy** — the commissioner acting for a team **nobody has claimed**
+  ("Commissioner acting for Team X"). Every proxy action is logged in `league_activity`
+  with `acting_as`. A seat reserved for an invitee is not proxy-able, and proxy control
+  ends the moment the team is claimed; the commissioner never overrides a claimed team.
+* **none** — read only.
+
+Proxy covers lineups, waiver moves and trades. A commissioner trade with an unclaimed team
+needs an explicit confirmation and passes the normal ownership/size validation
+(`execute_commissioner_trade`).
+
+## Season ledger: scoring periods and official standings
+
+A league gets a calendar when the commissioner sets one (Lineup page → "Set the season
+calendar"). Leagues without one keep the legacy weekly engine below; no history is
+invented for them (`ledger_initialized` is False and the official table says how to start).
+
+```
+workflow.season_ledger = {
+  "version": 1, "timezone": "America/New_York",
+  "periods": { "P1": {
+      "period_id", "number", "label", "start", "end",         # inclusive dates
+      "lineups": { team: snapshot },
+      "result": {...} | absent, "finalized_at", "finalized_by", "audit": [...] } } }
+```
+
+* **Status** is derived, never stored: finalized (has `finalized_at`), else upcoming
+  (before `start`), active (start..end in the league time zone) or locked (after `end`).
+* **Snapshot** (`build_lineup_snapshot`) — starters with slot, player id/key, eligible
+  positions and `owner_at_snapshot`; bench; empty required slots; `saved_by`;
+  `set_after_lock` when the commissioner set it after the period started.
+* **Lock rules** (`save_period_lineup`): an owner sets a period's lineup before it
+  starts; after that only the commissioner may (flagged); a finalized period never
+  changes. A new snapshot may only start players the team owns now, so a stale page
+  cannot start a dropped or traded player.
+* **Scoring** (`fantasy_season_results.compute_period_result`) — the snapshot's starters,
+  matched by MLBAM id then name, against `fantasy_period_stats.fetch_period_hitting_stats`
+  (MLB Stats API `byDateRange` for exactly the period's dates). Components are summed
+  (PA AB H 2B 3B HR R RBI SB BB HBP SF TB G); AVG = H/AB, OBP = (H+BB+HBP)/(AB+BB+HBP+SF),
+  SLG = TB/AB, OPS = OBP+SLG — never averages of averages. Bench and empty slots add 0.
+* **Finalize** (`finalize_period`) — commissioner only; the period must have ended;
+  periods finalize in order; a team with no lineup scores zero only on explicit
+  confirmation. Stores every starter's components, team totals, stat source, finalizer
+  and an audit entry. A finalized result is never recomputed.
+* **Official standings** (`official_standings`) — components summed over finalized
+  periods, then roto points per category (`fantasy_team_rates.roto_points`, ties split;
+  a team with no at-bats ranks last in rate categories). The Standings page shows this
+  first as "League Standings (official)" with a Completed weeks browser; the table built
+  from today's rosters and season-to-date stats is labeled "Current Roster Snapshot (not
+  official standings)".
+* **Roster moves across periods** take effect from the next period: a starter dropped or
+  traded mid-period still scores that period for the team whose snapshot holds him; a
+  mid-period add scores once he is in a later period's lineup. Finalized weeks are
+  untouched by any later move.
+* **Shared leagues** — `push_season_ledger_to_shared` publishes the ledger (never rosters);
+  `merge_season_ledgers`: a finalized period wins, the earliest finalization wins, lineups
+  merge per team by latest `saved_at`, and calendars that differ never mix. A full context
+  push keeps the stored ledger.
 
 ## Persistence
 
@@ -148,9 +225,10 @@ install with an empty disk store is a new workspace and saves normally.
 * Standings: roto category ties split the points (3.5 / 3.5); team BA/OBP/SLG/OPS are
   built from summed hits and at-bats when the stats carry them.
 
-## Weekly scoring (audit, October 2026)
+## Legacy weekly scoring (leagues without a calendar)
 
-`fantasy_weekly_hitter_scoring.py` is a working hitter-only engine:
+`fantasy_weekly_hitter_scoring.py` is the older hitter-only engine, still used by leagues
+that have not set a season calendar:
 
 * Locking a team's weekly lineup snapshots each rostered player's **season-to-date**
   stats as the week's baseline (`create_weekly_baseline_on_lock`).
@@ -161,22 +239,23 @@ install with an empty disk store is a new workspace and saves normally.
   freezes the week, adds team totals into `hitter_weekly_standings_cumulative`, and
   advances the active week.
 
-Gaps — documented, not built:
+Audit gaps (October 2026) and where the season ledger answers them:
 
-1. **No week calendar.** "Week N" is a label. Deltas use whatever season-to-date stats
+1. **No week calendar.** *(Answered: explicit periods + `byDateRange` stats.)* "Week N" is a label. Deltas use whatever season-to-date stats
    are loaded at refresh time, so finalizing late counts games played after the week.
    Needs per-week date ranges and as-of stats (the MLB Stats API supports
    `byDateRange`).
-2. **Mid-week roster moves.** A starter dropped after the lock is looked up on the
+2. **Mid-week roster moves.** *(Answered: scoring follows the locked snapshot.)* A starter dropped after the lock is looked up on the
    current roster, not found, and his week's stats vanish; a mid-week add scores nothing
    until the next lock. Needs scoring by the locked lineup's player ids.
-3. **Every team must lock.** In a solo imported league the other teams are never locked,
+3. **Every team must lock.** *(Answered: commissioner proxy for unclaimed teams; explicit zero for a missing lineup.)* In a solo imported league the other teams are never locked,
    so a week can never be finalized. Needs commissioner/auto-lock for unmanaged teams.
-4. **No head-to-head.** There is no schedule or matchup model; only cumulative roto.
-5. **Two standings definitions.** Standings Tracker scores current rosters on full
+4. **No head-to-head.** *(Still open.)* There is no schedule or matchup model; only cumulative roto.
+5. **Two standings definitions.** *(Answered: official = finalized periods; the other is labeled a snapshot.)* Standings Tracker scores current rosters on full
    season-to-date stats; weekly finalization sums starters' weekly deltas. They will
    disagree after any roster move. The product needs to pick which one is "the standings".
-6. Hitters only by design; pitching categories are not scored.
+6. Hitters only by design; pitching categories are not scored. Points-format leagues get
+   no official table yet (the ledger awards roto points).
 
 ## Live / Shared Draft → league handoff (audit, October 2026)
 
@@ -188,6 +267,7 @@ needed. Findings:
 
 * Fixed: roster capacity counted only starters, so a league drafted with bench spots was
   "over capacity" and every waiver add was refused.
-* Trades need an owner on both teams, so trades wait until invites are accepted.
-* Lineup writes require a signed-in account (`fantasy_lineup_scope`); a local install
-  with auth disabled cannot save weekly lineups ("Sign in to save lineup changes.").
+* Trades need an owner on both teams; the commissioner can trade with a team nobody has
+  claimed (not a reserved invitee seat) as its proxy.
+* Lineup writes require the team's owner; on a local install without auth that is the
+  local account, so lineups save (fixed in Phase D).
