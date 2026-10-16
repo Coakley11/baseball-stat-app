@@ -2920,6 +2920,14 @@ def sync_board_to_session_keys(
         source=reason,
         pick_count=pick_count,
     )
+    # Stamp before the blob is written so the persisted board carries its owner.
+    if pick_count > 0 and _should_stamp_simulator_board_ownership(local_edit=local_edit, reason=reason):
+        try:
+            from live_draft_navigation import stamp_simulator_board_ownership
+
+            stamp_simulator_board_ownership(session, origin=reason or "local_edit")
+        except ImportError:
+            pass
     blob = write_canonical_draft_room_state(session, normalized, reason=reason, local_edit=local_edit)
     session["local_has_draft_room_board"] = pick_count > 0
     session["local_draft_room_pick_count"] = pick_count
@@ -2929,13 +2937,6 @@ def sync_board_to_session_keys(
     session["cloud_payload_pick_count"] = int(blob.get("pick_count") or pick_count)
     session["_draft_room_canonical_sync_reason"] = reason
     session["_draft_room_canonical_pick_count"] = pick_count
-    if pick_count > 0 and _should_stamp_simulator_board_ownership(local_edit=local_edit, reason=reason):
-        try:
-            from live_draft_navigation import stamp_simulator_board_ownership
-
-            stamp_simulator_board_ownership(session, origin=reason or "local_edit")
-        except ImportError:
-            pass
     return normalized
 
 
@@ -2971,6 +2972,36 @@ def _sync_page_filter_draft_room_block(session: dict[str, Any], *, blob: dict[st
             block[key] = session[key]
 
 
+def _attach_board_ownership(session: dict[str, Any], blob: dict[str, Any], table: Any = None) -> None:
+    """Carry the board's ownership stamp inside its persisted blob (only when it describes this board).
+
+    Without it a refreshed session restores the board unstamped and the account scrub
+    (live_draft_navigation.scrub_simulator_runtime_for_current_account) discards it.
+    """
+    try:
+        from live_draft_navigation import (
+            PERSISTED_OWNERSHIP_FIELD,
+            ownership_stamp_for_table,
+            simulator_board_fingerprint_for_table,
+        )
+    except ImportError:
+        return
+    if not is_runtime_table(table):
+        table = table_from_persist_dict(blob)
+    stamp = ownership_stamp_for_table(session, table)
+    if not stamp:
+        # Re-writing a restored board before the scrub adopts its stamp: keep the one it came with.
+        prior = session.get(DRAFT_ROOM_STATE_KEY)
+        prior_stamp = prior.get(PERSISTED_OWNERSHIP_FIELD) if isinstance(prior, dict) else None
+        board_fp = simulator_board_fingerprint_for_table(table)
+        if isinstance(prior_stamp, dict) and board_fp and prior_stamp.get("simulator_board_fingerprint") == board_fp:
+            stamp = dict(prior_stamp)
+    if stamp:
+        blob[PERSISTED_OWNERSHIP_FIELD] = stamp
+    else:
+        blob.pop(PERSISTED_OWNERSHIP_FIELD, None)
+
+
 def write_canonical_draft_room_state(
     session: dict[str, Any],
     table: Any,
@@ -2981,6 +3012,7 @@ def write_canonical_draft_room_state(
     settings = _room_settings_from_session(session)
     blob = table_to_persist_dict(table, settings=settings)
     blob["last_write_reason"] = reason or None
+    _attach_board_ownership(session, blob, table)
     meta = get_canonical_draft_meta(session)
     if meta:
         blob["canonical_draft_meta"] = _json_safe(meta)
@@ -3235,6 +3267,7 @@ def enrich_save_payload_with_draft_room(
             return state, diag
 
     safe_blob = copy.deepcopy(blob)
+    _attach_board_ownership(session, safe_blob)
     # copy_input=False: the caller owns ``state`` and replaces it with the return
     # value (build_baseball_disk_state). Skips a full deep copy of the workspace
     # state, which carries the Live Draft player pool several times over.

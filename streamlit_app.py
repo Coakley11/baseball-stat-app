@@ -1970,13 +1970,32 @@ def add_rate_stats(df):
     df["OPS"] = pd.to_numeric(df["OBP"] + df["SLG"], errors="coerce")
     return df
 
-def apply_stat_min_filters(df, prefix, on_change=None):
+def apply_stat_min_filters(df, prefix, on_change=None, *, sort_stat=None, qualification=None):
+    """Stat minimum filters. ``qualification`` (from ``rate_stat_qualification.qualified_ab``)
+    turns on the default Min AB for rate-stat rankings; ``sort_stat`` is the ranking stat."""
     df = df.copy()
     stat_columns = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
     for col in stat_columns:
         if col not in df.columns:
             df[col] = 0
         df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    qual_state = None
+    ab_on_change = on_change
+    if qualification is not None:
+        import rate_stat_qualification as rsq
+
+        qual_state = rsq.resolve_ab_minimum(st.session_state, prefix, sort_stat, qualification["value"])
+
+        def ab_on_change(_prefix=prefix, _cb=on_change):
+            rsq.mark_manual(st.session_state, _prefix)
+            if _cb is not None:
+                _cb()
+
+        def ab_restore_auto(_prefix=prefix, _cb=on_change):
+            rsq.restore_auto(st.session_state, _prefix)
+            if _cb is not None:
+                _cb()
 
     with st.expander("Stat minimum filters", expanded=False):
         if prefix == "trend":
@@ -1993,18 +2012,26 @@ def apply_stat_min_filters(df, prefix, on_change=None):
             for i, stat in enumerate(count_filter_cols):
                 with cols[i % 4]:
                     label = f"Min total {stat} (window)" if prefix == "trend" else f"Min {stat}"
+                    _min_key = f"{prefix}_{stat}_min"
+                    _qualified_ab = qual_state is not None and stat == "AB"
+                    _kwargs = {} if (_qualified_ab and _min_key in st.session_state) else {"value": 0}
                     mins[stat] = st.number_input(
                         label,
                         min_value=0,
-                        value=0,
                         step=1,
-                        key=f"{prefix}_{stat}_min",
-                        on_change=on_change,
+                        key=_min_key,
+                        on_change=ab_on_change if _qualified_ab else on_change,
                         help=(
                             f"Minimum {stat} combined across selected lookback years."
                             if prefix == "trend"
-                            else None
+                            else (
+                                "Set automatically to a qualified minimum when ranking by BA, OBP, SLG "
+                                "or OPS. Any value you enter here (including 0) is kept."
+                                if _qualified_ab
+                                else None
+                            )
                         ),
+                        **_kwargs,
                     )
         with rate_tab:
             cols = st.columns(4)
@@ -2025,6 +2052,23 @@ def apply_stat_min_filters(df, prefix, on_change=None):
                             else None
                         ),
                     )
+
+    if qual_state is not None and qual_state["rate"]:
+        caption = rsq.qualification_caption(qual_state, qualification, sort_stat)
+        if qual_state["mode"] == rsq.MODE_MANUAL and qual_state["value"] != qual_state["qualified"]:
+            cap_col, btn_col = st.columns([4, 1])
+            with cap_col:
+                st.caption(caption)
+            with btn_col:
+                st.button(
+                    f"Use qualified ({qual_state['qualified']:,} AB)",
+                    # Not prefixed with the page's state prefix: page_state would persist a button value.
+                    key=f"rate_qualification_restore_{prefix}",
+                    on_click=ab_restore_auto,
+                    width="stretch",
+                )
+        else:
+            st.caption(caption)
 
     mask = pd.Series(True, index=df.index)
     for stat, min_val in mins.items():
@@ -12631,6 +12675,18 @@ AWARDS_PLAYERS_DF = _cached_awards_players_df(AWARDS_CACHE_KEY)
 
 _DATA_LOAD_START = time.perf_counter()
 batting_df, yearly_df, people_df = load_data(HOF_CACHE_KEY)
+# Games per season, for the default Min AB on rate-stat rankings (rate_stat_qualification).
+from rate_stat_qualification import qualified_ab as _qualified_ab
+
+
+@st.cache_data(show_spinner=False)
+def _season_game_counts(_yearly_df, cache_key):
+    from rate_stat_qualification import season_lengths
+
+    return season_lengths(_yearly_df)
+
+
+SEASON_GAME_COUNTS = _season_game_counts(yearly_df, HOF_CACHE_KEY)
 if load_hall_of_fame_player_ids is not None:
     HOF_PLAYER_IDS = _cached_hof_player_ids(HOF_CACHE_KEY)
 else:
@@ -14058,6 +14114,8 @@ def _transfer_stat_min_keys(*prefixes):
     keys = set()
     for prefix in prefixes:
         keys.update(f"{prefix}_{c}_min" for c in pg_xfer._TRANSFER_STAT_COLS)
+        if prefix in ("hist", "career", "leaders"):
+            keys.add(f"{prefix}_ab_qualification_mode")
     return keys
 
 
@@ -14861,6 +14919,35 @@ if not st.session_state.get("_qp_active_page_nav_consumed"):
                 except ImportError:
                     st.session_state.pop("_live_draft_browsing_away", None)
                 st.session_state["active_page"] = "Live Draft Room"
+# From here on the URL follows the page (url_page_sync), so ?active_page= is a deep link
+# only on a session's first run — never the page this session wrote there itself.
+st.session_state["_qp_active_page_nav_consumed"] = True
+# Browser Back/Forward: the address bar moved to another page (url_page_sync).
+try:
+    from url_page_sync import history_navigation_target
+
+    _history_nav_target = history_navigation_target(
+        st.session_state,
+        current_page=st.session_state.get("active_page"),
+        valid_pages=_PAGE_OPTION_SET,
+        normalize=normalize_page_key,
+    )
+    if _history_nav_target:
+        # Same precedence as a deep link: wins over saved-page restore this run.
+        st.session_state["_navigate_to_page"] = _history_nav_target
+        st.session_state["_skip_page_restore_for"] = _history_nav_target
+        from baseball_persistent_state import EXPLICIT_PAGE_NAV_KEY
+
+        st.session_state[EXPLICIT_PAGE_NAV_KEY] = _history_nav_target
+        if _history_nav_target == "Live Draft Room":
+            # Enter the live room body, not the "Return to Live Draft" card. Unlike the
+            # first-run deep link, leave active_page alone: the scheduled navigation must
+            # still move the sidebar radio, or alignment snaps back to the previous page.
+            from live_draft_navigation import BROWSING_AWAY_KEY
+
+            st.session_state.pop(BROWSING_AWAY_KEY, None)
+except ImportError:
+    pass
 _record_sidebar_nav_trace("run_start_before_consume")
 _consumed_nav_target = _consume_scheduled_navigation()
 try:
@@ -15580,6 +15667,16 @@ try:
         st=st,
         body_active_page=active_page,
     )
+except ImportError:
+    pass
+
+# Address bar follows the requested page (before any entitlement/paywall stand-in), so
+# refresh stays here and Back/Forward walk the pages visited (url_page_sync).
+try:
+    from url_page_sync import sync_address_bar
+
+    if active_page in _PAGE_OPTION_SET:
+        sync_address_bar(st, active_page)
 except ImportError:
     pass
 
@@ -16664,7 +16761,13 @@ elif active_page == "Historical Explorer":
     else:
         hist["displayPosition"] = ""
 
-    hist = apply_stat_min_filters(hist, "hist", on_change=historical_filter_changed)
+    hist = apply_stat_min_filters(
+        hist,
+        "hist",
+        on_change=historical_filter_changed,
+        sort_stat=hist_sort_stat,
+        qualification=_qualified_ab(SEASON_GAME_COUNTS, hist_year_range, span=False),
+    )
     if hof_case_mode and merge_hof_flag is not None and "playerID" in hist.columns:
         hist = merge_hof_flag(hist, HOF_PLAYER_IDS)
         hist = apply_hof_membership_filter(hist, hist_hof_filter)
@@ -17077,7 +17180,13 @@ elif active_page == "Career Totals":
         career_mode_note = "Total-career mode: one row per player. Franchise/league filters first limit the data included, then Team becomes the primary team within that filtered data. Position is based on Fielding.csv games."
 
     career_totals = add_rate_stats(career_totals)
-    career_totals = apply_stat_min_filters(career_totals, "career", on_change=career_filter_changed)
+    career_totals = apply_stat_min_filters(
+        career_totals,
+        "career",
+        on_change=career_filter_changed,
+        sort_stat=sort_stat_career,
+        qualification=_qualified_ab(SEASON_GAME_COUNTS, range_career, span=True),
+    )
     if hof_case_mode and merge_hof_flag is not None and "playerID" in career_totals.columns:
         career_totals = merge_hof_flag(career_totals, HOF_PLAYER_IDS)
         career_totals = apply_hof_membership_filter(career_totals, career_hof_filter)
@@ -17688,7 +17797,13 @@ elif active_page == "Leaderboards":
     leaderboard = aggregate_leaderboard_career_totals(filtered_leaders)
     st.session_state["_perf_leaderboard_agg_sec"] = round(time.perf_counter() - _lb_agg_start, 4)
     leaderboard = add_rate_stats(leaderboard)
-    leaderboard = apply_stat_min_filters(leaderboard, "leaders", on_change=leaderboards_filter_changed)
+    leaderboard = apply_stat_min_filters(
+        leaderboard,
+        "leaders",
+        on_change=leaderboards_filter_changed,
+        sort_stat=sort_stat_leaders,
+        qualification=_qualified_ab(SEASON_GAME_COUNTS, range_leaders, span=True),
+    )
     leaderboard = safe_round_rate_stats(leaderboard)
 
     leaderboard["score"] = 0.0
@@ -22002,11 +22117,16 @@ elif active_page == "Draft Room Simulator":
                 record_manual_save_button_click(st.session_state)
 
             st.markdown("**Save draft board**")
+            st.caption(
+                "**Save Draft Board Now** keeps this working board (including an applied import) "
+                "through refreshes. Standings, Lineup and Waivers use a **Saved Draft**: add this board "
+                "with **Set Active Draft** on the *Rosters & grades* tab."
+            )
             save_clicked = st.button(
                 "Save Draft Board Now",
                 key=MANUAL_SAVE_BUTTON_KEY,
                 type="primary",
-                help="Write the current board to disk and cloud.",
+                help="Save the working board shown above. It does not add it to your Saved Draft Library.",
                 on_click=_on_manual_save_click,
             )
             if save_clicked:
