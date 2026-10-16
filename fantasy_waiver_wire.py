@@ -1950,8 +1950,13 @@ def apply_waiver_move_pairs(
     pairs: list[dict[str, Any]],
     *,
     stats_pool: pd.DataFrame | None = None,
+    team: str = "",
 ) -> dict[str, Any]:
-    """Execute matched add/drop pairs on the active league context roster."""
+    """Execute matched add/drop pairs on a team's roster (default: your team).
+
+    ``team`` lets the commissioner act for an unclaimed team (explicit proxy); a team
+    claimed by another manager is refused.
+    """
     result: dict[str, Any] = {
         "ok": False,
         "applied": 0,
@@ -1979,6 +1984,21 @@ def apply_waiver_move_pairs(
         return result
 
     my_team = str(context.get("my_team_name") or "").strip()
+    acting_control = None
+    requested = str(team or "").strip()
+    if requested and requested != my_team:
+        try:
+            from fantasy_team_control import resolve_team_control
+
+            acting_control = resolve_team_control(session, context, requested)
+        except ImportError:
+            acting_control = None
+        if acting_control is None or not acting_control.can_manage:
+            result["errors"].append(
+                (acting_control.reason if acting_control is not None else "") or f"You cannot manage {requested}."
+            )
+            return result
+        my_team = requested
     league_rosters = copy.deepcopy(context.get("league_rosters") or {})
     if not isinstance(league_rosters, dict):
         league_rosters = {}
@@ -2057,10 +2077,27 @@ def apply_waiver_move_pairs(
                 "recorded_at": now,
             }
         )
+    if acting_control is not None and acting_control.is_proxy:
+        for entry in activity[-2 * len(result["moves"]):]:
+            entry.update(
+                {
+                    "actor_user_id": acting_control.user_id,
+                    "acting_as": acting_control.mode,
+                    "note": f"Commissioner acting for {my_team}",
+                }
+            )
     workflow[WORKFLOW_KEY_LEAGUE_ACTIVITY] = activity[-50:]
     context["workflow"] = workflow
     context["league_rosters"] = league_rosters
     context = upsert_league_context(session, context)
+    # Shared leagues: publish the move, or the next page sync pulls the old rosters back
+    # from the shared document and silently undoes it (trades already publish).
+    try:
+        from fantasy_shared_league_store import push_league_context_to_shared
+
+        push_league_context_to_shared(session, context)
+    except Exception:
+        pass
 
     draft_id = str(context.get("source_draft_id") or "").strip()
     if not draft_id:
@@ -2085,7 +2122,7 @@ def apply_waiver_move_pairs(
         except ImportError:
             pass
 
-    my_roster_df = _with_positions_from_stats(my_team_roster_dataframe(context), stats_pool)
+    my_roster_df = _with_positions_from_stats(my_team_roster_dataframe({**context, "my_team_name": my_team}), stats_pool)
     try:
         from fantasy_league_context import context_has_roster_slots, resolve_context_open_position_needs
 

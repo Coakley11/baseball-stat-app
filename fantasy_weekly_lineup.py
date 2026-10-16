@@ -264,6 +264,16 @@ def is_lineup_locked(
 
 
 def _assert_lineup_team_write(session: dict[str, Any], context: dict[str, Any], my_team: str) -> str | None:
+    try:
+        from fantasy_team_control import MODE_NONE, resolve_team_control
+
+        control = resolve_team_control(session, context, my_team)
+        if control.is_proxy:
+            return None  # commissioner acting for an unclaimed team
+        if control.mode == MODE_NONE and (context.get("team_ownership") or {}):
+            return control.reason or "You cannot manage this team."
+    except ImportError:
+        pass
     uid = str(session.get("_suite_auth_user_id") or session.get("_suite_cloud_user_id") or "").strip()
     if not uid:
         return None
@@ -428,6 +438,7 @@ def validate_weekly_lineup(
         "missing_slots": [],
         "ineligible_slots": [],
         "duplicate_players": [],
+        "unfillable_slots": [],
         "messages": [],
     }
     if roster_df is None or roster_df.empty:
@@ -447,8 +458,6 @@ def validate_weekly_lineup(
         slot_label = slot_display_name(base_slot)
         if not player_name:
             result["missing_slots"].append(base_slot)
-            result["messages"].append(f"{slot_label} is empty.")
-            result["ok"] = False
             continue
         if player_name in used_players:
             result["duplicate_players"].append(player_name)
@@ -464,6 +473,28 @@ def validate_weekly_lineup(
             result["ineligible_slots"].append({"slot": base_slot, "player": player_name})
             result["messages"].append(f"{player_name} is not eligible for {slot_label}.")
             result["ok"] = False
+
+    # An empty slot only blocks saving when an unused rostered player could fill it.
+    # A roster that genuinely lacks the position may save; the slot scores nothing.
+    if result["missing_slots"]:
+        try:
+            from fantasy_lineup_fill import unfilled_slots
+
+            unused = [position_tokens_from_row(row) for name, row in roster_lookup.items() if name not in used_players]
+            unfillable = unfilled_slots(unused, list(result["missing_slots"]))
+        except ImportError:
+            unfillable = []
+        fillable = list(result["missing_slots"])
+        for slot in unfillable:
+            fillable.remove(slot)
+        result["unfillable_slots"] = list(unfillable)
+        for base_slot in fillable:
+            result["messages"].append(f"{slot_display_name(base_slot)} is empty.")
+            result["ok"] = False
+        for base_slot in unfillable:
+            result["messages"].append(
+                f"{slot_display_name(base_slot)} stays empty: no eligible player on the roster (it scores nothing)."
+            )
 
     for slot in slots:
         base = str(slot or "").strip().upper()
@@ -743,6 +774,14 @@ def save_weekly_lineup(
     store[team_week_lineup_key(team_name, week)] = payload
     drafts = _weekly_lineup_drafts_store(context)
     drafts.pop(team_week_lineup_key(team_name, week), None)
+    try:
+        from fantasy_team_control import record_league_action, resolve_team_control
+
+        control = resolve_team_control(session, context, team_name)
+        payload["saved_by"] = control.actor_record()
+        record_league_action(context, control=control, action="lineup_saved", detail={"week": int(week)})
+    except ImportError:
+        pass
     context = upsert_league_context(session, context)
 
     try:

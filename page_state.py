@@ -281,6 +281,9 @@ _PAGE_STATE_SKIP_KEYS = frozenset({
     # repeated "League lineup format saved." on the next visit.
     "lineup_format_saved_flash",
     "lineup_format_editing",
+    # Commissioner "Manage team" pickers: a reopened session starts on your own team.
+    "lineup_manage_team",
+    "waiver_manage_team",
 })
 
 

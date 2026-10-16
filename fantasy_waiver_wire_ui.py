@@ -387,6 +387,48 @@ def _on_clear_planner_drop_click(*_args, **_kwargs) -> None:
     _on_planner_pick_changed()
 
 
+WAIVER_MANAGE_TEAM_KEY = "waiver_manage_team"
+
+
+def _managed_waiver_team(session: dict[str, Any], context: dict[str, Any] | None) -> str:
+    """The unclaimed team the commissioner chose to act for, or "" for your own team."""
+    chosen = str(session.get(WAIVER_MANAGE_TEAM_KEY) or "").strip()
+    if not chosen or not isinstance(context, dict):
+        return ""
+    try:
+        from fantasy_team_control import resolve_team_control
+
+        return chosen if resolve_team_control(session, context, chosen).is_proxy else ""
+    except ImportError:
+        return ""
+
+
+def _render_waiver_manage_team(st: Any, session: dict[str, Any], context: dict[str, Any], *, own_team: str) -> str:
+    """Commissioner picks an unclaimed team to run waivers for; returns it, or ""."""
+    try:
+        from fantasy_team_control import manageable_teams
+    except ImportError:
+        return ""
+    proxy = [c.team for c in manageable_teams(session, context) if c.is_proxy and c.team != own_team]
+    if not proxy:
+        session.pop(WAIVER_MANAGE_TEAM_KEY, None)
+        return ""
+    options = [own_team] + proxy if own_team else proxy
+    if session.get(WAIVER_MANAGE_TEAM_KEY) not in options:
+        session[WAIVER_MANAGE_TEAM_KEY] = options[0]
+    choice = st.selectbox(
+        "Manage team",
+        options,
+        key=WAIVER_MANAGE_TEAM_KEY,
+        format_func=lambda t: f"{t} (your team)" if t == own_team else f"{t} — unclaimed, commissioner",
+        help="As commissioner you can make waiver moves for teams no manager has claimed yet.",
+    )
+    if choice and choice != own_team:
+        st.info(f"**Commissioner acting for {choice}.** Moves are logged as commissioner actions.")
+        return choice
+    return ""
+
+
 def _on_confirm_waiver_move_click(*_args, **_kwargs) -> None:
     import streamlit as st
 
@@ -401,7 +443,9 @@ def _on_confirm_waiver_move_click(*_args, **_kwargs) -> None:
         from fantasy_waiver_wire import waiver_roster_transaction_mode
 
         context = get_active_league_context(session)
-        my_roster = my_team_roster_dataframe(context) if context else pd.DataFrame()
+        managed = _managed_waiver_team(session, context)
+        roster_ctx = {**context, "my_team_name": managed} if (context and managed) else context
+        my_roster = my_team_roster_dataframe(roster_ctx) if context else pd.DataFrame()
         tx_mode = waiver_roster_transaction_mode(context, len(_player_names(my_roster)))
     except ImportError:
         tx_mode = "add_drop"
@@ -445,7 +489,13 @@ def _on_confirm_waiver_move_click(*_args, **_kwargs) -> None:
     else:
         pairs = [{"add_player": add_name, "drop_player": ""} for add_name in tx_adds]
     stats_pool = _resolve_waiver_stats_pool(session)
-    tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool)
+    try:
+        from fantasy_league_context import get_active_league_context as _active
+
+        managed = _managed_waiver_team(session, _active(session))
+    except ImportError:
+        managed = ""
+    tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool, team=managed)
     _apply_waiver_tx_result(session, tx_result, stats_pool=stats_pool)
 
 
@@ -497,7 +547,13 @@ def _on_confirm_pending_waiver_moves_click(*_args, **_kwargs) -> None:
         set_waiver_tx_flash(session, level="warning", message="No pending add/drop moves to confirm.")
         return
     stats_pool = _resolve_waiver_stats_pool(session)
-    tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool)
+    try:
+        from fantasy_league_context import get_active_league_context as _active
+
+        managed = _managed_waiver_team(session, _active(session))
+    except ImportError:
+        managed = ""
+    tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool, team=managed)
     _apply_waiver_tx_result(session, tx_result, stats_pool=stats_pool)
 
 
@@ -701,6 +757,9 @@ def render_waiver_wire_page(
         my_team = str(context.get("my_team_name") or "").strip() or my_team
     if not my_team:
         my_team = str(context.get("my_team_name") or "").strip()
+    proxy_team = _render_waiver_manage_team(st, session, context, own_team=my_team)
+    if proxy_team:
+        my_team = proxy_team
     league_df = filter_roster_stats_to_league_teams(league_df, context)
     if not league_df.empty and my_team and "Team" in league_df.columns:
         my_roster = league_df[league_df["Team"].astype(str) == my_team].copy()

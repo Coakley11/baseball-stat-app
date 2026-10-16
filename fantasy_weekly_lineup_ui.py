@@ -289,6 +289,35 @@ def _render_open_slots_and_validation(
     return validation
 
 
+def _render_manage_team_picker(st: Any, session: dict[str, Any], context: dict[str, Any], *, own_team: str):
+    """Commissioner picks a team to manage; returns its TeamControl when acting as proxy."""
+    try:
+        from fantasy_team_control import manageable_teams
+    except ImportError:
+        return None
+    proxy = [c for c in manageable_teams(session, context) if c.is_proxy and c.team != own_team]
+    if not proxy:
+        return None
+    options = ([own_team] if own_team else []) + [c.team for c in proxy]
+    key = "lineup_manage_team"
+    if session.get(key) not in options:
+        session[key] = options[0]
+    choice = st.selectbox(
+        "Manage team",
+        options,
+        key=key,
+        format_func=lambda t: f"{t} (your team)" if t == own_team else f"{t} — unclaimed, commissioner",
+        help="As commissioner you can set lineups for teams no manager has claimed yet.",
+    )
+    return next((c for c in proxy if c.team == choice), None)
+
+
+def _lineup_write_check(scope: Any, proxy_control: Any) -> tuple[bool, str]:
+    if proxy_control is not None and proxy_control.is_proxy:
+        return True, ""
+    return assert_lineup_write_identity(scope)
+
+
 def render_weekly_lineup_section(
     st: Any,
     session: dict[str, Any],
@@ -312,6 +341,18 @@ def render_weekly_lineup_section(
         active_team = str(context.get("my_team_name") or page_team or "").strip()
     if page_team and active_team and page_team != active_team:
         st.warning(LINEUP_IDENTITY_SYNC_ERROR)
+
+    proxy_control = None
+    proxy_choice = _render_manage_team_picker(st, session, context, own_team=active_team)
+    if proxy_choice is not None:
+        proxy_control = proxy_choice
+        active_team = proxy_control.team
+        page_team = proxy_control.team
+        team_roster = None  # load this team's roster below
+        st.info(
+            f"**Commissioner acting for {active_team}.** This team is unclaimed; "
+            "lineups you set are logged as commissioner actions."
+        )
 
     if not active_team:
         st.info("Claim your team in this league before managing weekly lineups.")
@@ -371,6 +412,10 @@ def render_weekly_lineup_section(
     ledger_weeks = period_week_options(context)
     week_options = ledger_weeks or list_week_options()
     prefix = "weekly_lineup"
+    if proxy_control is not None:
+        import re as _re
+
+        prefix = "weekly_lineup_proxy_" + _re.sub(r"[^A-Za-z0-9]+", "_", active_team)
     if ledger_weeks and session.get(f"{prefix}_selected_week") not in ledger_weeks:
         session[f"{prefix}_selected_week"] = current_period_number(context) or ledger_weeks[0]
 
@@ -395,7 +440,10 @@ def render_weekly_lineup_section(
             key=f"{prefix}_selected_week",
         )
 
-    scope = resolve_lineup_scope(session, context, week=int(selected_week), page_lineup_team=page_team)
+    # Proxy edits use team-specific keys; the account's own lineup scope stays untouched.
+    scope = None if proxy_control is not None else resolve_lineup_scope(
+        session, context, week=int(selected_week), page_lineup_team=page_team
+    )
     scope_changed = bool(scope and apply_lineup_scope_change(session, scope))
 
     saved = get_saved_weekly_lineup(context, int(selected_week), team=active_team, session=session)
@@ -548,7 +596,7 @@ def render_weekly_lineup_section(
             )
 
     if drop_event and not lineup_locked:
-        write_ok, write_err = assert_lineup_write_identity(scope)
+        write_ok, write_err = _lineup_write_check(scope, proxy_control)
         if not write_ok:
             st.error(write_err)
         else:
@@ -650,7 +698,7 @@ def render_weekly_lineup_section(
     with save_col:
         save_disabled = not validation.get("ok")
         if st.button("Save Lineup", key=save_key, type="primary", disabled=bool(save_disabled)):
-            write_ok, write_err = assert_lineup_write_identity(scope)
+            write_ok, write_err = _lineup_write_check(scope, proxy_control)
             if not write_ok:
                 st.error(write_err)
             else:

@@ -1077,6 +1077,93 @@ def accept_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[di
     return get_trade_proposal(saved, proposal_id), ""
 
 
+COMMISSIONER_TRADE_CONFIRM_MESSAGE = (
+    "Confirm that you are acting as commissioner for the unclaimed team before executing this trade."
+)
+
+
+def execute_commissioner_trade(
+    session: dict[str, Any],
+    *,
+    team_a: str,
+    team_b: str,
+    team_a_gives: list[str],
+    team_b_gives: list[str],
+    confirmed: bool,
+) -> tuple[dict[str, Any] | None, str]:
+    """Commissioner completes a trade in which at least one side is an unclaimed team.
+
+    The commissioner acts for each unclaimed side (explicit proxy) and for their own team.
+    A trade between two claimed teams must go through a normal proposal; this path never
+    speaks for a claimed manager. Player ownership and trade limits are validated exactly
+    as for proposals, and the swap rolls back if any player has moved.
+    """
+    context, load_err = _load_mutable_context(session)
+    if context is None:
+        return None, load_err
+    enabled, gate_msg = trades_enabled(context, session)
+    if not enabled:
+        return None, gate_msg or TRADES_DISABLED_MESSAGE
+    if not confirmed:
+        return None, COMMISSIONER_TRADE_CONFIRM_MESSAGE
+    from fantasy_team_control import record_league_action, resolve_team_control
+
+    side_a = resolve_team_control(session, context, team_a)
+    side_b = resolve_team_control(session, context, team_b)
+    for side in (side_a, side_b):
+        if not side.can_manage:
+            return None, side.reason or f"You cannot manage {side.team}."
+    if not (side_a.is_proxy or side_b.is_proxy):
+        return None, "Both teams have managers. Use a normal trade proposal."
+    gives = [str(x).strip() for x in team_a_gives if str(x).strip()]
+    receives = [str(x).strip() for x in team_b_gives if str(x).strip()]
+    ok, msg = validate_proposal_players(
+        context, proposer_team=side_a.team, recipient_team=side_b.team, proposer_gives=gives, proposer_receives=receives
+    )
+    if not ok:
+        return None, msg
+    now = _utc_now_iso()
+    proxied = [s.team for s in (side_a, side_b) if s.is_proxy]
+    give_refs = [_normalize_player_ref(n) for n in gives]
+    receive_refs = [_normalize_player_ref(n) for n in receives]
+    proposal: dict[str, Any] = {
+        "proposal_id": f"tp:{uuid.uuid4().hex[:12]}",
+        "league_id": resolve_canonical_league_id(context),
+        "status": TRADE_PROPOSAL_STATUS_ACCEPTED,
+        "proposer_team": side_a.team,
+        "recipient_team": side_b.team,
+        "from_user_id": side_a.user_id,
+        "to_user_id": "",
+        "from_team_id": side_a.team,
+        "to_team_id": side_b.team,
+        "proposer_gives": give_refs,
+        "proposer_receives": receive_refs,
+        "give_player_ids": _player_ids_from_refs(give_refs),
+        "receive_player_ids": _player_ids_from_refs(receive_refs),
+        "created_at": now,
+        "updated_at": now,
+        "responded_at": now,
+        "accepted_at": now,
+        "commissioner_executed": True,
+        "commissioner_user_id": side_a.user_id,
+        "commissioner_acting_for": proxied,
+    }
+    proposal["trade_id"] = proposal["proposal_id"]
+    if not _execute_roster_swap(context, proposal):
+        return None, STALE_TRADE_MESSAGE
+    _ensure_trade_proposals_workflow(context).append(proposal)
+    _record_trade_activity(context, proposal, TRADE_PROPOSAL_STATUS_ACCEPTED)
+    for side, sent, got in ((side_a, gives, receives), (side_b, receives, gives)):
+        record_league_action(
+            context,
+            control=side,
+            action="trade",
+            detail={"trade_id": proposal["proposal_id"], "sent": sent, "received": got},
+        )
+    saved, _ok, _err = finalize_accepted_trade(session, context)
+    return get_trade_proposal(saved, proposal["proposal_id"]), ""
+
+
 def decline_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[dict[str, Any] | None, str]:
     context, load_err = _load_mutable_context(session)
     if context is None:

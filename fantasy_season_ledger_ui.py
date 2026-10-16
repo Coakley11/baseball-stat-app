@@ -62,9 +62,12 @@ def render_season_calendar_setup(st: Any, session: dict[str, Any], context: dict
             "Official standings add up finalized scoring periods. Each period has fixed dates; "
             "a finalized period never changes, even after later drops or trades."
         )
-        first_day = st.date_input("First day of Week 1", value=_default_first_day(), key="season_calendar_first_day")
-        count = st.number_input("Number of weeks", min_value=1, max_value=30, value=26, step=1, key="season_calendar_count")
-        if st.button("Create season calendar", key="season_calendar_create", type="primary"):
+        # A form: editing the date must not rerun the page (which folded the expander away).
+        with st.form("season_calendar_form", border=False):
+            first_day = st.date_input("First day of Week 1", value=_default_first_day(), key="season_calendar_first_day")
+            count = st.number_input("Number of weeks", min_value=1, max_value=30, value=26, step=1, key="season_calendar_count")
+            submitted = st.form_submit_button("Create season calendar", type="primary")
+        if submitted:
             ok, err = configure_season_calendar(context, first_day=first_day, period_count=int(count))
             if not ok:
                 st.error(err)
