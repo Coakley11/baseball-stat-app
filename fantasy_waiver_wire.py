@@ -99,7 +99,7 @@ ROTO_STAT_MAP = {
     "HR": ("HR", "proj_HR", "Total HR"),
     "RBI": ("RBI", "proj_RBI", "Total RBI"),
     "SB": ("SB", "proj_SB", "Total SB"),
-    "AVG": ("BA", "proj_BA", "Average BA"),
+    "AVG": ("BA", "proj_BA", "Team BA"),
     "R": ("R", "proj_R", "Total R"),
     "S": ("SV", "proj_SV", "Total SV"),
     "K": ("SO", "proj_SO", "Total SO"),
@@ -587,6 +587,12 @@ def _category_value_for_team(subset: pd.DataFrame, category: str) -> float | Non
     vals = pd.to_numeric(subset[col], errors="coerce")
     if not vals.notna().any():
         return None
+    if category in RATE_CATEGORIES and col in ("BA", "AVG", "OBP", "SLG", "OPS"):
+        from fantasy_team_rates import team_rate
+
+        rate = team_rate(subset, col)  # summed hits/at-bats when present, else the mean
+        if rate is not None:
+            return float(rate)
     if category in LOWER_IS_BETTER_CATEGORIES or category in RATE_CATEGORIES:
         return float(vals.mean())
     return float(vals.sum())

@@ -7122,7 +7122,7 @@ def format_fantasy_standings_table(df):
     out = df.copy()
 
     # Four decimals for rate stats, remove trailing zeros.
-    for c in ["Average BA", "Average OPS", "BA", "OPS", "OBP", "SLG"]:
+    for c in ["Team BA", "Team OPS", "BA", "OPS", "OBP", "SLG"]:
         if c in out.columns:
             def _fmt_rate(v):
                 try:
@@ -7138,9 +7138,15 @@ def format_fantasy_standings_table(df):
                     return v
             out[c] = out[c].apply(_fmt_rate)
 
-    # Integer columns: totals, roto points, estimated points, league rank.
+    # Integer columns: totals, estimated points, league rank. Roto points stay as-is when a
+    # tie split them (3.5).
     for c in out.columns:
         c_text = str(c)
+        if c_text.endswith(" Points") and c_text != "Estimated Points":
+            vals = pd.to_numeric(out[c], errors="coerce")
+            if vals.notna().any() and (vals.dropna() % 1 != 0).any():
+                out[c] = vals.round(1)
+                continue
         if (
             c_text.startswith("Total ")
             or c_text.endswith(" Points")
@@ -7163,6 +7169,8 @@ def score_fantasy_rosters_from_stats(roster_df, scoring_format="5x5 Roto"):
             df[c] = np.nan
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
+    from fantasy_team_rates import roto_points, team_rate
+
     team_rows = []
     for team, g in df.groupby("Team"):
         row = {
@@ -7172,8 +7180,9 @@ def score_fantasy_rosters_from_stats(roster_df, scoring_format="5x5 Roto"):
             "Total RBI": g["RBI"].sum(),
             "Total R": g["R"].sum(),
             "Total SB": g["SB"].sum(),
-            "Average BA": g["BA"].mean(),
-            "Average OPS": g["OPS"].mean(),
+            # Team rates from summed hits/at-bats when the stats carry them (roto convention).
+            "Team BA": team_rate(g, "BA"),
+            "Team OPS": team_rate(g, "OPS"),
         }
         team_rows.append(row)
 
@@ -7182,9 +7191,9 @@ def score_fantasy_rosters_from_stats(roster_df, scoring_format="5x5 Roto"):
         return standings
 
     if scoring_format == "5x5 Roto":
-        categories = ["Total HR", "Total RBI", "Total R", "Total SB", "Average BA"]
+        categories = ["Total HR", "Total RBI", "Total R", "Total SB", "Team BA"]
         for cat in categories:
-            standings[f"{cat} Points"] = standings[cat].rank(ascending=True, method="min")
+            standings[f"{cat} Points"] = roto_points(standings[cat])  # ties split points
         standings["Total Roto Points"] = standings[[f"{c} Points" for c in categories]].sum(axis=1)
         standings["League Rank"] = standings["Total Roto Points"].rank(ascending=False, method="min")
         standings = standings.sort_values(["League Rank", "Fantasy Team"])
@@ -7194,7 +7203,7 @@ def score_fantasy_rosters_from_stats(roster_df, scoring_format="5x5 Roto"):
             standings["Total RBI"] +
             standings["Total R"] +
             standings["Total SB"] * 2 +
-            standings["Average OPS"].fillna(0) * 25
+            standings["Team OPS"].fillna(0) * 25
         )
         standings["League Rank"] = standings["Estimated Points"].rank(ascending=False, method="min")
         standings = standings.sort_values(["League Rank", "Fantasy Team"])
@@ -7212,8 +7221,8 @@ def summarize_team_category_needs(standings, team_name):
         "RBI": "Total RBI",
         "R": "Total R",
         "SB": "Total SB",
-        "BA": "Average BA",
-        "OPS": "Average OPS",
+        "BA": "Team BA",
+        "OPS": "Team OPS",
     }
     for label, col in category_map.items():
         if col in standings.columns:
