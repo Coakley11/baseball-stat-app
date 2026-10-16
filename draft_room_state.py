@@ -1771,10 +1771,14 @@ def get_active_draft_status(session: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         pass
     if not status["current_pick"] and picks > 0:
-        status["current_pick"] = picks + 1
-    if not status["current_round"] and picks > 0:
-        team_count = int(session.get("room_team_count") or 12)
-        status["current_round"] = ((picks) // team_count) + 1 if team_count else None
+        # Read progress from the board itself (team count from its round-1 order, size from its
+        # rows) — League setup's team count can belong to a different board (e.g. an import).
+        progress = derive_draft_progress(coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY)))
+        if progress.get("draft_complete"):
+            status["draft_complete"] = True
+        else:
+            status["current_pick"] = progress.get("current_pick")
+            status["current_round"] = progress.get("current_round")
     try:
         from draft_actions import resolve_on_clock_team_label
 
@@ -2031,7 +2035,9 @@ def render_active_draft_banner(st: Any, session: dict[str, Any], *, page_label_f
     mode = status.get("mode")
     label = "Live Draft" if mode == ACTIVE_DRAFT_MODE_LIVE else "Practice Draft"
     parts = [f"**{label}** · **{status.get('pick_count', 0)}** pick(s) logged"]
-    if status.get("current_round") and status.get("current_pick"):
+    if status.get("draft_complete"):
+        parts.append("Draft complete")
+    elif status.get("current_round") and status.get("current_pick"):
         parts.append(f"Round **{status['current_round']}** · Pick **{status['current_pick']}**")
     if status.get("my_next_pick"):
         parts.append(f"My next pick: **{status['my_next_pick']}**")

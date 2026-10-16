@@ -157,11 +157,23 @@ def render_lineup_management_page(
             "Lineup needs and recommendations use this format — not the default 15-player template."
         )
     elif _context_no_slot_config:
-        st.info(
-            "This mock draft was saved without roster-slot settings, so analysis focuses "
-            "on player value, category balance, and team strengths rather than missing "
-            "lineup positions."
-        )
+        try:
+            from fantasy_league_lineup_format import needs_lineup_format_setup
+
+            _setup_pending = needs_lineup_format_setup(_lineup_active_context)
+        except ImportError:
+            _setup_pending = False
+        if _setup_pending:
+            st.info(
+                "This league doesn't have starting positions yet. Rosters are kept as drafted; "
+                "choose the positions under **Choose Lineup Positions** to check each team's lineup."
+            )
+        else:
+            st.info(
+                "This mock draft was saved without roster-slot settings, so analysis focuses "
+                "on player value, category balance, and team strengths rather than missing "
+                "lineup positions."
+            )
     else:
         with st.expander("Starting lineup slots (optional)"):
             deps.ensure_widget_state("lineup_include_util", True)
@@ -411,6 +423,12 @@ def render_lineup_management_page(
                 _cached_diag = None
                 _diag_cache_key = None
 
+            # Both the cached and the fresh diagnosis use this team's roster rows below.
+            _my_team_df = (
+                roster_stats[roster_stats["Team"].astype(str) == str(lineup_team)]
+                if "Team" in roster_stats.columns
+                else roster_stats
+            )
             if isinstance(_cached_diag, dict):
                 _needs = dict(_cached_diag.get("needs") or {})
                 _cat_ranks = dict(_cached_diag.get("category_ranks") or {})
@@ -434,11 +452,6 @@ def render_lineup_management_page(
                 with _diag_phase:
                     from fantasy_waiver_wire import analyze_current_team_needs, build_waiver_pool, merge_current_season_stats
 
-                    _my_team_df = (
-                        roster_stats[roster_stats["Team"].astype(str) == str(lineup_team)]
-                        if "Team" in roster_stats.columns
-                        else roster_stats
-                    )
                     if not _my_team_df.empty:
                         _needs = analyze_current_team_needs(_my_team_df, roster_stats)
                         _cat_ranks = dict(_needs.get("category_ranks") or {})

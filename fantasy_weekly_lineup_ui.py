@@ -55,6 +55,7 @@ from fantasy_weekly_hitter_scoring_ui import (
 )
 from fantasy_weekly_lineup import (
     assignments_to_slot_player_map,
+    eligible_players_for_slot,
     get_saved_weekly_lineup,
     is_lineup_locked,
     list_week_options,
@@ -135,10 +136,24 @@ def _waiver_slot_label_for_open_prompt(slot_label: SlotKeyLabel) -> str:
     return slot_display_name(slot_label.base_slot)
 
 
+def _unused_roster_options(team_roster: pd.DataFrame | None, code: str, assigned: set[str]) -> list[str]:
+    """Rostered players eligible for ``code`` who are not already in this week's lineup."""
+    if team_roster is None or getattr(team_roster, "empty", True):
+        return []
+    return [name for name in eligible_players_for_slot(team_roster, code) if name not in assigned]
+
+
 def build_open_slot_prompts(
     slot_labels: list[SlotKeyLabel],
     assignments: dict[str, str],
+    team_roster: pd.DataFrame | None = None,
 ) -> list[dict[str, str]]:
+    """One prompt per open position (outfield combined).
+
+    With ``team_roster``, an open spot that an unused rostered player can fill asks the
+    user to start someone from the roster; the waiver button is only offered when the
+    roster has nobody eligible (or not enough outfielders).
+    """
     open_slots = [label for label in slot_labels if not str(assignments.get(label.key) or "").strip()]
     if not open_slots:
         return []
@@ -149,18 +164,25 @@ def build_open_slot_prompts(
         missing_position_message = None  # type: ignore[assignment]
         open_waiver_button_label = None  # type: ignore[assignment]
 
+    assigned = {str(v or "").strip() for v in assignments.values() if str(v or "").strip()}
+    check_roster = team_roster is not None and not getattr(team_roster, "empty", True)
+
+    def _missing(code: str, fallback: str) -> tuple[str, str]:
+        if missing_position_message is not None:
+            return missing_position_message(code), open_waiver_button_label(code)
+        return fallback, "Open Waiver Wire"
+
     rows: list[dict[str, str]] = []
     of_labels = [label for label in open_slots if label.base_slot == "OF"]
     other_labels = [label for label in open_slots if label.base_slot != "OF"]
 
     for label in other_labels:
         code = str(label.base_slot or "").strip().upper()
-        if missing_position_message is not None:
-            text = missing_position_message(code)
-            button = open_waiver_button_label(code)
+        options = _unused_roster_options(team_roster, code, assigned) if check_roster else []
+        if options:
+            text, button = f"{slot_display_name(code)} open — start someone from your roster", ""
         else:
-            text = f"{label.label} is empty"
-            button = "Open Waiver Wire"
+            text, button = _missing(code, f"{label.label} is empty")
         rows.append(
             {
                 "text": text,
@@ -170,28 +192,22 @@ def build_open_slot_prompts(
             }
         )
 
-    if len(of_labels) == 1:
-        if missing_position_message is not None:
-            text = missing_position_message("OF")
+    if of_labels:
+        n_open = len(of_labels)
+        n_options = len(_unused_roster_options(team_roster, "OF", assigned)) if check_roster else 0
+        short = max(0, n_open - n_options)
+        if short == 0:
+            spots = "Outfield spot" if n_open == 1 else f"{n_open} outfield spots"
+            text, button = f"{spots} open — start someone from your roster", ""
+        elif n_open == 1:
+            text, button = _missing("OF", f"{of_labels[0].label} is empty")
+        elif missing_position_message is not None:
+            text = f"Missing {short} outfielder" + ("" if short == 1 else "s")
+            if n_options:
+                text += f" — your roster covers {n_options} of the {n_open} open spots"
             button = open_waiver_button_label("OF")
         else:
-            text = f"{of_labels[0].label} is empty"
-            button = "Open Waiver Wire"
-        rows.append(
-            {
-                "text": text,
-                "waiver_label": "Outfield",
-                "button_label": button,
-                "position_code": "OF",
-            }
-        )
-    elif len(of_labels) > 1:
-        if missing_position_message is not None:
-            text = f"Missing {len(of_labels)} outfielders"
-            button = open_waiver_button_label("OF")
-        else:
-            text = f"{len(of_labels)} Outfield spots are empty"
-            button = "Open Waiver Wire"
+            text, button = f"{n_open} Outfield spots are empty", "Open Waiver Wire"
         rows.append(
             {
                 "text": text,
@@ -252,7 +268,7 @@ def _render_open_slots_and_validation(
         else:
             st.info(message)
 
-    open_rows = build_open_slot_prompts(slot_labels, assignments)
+    open_rows = build_open_slot_prompts(slot_labels, assignments, team_roster)
     if open_rows:
         _inject_open_slots_styles(st)
         # Phones: keep "Missing X" and its waiver button on one line (desktop unchanged).
@@ -262,7 +278,7 @@ def _render_open_slots_and_validation(
                 with text_col:
                     st.markdown(f"**{row['text']}**")
                 with btn_col:
-                    if on_open_waiver_wire is not None:
+                    if on_open_waiver_wire is not None and row.get("button_label"):
                         st.button(
                             str(row.get("button_label") or "Open Waiver Wire"),
                             key=f"{prefix}_waiver_{row['waiver_label']}_{idx}_{int(selected_week)}",

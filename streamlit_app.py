@@ -15824,11 +15824,8 @@ if _submit_insight_run:
 
 # Drop restored ephemeral button keys (assigning them from snapshots crashes Streamlit).
 # Do NOT purge file_uploader keys here — live uploads need session values until staged.
-for _ephemeral_key in list(st.session_state.keys()):
-    if pg_state._is_file_uploader_widget_key(_ephemeral_key):
-        continue
-    if pg_state._is_ephemeral_widget_key(_ephemeral_key):
-        st.session_state.pop(_ephemeral_key, None)
+# Live button keys stay: popping one deletes its pending click before the button renders.
+pg_state.purge_restored_ephemeral_widget_keys(st.session_state)
 
 if not pp.is_screenshot_mode(st):
     st.sidebar.caption("Filters are remembered as you move between pages.")

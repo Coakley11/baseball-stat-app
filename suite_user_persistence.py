@@ -251,6 +251,15 @@ def _workspace_comparison_players(state: dict[str, Any]) -> list[str]:
     return []
 
 
+def _cloud_storage_disabled() -> bool:
+    try:
+        from suite_storage_config import cloud_storage_enabled
+
+        return not cloud_storage_enabled()
+    except ImportError:
+        return False
+
+
 def _mark_workspace_sync_skipped(st: Any, app_id: str, reason: str) -> None:
     """Block cloud autosave when startup workspace sync did not apply."""
     st.session_state["_suite_workspace_sync_skipped_no_apply"] = True
@@ -742,7 +751,13 @@ def sync_workspace_protocol(
             winner="none", reason="empty", applied=False,
         )
         st.session_state["_suite_persist_restore_skip_reason"] = reason
-        _mark_workspace_sync_skipped(st, app_id, reason)
+        if _cloud_storage_disabled():
+            # Local install: disk is the only store and it is empty — a new workspace with
+            # nothing to protect. Blocking autosave here meant its first league never saved.
+            # (With cloud storage a failed read also looks empty, so keep the guard there.)
+            st.session_state["_suite_workspace_sync_skipped_no_apply"] = True
+        else:
+            _mark_workspace_sync_skipped(st, app_id, reason)
         _record_startup_restore_diagnostics(
             st, app_id,
             cloud_state={}, cloud_ts=cloud_ts, disk_state={}, disk_ts=disk_ts,
