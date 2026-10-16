@@ -388,6 +388,7 @@ def render_lineup_management_page(
         _needs: dict = {}
         _waiver_pool = pd.DataFrame()
         _ctx = None
+        _my_team_df = None
         try:
             from fantasy_league_context import get_active_league_context
 
@@ -467,12 +468,10 @@ def render_lineup_management_page(
                         team_outlook_summary,
                     )
 
+                    # One source — the league ranks shown in the snapshot — so a category is never
+                    # listed as both a strength and a weakness.
                     _strength_cats = league_strength_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
                     _weakness_cats = league_weakness_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
-                    if _needs.get("strengths"):
-                        _strength_cats = list(_needs.get("strengths") or _strength_cats)[:2]
-                    if _needs.get("weaknesses"):
-                        _weakness_cats = list(_needs.get("weaknesses") or _weakness_cats)[:2]
                     _outlook, _confidence, _stars = team_outlook_summary(
                         strong_cats=_strength_cats,
                         weak_cats=_weakness_cats,
@@ -536,7 +535,9 @@ def render_lineup_management_page(
                             starter_df=worst_starters,
                             waiver_pool=_waiver_pool,
                             needs=_needs,
+                            league_context=_ctx if isinstance(_ctx, dict) else None,
                             benchmark=diag.get("weakest_pos_benchmark"),
+                            my_roster=_my_team_df,
                         )
                     )
                 except ImportError:
@@ -558,6 +559,7 @@ def render_lineup_management_page(
                 needs=_needs,
                 waiver_pool=_waiver_pool,
                 league_context=_ctx if isinstance(_ctx, dict) else None,
+                my_roster=_my_team_df,
             )
             with st.container(border=True):
                 render_condensed_team_summary(st, _team_summary)
@@ -608,6 +610,7 @@ def render_lineup_management_page(
                 league_rosters=roster_stats,
                 my_team=str(lineup_team or ""),
                 league_context=_ctx if isinstance(_ctx, dict) else None,
+                my_roster=_my_team_df,
             )
             _waiver_cards = list((_team_summary or {}).get("waiver_targets") or [])
             if _waiver_cards:

@@ -92,19 +92,27 @@ def _fingerprint(
 
 
 def _content_revision(context: dict[str, Any], archive: dict[str, Any] | None) -> str:
+    stamp = ""
     for src in (archive, context):
         if not isinstance(src, dict):
             continue
         for key in ("content_revision", "content_updated_at", "updated_at", "revision"):
             val = src.get(key)
             if val is not None and str(val).strip():
-                return str(val).strip()
+                stamp = str(val).strip()
+                break
+        if stamp:
+            break
+    # Always include the rosters themselves: a waiver move or trade can leave the stamp
+    # unchanged (same second, or an archive stamp that is not bumped), which served the
+    # pre-move rosters from cache.
     try:
         rosters = context.get("league_rosters") or {}
         blob = json.dumps(rosters, sort_keys=True, default=str)
-        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+        roster_hash = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
     except Exception:
-        return "0"
+        roster_hash = "0"
+    return f"{stamp}|{roster_hash}" if stamp else roster_hash
 
 
 def validate_resolved_fantasy_context(

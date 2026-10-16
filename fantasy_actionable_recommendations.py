@@ -72,10 +72,17 @@ def league_strength_categories(
     n_teams: int = 0,
     limit: int = 2,
 ) -> list[str]:
-    """League rank 1 = strongest category for this team."""
+    """League rank 1 = strongest category for this team.
+
+    With ``n_teams`` known, only top-half ranks count, so a category is never both a
+    strength and a weakness (see league_weakness_categories).
+    """
     ranks = dict(category_ranks or {})
     if not ranks:
         return []
+    if int(n_teams or 0) > 0:
+        cut = max(1, int(n_teams) // 2)
+        ranks = {cat: r for cat, r in ranks.items() if int(r) <= cut}
     ordered = sorted(ranks.items(), key=lambda kv: (int(kv[1]), kv[0]))
     return [cat for cat, _ in ordered[: max(1, int(limit))]]
 
@@ -86,10 +93,15 @@ def league_weakness_categories(
     n_teams: int = 0,
     limit: int = 2,
 ) -> list[str]:
-    """Highest league rank = weakest category for this team."""
+    """Highest league rank = weakest category for this team (bottom half when ``n_teams`` is known)."""
     ranks = dict(category_ranks or {})
     if not ranks:
         return []
+    if int(n_teams or 0) > 0:
+        cut = (int(n_teams) + 1) // 2
+        ranks = {cat: r for cat, r in ranks.items() if int(r) > cut}
+        if not ranks:
+            return []
     ordered = sorted(ranks.items(), key=lambda kv: (-int(kv[1]), kv[0]))
     return [cat for cat, _ in ordered[: max(1, int(limit))]]
 
@@ -325,6 +337,7 @@ def build_condensed_team_summary(
     needs: dict[str, Any] | None = None,
     waiver_pool: pd.DataFrame | None = None,
     league_context: dict[str, Any] | None = None,
+    my_roster: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """Single team summary block — strengths, biggest weakness, one sentence, waiver cards."""
     strengths = list(strong_cats or [])[:3]
@@ -350,6 +363,7 @@ def build_condensed_team_summary(
             needs=needs,
             waiver_pool=waiver_pool,
             league_context=league_context,
+            my_roster=my_roster,
             limit=3,
         ),
     }
@@ -404,6 +418,7 @@ def build_team_actionable_summary(
     league_rosters: pd.DataFrame | None = None,
     my_team: str = "",
     league_context: dict[str, Any] | None = None,
+    my_roster: pd.DataFrame | None = None,
 ) -> list[str]:
     """Short actionable blocks for lineup / team analysis pages (league ranks only)."""
     lines: list[str] = []
@@ -413,6 +428,7 @@ def build_team_actionable_summary(
         needs=needs,
         waiver_pool=waiver_pool,
         league_context=league_context,
+        my_roster=my_roster,
         limit=3,
     )
     if weak_cats and cards:
@@ -422,8 +438,9 @@ def build_team_actionable_summary(
             "**Best waiver strategy:** No strong waiver upgrades are currently available in this league."
         )
     if weak_cats:
-        trade_from = strong_cats[0] if strong_cats else "surplus counting stats"
         weak = weak_cats[0]
+        surplus = [cat for cat in strong_cats if cat not in weak_cats]
+        trade_from = surplus[0] if surplus else "surplus counting stats"
         trade_targets = _trade_target_names(
             league_rosters,
             my_team=str(my_team or ""),
@@ -620,52 +637,69 @@ def build_actionable_position_weakness_note(
     needs: dict[str, Any] | None = None,
     league_context: dict[str, Any] | None = None,
     benchmark: float | None = None,
+    my_roster: pd.DataFrame | None = None,
 ) -> str:
-    """Actionable weakest-position card with starter name and best waiver upgrade."""
+    """Weakest-position card: current starter and the best waiver option who can play there.
+
+    The option must be eligible at ``worst_pos`` (a lineup slot such as SS, OF2 or UTIL);
+    the comparison line is option minus starter on season totals.
+    """
+    import re
+
     starter_name = "—"
+    starter_row = None
     if starter_df is not None and not getattr(starter_df, "empty", True):
         name_col = "Player" if "Player" in starter_df.columns else "fullName"
         if name_col in starter_df.columns:
             names = starter_df[name_col].dropna().astype(str).tolist()
             if names:
                 starter_name = names[0]
-    upgrade_name = "—"
-    gain_bits: list[str] = []
+                starter_row = starter_df.iloc[0]
+    slot = re.sub(r"\s*\d+$", "", str(worst_pos or "").strip().upper())
+    option_name = ""
+    compare_bits: list[str] = []
     if waiver_pool is not None and not getattr(waiver_pool, "empty", True):
         try:
-            from fantasy_waiver_wire import recommend_adds_personalized
+            from fantasy_waiver_wire import _player_eligible_at, recommend_adds_personalized
 
-            roster = starter_df if isinstance(starter_df, pd.DataFrame) else pd.DataFrame()
+            if isinstance(my_roster, pd.DataFrame):
+                roster = my_roster
+            else:
+                roster = starter_df if isinstance(starter_df, pd.DataFrame) else pd.DataFrame()
             adds = recommend_adds_personalized(
                 waiver_pool,
                 needs or {},
                 context=league_context,
                 my_roster=roster,
-                limit=5,
+                limit=40,
             )
             if not adds.empty:
-                pos_col = "Primary Position" if "Primary Position" in adds.columns else "Position"
-                if pos_col in adds.columns:
-                    pos_match = adds[adds[pos_col].astype(str).str.contains(str(worst_pos), case=False, na=False)]
-                    pick = pos_match.iloc[0] if not pos_match.empty else adds.iloc[0]
+                if slot in ("UTIL", "DH"):
+                    eligible = adds
                 else:
-                    pick = adds.iloc[0]
-                upgrade_name = str(pick.get("Player") or pick.get("fullName") or "—")
-                for col, label in (("HR", "+HR"), ("RBI", "+RBI"), ("AVG", "+AVG"), ("R", "+R"), ("SB", "+SB")):
-                    if col in pick.index and pd.notna(pick.get(col)):
-                        if col == "AVG":
-                            gain_bits.append(f"{label} {float(pick.get(col)):.3f}")
-                        else:
-                            gain_bits.append(f"{label} {int(round(float(pick.get(col))))}")
+                    eligible = adds[adds.apply(lambda r: _player_eligible_at(r, slot), axis=1)]
+                if not eligible.empty:
+                    pick = eligible.iloc[0]
+                    option_name = str(pick.get("Player") or pick.get("fullName") or "")
+                    for col in ("HR", "RBI", "R", "SB"):
+                        mine = pd.to_numeric(pick.get(col), errors="coerce")
+                        theirs = pd.to_numeric(starter_row.get(col), errors="coerce") if starter_row is not None else None
+                        if pd.notna(mine) and theirs is not None and pd.notna(theirs):
+                            diff = int(round(float(mine) - float(theirs)))
+                            compare_bits.append(f"{col} {diff:+d}".replace("-", "−"))
         except ImportError:
             pass
     bench_line = f"\n\nLeague benchmark: **{benchmark:.0f}**" if benchmark is not None else ""
-    gain_line = " · ".join(gain_bits[:3]) if gain_bits else "Check waiver pool for upgrades"
+    if option_name:
+        option_line = f"**Best Waiver Option:** {option_name}"
+        if compare_bits and starter_name != "—":
+            option_line += f"\n\n**Compared with {starter_name} (season totals):** " + " · ".join(compare_bits[:3])
+    else:
+        option_line = f"**Best Waiver Option:** none eligible at {slot or worst_pos} in the current waiver pool"
     return (
         f"**Weakest Position:** {worst_pos}\n\n"
         f"**Current Starter:** {starter_name}\n\n"
-        f"**Best Available Upgrade:** {upgrade_name}\n\n"
-        f"**Estimated Gain:** {gain_line}{bench_line}"
+        f"{option_line}{bench_line}"
     )
 
 

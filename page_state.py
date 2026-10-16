@@ -277,6 +277,10 @@ _PAGE_STATE_SKIP_KEYS = frozenset({
     "standings_refresh_mlb_stats",
     "_standings_refresh_mlb_stats_requested",
     "_fantasy_stats_refresh_requested",
+    # One-time Lineup notices/modes (the "lineup_" prefix captured them): a restored flash
+    # repeated "League lineup format saved." on the next visit.
+    "lineup_format_saved_flash",
+    "lineup_format_editing",
 })
 
 

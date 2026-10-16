@@ -463,6 +463,13 @@ def build_roster_stats_from_league_context(
     roster_stats = work.merge(stats, on="Player Key", how="left", suffixes=("", "_stats"))
     if "Player_stats" in roster_stats.columns:
         roster_stats["Player"] = roster_stats["Player"].fillna(roster_stats["Player_stats"])
+    # Imported boards often carry names only: take position/team from the stats feed
+    # where the roster entry is blank (otherwise every slot read "No eligible C").
+    for base in ("Primary Position", "Position", "MLB Team"):
+        dup = f"{base}_stats"
+        if base in roster_stats.columns and dup in roster_stats.columns:
+            blank = roster_stats[base].isna() | (roster_stats[base].astype(str).str.strip().isin(["", "nan", "None"]))
+            roster_stats.loc[blank, base] = roster_stats.loc[blank, dup]
     return roster_stats
 
 
