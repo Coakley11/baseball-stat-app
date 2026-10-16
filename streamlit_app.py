@@ -1884,15 +1884,10 @@ def format_advanced_trend_table(df):
 
 
 def compute_trend_slope(group, stat_col):
-    group = group.sort_values("yearID")
-    x = pd.to_numeric(group["yearID"], errors="coerce").values
-    y = pd.to_numeric(group[stat_col], errors="coerce").values
-    mask = ~pd.isna(y)
-    x = x[mask]
-    y = y[mask]
-    if len(x) < 2:
-        return np.nan
-    return np.polyfit(x, y, 1)[0]
+    """Season trend for one player's rows (see trend_slopes for the method)."""
+    from trend_slopes import reference_slope
+
+    return reference_slope(group, stat_col)
 
 
 @st.cache_data(show_spinner=False)
@@ -1902,19 +1897,10 @@ def compute_player_trend_table(recent_data, stats_tuple):
     cols = ["playerID"] + [f"{s}_trend" for s in stats]
     if recent_data is None or recent_data.empty or "playerID" not in recent_data.columns:
         return pd.DataFrame(columns=cols)
-    src = recent_data[["playerID", "yearID"] + stats].copy()
+    from trend_slopes import trend_slopes
 
-    def _slopes(g):
-        return pd.Series({f"{stat}_trend": compute_trend_slope(g, stat) for stat in stats})
-
-    grouped = src.groupby("playerID", group_keys=False)
-    try:
-        out = grouped.apply(_slopes, include_groups=False).reset_index()
-    except TypeError:
-        out = grouped.apply(_slopes).reset_index()
-    if out.columns.duplicated().any():
-        out = out.loc[:, ~out.columns.duplicated()]
-    return out
+    # One vectorized pass for every player (was a per-player np.polyfit, ~40 s cold).
+    return trend_slopes(recent_data[["playerID", "yearID"] + stats], stats)[cols]
 
 
 @st.cache_data(show_spinner=False)
@@ -1946,7 +1932,7 @@ def aggregate_recent_player_totals(recent_data, stat_cols_tuple):
     stat_cols = [c for c in (stat_cols_tuple or []) if c in recent_data.columns]
     if not group_cols or not stat_cols:
         return pd.DataFrame()
-    out = recent_data.groupby(group_cols, as_index=False)[stat_cols].sum()
+    out = recent_data.groupby(group_cols, as_index=False, dropna=False)[stat_cols].sum()
     return add_rate_stats(out)
 
 def add_missing_numeric_columns(df, cols):
@@ -6544,7 +6530,9 @@ def load_data(_hof_cache_key: float = 0.0):
     batting = add_rate_stats(batting)
 
     yearly = (
-        batting.groupby(["playerID", "fullName", "bats", "throws", "birthYear", "birthMonth", "birthDay", "birthCountry", "careerPrimaryPos", "yearID"], as_index=False)
+        # dropna=False: thousands of early and Negro Leagues players have an unknown birth
+        # date or batting hand; NaN group keys would silently drop their seasons.
+        batting.groupby(["playerID", "fullName", "bats", "throws", "birthYear", "birthMonth", "birthDay", "birthCountry", "careerPrimaryPos", "yearID"], as_index=False, dropna=False)
         [["G", "AB", "R", "H", "2B", "3B", "HR", "RBI", "SB", "CS", "BB", "SO", "IBB", "HBP", "SH", "SF", "GIDP"]]
         .sum()
     )
@@ -11430,12 +11418,20 @@ def _player_display_name(selected_player, label_map) -> str:
     return fullname_base_from_label(sp) or sp
 
 
+@st.cache_data(show_spinner=False)
+def _active_player_index(_yearly_df, cache_key):
+    return plr_act.build_active_player_index(_yearly_df)
+
+
 def is_active_current_player(player, source_df=None) -> bool:
     """Streamlit wrapper: default eligibility source is the loaded yearly table."""
     df = source_df
     if df is None or getattr(df, "empty", True):
         try:
-            df = yearly_df
+            # Indexed once per data load — action menus check many players per rerun.
+            return plr_act.is_active_current_player_indexed(
+                player, _active_player_index(yearly_df, HOF_CACHE_KEY)
+            )
         except NameError:
             df = pd.DataFrame()
     return plr_act.is_active_current_player(player, df)
@@ -12694,14 +12690,23 @@ else:
 st.session_state["_perf_data_load_sec"] = round(time.perf_counter() - _DATA_LOAD_START, 4)
 
 
+@st.cache_data(show_spinner=False)
+def _clean_player_label_map_cached(_yl_df, cache_key):
+    label_map = build_clean_player_label_map(_yl_df)
+    return label_map, sorted(label_map.keys())
+
+
 def get_clean_player_label_map_yearly(yl_df):
-    """Session cache for Lahman label map (same ``yearly_df`` ref from ``load_data`` across reruns)."""
-    vid = id(yl_df)
-    if st.session_state.get("_clean_label_map_vid") != vid:
-        st.session_state["_clean_label_map_vid"] = vid
-        st.session_state["_clean_label_map"] = build_clean_player_label_map(yl_df)
-        st.session_state["_clean_label_keys_sorted"] = sorted(st.session_state["_clean_label_map"].keys())
-    return st.session_state["_clean_label_map"]
+    """Lahman label map, built once per data load.
+
+    Keyed by the data load and row count, not ``id(yl_df)``: ``load_data`` is cached and hands
+    back a fresh copy each rerun, so an id key rebuilt the map (an ``iterrows`` over every
+    player) on every run.
+    """
+    label_map, keys_sorted = _clean_player_label_map_cached(yl_df, (HOF_CACHE_KEY, len(yl_df)))
+    st.session_state["_clean_label_map"] = label_map
+    st.session_state["_clean_label_keys_sorted"] = keys_sorted
+    return label_map
 
 
 def get_sorted_clean_player_label_keys(yl_df):
@@ -13208,6 +13213,9 @@ def normalize_page_key(value) -> str:
     if key in _PAGE_OPTION_SET:
         return key
     return _PAGE_LABEL_TO_KEY.get(key, "Historical Explorer")
+
+
+BAD_PAGE_LINK_NOTICE_KEY = "_bad_page_link_notice"
 
 
 def get_sidebar_page_value(page_key: str) -> str:
@@ -14894,6 +14902,13 @@ if not st.session_state.get("_qp_active_page_nav_consumed"):
             _qp_page_raw = ""
     if _qp_page_raw:
         _qp_target = get_sidebar_page_value(_qp_page_raw)
+        if not (
+            _qp_page_raw in _PAGE_OPTION_SET
+            or _qp_page_raw in _PAGE_LEGACY_ALIASES
+            or _qp_page_raw in _PAGE_LABEL_TO_KEY
+        ):
+            # Unknown page in the link: open the safe fallback and say so (shown once, pre-body).
+            st.session_state[BAD_PAGE_LINK_NOTICE_KEY] = _qp_target
         if _qp_target in _PAGE_OPTION_SET:
             st.session_state["_navigate_to_page"] = _qp_target
             st.session_state["_skip_page_restore_for"] = _qp_target
@@ -15679,6 +15694,9 @@ try:
         sync_address_bar(st, active_page)
 except ImportError:
     pass
+_bad_link_fallback = st.session_state.pop(BAD_PAGE_LINK_NOTICE_KEY, None)
+if _bad_link_fallback and _bad_link_fallback == active_page:
+    st.info(f"That page wasn't found. {active_page} has been opened instead.")
 
 # Immutable page snapshot for this run — exclusive body routing + fragment gates.
 _monetization_snapshot = None
@@ -17176,7 +17194,7 @@ elif active_page == "Career Totals":
         career_mode_note = "By-team mode: each player/team row must pass stat minimum filters on its own. Franchise/league filters first limit the data included; position is based on Fielding.csv games."
     else:
         # Filter first, aggregate by player second, then apply stat minimum filters to the total row.
-        career_totals = filtered_career.groupby(["playerID", "fullName", "bats"], as_index=False)[stat_cols_career].sum()
+        career_totals = filtered_career.groupby(["playerID", "fullName", "bats"], as_index=False, dropna=False)[stat_cols_career].sum()
         career_totals = add_primary_team_for_career(career_totals, filtered_career)
         if position_filter_mode == "Career Primary Position":
             career_totals["displayPosition"] = career_totals["careerPrimaryPos"] if "careerPrimaryPos" in career_totals.columns else career_totals.get("primaryPos")
@@ -17970,8 +17988,8 @@ elif active_page == "Comparison Tool":
     except ImportError:
         comparison_action_team = st.session_state.get("room_your_team")
     comparison_teams = get_draft_room_team_options()
-    if comparison_teams and comparison_action_team not in comparison_teams:
-        st.caption(f"Note: **{comparison_action_team or '—'}** is not on the Draft Room board yet.")
+    if comparison_action_team and comparison_teams and comparison_action_team not in comparison_teams:
+        st.caption(f"Note: **{comparison_action_team}** is not on the Draft Room board yet.")
     elif not comparison_teams:
         st.caption("Draft/trade actions require a Draft Room table with fantasy teams.")
 
@@ -18137,6 +18155,8 @@ elif active_page == "Comparison Tool":
         compare_settings_changed()
 
     if selected_ids_compare:
+        if len(selected_ids_compare) == 1:
+            st.caption("Add a second player above to compare them side by side.")
         compare = yearly_df[yearly_df["playerID"].isin(selected_ids_compare)].copy()
         compare["Age"] = compare.apply(
             lambda r: baseball_age_for_season(
@@ -18308,6 +18328,9 @@ elif active_page == "Comparison Tool":
             )
 
 
+    else:
+        st.info("Choose up to three players in **Select up to 3 players** to compare their seasons, career totals and trends.")
+
     st.divider()
     if not pp.skip_heavy_work(st):
       with st.expander("Advanced: Statistical significance test", expanded=False):
@@ -18332,6 +18355,11 @@ elif active_page == "Comparison Tool":
         )
         st.markdown(f"**Comparison mode:** {_sig_axis_mode}")
         st.caption(_sig_sync_caption)
+        if len(selected_labels_compare) < 2:
+            st.info(
+                "Pick two different players — in **Select up to 3 players** above, or as Player A "
+                "and Player B below — to test whether their stats differ."
+            )
         with mobile_wrap_row(st, "comparison-sig-players"):
             sig_col1, sig_col2 = st.columns(2)
         clean_label_map_sig = clean_label_map_compare
@@ -18445,7 +18473,9 @@ elif active_page == "Comparison Tool":
         )
         alpha = st.selectbox("Significance Level", [0.10, 0.05, 0.01], index=1, key="sig_alpha")
 
-        if sig_player_a_label and sig_player_b_label and sig_stats:
+        if pid_a_preview == pid_b_preview:
+            st.info("Player A and Player B are the same player. Choose a different Player B to run the test.")
+        elif sig_player_a_label and sig_player_b_label and sig_stats:
             pid_a = clean_label_map_sig[sig_player_a_label]
             pid_b = clean_label_map_sig[sig_player_b_label]
             st.caption("Actions for significance-test players")
@@ -31385,28 +31415,9 @@ elif active_page == "Valuation":
         with c6:
             w_trend = st.number_input("Weight: Trend Score", 0.0, 10.0, 1.0, key="value_w_trend", on_change=valuation_filter_changed)
 
-    valuation_df["Trend_Score"] = (
-        valuation_df["R_trend"].fillna(0) * 1.0 + valuation_df["H_trend"].fillna(0) * 0.5 +
-        valuation_df["2B_trend"].fillna(0) * 0.75 + valuation_df["3B_trend"].fillna(0) * 0.75 +
-        valuation_df["HR_trend"].fillna(0) * 2.0 + valuation_df["RBI_trend"].fillna(0) * 1.5 +
-        valuation_df["SB_trend"].fillna(0) * 1.0 + valuation_df["BB_trend"].fillna(0) * 0.5 +
-        valuation_df["BA_trend"].fillna(0) * 100 + valuation_df["OBP_trend"].fillna(0) * 100 +
-        valuation_df["SLG_trend"].fillna(0) * 100 + valuation_df["OPS_trend"].fillna(0) * 100
-    )
-    valuation_df["Perf_Score"] = (
-        valuation_df["R"] * 0.10 + valuation_df["H"] * 0.05 + valuation_df["2B"] * 0.05 +
-        valuation_df["3B"] * 0.05 + valuation_df["HR"] * 0.25 + valuation_df["RBI"] * 0.20 +
-        valuation_df["SB"] * 0.10 + valuation_df["BA"].fillna(0) * 100 * 0.05 +
-        valuation_df["OBP"].fillna(0) * 100 * 0.10 + valuation_df["SLG"].fillna(0) * 100 * 0.10 +
-        valuation_df["OPS"].fillna(0) * 100 * 0.10
-    )
-    valuation_df["Valuation_Raw"] = w_current * valuation_df["Perf_Score"] + w_trend * valuation_df["Trend_Score"]
-    val_min = valuation_df["Valuation_Raw"].min()
-    val_max = valuation_df["Valuation_Raw"].max()
-    if pd.notna(val_min) and pd.notna(val_max) and val_max != val_min:
-        valuation_df["Valuation_Score"] = (valuation_df["Valuation_Raw"] - val_min) / (val_max - val_min)
-    else:
-        valuation_df["Valuation_Score"] = 0.0
+    from valuation_scores import add_valuation_scores
+
+    add_valuation_scores(valuation_df, w_current, w_trend)
 
     valuation_lookup_df = valuation_df.copy()
     try:
