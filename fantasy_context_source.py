@@ -956,7 +956,10 @@ def _workflow_descriptor_cache_fingerprint(session: dict[str, Any]) -> str:
         active_ctx = str(store.get("active_league_context_id") or active_ctx).strip()
         # Waiver moves and trades change who is on which team without changing any id above;
         # without this the cached descriptor kept serving the pre-move rosters.
-        active_rosters = league_rosters_cache_sig((store.get("contexts") or {}).get(active_ctx))
+        active_context = (store.get("contexts") or {}).get(active_ctx)
+        active_rosters = league_rosters_cache_sig(active_context)
+        if isinstance(active_context, dict):  # a rename changes the heading, not the rosters
+            active_rosters += ":" + str(active_context.get("league_name") or active_context.get("display_name") or "")
     except ImportError:
         pass
 

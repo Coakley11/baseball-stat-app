@@ -281,11 +281,14 @@ def roster_capacity_from_format(context: dict[str, Any] | None) -> int | None:
         return max(1, int(block["roster_capacity"]))
     if context_has_roster_slots(context):
         try:
-            from fantasy_league_context import resolve_context_lineup_slots
+            from fantasy_league_context import resolve_context_bench_slot_count, resolve_context_lineup_slots
 
             slots = resolve_context_lineup_slots(context) or []
             if slots:
-                return len(slots)
+                # Starters plus bench: a Live Draft league drafted 9 starters + 3 BN has
+                # 12-player rosters; counting starters only put every team "over capacity"
+                # and blocked all waiver adds.
+                return len(slots) + int(resolve_context_bench_slot_count(context) or 0)
         except ImportError:
             pass
     return None

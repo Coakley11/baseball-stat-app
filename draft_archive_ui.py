@@ -980,7 +980,13 @@ def _sync_draft_rename_to_league_context(
     context = get_league_context_for_archive(session, entry)
     if not isinstance(context, dict):
         return
-    context["display_name"] = str(new_name or "").strip()
+    label = str(new_name or "").strip()
+    # Fantasy page headings read league_name first; renaming only display_name left
+    # Standings/Lineup/Waivers showing the old name while the Library showed the new one.
+    context["display_name"] = label
+    context["league_name"] = label
+    if context.get("draft_name"):
+        context["draft_name"] = label
     upsert_league_context(session, context)
 
 
