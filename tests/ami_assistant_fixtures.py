@@ -86,8 +86,11 @@ def synthetic_dataset():
 def realistic_draft_session() -> dict:
     """The acceptance harness's Draft Assistant session (built by the real cache writer).
 
-    Building it goes through applied_math_context, which puts the sibling AMI repo first on
-    sys.path; restore it so later ``import streamlit_app`` still finds this app.
+    Defensive only: building it does not change sys.path today, but the QA harness modules
+    nearby (ami_hardening_pass, ami_answer_quality_audit, …) put the sibling AMI repo first on
+    sys.path, which makes a later ``import streamlit_app`` load that app. Restoring sys.path
+    here keeps these tests from ever being a source of that leak.
+    See docs/AMI_INTEGRATION_ARCHITECTURE_AUDIT.md §8.
     """
     import sys
 

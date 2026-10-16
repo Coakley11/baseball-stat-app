@@ -81,6 +81,67 @@ class PageSourceStillMatchesTests(unittest.TestCase):
             self.assertIn(s, sec)
 
 
+def _pool_steps(page: str, names: tuple[str, ...]) -> list[str]:
+    """Every statement on the page that reassigns one of the pool frames (first line only)."""
+    import re
+
+    pat = re.compile(r"^\s*(?:%s)\s+=\s.*$|^\s*add_valuation_scores\(.*$" % "|".join(names), re.M)
+    return [m.group(0).strip() for m in pat.finditer(page_section(page))]
+
+
+# How ami_assistant/tools/value.py treats each page step. "mirrored" = same computation;
+# "not applied" = user-specific option AMI states in its answer instead of applying.
+VALUATION_STEPS = {
+    'recent_data_value = yearly_df[yearly_df["yearID"].isin(recent_years_value)].copy().sort_values(["playerID", "yearID"])': "mirrored",
+    'recent_data_value = recent_data_value[~recent_data_value["fullName"].astype(str).isin(set(value_drafted_names))].copy()': "not applied (Draft Room sync)",
+    "agg_value = aggregate_recent_player_totals(": "mirrored",
+    'agg_value = agg_value[agg_value["G"] >= min_g_value].copy()': "mirrored",
+    'agg_value = apply_stat_min_filters(agg_value, "value", on_change=valuation_filter_changed)': "mirrored at defaults (no minimums)",
+    "trend_value = compute_player_trend_table(": "mirrored",
+    'valuation_df = agg_value.merge(trend_value, on="playerID", how="left")': "mirrored",
+    "valuation_df = add_latest_and_projection_columns(valuation_df, recent_data_value)": "mirrored (zero-filled trends)",
+    "valuation_df = merge_canonical_projections(valuation_df, _canonical_value_pool)": "irrelevant to scores (proj_* columns)",
+    "valuation_df = attach_fantasy_position_columns(valuation_df, recent_data_value)": "irrelevant to scores",
+    "valuation_df = filter_players_by_fantasy_position(valuation_df, value_position_filter)": "not applied (position filter)",
+    "add_valuation_scores(valuation_df, w_current, w_trend)": "mirrored",
+    "valuation_df = apply_research_recommendation_adjustments(": "not applied (roster-need boosts)",
+    "valuation_df = safe_round_rate_stats(valuation_df)": "display only",
+}
+TREND_STEPS = {
+    'recent_baseline_trend = yearly_df[yearly_df["yearID"].isin(recent_years_trend)].copy().sort_values(["playerID", "yearID"])': "mirrored",
+    "recent_data_trend = recent_baseline_trend.copy()": "mirrored",
+    'recent_data_trend = recent_data_trend[~recent_data_trend["fullName"].astype(str).isin(set(trend_drafted_names))].copy()': "not applied (Draft Room sync)",
+    "agg_trend = aggregate_recent_player_totals(": "mirrored",
+    'agg_trend = agg_trend[agg_trend["G"] >= min_g_trend].copy()': "mirrored",
+    'agg_trend = apply_stat_min_filters(agg_trend, "trend")': "mirrored at defaults (no minimums)",
+    "trend_table = compute_player_trend_table(": "mirrored",
+    'trend_value_df = agg_trend.merge(trend_table, on="playerID", how="left")': "mirrored",
+    "trend_value_df = add_latest_and_projection_columns(trend_value_df, recent_data_trend)": "page zero-fills; AMI reports blank (stated)",
+    "trend_value_df = merge_canonical_projections(trend_value_df, _canonical_trend_pool)": "irrelevant to slopes",
+    "trend_value_df = apply_research_recommendation_adjustments(": "not applied (sort only)",
+    "trend_value_df = attach_fantasy_position_columns(trend_value_df, recent_data_trend)": "irrelevant to slopes",
+    "trend_value_df = filter_players_by_fantasy_position(trend_value_df, trend_position_filter)": "not applied (position filter)",
+}
+
+
+class PagePipelineStrictPinTests(unittest.TestCase):
+    """Strict tripwire: a new, removed or reordered pool step fails here, naming the step, so
+    the AMI tool is updated deliberately (e.g. Phase D7's valuation_hitter_pool)."""
+
+    def _check(self, page: str, names: tuple[str, ...], expected: dict[str, str]) -> None:
+        actual = _pool_steps(page, names)
+        unknown = [s for s in actual if s not in expected]
+        self.assertEqual(unknown, [], f"{page} has pipeline steps AMI doesn't know about; update ami_assistant/tools/value.py")
+        self.assertEqual(actual, list(expected), f"{page} pipeline steps were removed or reordered")
+
+    def test_valuation_pipeline_is_exactly_known(self) -> None:
+        self._check("Valuation", ("recent_data_value", "agg_value", "trend_value", "valuation_df"), VALUATION_STEPS)
+
+    def test_trend_value_pipeline_is_exactly_known(self) -> None:
+        self._check("Trend Value", ("recent_baseline_trend", "recent_data_trend", "agg_trend", "trend_table", "trend_value_df"),
+                    TREND_STEPS)
+
+
 class TrendAndValuationParityTests(RealDataCase):
     def test_trend_table_equals_the_page_function(self) -> None:
         page = monolith_functions("compute_player_trend_table")["compute_player_trend_table"]
