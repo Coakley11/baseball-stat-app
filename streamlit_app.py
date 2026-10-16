@@ -15812,6 +15812,12 @@ for _ephemeral_key in list(st.session_state.keys()):
 
 if not pp.is_screenshot_mode(st):
     st.sidebar.caption("Filters are remembered as you move between pages.")
+try:
+    from data_sources import render_data_attribution
+
+    render_data_attribution(st)
+except Exception:
+    pass
 if developer_mode_enabled():
     try:
         from baseball_persistent_state import render_cross_device_sync_debug
