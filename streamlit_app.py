@@ -30757,6 +30757,16 @@ elif active_page == "Fantasy Standings Tracker":
         elif active_archive and roster_stats.empty and not _used_standings_cache:
             st.warning("Loaded saved draft has no roster players to score.")
 
+        _uses_season_ledger = False
+        if _use_full_league_context and active_league_context is not None:
+            try:
+                from fantasy_season_results_ui import render_official_standings
+
+                # Official standings: the sum of finalized scoring periods.
+                _uses_season_ledger = render_official_standings(st, active_league_context)
+            except ImportError:
+                _uses_season_ledger = False
+
         if not roster_stats.empty:
             _show_multi_team_rosters = _use_full_league_context or not active_archive
             if _show_multi_team_rosters:
@@ -30771,12 +30781,17 @@ elif active_page == "Fantasy Standings Tracker":
                 file_name="fantasy_rosters_current_stats.csv",
                 display_rows=300,
             )
-            st.subheader("Live Fantasy Standings")
+            st.subheader("Current Roster Snapshot (not official standings)")
+            st.caption(
+                "Season-to-date stats of the players on each roster today, ranked like roto. Useful for "
+                "analysis, but it is not the league standings: a player counts for whoever owns him now, "
+                "whenever he played."
+            )
             try:
                 from fantasy_weekly_hitter_scoring import cumulative_standings_rows
 
                 _wk_cum_rows = []
-                if active_league_context is not None:
+                if active_league_context is not None and not _uses_season_ledger:
                     _wk_cum_rows = cumulative_standings_rows(active_league_context)
                 if _wk_cum_rows:
                     st.subheader("Weekly Hitter Standings (finalized weeks)")
