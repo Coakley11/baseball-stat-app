@@ -770,6 +770,14 @@ def save_weekly_lineup(
     store[team_week_lineup_key(team_name, week)] = payload
     drafts = _weekly_lineup_drafts_store(context)
     drafts.pop(team_week_lineup_key(team_name, week), None)
+    if ledger_err is not None:
+        # Shared leagues: the commissioner finalizes from everyone's period snapshots.
+        try:
+            from fantasy_shared_league_store import push_season_ledger_to_shared
+
+            push_season_ledger_to_shared(session, context)
+        except Exception:
+            pass
     try:
         from fantasy_team_control import record_league_action, resolve_team_control
 

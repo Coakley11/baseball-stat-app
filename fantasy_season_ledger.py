@@ -396,3 +396,59 @@ def get_period_lineup(context: dict[str, Any] | None, number: int, team: str) ->
         return None
     snap = (period.get("lineups") or {}).get(str(team or "").strip())
     return copy.deepcopy(snap) if isinstance(snap, dict) else None
+
+
+# --- sharing across managers -----------------------------------------------------------
+
+
+def _audit_key(entry: dict[str, Any]) -> tuple:
+    return (str(entry.get("at") or ""), str(entry.get("action") or ""), str(entry.get("team") or ""))
+
+
+def merge_season_ledgers(local: dict[str, Any] | None, shared: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Combine two copies of a league's ledger (e.g. this manager's and the shared document).
+
+    * A finalized period is immutable: if either copy finalized it, that copy wins; if both
+      did, the earlier finalization wins.
+    * Otherwise lineups merge per team, keeping the most recently saved snapshot.
+    * The calendar comes from whichever copy already has a finalized period, else the
+      most recently configured one.
+    """
+    if not isinstance(local, dict) or not local.get("periods"):
+        return copy.deepcopy(shared) if isinstance(shared, dict) else (copy.deepcopy(local) if isinstance(local, dict) else None)
+    if not isinstance(shared, dict) or not shared.get("periods"):
+        return copy.deepcopy(local)
+
+    def has_final(ledger: dict[str, Any]) -> bool:
+        return any(str((p or {}).get("finalized_at") or "") for p in ledger["periods"].values())
+
+    if has_final(shared) and not has_final(local):
+        base, other = shared, local
+    elif has_final(local) and not has_final(shared):
+        base, other = local, shared
+    else:
+        local_cfg = str((local.get("calendar") or {}).get("configured_at") or "")
+        shared_cfg = str((shared.get("calendar") or {}).get("configured_at") or "")
+        base, other = (shared, local) if shared_cfg > local_cfg else (local, shared)
+    merged = copy.deepcopy(base)
+    for pid, period in merged["periods"].items():
+        theirs = (other.get("periods") or {}).get(pid)
+        if not isinstance(theirs, dict) or theirs.get("start") != period.get("start"):
+            continue  # different calendar: never mix periods with different dates
+        mine_final, theirs_final = str(period.get("finalized_at") or ""), str(theirs.get("finalized_at") or "")
+        if theirs_final and (not mine_final or theirs_final < mine_final):
+            merged["periods"][pid] = copy.deepcopy(theirs)
+            continue
+        if mine_final:
+            continue
+        lineups = period.setdefault("lineups", {})
+        for team, snap in (theirs.get("lineups") or {}).items():
+            current = lineups.get(team)
+            if not isinstance(current, dict) or str(snap.get("saved_at") or "") > str(current.get("saved_at") or ""):
+                lineups[team] = copy.deepcopy(snap)
+        seen = {_audit_key(a) for a in period.get("audit") or []}
+        for entry in theirs.get("audit") or []:
+            if _audit_key(entry) not in seen:
+                period.setdefault("audit", []).append(copy.deepcopy(entry))
+        period["audit"] = sorted(period.get("audit") or [], key=lambda a: str(a.get("at") or ""))
+    return merged

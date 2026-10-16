@@ -605,6 +605,15 @@ def merge_shared_into_context(context: dict[str, Any], shared: dict[str, Any]) -
         shared.get("league_activity") or [],
     )
     workflow[WORKFLOW_KEY_LEAGUE_ACTIVITY] = merged_activity
+    if isinstance(shared.get("season_ledger"), dict):
+        try:
+            from fantasy_season_ledger import LEDGER_KEY, merge_season_ledgers
+
+            merged_ledger = merge_season_ledgers(workflow.get(LEDGER_KEY), shared.get("season_ledger"))
+            if merged_ledger:
+                workflow[LEDGER_KEY] = merged_ledger
+        except ImportError:
+            pass
     out["workflow"] = workflow
     try:
         from fantasy_trade_roster_sync import reconcile_accepted_trades_in_context
@@ -833,6 +842,35 @@ def sync_context_with_shared_store(
     return upsert_league_context(session, merged, mark_persist_authoritative=False)
 
 
+def push_season_ledger_to_shared(
+    session: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    store: SharedLeagueStore | None = None,
+) -> dict[str, Any] | None:
+    """Publish only the season ledger (lineup snapshots, finalized periods) to a shared league.
+
+    Rosters are left as stored: a lineup save must never push this manager's possibly
+    older rosters over someone else's newer trade. No-op for leagues that are not shared.
+    """
+    from fantasy_season_ledger import LEDGER_KEY, merge_season_ledgers
+
+    league_id = resolve_canonical_league_id(context)
+    local = (context.get("workflow") or {}).get(LEDGER_KEY)
+    if not league_id or not isinstance(local, dict):
+        return None
+    backend = store or get_shared_league_store()
+    existing = backend.load(league_id)
+    if not isinstance(existing, dict):
+        return None
+    document = copy.deepcopy(existing)
+    document["season_ledger"] = merge_season_ledgers(local, existing.get("season_ledger"))
+    document["revision"] = int(existing.get("revision") or 0) + 1
+    saved = backend.save(document)
+    invalidate_shared_league_doc_cache(league_id)
+    return saved
+
+
 def push_league_context_to_shared(
     session: dict[str, Any],
     context: dict[str, Any],
@@ -854,6 +892,17 @@ def push_league_context_to_shared(
     )
     document["league_rosters"] = copy.deepcopy(context.get("league_rosters") or {})
     document["roster_settings"] = copy.deepcopy(context.get("roster_settings") or {})
+    try:
+        from fantasy_season_ledger import LEDGER_KEY, merge_season_ledgers
+
+        ledger = merge_season_ledgers(
+            (context.get("workflow") or {}).get(LEDGER_KEY),
+            existing.get("season_ledger") if isinstance(existing, dict) else None,
+        )
+        if ledger:
+            document["season_ledger"] = ledger  # never drop the league's weekly history
+    except ImportError:
+        pass
     if isinstance(existing, dict):
         merged_proposals = _merge_trade_proposals(
             existing.get("trade_proposals") or [],

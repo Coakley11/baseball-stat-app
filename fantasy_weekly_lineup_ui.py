@@ -312,6 +312,24 @@ def _render_manage_team_picker(st: Any, session: dict[str, Any], context: dict[s
     return next((c for c in proxy if c.team == choice), None)
 
 
+_SAVE_ERROR_KEY = "_weekly_lineup_save_error"
+
+
+def _on_save_lineup_click(scope: Any, proxy_control: Any, **save_kwargs: Any) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    write_ok, write_err = _lineup_write_check(scope, proxy_control)
+    if not write_ok:
+        session[_SAVE_ERROR_KEY] = write_err
+        return
+    result = save_weekly_lineup(session, **save_kwargs)
+    if result.get("ok"):
+        session["weekly_lineup_save_flash"] = True
+    else:
+        session[_SAVE_ERROR_KEY] = "; ".join(result.get("errors") or []) or "Couldn't save changes. Try again."
+
+
 def _lineup_write_check(scope: Any, proxy_control: Any) -> tuple[bool, str]:
     if proxy_control is not None and proxy_control.is_proxy:
         return True, ""
@@ -462,14 +480,15 @@ def render_weekly_lineup_section(
         st.info(edit_message)
 
     scoring_profile = resolve_hitter_scoring_profile(context, session=session)
-    context = maybe_mark_legacy_lineup_scoring(
-        session,
-        context,
-        week=int(selected_week),
-        team=active_team,
-        saved_lineup=saved,
-    )
-    render_week_transition_notice(st, context=context, week=int(selected_week))
+    if not ledger_weeks:  # legacy weekly scoring (leagues without a season calendar)
+        context = maybe_mark_legacy_lineup_scoring(
+            session,
+            context,
+            week=int(selected_week),
+            team=active_team,
+            saved_lineup=saved,
+        )
+        render_week_transition_notice(st, context=context, week=int(selected_week))
 
     canon_key = scope.assignments_key if scope else canonical_week_key(prefix, int(selected_week))
     if should_start_week_empty(context, int(selected_week)) and not lineup_locked and not saved_assignments:
@@ -521,36 +540,49 @@ def render_weekly_lineup_section(
         except ImportError:
             pass
 
-        scoring_record = render_scoring_refresh_controls(
-            st,
-            session,
-            context=context,
-            week=int(selected_week),
-            team=active_team,
-            roster_df=team_roster,
-            prefix=prefix,
-        )
-        if scoring_record is None:
-            scoring_record = get_weekly_scoring_record(context, week=int(selected_week), team=active_team)
-        scoring_record = ensure_weekly_scoring_populated(
-            session,
-            context,
-            week=int(selected_week),
-            team=active_team,
-            roster_df=team_roster,
-            profile=scoring_profile,
-        ) or scoring_record
-        render_locked_weekly_dashboard(
-            st,
-            context=context,
-            week=int(selected_week),
-            team=active_team,
-            scoring_record=scoring_record,
-            profile=scoring_profile,
-            roster_df=team_roster,
-            saved_lineup=saved,
-            session=session,
-        )
+        if ledger_weeks:
+            from fantasy_season_ledger import PERIOD_FINALIZED, get_period, period_date_label, period_status
+            from fantasy_season_results_ui import render_team_period_result
+
+            _period = get_period(context, int(selected_week))
+            if period_status(_period) == PERIOD_FINALIZED:
+                render_team_period_result(st, context, int(selected_week), active_team)
+            else:
+                st.caption(
+                    f"Results for this week are calculated when the commissioner finalizes it, from stats for "
+                    f"{period_date_label(_period)} only — later roster moves never change them."
+                )
+        else:
+            scoring_record = render_scoring_refresh_controls(
+                st,
+                session,
+                context=context,
+                week=int(selected_week),
+                team=active_team,
+                roster_df=team_roster,
+                prefix=prefix,
+            )
+            if scoring_record is None:
+                scoring_record = get_weekly_scoring_record(context, week=int(selected_week), team=active_team)
+            scoring_record = ensure_weekly_scoring_populated(
+                session,
+                context,
+                week=int(selected_week),
+                team=active_team,
+                roster_df=team_roster,
+                profile=scoring_profile,
+            ) or scoring_record
+            render_locked_weekly_dashboard(
+                st,
+                context=context,
+                week=int(selected_week),
+                team=active_team,
+                scoring_record=scoring_record,
+                profile=scoring_profile,
+                roster_df=team_roster,
+                saved_lineup=saved,
+                session=session,
+            )
 
     board_payload = build_interactive_board_payload(
         slot_labels,
@@ -668,6 +700,11 @@ def render_weekly_lineup_section(
         selected_week=int(selected_week),
     )
 
+    if lineup_locked and ledger_weeks:
+        from fantasy_season_results_ui import render_period_finalize_panel
+
+        render_period_finalize_panel(st, session, context, int(selected_week), is_commissioner=is_commissioner)
+        return
     if lineup_locked:
         roster_by_team = {active_team: team_roster}
         try:
@@ -697,28 +734,34 @@ def render_weekly_lineup_section(
         save_col, _reset_col = st.columns(2)
     with save_col:
         save_disabled = not validation.get("ok")
-        if st.button("Save Lineup", key=save_key, type="primary", disabled=bool(save_disabled)):
-            write_ok, write_err = _lineup_write_check(scope, proxy_control)
-            if not write_ok:
-                st.error(write_err)
-            else:
-                save_result = save_weekly_lineup(
-                    session,
-                    week=int(selected_week),
-                    slots=slots,
-                    assignments=assignments,
-                    my_team=active_team,
-                    roster_df=team_roster,
-                )
-                if save_result.get("ok"):
-                    session["weekly_lineup_save_flash"] = True
-                    st.rerun()
-                else:
-                    st.error("Couldn't save changes. Try again.")
-        elif save_disabled:
+        save_error = session.pop(_SAVE_ERROR_KEY, None)
+        if save_error:
+            st.error(save_error)
+        # on_click runs before the next script run starts, so a Save pressed while a
+        # board drop is still re-rendering is never lost.
+        st.button(
+            "Save Lineup",
+            key=save_key,
+            type="primary",
+            disabled=bool(save_disabled),
+            on_click=_on_save_lineup_click,
+            args=(scope, proxy_control),
+            kwargs={
+                "week": int(selected_week),
+                "slots": list(slots),
+                "assignments": dict(assignments),
+                "my_team": active_team,
+                "roster_df": team_roster,
+            },
+        )
+        if save_disabled:
             st.caption("Complete your lineup before saving.")
     with _reset_col:
         if st.button("Reset", key=reset_key):
             session[canon_key] = _normalize_assignments(saved_assignments, slot_keys)
             session[board_nonce_key] = board_nonce + 1
             st.rerun()
+    if ledger_weeks:
+        from fantasy_season_results_ui import render_period_finalize_panel
+
+        render_period_finalize_panel(st, session, context, int(selected_week), is_commissioner=is_commissioner)

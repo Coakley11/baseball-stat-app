@@ -627,7 +627,11 @@ def get_trade_notifications(
                         "alert_key": key,
                         "proposal_id": pid,
                         "kind": "accepted",
-                        "message": f"Trade accepted by {recipient}",
+                        "message": (
+                            f"Trade completed by the commissioner (acting for {', '.join(proposal.get('commissioner_acting_for') or [recipient])})"
+                            if proposal.get("commissioner_executed")
+                            else f"Trade accepted by {recipient}"
+                        ),
                         "view_as_team": team,
                     }
                 )
