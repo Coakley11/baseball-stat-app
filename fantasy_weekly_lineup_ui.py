@@ -503,6 +503,34 @@ def render_weekly_lineup_section(
         scope_changed=scope_changed,
     )
 
+    # U1: "Use Suggested Lineup" (flag set by the button's on_click) fills the board with the
+    # recommended starters and keeps it as a draft. It never saves, locks or finalizes.
+    board_nonce_key = scope.board_nonce_key if scope else f"{prefix}_board_nonce_{int(selected_week)}"
+    suggest_flag = f"{canon_key}|apply_suggested"
+    if session.pop(suggest_flag, False) and not lineup_locked:
+        from suggested_lineup import apply_suggested_lineup
+
+        applied = apply_suggested_lineup(
+            session,
+            week=int(selected_week),
+            slots=list(slots),
+            slot_labels=slot_labels,
+            team_roster=team_roster,
+            team=active_team,
+            scoring_format=str(session.get("lineup_format") or "5x5 Roto"),
+            write_check=lambda: _lineup_write_check(scope, proxy_control),
+        )
+        if applied["ok"]:
+            session[canon_key] = _normalize_assignments(applied["assignments"], slot_keys)
+            assignments = dict(session[canon_key])
+            session[board_nonce_key] = int(session.get(board_nonce_key, 0)) + 1
+            st.success(applied["message"])
+            if applied["unfilled"]:
+                st.warning("No eligible player on this roster for: " + ", ".join(
+                    slot_display_name(s) for s in applied["unfilled"]) + ".")
+        else:
+            st.error("; ".join(applied["errors"]))
+
     try:
         from suite_workspace import can_show_developer_tools
 
@@ -584,6 +612,14 @@ def render_weekly_lineup_section(
                 session=session,
             )
 
+    if not lineup_locked:
+        st.button(
+            "Use Suggested Lineup",
+            key=f"{suggest_flag}|btn",
+            use_container_width=True,
+            help="Fills the board with the Lineup Assistant's recommended starters. Review it, then press Save Lineup.",
+            on_click=lambda: session.__setitem__(suggest_flag, True),
+        )
     board_payload = build_interactive_board_payload(
         slot_labels,
         assignments,
@@ -591,7 +627,6 @@ def render_weekly_lineup_section(
         editable=not lineup_locked,
         session=session,
     )
-    board_nonce_key = scope.board_nonce_key if scope else f"{prefix}_board_nonce_{int(selected_week)}"
     board_nonce = int(session.get(board_nonce_key, 0))
     component_key = (
         f"{scope.component_key_base}_{board_nonce}"
