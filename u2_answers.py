@@ -184,3 +184,174 @@ def career_answer(rows: pd.DataFrame, sort_stat: str, year_range: Any, *, season
         "seasons": n_seasons,
     }
 
+
+def slope_text(stat: str, slope: Any) -> str:
+    """'+.045' for rate stats, '+3.5' for counting stats (per season)."""
+    v = _num(slope)
+    if v is None:
+        return "—"
+    if stat in RATE_STATS:
+        text = f"{abs(v):.3f}"
+        text = text[1:] if text.startswith("0.") else text
+    else:
+        text = f"{abs(v):.1f}"
+    sign = "+" if v > 0 else ("−" if v < 0 else "")
+    return f"{sign}{text}" if sign and text.strip("0.") else text
+
+
+def _direction(stat: str, slope: float) -> str:
+    shown = slope_text(stat, slope).lstrip("+−")
+    if not shown.strip("0."):
+        return "flat"
+    return "up" if slope > 0 else "down"
+
+
+def _path_text(stat: str, values: Sequence[tuple] | None) -> str:
+    """'.218 in 2023, 39 AB → .912 in 2025, 520 AB'. Entries are (year, value) or
+    (year, value, at_bats); at-bats are shown for rate stats so a small sample is visible."""
+    pts = sorted((int(p[0]), p[1], _num(p[2]) if len(p) > 2 else None) for p in (values or []) if _num(p[1]) is not None)
+    if len(pts) < 2:
+        return ""
+
+    def one(p) -> str:
+        ab = f", {int(p[2]):,} AB" if stat in RATE_STATS and p[2] is not None else ""
+        return f"{fmt_stat(stat, p[1])} in {p[0]}{ab}"
+
+    return f"{one(pts[0])} → {one(pts[-1])}"
+
+
+def trend_answer(rows: pd.DataFrame, stat: str, years: Sequence[int], *, slope_col: str = "",
+                 values: Mapping[str, Sequence[tuple[int, Any]]] | None = None,
+                 focus: str = "") -> dict[str, Any] | None:
+    """Trend Value: who is rising and falling fastest in ``stat`` over the window, from the
+    page's own per-season slopes (``{stat}_trend``). ``values``: season values by player name,
+    for the "from → to" text. ``focus``: a player the user sent here; leads when present."""
+    slope_col = slope_col or f"{stat}_trend"
+    if rows is None or rows.empty or slope_col not in rows.columns:
+        return None
+    ranked = rows.assign(_s=pd.to_numeric(rows[slope_col], errors="coerce")).dropna(subset=["_s"])
+    if ranked.empty:
+        return None
+    ranked = ranked.sort_values("_s", ascending=False, kind="stable").reset_index(drop=True)
+    span = f"{years[0]}–{years[-1]}" if len(years) > 1 else str(years[0])
+    name = lambda r: str(r.get("fullName") or "").strip()  # noqa: E731
+    riser, faller = ranked.iloc[0], ranked.iloc[-1]
+    up = int(sum(_direction(stat, float(v)) == "up" for v in ranked["_s"]))
+    total = len(ranked)
+    what = stat_name(stat)
+    rate = stat in RATE_STATS
+
+    def line(r) -> str:
+        path = _path_text(stat, (values or {}).get(name(r)))
+        return f"{name(r)} ({slope_text(stat, r['_s'])} per season{': ' + path if path else ''})"
+
+    focus_row = None
+    if focus:
+        match = ranked[ranked["fullName"].astype(str).str.strip() == focus]
+        focus_row = match.iloc[0] if not match.empty else None
+    if focus_row is not None:
+        rank = int(match.index[0]) + 1
+        direction = _direction(stat, float(focus_row["_s"]))
+        verb = "flat" if direction == "flat" else f"trending {direction} by about {slope_text(stat, focus_row['_s']).lstrip('+−')} per season"
+        headline = f"{focus}: {stat} {verb} ({span})"
+        path = _path_text(stat, (values or {}).get(focus))
+        body = (f"{path}. " if path else "") + f"Ranks {_ordinal(rank)} of {total:,} hitters shown by {stat} trend. "
+        body += f"Fastest riser: {line(riser)}. Biggest drop: {line(faller)}."
+        kicker = f"Your player · {stat} trend · {span}"
+        chart_names = [focus] + [n for n in (name(riser), name(faller)) if n != focus][:1]
+    elif focus:
+        headline = f"Biggest {stat} riser, {span}: {name(riser)}"
+        body = (f"{focus} isn't in the current list (check Minimum Games and Fantasy Position under Explore more). "
+                f"Fastest riser: {line(riser)}. Biggest drop: {line(faller)}.")
+        kicker = f"{stat} trend · {span}"
+        chart_names = [name(riser), name(faller)]
+    else:
+        headline = f"Biggest {stat} riser, {span}: {name(riser)}, about {slope_text(stat, riser['_s']).lstrip('+−')} per season"
+        if float(riser["_s"]) <= 0:
+            headline = f"No hitter shown is trending up in {stat} over {span}"
+        path = _path_text(stat, (values or {}).get(name(riser)))
+        body = (f"{path}. " if path else "") + f"Biggest drop: {line(faller)}."
+        kicker = f"{stat} trend · {span}"
+        chart_names = [name(riser), name(faller)]
+    body += f" {up:,} of {total:,} hitters shown {'is' if up == 1 else 'are'} trending up."
+    if rate:
+        body += " Rate-stat trends weight seasons by playing time so small samples have less influence."
+    else:
+        body += f" The trend is the per-season slope of each player's season {what}."
+    return {"headline": headline, "body": body, "kicker": kicker, "chart_names": chart_names,
+            "riser": name(riser), "faller": name(faller), "focus_found": focus_row is not None}
+
+
+def _rank_of(series: pd.Series, value: float) -> int:
+    vals = pd.to_numeric(series, errors="coerce")
+    return int((vals > value).sum()) + 1
+
+
+def _ordinal(n: int) -> str:
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n:,}{suffix}"
+
+
+def valuation_answer(rows: pd.DataFrame, model_rows: pd.DataFrame, *, w_current: float, w_trend: float,
+                     years: Sequence[int]) -> dict[str, Any] | None:
+    """Valuation: the top player and why, in the model's own terms.
+
+    ``rows``: what the table ranks (after any Research-mode position-need boost).
+    ``model_rows``: the valued pool straight from ``add_valuation_scores`` (Perf_Score,
+    Trend_Score, Perf_Pct, Trend_Pct). Valuation = weighted average of the production and
+    trend percentiles, rescaled 0–100. A trend score of zero (including "no trend") is neutral,
+    never called a decline."""
+    need = {"fullName", "Valuation_Score"}
+    if rows is None or rows.empty or not need <= set(rows.columns) or model_rows is None or model_rows.empty:
+        return None
+    ranked = rows.assign(_v=pd.to_numeric(rows["Valuation_Score"], errors="coerce")).dropna(subset=["_v"])
+    if ranked.empty:
+        return None
+    ranked = ranked.sort_values("_v", ascending=False, kind="stable")
+    top = ranked.iloc[0]
+    name = str(top["fullName"]).strip()
+    span = f"{years[0]}–{years[-1]}" if len(years) > 1 else str(years[0])
+    match = model_rows[model_rows["fullName"].astype(str).str.strip() == name]
+    m = match.iloc[0] if not match.empty else top
+    pool = len(model_rows)
+    perf = _num(m.get("Perf_Score"))
+    trend = _num(m.get("Trend_Score"))
+    perf_rank = _rank_of(model_rows["Perf_Score"], perf) if perf is not None else None
+    trend_rank = _rank_of(model_rows["Trend_Score"], trend) if trend is not None else None
+    if trend is None or round(trend, 1) == 0:
+        trend_word = "about flat"
+    else:
+        trend_word = "trending up" if trend > 0 else "trending down"
+    score = f"{float(top['_v']) * 100:.0f}"
+    wc, wt = float(w_current), float(w_trend)
+    weights = f"{wc:g} : {wt:g}"
+    parts = []
+    if perf_rank:
+        parts.append(f"Production ranks {_ordinal(perf_rank)} of {pool:,}")
+    if trend_rank:
+        parts.append(f"trend ranks {_ordinal(trend_rank)} ({trend_word})")
+    body = (", ".join(parts) + ". ") if parts else ""
+    pp, tp = _num(m.get("Perf_Pct")), _num(m.get("Trend_Pct"))
+    if pp is not None and tp is not None and wc > 0 and wt > 0:
+        if pp - tp >= 0.2:
+            body += "The score comes mainly from production. "
+        elif tp - pp >= 0.2:
+            body += "The score comes mainly from the trend. "
+        else:
+            body += "Production and trend both rank high. "
+    body += (f"Valuation Score is a {weights} blend (production : trend) of each hitter's percentile among the "
+             f"{pool:,} hitters valued for {span}, rescaled 0–100 (top = 100).")
+    boosted = False
+    if "Valuation_Score" in m.index and _num(m.get("Valuation_Score")) is not None:
+        boosted = abs(float(m["Valuation_Score"]) - float(top["_v"])) > 1e-9
+    if boosted:
+        body += " This list also includes your league's position-need boost (Research mode)."
+    tiles = [("Valuation", score, f"1st of {len(ranked):,}")]
+    if perf_rank:
+        tiles.append(("Production", _ordinal(perf_rank), f"Current Score {perf:,.1f}"))
+    if trend_rank:
+        tiles.append(("Trend", _ordinal(trend_rank), f"Trend Score {trend:+,.1f}" if trend_word != "about flat" else "about flat"))
+    tiles.append(("Weights", weights, "production : trend"))
+    return {"headline": f"Top valuation, {span}: {name}", "body": body, "tiles": tiles, "player": name,
+            "next": [str(n) for n in ranked["fullName"].head(2).tolist()], "trend_word": trend_word}
+

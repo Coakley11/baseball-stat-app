@@ -130,6 +130,7 @@ class FilterRowWrapWiringTests(unittest.TestCase):
         "comparison-sig-players",
         "comparison-sig-actions",
         "trend-top-filters",
+        "trend-explore-filters",
         "trend-dash-mode",
         "sleepers-top-filters",
         "sleepers-rank-cutoffs",

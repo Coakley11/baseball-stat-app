@@ -6,6 +6,7 @@ import unittest
 import pandas as pd
 
 import u2_answers as u2a
+from valuation_scores import add_valuation_scores
 
 
 def _career(**cols):
@@ -68,6 +69,66 @@ class CareerAnswerTests(unittest.TestCase):
     def test_ties_say_tied(self):
         rows = self.rows.assign(HR=[300, 300, 290])
         self.assertIn("Tied for the lead", u2a.career_answer(rows, "HR", (2010, 2025))["body"])
+
+
+class TrendAnswerTests(unittest.TestCase):
+    def setUp(self):
+        self.rows = pd.DataFrame({"fullName": ["Up Guy", "Flat Guy", "Down Guy"], "OPS_trend": [0.045, 0.0001, -0.06]})
+
+    def test_riser_faller_and_reliability_note(self):
+        ans = u2a.trend_answer(self.rows, "OPS", [2023, 2024, 2025], values={"Up Guy": [(2023, 0.8, 30), (2025, 0.9, 500)]})
+        self.assertEqual(ans["headline"], "Biggest OPS riser, 2023–2025: Up Guy, about .045 per season")
+        self.assertIn(".800 in 2023, 30 AB → .900 in 2025, 500 AB", ans["body"])
+        self.assertIn("1 of 3 hitters shown is trending up", ans["body"], "a slope that displays as .000 is not 'up'")
+        self.assertIn("Rate-stat trends weight seasons by playing time so small samples have less influence.", ans["body"])
+        self.assertEqual(ans["chart_names"], ["Up Guy", "Down Guy"])
+
+    def test_sent_player_leads_and_flat_is_flat(self):
+        ans = u2a.trend_answer(self.rows, "OPS", [2023, 2025], focus="Flat Guy")
+        self.assertEqual(ans["headline"], "Flat Guy: OPS flat (2023–2025)")
+        self.assertIn("Ranks 2nd of 3", ans["body"])
+        self.assertTrue(ans["focus_found"])
+
+    def test_missing_focus_is_explained(self):
+        ans = u2a.trend_answer(self.rows, "OPS", [2023, 2025], focus="Nobody")
+        self.assertIn("isn't in the current list", ans["body"])
+
+    def test_counting_stat_wording(self):
+        rows = pd.DataFrame({"fullName": ["A", "B"], "HR_trend": [5.5, -3.0]})
+        body = u2a.trend_answer(rows, "HR", [2023, 2025])["body"]
+        self.assertIn("per-season slope of each player's season home runs", body)
+        self.assertNotIn("Rate-stat", body)
+
+
+class ValuationAnswerTests(unittest.TestCase):
+    def _pool(self):
+        df = pd.DataFrame({"fullName": [f"P{i}" for i in range(5)]})
+        for c in ["R", "H", "2B", "3B", "HR", "RBI", "SB"]:
+            df[c] = [50, 40, 30, 20, 10]
+        for c in ["BA", "OBP", "SLG", "OPS"]:
+            df[c] = [0.3, 0.29, 0.28, 0.27, 0.26]
+        for c in ["R_trend", "H_trend", "2B_trend", "3B_trend", "HR_trend", "RBI_trend", "SB_trend", "BB_trend",
+                  "BA_trend", "OBP_trend", "SLG_trend", "OPS_trend"]:
+            df[c] = [0.0, 1.0, -1.0, 0.5, -0.5]
+        return add_valuation_scores(df, 1, 1)
+
+    def test_neutral_trend_is_not_called_a_decline(self):
+        df = self._pool()
+        ans = u2a.valuation_answer(df, df, w_current=1, w_trend=1, years=[2023, 2024, 2025])
+        self.assertEqual(ans["player"], df.sort_values("Valuation_Score", ascending=False).iloc[0]["fullName"])
+        top = df[df["fullName"] == ans["player"]].iloc[0]
+        if round(float(top["Trend_Score"]), 1) == 0:
+            self.assertIn("about flat", ans["body"])
+        self.assertNotIn("decline", ans["body"].lower())
+        self.assertIn("1 : 1 blend (production : trend)", ans["body"])
+
+    def test_position_boost_disclosed(self):
+        df = self._pool()
+        boosted = df.copy()
+        boosted.loc[boosted["fullName"] == "P4", "Valuation_Score"] = 2.0
+        ans = u2a.valuation_answer(boosted, df, w_current=1, w_trend=1, years=[2025])
+        self.assertEqual(ans["player"], "P4")
+        self.assertIn("position-need boost", ans["body"])
 
 
 if __name__ == "__main__":

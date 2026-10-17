@@ -1755,6 +1755,118 @@ def _render_u2_career_answer(rows, filtered_seasons, sort_stat, year_range, *, b
     ], key="career", primary=None)
 
 
+def _u2_compare_pair_cb(names):
+    """Button callback: open Compare Players with exactly these players (replaces the
+    current selection). Never drafts, trades or saves a move."""
+    def _cb():
+        label_map = get_clean_player_label_map_yearly(yearly_df)
+        labels = []
+        for name in names:
+            lbl = resolve_fullname_to_clean_label(name, label_map)
+            if lbl and lbl not in labels:
+                labels.append(lbl)
+        if len(labels) < 2:
+            st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = "Could not match both players in the database."
+            return
+        from comparison_state import write_canonical_comparison_state
+
+        write_canonical_comparison_state(st.session_state, labels[:3], reason="u2_compare_pair")
+        record_workflow_comparison_pair(labels[0], labels[1])
+        st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = f"Comparing {' and '.join(names[:3])}."
+        _schedule_player_action_page_nav("Comparison Tool")
+    return _cb
+
+
+def _u2_season_line_chart(seasons, names, stat, *, height=220):
+    """One small line chart: ``stat`` by season for a few named players (values as the page
+    shows them; nothing recomputed). Colours follow the order of ``names``."""
+    import altair as alt
+    from ui_hierarchy import PLAYER_COLORS
+
+    if seasons is None or seasons.empty or stat not in seasons.columns:
+        return
+    data = seasons[seasons["fullName"].astype(str).isin(names)][["fullName", "yearID", stat]].copy()
+    data[stat] = pd.to_numeric(data[stat], errors="coerce")
+    data = data.dropna(subset=[stat]).drop_duplicates(["fullName", "yearID"], keep="last")
+    if data.empty:
+        return
+    data["Season"] = data["yearID"].astype(int).astype(str)
+    order = [n for n in names if n in set(data["fullName"])]
+    fmt = ".3f" if stat in RATE_STATS else ",.0f"
+    chart = (
+        alt.Chart(data)
+        .mark_line(point=True, strokeWidth=2.5)
+        .encode(
+            x=alt.X("Season:O", title=None, axis=alt.Axis(labelAngle=0)),
+            y=alt.Y(f"{stat}:Q", title=stat, scale=alt.Scale(zero=False), axis=alt.Axis(format=fmt)),
+            color=alt.Color("fullName:N", title=None, sort=order,
+                            scale=alt.Scale(domain=order, range=list(PLAYER_COLORS[:len(order)])),
+                            legend=alt.Legend(orient="bottom")),
+            tooltip=[alt.Tooltip("fullName:N", title="Player"), alt.Tooltip("Season:O"), alt.Tooltip(f"{stat}:Q", format=fmt)],
+        )
+        .properties(height=height)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_u2_trend_answer(rows, seasons, stat, years):
+    """Trend Value answer: fastest riser and biggest drop in the chosen stat (or the player
+    the user sent here), one season-by-season chart, next steps."""
+    import u1_answers as u1a
+    import u2_answers as u2a
+    import ui_hierarchy as u1
+
+    focus = str(st.session_state.get("_u2_trend_focus") or "").strip()
+    values = {}
+    if seasons is not None and not seasons.empty and stat in seasons.columns:
+        cols = ["fullName", "yearID", stat] + (["AB"] if "AB" in seasons.columns and stat != "AB" else [])
+        for name, grp in seasons[cols].groupby("fullName"):
+            values[str(name)] = list(zip(*(grp[c].tolist() for c in cols[1:])))
+    answer = u2a.trend_answer(rows, stat, years, values=values, focus=focus)
+    if answer is None:
+        u1.answer_card(st, "No hitters match these filters",
+                       "Lower Minimum Games or widen Fantasy Position under Explore more.", tone="warn")
+        return
+    u1.answer_card(st, answer["headline"], answer["body"], kicker=answer["kicker"])
+    _u2_season_line_chart(seasons, answer["chart_names"], stat)
+    pair = answer["chart_names"][:2]
+    actions = []
+    if len(pair) == 2:
+        actions.append((f"Compare {u1a.last_name(pair[0])} & {u1a.last_name(pair[1])}", _u2_compare_pair_cb(pair)))
+    actions.append(("Valuation", _u1_nav_cb("Valuation")))
+    if focus:
+        actions.append(("Show top risers", lambda: st.session_state.pop("_u2_trend_focus", None)))
+    u1.action_row(st, actions, key="trend", primary=None)
+
+
+def _render_u2_valuation_answer(rows, model_rows, chart_rows, w_current, w_trend, years):
+    """Valuation answer: the top hitter, production and trend components in the model's own
+    terms, the weights, the top-10 chart, next steps."""
+    import u1_answers as u1a
+    import u2_answers as u2a
+    import ui_hierarchy as u1
+
+    answer = u2a.valuation_answer(rows, model_rows, w_current=w_current, w_trend=w_trend, years=years)
+    if answer is None:
+        u1.answer_card(st, "No hitters match these filters",
+                       "Lower Minimum Games or widen Fantasy Position.", tone="warn")
+        return
+    u1.answer_card(st, answer["headline"], answer["body"], kicker="Valuation · production + trend")
+    u1.metric_tiles(st, answer["tiles"])
+    top_bar_chart(chart_rows, "fullName", "Valuation_Score", "Top 10 Valuation Score", always_show=True)
+    player = answer["player"]
+    last = u1a.last_name(player)
+    actions = []
+    if len(answer["next"]) == 2:
+        a, b = answer["next"]
+        actions.append((f"Compare {u1a.last_name(a)} & {u1a.last_name(b)}", _u2_compare_pair_cb([a, b])))
+    actions += [
+        (f"{last}'s trend", _u1_player_action_cb("Send to Trend Page", player)),
+        ("Sleepers & Busts", _u1_nav_cb("Fantasy Sleepers & Busts")),
+    ]
+    u1.action_row(st, actions, key="value", primary=None)
+
+
 def plot_player_stat_trends(ax, df, player_ids, stat_col, mode="Actual Values", smooth_window=3):
     """Plot one stat for multiple players using actual values or a moving-average smooth."""
     for pid in player_ids:
@@ -17872,7 +17984,9 @@ elif active_page == "Trend Value":
         prepare_canonical_scoring_context(st.session_state, active_page=active_page)
     except ImportError:
         pass
-    render_section_header("🔥 Trend Value", "Analyze trend direction, volatility, consistency, breakout momentum, decline risk, and fantasy relevance over recent seasons.")
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "🔥 Trend Value", "Who is rising or falling in a stat over recent seasons.")
     try:
         from baseball_event_trace import render_trend_value_deploy_banner
 
@@ -17887,6 +18001,9 @@ elif active_page == "Trend Value":
     except ImportError:
         pass
     apply_pending_page_transfer(active_page)
+    if st.session_state.get("pending_trend_player"):
+        # A player sent here from another page leads the answer (prepare_trend_value_page consumes the flag).
+        st.session_state["_u2_trend_focus"] = str(st.session_state["pending_trend_player"])
     try:
         from trend_state import prepare_trend_top_filters
 
@@ -17894,9 +18011,18 @@ elif active_page == "Trend Value":
     except Exception:
         pass
     _trend_lag_options = [3, 4, 5]
+    _trend_sort_options = ["R Δ", "H Δ", "2B Δ", "3B Δ", "HR Δ", "RBI Δ", "SB Δ", "BB Δ", "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ"]
     with mobile_wrap_row(st, "trend-top-filters"):
-        c1, c2, c3 = st.columns(3)
+        c1, c2 = st.columns(2)
     with c1:
+        validate_state_option("trend_sort_col", _trend_sort_options, "OPS Δ")
+        sort_col = st.selectbox(
+            "Sort By Trend Stat",
+            _trend_sort_options,
+            key="trend_sort_col",
+            on_change=trend_settings_changed,
+        )
+    with c2:
         validate_state_option("trend_lag", _trend_lag_options, 3)
         lag_trend = st.selectbox(
             "Trend Window (Years)",
@@ -17904,6 +18030,10 @@ elif active_page == "Trend Value":
             key="trend_lag",
             on_change=trend_settings_changed,
         )
+    trend_answer_slot = st.container()
+    u1.section_label(st, "Explore more · minimum games, positions, draft sync, the full trend table and player charts")
+    with mobile_wrap_row(st, "trend-explore-filters"):
+        c2, c3 = st.columns(2)
     with c2:
         validate_number_state("trend_min_g", 50, min_value=0, max_value=800)
         min_g_trend = st.number_input(
@@ -18040,18 +18170,12 @@ elif active_page == "Trend Value":
     ].copy()
     trend_display.columns = ["Player", "Position", "Bats", "R Δ", "H Δ", "2B Δ", "3B Δ", "HR Δ", "RBI Δ", "SB Δ", "BB Δ", "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ"]
 
-    _trend_sort_options = ["R Δ", "H Δ", "2B Δ", "3B Δ", "HR Δ", "RBI Δ", "SB Δ", "BB Δ", "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ"]
-    validate_state_option("trend_sort_col", _trend_sort_options, "OPS Δ")
-    sort_col = st.selectbox(
-        "Sort By Trend Stat",
-        _trend_sort_options,
-        key="trend_sort_col",
-        on_change=trend_settings_changed,
-    )
     trend_label_to_column = {"R Δ": "R_trend", "H Δ": "H_trend", "2B Δ": "2B_trend", "3B Δ": "3B_trend", "HR Δ": "HR_trend", "RBI Δ": "RBI_trend", "SB Δ": "SB_trend", "BB Δ": "BB_trend", "BA Δ": "BA_trend", "OBP Δ": "OBP_trend", "SLG Δ": "SLG_trend", "OPS Δ": "OPS_trend"}
     selected_trend_col = trend_label_to_column[sort_col]
     selected_trend_name = sort_col.replace(" Δ", "")
     selected_values = pd.to_numeric(trend_value_df[selected_trend_col], errors="coerce")
+    with trend_answer_slot:
+        _render_u2_trend_answer(trend_value_df, recent_data_trend, selected_trend_name, recent_years_trend)
 
     c3m, c4m, c5m = st.columns(3)
     if selected_trend_name in RATE_STATS:
@@ -30496,7 +30620,9 @@ elif active_page == "Valuation":
     prepare_valuation_page(st.session_state)
     prepare_valuation_filters(st.session_state)
 
-    render_section_header("💰 Valuation", "Blend recent production and trend momentum into a valuation score.")
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "💰 Valuation", "One score per hitter: recent production blended with trend, then ranked.")
     render_page_guide(active_page)
     try:
         from fantasy_context_ui import render_research_sync_badge
@@ -30508,19 +30634,10 @@ elif active_page == "Valuation":
 
     _value_lag_options = [3, 4, 5]
     with mobile_wrap_row(st, "valuation-top-filters"):
-        c1, c2, c3 = st.columns(3)
+        c1, c3 = st.columns(2)
     with c1:
         validate_state_option("value_lag", _value_lag_options, 3)
         lag_value = st.selectbox("Valuation Window (Years)", _value_lag_options, key="value_lag", on_change=valuation_filter_changed)
-    with c2:
-        validate_number_state("value_min_g", 50, min_value=0, max_value=800)
-        min_g_value = st.number_input(
-            "Minimum Games Played",
-            min_value=0,
-            max_value=800,
-            key="value_min_g",
-            on_change=valuation_filter_changed,
-        )
     with c3:
         try:
             from fantasy_position_sync import (
@@ -30557,6 +30674,16 @@ elif active_page == "Valuation":
                 help="Compare players within one fantasy position group (OF includes LF/CF/RF).",
                 on_change=valuation_filter_changed,
             )
+    value_answer_slot = st.container()
+    u1.section_label(st, "Explore more · minimum games, blend weights, the full table and player explanations")
+    validate_number_state("value_min_g", 50, min_value=0, max_value=800)
+    min_g_value = st.number_input(
+        "Minimum Games Played",
+        min_value=0,
+        max_value=800,
+        key="value_min_g",
+        on_change=valuation_filter_changed,
+    )
 
     max_year_value = int(yearly_df["yearID"].max())
     recent_years_value = list(range(max_year_value - lag_value + 1, max_year_value + 1))
@@ -30669,7 +30796,8 @@ elif active_page == "Valuation":
     valuation_chart_df["Valuation_Score"] = pd.to_numeric(
         valuation_chart_df["Valuation_Score"], errors="coerce"
     ) * 100.0
-    top_bar_chart(valuation_chart_df, "fullName", "Valuation_Score", "Top 10 Valuation Score")
+    with value_answer_slot:
+        _render_u2_valuation_answer(valuation_df, valuation_lookup_df, valuation_chart_df, w_current, w_trend, recent_years_value)
 
     c7, c8, c9 = st.columns(3)
     c7.metric(
