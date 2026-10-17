@@ -157,7 +157,67 @@ export const HISTORICAL_SCENARIOS: Record<string, HistoricalExplorerResult> = {
   },
 };
 
-/** Fixture lookup key. Only the default year range is covered. */
-export function historicalScenarioKey(playerId: string | null, metric: string, order: string): string {
-  return `${playerId ?? "all"}|${metric}|${order}`;
+// 2020–2025 (the Leaderboards default range), so links between the two pages land on an answer.
+const RANGE_2020 = { start: 2020, end: 2025 };
+
+const HR_2020 = seasonRows([
+  "judgeaa01-2022", "raleica01-2025", "judgeaa01-2024", "schwaky01-2025", "ohtansh01-2025", "ohtansh01-2024",
+  "olsonma02-2023", "judgeaa01-2025", "guerrvl02-2021", "perezsa02-2021", "judgeaa01-2021", "guerrvl02-2022",
+]);
+
+const OPS_2020 = seasonRows([
+  "judgeaa01-2024", "judgeaa01-2025", "judgeaa01-2022", "ohtansh01-2024", "ohtansh01-2025", "guerrvl02-2021",
+  "olsonma02-2023", "raleica01-2025", "guerrvl02-2024", "schwaky01-2025", "judgeaa01-2021",
+]);
+
+const RECENT_SCENARIOS: Record<string, HistoricalExplorerResult> = {
+  "all|HR|desc": {
+    query: { yearRange: RANGE_2020, metric: "HR", order: "desc", playerId: null },
+    metric: metricDefinition("HR"),
+    qualification: COUNTING,
+    answer: {
+      headline: "Aaron Judge, 2022: 62 home runs",
+      detail: "Aaron Judge's 62 home runs in 2022 are the most among the 3,874 seasons shown (2020–2025). Next: Cal Raleigh (2025), 60.",
+      context: "2022 · NYY · RF",
+    },
+    topSeasonId: "judgeaa01-2022",
+    keyMetrics: ["HR", "RBI", "BA", "OPS"],
+    columns: COLUMNS,
+    seasons: HR_2020,
+    totalCount: 3874,
+    player: null,
+    chart: { kind: "ranking", title: "Top 10 seasons by home runs", seasonIds: HR_2020.slice(0, 10).map((s) => s.id) },
+  },
+  "all|OPS|desc": {
+    query: { yearRange: RANGE_2020, metric: "OPS", order: "desc", playerId: null },
+    metric: metricDefinition("OPS"),
+    qualification: QUALIFIED_SEASON,
+    answer: {
+      headline: "Aaron Judge, 2024: 1.159 OPS",
+      detail: "Aaron Judge's 1.159 OPS in 2024 is the highest among the 1,012 seasons shown (2020–2025). Next: Aaron Judge (2025), 1.145.",
+      context: "2024 · NYY · CF",
+    },
+    topSeasonId: "judgeaa01-2024",
+    keyMetrics: ["OPS", "HR", "RBI", "BA"],
+    columns: COLUMNS,
+    seasons: OPS_2020,
+    totalCount: 1012,
+    player: null,
+    chart: { kind: "ranking", title: "Top 10 seasons by OPS", seasonIds: OPS_2020.slice(0, 10).map((s) => s.id) },
+  },
+};
+
+const BY_RANGE: Record<string, Record<string, HistoricalExplorerResult>> = {
+  [`${RANGE.start}-${RANGE.end}`]: HISTORICAL_SCENARIOS,
+  "2020-2025": RECENT_SCENARIOS,
+};
+
+/** The canned answer for a question, if the sample data has one. */
+export function findHistoricalScenario(
+  range: { start: number; end: number },
+  playerId: string | null,
+  metric: string,
+  order: string,
+): HistoricalExplorerResult | undefined {
+  return BY_RANGE[`${range.start}-${range.end}`]?.[`${playerId ?? "all"}|${metric}|${order}`];
 }

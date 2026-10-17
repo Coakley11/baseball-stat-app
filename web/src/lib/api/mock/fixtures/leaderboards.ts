@@ -106,3 +106,38 @@ export const LEADERBOARD_SCENARIOS: Record<string, LeaderboardResult> = {
     score: null,
   },
 };
+
+// 2010–2025 home runs (the Historical Explorer default range). Only HR totals are in the sample,
+// so this answer's table has a single stat column (columns are always the API's choice).
+const HR_2010: [id: string, seasons: number, HR: number][] = [
+  ["stantmi03", 16, 429], ["troutmi01", 15, 404], ["freemfr01", 16, 367], ["harpebr03", 14, 363],
+  ["schwaky01", 11, 340], ["judgeaa01", 10, 315], ["cabremi01", 14, 300], ["davisch02", 11, 290],
+  ["olsonma02", 10, 280], ["ohtansh01", 8, 280],
+];
+
+const LONG_RANGE_SCENARIOS: Record<string, LeaderboardResult> = {
+  HR: {
+    query: { yearRange: { start: 2010, end: 2025 }, metric: "HR" },
+    metric: metricDefinition("HR"),
+    qualification: COUNTING,
+    answer: {
+      headline: "Giancarlo Stanton leads 2010–2025 in home runs: 429",
+      detail: "Ahead of Mike Trout (404) and Freddie Freeman (367). Total home runs over 2010–2025.",
+      context: null,
+    },
+    entries: HR_2010.map(([id, seasons, HR], i) => ({ rank: i + 1, player: playerRef(id), seasons, stats: { HR } })),
+    totalRanked: 4213,
+    columns: ["HR"],
+    score: null,
+  },
+};
+
+const BY_RANGE: Record<string, Record<string, LeaderboardResult>> = {
+  [`${RANGE.start}-${RANGE.end}`]: LEADERBOARD_SCENARIOS,
+  "2010-2025": LONG_RANGE_SCENARIOS,
+};
+
+/** The canned answer for a question, if the sample data has one. */
+export function findLeaderboardScenario(range: { start: number; end: number }, metric: string): LeaderboardResult | undefined {
+  return BY_RANGE[`${range.start}-${range.end}`]?.[metric];
+}

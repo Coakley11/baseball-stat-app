@@ -120,7 +120,6 @@ function TaskCard({ task }: { task: Task }) {
         <h3 id={titleId} className={styles.taskTitle}>
           {task.title}
         </h3>
-        {!ready && <Badge>Coming later</Badge>}
       </div>
       <p className={styles.taskBody}>{task.body}</p>
       {ready ? (
@@ -135,7 +134,9 @@ function TaskCard({ task }: { task: Task }) {
           )}
         </div>
       ) : (
-        <p className={styles.taskLaterNote}>Still in the current Baseball Explorer app for now.</p>
+        <p className={styles.taskLaterNote}>
+          <Badge>Coming later</Badge> Still in the current Baseball Explorer app for now.
+        </p>
       )}
     </Card>
   );

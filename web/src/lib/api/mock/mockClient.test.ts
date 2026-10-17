@@ -61,6 +61,14 @@ describe("fixture adapter", () => {
     expect(ops.entries.some((e) => e.player.name === "Ronald Acuña Jr.")).toBe(false);
   });
 
+  it("covers the other page's default range so cross-page links land on an answer", async () => {
+    const seasons = await client.getHistoricalExplorer({ ...HIST_DEFAULT, yearRange: { start: 2020, end: 2025 } });
+    expect(seasons.answer?.detail).toContain("(2020–2025)");
+    const leaders = await client.getLeaderboard({ yearRange: { start: 2010, end: 2025 }, metric: "HR" });
+    expect(leaders.columns).toEqual(["HR"]);
+    expect(leaders.entries[0]?.player.name).toBe("Giancarlo Stanton");
+  });
+
   it("searches player names ignoring case and accents", async () => {
     expect((await client.searchPlayers("jose")).map((p) => p.name)).toEqual(["José Bautista", "José Ramírez"]);
     expect((await client.searchPlayers("GUERRERO")).map((p) => p.name)).toEqual(["Vladimir Guerrero Jr."]);

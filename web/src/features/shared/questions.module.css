@@ -142,6 +142,11 @@
   min-width: 0;
 }
 
+/* A section inside the answer stack already gets the stack's gap; drop its heading's top margin. */
+.tightSection > :first-child {
+  margin-top: var(--space-1);
+}
+
 .chips {
   display: flex;
   flex-wrap: wrap;

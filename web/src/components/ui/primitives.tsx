@@ -144,6 +144,11 @@ export function PlayerCard({
   );
 }
 
+/** Ordered list of PlayerCards: one column on phones, three across from 720px. */
+export function Podium({ children }: { children: ReactNode }) {
+  return <ol className={styles.podium}>{children}</ol>;
+}
+
 /* ---------------------------------------------------------------- buttons */
 
 type ButtonVariant = "primary" | "secondary" | "ghost";

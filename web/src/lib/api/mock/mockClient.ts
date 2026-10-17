@@ -20,8 +20,8 @@ import type {
   YearRange,
 } from "../types";
 import { CATALOG } from "./fixtures/catalog";
-import { HISTORICAL_SCENARIOS, historicalScenarioKey } from "./fixtures/historical";
-import { LEADERBOARD_SCENARIOS } from "./fixtures/leaderboards";
+import { findHistoricalScenario, HISTORICAL_SCENARIOS } from "./fixtures/historical";
+import { findLeaderboardScenario, LEADERBOARD_SCENARIOS } from "./fixtures/leaderboards";
 import { PLAYERS } from "./fixtures/players";
 
 export type MockScenario = "normal" | "loading" | "slow" | "unavailable" | "empty";
@@ -50,10 +50,6 @@ function wait(ms: number, signal?: AbortSignal): Promise<void> {
       reject(new DOMException("Aborted", "AbortError"));
     }, { once: true });
   });
-}
-
-function sameRange(a: YearRange, b: YearRange): boolean {
-  return a.start === b.start && a.end === b.end;
 }
 
 function checkRange(range: YearRange): void {
@@ -113,9 +109,7 @@ export function createMockClient(options: MockClientOptions = {}): BaseballClien
       if (query.playerId !== null && !PLAYERS.some((p: PlayerSummary) => p.id === query.playerId)) {
         throw new BaseballApiError("invalid_request", "That player isn't in the data.");
       }
-      const canned = sameRange(query.yearRange, CATALOG.historical.yearRange)
-        ? HISTORICAL_SCENARIOS[historicalScenarioKey(query.playerId, query.metric, query.order)]
-        : undefined;
+      const canned = findHistoricalScenario(query.yearRange, query.playerId, query.metric, query.order);
       if (scenario === "empty") {
         const base = canned ?? Object.values(HISTORICAL_SCENARIOS)[0]!;
         return { ...base, query, answer: null, topSeasonId: null, seasons: [], totalCount: 0, chart: null };
@@ -123,7 +117,7 @@ export function createMockClient(options: MockClientOptions = {}): BaseballClien
       if (!canned) {
         throw new BaseballApiError(
           "unsupported",
-          "The sample data only covers 2010–2025, highest first, ranked by home runs or OPS: every player, Aaron Judge, or Vladimir Guerrero Jr.",
+          "The sample data covers 2010–2025 and 2020–2025, highest first, ranked by home runs or OPS (one-player views: Aaron Judge or Vladimir Guerrero Jr., 2010–2025).",
         );
       }
       return canned;
@@ -135,9 +129,7 @@ export function createMockClient(options: MockClientOptions = {}): BaseballClien
         throw new BaseballApiError("invalid_request", `"${query.metric}" isn't a stat this page can rank.`);
       }
       checkRange(query.yearRange);
-      const canned = sameRange(query.yearRange, CATALOG.leaderboards.yearRange)
-        ? LEADERBOARD_SCENARIOS[query.metric]
-        : undefined;
+      const canned = findLeaderboardScenario(query.yearRange, query.metric);
       if (scenario === "empty") {
         const base = canned ?? LEADERBOARD_SCENARIOS.OPS!;
         return { ...base, query, answer: null, entries: [], totalRanked: 0 };
@@ -145,7 +137,7 @@ export function createMockClient(options: MockClientOptions = {}): BaseballClien
       if (!canned) {
         throw new BaseballApiError(
           "unsupported",
-          "The sample data only covers 2020–2025, ranked by weighted score, home runs or OPS.",
+          "The sample data covers 2020–2025 by weighted score, home runs or OPS, and 2010–2025 by home runs.",
         );
       }
       return canned;
