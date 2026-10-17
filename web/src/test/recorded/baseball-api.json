@@ -1,0 +1,7349 @@
+{
+ "api_commit": "a9a80f7",
+ "recorded_at": "2026-10-17",
+ "responses": {
+  "health": {
+   "status": 200,
+   "body": {
+    "status": "ok",
+    "api_version": "v1",
+    "build": "3713de5",
+    "data_loaded": true,
+    "seasons": [
+     1871,
+     2025
+    ]
+   }
+  },
+  "seasons?start=2010&end=2025&metric=HR&order=desc&limit=25": {
+   "status": 200,
+   "body": {
+    "start": 2010,
+    "end": 2025,
+    "metric": {
+     "key": "HR",
+     "label": "HR",
+     "kind": "count",
+     "higher_is_better": true,
+     "decimals": 0
+    },
+    "order": "desc",
+    "split_mode": "team",
+    "qualification": {
+     "applies": false,
+     "min_ab": 0,
+     "qualified_ab": 437,
+     "mode": "auto",
+     "text": ""
+    },
+    "total_rows": 24261,
+    "rows": [
+     {
+      "rank": 1,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "year": 2022,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 157,
+       "AB": 570,
+       "R": 133,
+       "H": 177,
+       "2B": 28,
+       "3B": 0,
+       "HR": 62,
+       "RBI": 131,
+       "SB": 16,
+       "BB": 111,
+       "BA": 0.311,
+       "OBP": 0.425,
+       "SLG": 0.686,
+       "OPS": 1.111
+      }
+     },
+     {
+      "rank": 2,
+      "player": {
+       "player_id": "raleica01",
+       "name": "Cal Raleigh",
+       "label": "Cal Raleigh"
+      },
+      "year": 2025,
+      "team": {
+       "team_id": "SEA",
+       "name": "Seattle Mariners",
+       "season_name": "Seattle Mariners",
+       "league": "AL"
+      },
+      "position": "C",
+      "bats": "B",
+      "stats": {
+       "G": 159,
+       "AB": 596,
+       "R": 110,
+       "H": 147,
+       "2B": 24,
+       "3B": 0,
+       "HR": 60,
+       "RBI": 125,
+       "SB": 14,
+       "BB": 97,
+       "BA": 0.247,
+       "OBP": 0.359,
+       "SLG": 0.589,
+       "OPS": 0.948
+      }
+     },
+     {
+      "rank": 3,
+      "player": {
+       "player_id": "stantmi03",
+       "name": "Giancarlo Stanton",
+       "label": "Giancarlo Stanton"
+      },
+      "year": 2017,
+      "team": {
+       "team_id": "MIA",
+       "name": "Miami Marlins",
+       "season_name": "Miami Marlins",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 159,
+       "AB": 597,
+       "R": 123,
+       "H": 168,
+       "2B": 32,
+       "3B": 0,
+       "HR": 59,
+       "RBI": 132,
+       "SB": 2,
+       "BB": 85,
+       "BA": 0.281,
+       "OBP": 0.376,
+       "SLG": 0.631,
+       "OPS": 1.007
+      }
+     },
+     {
+      "rank": 4,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "year": 2024,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 158,
+       "AB": 559,
+       "R": 122,
+       "H": 180,
+       "2B": 36,
+       "3B": 1,
+       "HR": 58,
+       "RBI": 144,
+       "SB": 10,
+       "BB": 133,
+       "BA": 0.322,
+       "OBP": 0.458,
+       "SLG": 0.701,
+       "OPS": 1.159
+      }
+     },
+     {
+      "rank": 5,
+      "player": {
+       "player_id": "schwaky01",
+       "name": "Kyle Schwarber",
+       "label": "Kyle Schwarber"
+      },
+      "year": 2025,
+      "team": {
+       "team_id": "PHI",
+       "name": "Philadelphia Phillies",
+       "season_name": "Philadelphia Phillies",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 162,
+       "AB": 604,
+       "R": 111,
+       "H": 145,
+       "2B": 23,
+       "3B": 2,
+       "HR": 56,
+       "RBI": 132,
+       "SB": 10,
+       "BB": 108,
+       "BA": 0.24,
+       "OBP": 0.365,
+       "SLG": 0.563,
+       "OPS": 0.928
+      }
+     },
+     {
+      "rank": 6,
+      "player": {
+       "player_id": "ohtansh01",
+       "name": "Shohei Ohtani",
+       "label": "Shohei Ohtani"
+      },
+      "year": 2025,
+      "team": {
+       "team_id": "LAD",
+       "name": "Los Angeles Dodgers",
+       "season_name": "Los Angeles Dodgers",
+       "league": "NL"
+      },
+      "position": "P",
+      "bats": "L",
+      "stats": {
+       "G": 158,
+       "AB": 611,
+       "R": 146,
+       "H": 172,
+       "2B": 25,
+       "3B": 9,
+       "HR": 55,
+       "RBI": 102,
+       "SB": 20,
+       "BB": 109,
+       "BA": 0.282,
+       "OBP": 0.392,
+       "SLG": 0.622,
+       "OPS": 1.014
+      }
+     },
+     {
+      "rank": 7,
+      "player": {
+       "player_id": "bautijo02",
+       "name": "Jose Bautista",
+       "label": "Jose Bautista (2004-2018)"
+      },
+      "year": 2010,
+      "team": {
+       "team_id": "TOR",
+       "name": "Toronto Blue Jays",
+       "season_name": "Toronto Blue Jays",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 161,
+       "AB": 569,
+       "R": 109,
+       "H": 148,
+       "2B": 35,
+       "3B": 3,
+       "HR": 54,
+       "RBI": 124,
+       "SB": 9,
+       "BB": 100,
+       "BA": 0.26,
+       "OBP": 0.378,
+       "SLG": 0.617,
+       "OPS": 0.995
+      }
+     },
+     {
+      "rank": 8,
+      "player": {
+       "player_id": "ohtansh01",
+       "name": "Shohei Ohtani",
+       "label": "Shohei Ohtani"
+      },
+      "year": 2024,
+      "team": {
+       "team_id": "LAD",
+       "name": "Los Angeles Dodgers",
+       "season_name": "Los Angeles Dodgers",
+       "league": "NL"
+      },
+      "position": "DH",
+      "bats": "L",
+      "stats": {
+       "G": 159,
+       "AB": 636,
+       "R": 134,
+       "H": 197,
+       "2B": 38,
+       "3B": 7,
+       "HR": 54,
+       "RBI": 130,
+       "SB": 59,
+       "BB": 81,
+       "BA": 0.31,
+       "OBP": 0.39,
+       "SLG": 0.646,
+       "OPS": 1.036
+      }
+     },
+     {
+      "rank": 9,
+      "player": {
+       "player_id": "olsonma02",
+       "name": "Matt Olson",
+       "label": "Matt Olson"
+      },
+      "year": 2023,
+      "team": {
+       "team_id": "ATL",
+       "name": "Atlanta Braves",
+       "season_name": "Atlanta Braves",
+       "league": "NL"
+      },
+      "position": "1B",
+      "bats": "L",
+      "stats": {
+       "G": 162,
+       "AB": 608,
+       "R": 127,
+       "H": 172,
+       "2B": 27,
+       "3B": 3,
+       "HR": 54,
+       "RBI": 139,
+       "SB": 1,
+       "BB": 104,
+       "BA": 0.283,
+       "OBP": 0.389,
+       "SLG": 0.604,
+       "OPS": 0.993
+      }
+     },
+     {
+      "rank": 10,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "year": 2025,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 152,
+       "AB": 541,
+       "R": 137,
+       "H": 179,
+       "2B": 30,
+       "3B": 2,
+       "HR": 53,
+       "RBI": 114,
+       "SB": 12,
+       "BB": 124,
+       "BA": 0.331,
+       "OBP": 0.457,
+       "SLG": 0.688,
+       "OPS": 1.144
+      }
+     },
+     {
+      "rank": 11,
+      "player": {
+       "player_id": "alonspe01",
+       "name": "Pete Alonso",
+       "label": "Pete Alonso"
+      },
+      "year": 2019,
+      "team": {
+       "team_id": "NYM",
+       "name": "New York Mets",
+       "season_name": "New York Mets",
+       "league": "NL"
+      },
+      "position": "1B",
+      "bats": "R",
+      "stats": {
+       "G": 161,
+       "AB": 597,
+       "R": 103,
+       "H": 155,
+       "2B": 30,
+       "3B": 2,
+       "HR": 53,
+       "RBI": 120,
+       "SB": 1,
+       "BB": 72,
+       "BA": 0.26,
+       "OBP": 0.358,
+       "SLG": 0.583,
+       "OPS": 0.941
+      }
+     },
+     {
+      "rank": 12,
+      "player": {
+       "player_id": "davisch02",
+       "name": "Chris Davis",
+       "label": "Chris Davis"
+      },
+      "year": 2013,
+      "team": {
+       "team_id": "BAL",
+       "name": "Baltimore Orioles",
+       "season_name": "Baltimore Orioles",
+       "league": "AL"
+      },
+      "position": "1B",
+      "bats": "L",
+      "stats": {
+       "G": 160,
+       "AB": 584,
+       "R": 103,
+       "H": 167,
+       "2B": 42,
+       "3B": 1,
+       "HR": 53,
+       "RBI": 138,
+       "SB": 4,
+       "BB": 72,
+       "BA": 0.286,
+       "OBP": 0.37,
+       "SLG": 0.634,
+       "OPS": 1.004
+      }
+     },
+     {
+      "rank": 13,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "year": 2017,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 155,
+       "AB": 542,
+       "R": 128,
+       "H": 154,
+       "2B": 24,
+       "3B": 3,
+       "HR": 52,
+       "RBI": 114,
+       "SB": 9,
+       "BB": 127,
+       "BA": 0.284,
+       "OBP": 0.422,
+       "SLG": 0.627,
+       "OPS": 1.049
+      }
+     },
+     {
+      "rank": 14,
+      "player": {
+       "player_id": "suareeu01",
+       "name": "Eugenio Suarez",
+       "label": "Eugenio Suarez"
+      },
+      "year": 2019,
+      "team": {
+       "team_id": "CIN",
+       "name": "Cincinnati Reds",
+       "season_name": "Cincinnati Reds",
+       "league": "NL"
+      },
+      "position": "3B",
+      "bats": "R",
+      "stats": {
+       "G": 159,
+       "AB": 575,
+       "R": 87,
+       "H": 156,
+       "2B": 22,
+       "3B": 2,
+       "HR": 49,
+       "RBI": 103,
+       "SB": 3,
+       "BB": 70,
+       "BA": 0.271,
+       "OBP": 0.358,
+       "SLG": 0.572,
+       "OPS": 0.93
+      }
+     },
+     {
+      "rank": 15,
+      "player": {
+       "player_id": "solerjo01",
+       "name": "Jorge Soler",
+       "label": "Jorge Soler"
+      },
+      "year": 2019,
+      "team": {
+       "team_id": "KCR",
+       "name": "Kansas City Royals",
+       "season_name": "Kansas City Royals",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 162,
+       "AB": 589,
+       "R": 95,
+       "H": 156,
+       "2B": 33,
+       "3B": 1,
+       "HR": 48,
+       "RBI": 117,
+       "SB": 3,
+       "BB": 73,
+       "BA": 0.265,
+       "OBP": 0.354,
+       "SLG": 0.569,
+       "OPS": 0.922
+      }
+     },
+     {
+      "rank": 16,
+      "player": {
+       "player_id": "perezsa02",
+       "name": "Salvador Perez",
+       "label": "Salvador Perez"
+      },
+      "year": 2021,
+      "team": {
+       "team_id": "KCR",
+       "name": "Kansas City Royals",
+       "season_name": "Kansas City Royals",
+       "league": "AL"
+      },
+      "position": "C",
+      "bats": "R",
+      "stats": {
+       "G": 161,
+       "AB": 620,
+       "R": 88,
+       "H": 169,
+       "2B": 24,
+       "3B": 0,
+       "HR": 48,
+       "RBI": 121,
+       "SB": 1,
+       "BB": 28,
+       "BA": 0.273,
+       "OBP": 0.316,
+       "SLG": 0.544,
+       "OPS": 0.859
+      }
+     },
+     {
+      "rank": 17,
+      "player": {
+       "player_id": "daviskh01",
+       "name": "Khris Davis",
+       "label": "Khris Davis"
+      },
+      "year": 2018,
+      "team": {
+       "team_id": "OAK",
+       "name": "Athletics",
+       "season_name": "Athletics",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 151,
+       "AB": 576,
+       "R": 98,
+       "H": 142,
+       "2B": 28,
+       "3B": 1,
+       "HR": 48,
+       "RBI": 123,
+       "SB": 0,
+       "BB": 59,
+       "BA": 0.247,
+       "OBP": 0.326,
+       "SLG": 0.549,
+       "OPS": 0.874
+      }
+     },
+     {
+      "rank": 18,
+      "player": {
+       "player_id": "guerrvl02",
+       "name": "Vladimir Guerrero",
+       "label": "Vladimir Guerrero (2019-2025)"
+      },
+      "year": 2021,
+      "team": {
+       "team_id": "TOR",
+       "name": "Toronto Blue Jays",
+       "season_name": "Toronto Blue Jays",
+       "league": "AL"
+      },
+      "position": "1B",
+      "bats": "R",
+      "stats": {
+       "G": 161,
+       "AB": 604,
+       "R": 123,
+       "H": 188,
+       "2B": 29,
+       "3B": 1,
+       "HR": 48,
+       "RBI": 111,
+       "SB": 4,
+       "BB": 86,
+       "BA": 0.311,
+       "OBP": 0.401,
+       "SLG": 0.601,
+       "OPS": 1.002
+      }
+     },
+     {
+      "rank": 19,
+      "player": {
+       "player_id": "trumbma01",
+       "name": "Mark Trumbo",
+       "label": "Mark Trumbo"
+      },
+      "year": 2016,
+      "team": {
+       "team_id": "BAL",
+       "name": "Baltimore Orioles",
+       "season_name": "Baltimore Orioles",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 159,
+       "AB": 613,
+       "R": 94,
+       "H": 157,
+       "2B": 27,
+       "3B": 1,
+       "HR": 47,
+       "RBI": 108,
+       "SB": 2,
+       "BB": 51,
+       "BA": 0.256,
+       "OBP": 0.316,
+       "SLG": 0.533,
+       "OPS": 0.85
+      }
+     },
+     {
+      "rank": 20,
+      "player": {
+       "player_id": "schwaky01",
+       "name": "Kyle Schwarber",
+       "label": "Kyle Schwarber"
+      },
+      "year": 2023,
+      "team": {
+       "team_id": "PHI",
+       "name": "Philadelphia Phillies",
+       "season_name": "Philadelphia Phillies",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 160,
+       "AB": 585,
+       "R": 108,
+       "H": 115,
+       "2B": 19,
+       "3B": 1,
+       "HR": 47,
+       "RBI": 104,
+       "SB": 0,
+       "BB": 126,
+       "BA": 0.197,
+       "OBP": 0.343,
+       "SLG": 0.474,
+       "OPS": 0.817
+      }
+     },
+     {
+      "rank": 21,
+      "player": {
+       "player_id": "davisch02",
+       "name": "Chris Davis",
+       "label": "Chris Davis"
+      },
+      "year": 2015,
+      "team": {
+       "team_id": "BAL",
+       "name": "Baltimore Orioles",
+       "season_name": "Baltimore Orioles",
+       "league": "AL"
+      },
+      "position": "1B",
+      "bats": "L",
+      "stats": {
+       "G": 160,
+       "AB": 573,
+       "R": 100,
+       "H": 150,
+       "2B": 31,
+       "3B": 0,
+       "HR": 47,
+       "RBI": 117,
+       "SB": 2,
+       "BB": 84,
+       "BA": 0.262,
+       "OBP": 0.361,
+       "SLG": 0.562,
+       "OPS": 0.923
+      }
+     },
+     {
+      "rank": 22,
+      "player": {
+       "player_id": "bellico01",
+       "name": "Cody Bellinger",
+       "label": "Cody Bellinger"
+      },
+      "year": 2019,
+      "team": {
+       "team_id": "LAD",
+       "name": "Los Angeles Dodgers",
+       "season_name": "Los Angeles Dodgers",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 156,
+       "AB": 558,
+       "R": 121,
+       "H": 170,
+       "2B": 34,
+       "3B": 3,
+       "HR": 47,
+       "RBI": 115,
+       "SB": 15,
+       "BB": 95,
+       "BA": 0.305,
+       "OBP": 0.406,
+       "SLG": 0.629,
+       "OPS": 1.035
+      }
+     },
+     {
+      "rank": 23,
+      "player": {
+       "player_id": "schwaky01",
+       "name": "Kyle Schwarber",
+       "label": "Kyle Schwarber"
+      },
+      "year": 2022,
+      "team": {
+       "team_id": "PHI",
+       "name": "Philadelphia Phillies",
+       "season_name": "Philadelphia Phillies",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 155,
+       "AB": 577,
+       "R": 100,
+       "H": 126,
+       "2B": 21,
+       "3B": 3,
+       "HR": 46,
+       "RBI": 94,
+       "SB": 10,
+       "BB": 86,
+       "BA": 0.218,
+       "OBP": 0.323,
+       "SLG": 0.504,
+       "OPS": 0.827
+      }
+     },
+     {
+      "rank": 24,
+      "player": {
+       "player_id": "alonspe01",
+       "name": "Pete Alonso",
+       "label": "Pete Alonso"
+      },
+      "year": 2023,
+      "team": {
+       "team_id": "NYM",
+       "name": "New York Mets",
+       "season_name": "New York Mets",
+       "league": "NL"
+      },
+      "position": "1B",
+      "bats": "R",
+      "stats": {
+       "G": 153,
+       "AB": 568,
+       "R": 92,
+       "H": 123,
+       "2B": 21,
+       "3B": 2,
+       "HR": 46,
+       "RBI": 118,
+       "SB": 4,
+       "BB": 65,
+       "BA": 0.217,
+       "OBP": 0.318,
+       "SLG": 0.504,
+       "OPS": 0.821
+      }
+     },
+     {
+      "rank": 25,
+      "player": {
+       "player_id": "ohtansh01",
+       "name": "Shohei Ohtani",
+       "label": "Shohei Ohtani"
+      },
+      "year": 2021,
+      "team": {
+       "team_id": "LAA",
+       "name": "Los Angeles Angels",
+       "season_name": "Los Angeles Angels",
+       "league": "AL"
+      },
+      "position": "P",
+      "bats": "L",
+      "stats": {
+       "G": 158,
+       "AB": 537,
+       "R": 103,
+       "H": 138,
+       "2B": 26,
+       "3B": 8,
+       "HR": 46,
+       "RBI": 100,
+       "SB": 26,
+       "BB": 96,
+       "BA": 0.257,
+       "OBP": 0.372,
+       "SLG": 0.592,
+       "OPS": 0.965
+      }
+     }
+    ],
+    "headline": "Aaron Judge, 2022: 62 home runs"
+   }
+  },
+  "seasons?start=2010&end=2025&metric=OPS&order=desc&limit=25": {
+   "status": 200,
+   "body": {
+    "start": 2010,
+    "end": 2025,
+    "metric": {
+     "key": "OPS",
+     "label": "OPS",
+     "kind": "rate",
+     "higher_is_better": true,
+     "decimals": 3
+    },
+    "order": "desc",
+    "split_mode": "team",
+    "qualification": {
+     "applies": true,
+     "min_ab": 437,
+     "qualified_ab": 437,
+     "mode": "auto",
+     "text": "**Qualified hitters only:** ranking by OPS requires at least **437 AB** (about 2.7 AB per team game of a full season, close to MLB's batting-title rule). Change it under *Stat minimum filters*. Shortened seasons in range (2020) need a lower minimum to appear."
+    },
+    "total_rows": 2084,
+    "rows": [
+     {
+      "rank": 1,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "year": 2024,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 158,
+       "AB": 559,
+       "R": 122,
+       "H": 180,
+       "2B": 36,
+       "3B": 1,
+       "HR": 58,
+       "RBI": 144,
+       "SB": 10,
+       "BB": 133,
+       "BA": 0.322,
+       "OBP": 0.458,
+       "SLG": 0.701,
+       "OPS": 1.159
+      }
+     },
+     {
+      "rank": 2,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "year": 2025,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 152,
+       "AB": 541,
+       "R": 137,
+       "H": 179,
+       "2B": 30,
+       "3B": 2,
+       "HR": 53,
+       "RBI": 114,
+       "SB": 12,
+       "BB": 124,
+       "BA": 0.331,
+       "OBP": 0.457,
+       "SLG": 0.688,
+       "OPS": 1.144
+      }
+     },
+     {
+      "rank": 3,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "year": 2022,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 157,
+       "AB": 570,
+       "R": 133,
+       "H": 177,
+       "2B": 28,
+       "3B": 0,
+       "HR": 62,
+       "RBI": 131,
+       "SB": 16,
+       "BB": 111,
+       "BA": 0.311,
+       "OBP": 0.425,
+       "SLG": 0.686,
+       "OPS": 1.111
+      }
+     },
+     {
+      "rank": 4,
+      "player": {
+       "player_id": "harpebr03",
+       "name": "Bryce Harper",
+       "label": "Bryce Harper"
+      },
+      "year": 2015,
+      "team": {
+       "team_id": "WAS",
+       "name": "Washington Nationals",
+       "season_name": "Washington Nationals",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 153,
+       "AB": 521,
+       "R": 118,
+       "H": 172,
+       "2B": 38,
+       "3B": 1,
+       "HR": 42,
+       "RBI": 99,
+       "SB": 6,
+       "BB": 124,
+       "BA": 0.33,
+       "OBP": 0.46,
+       "SLG": 0.649,
+       "OPS": 1.109
+      }
+     },
+     {
+      "rank": 5,
+      "player": {
+       "player_id": "yelicch01",
+       "name": "Christian Yelich",
+       "label": "Christian Yelich"
+      },
+      "year": 2019,
+      "team": {
+       "team_id": "MIL",
+       "name": "Milwaukee Brewers",
+       "season_name": "Milwaukee Brewers",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 130,
+       "AB": 489,
+       "R": 100,
+       "H": 161,
+       "2B": 29,
+       "3B": 3,
+       "HR": 44,
+       "RBI": 97,
+       "SB": 30,
+       "BB": 80,
+       "BA": 0.329,
+       "OBP": 0.429,
+       "SLG": 0.671,
+       "OPS": 1.1
+      }
+     },
+     {
+      "rank": 6,
+      "player": {
+       "player_id": "troutmi01",
+       "name": "Mike Trout",
+       "label": "Mike Trout"
+      },
+      "year": 2018,
+      "team": {
+       "team_id": "LAA",
+       "name": "Los Angeles Angels",
+       "season_name": "Los Angeles Angels",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 140,
+       "AB": 471,
+       "R": 101,
+       "H": 147,
+       "2B": 24,
+       "3B": 4,
+       "HR": 39,
+       "RBI": 79,
+       "SB": 24,
+       "BB": 122,
+       "BA": 0.312,
+       "OBP": 0.46,
+       "SLG": 0.628,
+       "OPS": 1.088
+      }
+     },
+     {
+      "rank": 7,
+      "player": {
+       "player_id": "troutmi01",
+       "name": "Mike Trout",
+       "label": "Mike Trout"
+      },
+      "year": 2019,
+      "team": {
+       "team_id": "LAA",
+       "name": "Los Angeles Angels",
+       "season_name": "Los Angeles Angels",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 134,
+       "AB": 470,
+       "R": 110,
+       "H": 137,
+       "2B": 27,
+       "3B": 2,
+       "HR": 45,
+       "RBI": 104,
+       "SB": 11,
+       "BB": 110,
+       "BA": 0.291,
+       "OBP": 0.438,
+       "SLG": 0.645,
+       "OPS": 1.083
+      }
+     },
+     {
+      "rank": 8,
+      "player": {
+       "player_id": "cabremi01",
+       "name": "Miguel Cabrera",
+       "label": "Miguel Cabrera"
+      },
+      "year": 2013,
+      "team": {
+       "team_id": "DET",
+       "name": "Detroit Tigers",
+       "season_name": "Detroit Tigers",
+       "league": "AL"
+      },
+      "position": "3B",
+      "bats": "R",
+      "stats": {
+       "G": 148,
+       "AB": 555,
+       "R": 103,
+       "H": 193,
+       "2B": 26,
+       "3B": 1,
+       "HR": 44,
+       "RBI": 137,
+       "SB": 3,
+       "BB": 90,
+       "BA": 0.348,
+       "OBP": 0.442,
+       "SLG": 0.636,
+       "OPS": 1.078
+      }
+     },
+     {
+      "rank": 9,
+      "player": {
+       "player_id": "bettsmo01",
+       "name": "Mookie Betts",
+       "label": "Mookie Betts"
+      },
+      "year": 2018,
+      "team": {
+       "team_id": "BOS",
+       "name": "Boston Red Sox",
+       "season_name": "Boston Red Sox",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 136,
+       "AB": 520,
+       "R": 129,
+       "H": 180,
+       "2B": 47,
+       "3B": 5,
+       "HR": 32,
+       "RBI": 80,
+       "SB": 30,
+       "BB": 81,
+       "BA": 0.346,
+       "OBP": 0.438,
+       "SLG": 0.64,
+       "OPS": 1.078
+      }
+     },
+     {
+      "rank": 10,
+      "player": {
+       "player_id": "ohtansh01",
+       "name": "Shohei Ohtani",
+       "label": "Shohei Ohtani"
+      },
+      "year": 2023,
+      "team": {
+       "team_id": "LAA",
+       "name": "Los Angeles Angels",
+       "season_name": "Los Angeles Angels",
+       "league": "AL"
+      },
+      "position": "P",
+      "bats": "L",
+      "stats": {
+       "G": 135,
+       "AB": 497,
+       "R": 102,
+       "H": 151,
+       "2B": 26,
+       "3B": 8,
+       "HR": 44,
+       "RBI": 95,
+       "SB": 20,
+       "BB": 91,
+       "BA": 0.304,
+       "OBP": 0.412,
+       "SLG": 0.654,
+       "OPS": 1.066
+      }
+     },
+     {
+      "rank": 11,
+      "player": {
+       "player_id": "bautijo02",
+       "name": "Jose Bautista",
+       "label": "Jose Bautista (2004-2018)"
+      },
+      "year": 2011,
+      "team": {
+       "team_id": "TOR",
+       "name": "Toronto Blue Jays",
+       "season_name": "Toronto Blue Jays",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 149,
+       "AB": 513,
+       "R": 105,
+       "H": 155,
+       "2B": 24,
+       "3B": 2,
+       "HR": 43,
+       "RBI": 103,
+       "SB": 9,
+       "BB": 132,
+       "BA": 0.302,
+       "OBP": 0.447,
+       "SLG": 0.608,
+       "OPS": 1.056
+      }
+     },
+     {
+      "rank": 12,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "year": 2017,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 155,
+       "AB": 542,
+       "R": 128,
+       "H": 154,
+       "2B": 24,
+       "3B": 3,
+       "HR": 52,
+       "RBI": 114,
+       "SB": 9,
+       "BB": 127,
+       "BA": 0.284,
+       "OBP": 0.422,
+       "SLG": 0.627,
+       "OPS": 1.049
+      }
+     },
+     {
+      "rank": 13,
+      "player": {
+       "player_id": "hamiljo03",
+       "name": "Josh Hamilton",
+       "label": "Josh Hamilton"
+      },
+      "year": 2010,
+      "team": {
+       "team_id": "TEX",
+       "name": "Texas Rangers",
+       "season_name": "Texas Rangers",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 133,
+       "AB": 518,
+       "R": 95,
+       "H": 186,
+       "2B": 40,
+       "3B": 3,
+       "HR": 32,
+       "RBI": 100,
+       "SB": 8,
+       "BB": 43,
+       "BA": 0.359,
+       "OBP": 0.411,
+       "SLG": 0.633,
+       "OPS": 1.044
+      }
+     },
+     {
+      "rank": 14,
+      "player": {
+       "player_id": "harpebr03",
+       "name": "Bryce Harper",
+       "label": "Bryce Harper"
+      },
+      "year": 2021,
+      "team": {
+       "team_id": "PHI",
+       "name": "Philadelphia Phillies",
+       "season_name": "Philadelphia Phillies",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 141,
+       "AB": 488,
+       "R": 101,
+       "H": 151,
+       "2B": 42,
+       "3B": 1,
+       "HR": 35,
+       "RBI": 84,
+       "SB": 13,
+       "BB": 100,
+       "BA": 0.309,
+       "OBP": 0.429,
+       "SLG": 0.615,
+       "OPS": 1.044
+      }
+     },
+     {
+      "rank": 15,
+      "player": {
+       "player_id": "cabremi01",
+       "name": "Miguel Cabrera",
+       "label": "Miguel Cabrera"
+      },
+      "year": 2010,
+      "team": {
+       "team_id": "DET",
+       "name": "Detroit Tigers",
+       "season_name": "Detroit Tigers",
+       "league": "AL"
+      },
+      "position": "1B",
+      "bats": "R",
+      "stats": {
+       "G": 150,
+       "AB": 548,
+       "R": 111,
+       "H": 180,
+       "2B": 45,
+       "3B": 1,
+       "HR": 38,
+       "RBI": 126,
+       "SB": 3,
+       "BB": 89,
+       "BA": 0.328,
+       "OBP": 0.42,
+       "SLG": 0.622,
+       "OPS": 1.042
+      }
+     },
+     {
+      "rank": 16,
+      "player": {
+       "player_id": "ohtansh01",
+       "name": "Shohei Ohtani",
+       "label": "Shohei Ohtani"
+      },
+      "year": 2024,
+      "team": {
+       "team_id": "LAD",
+       "name": "Los Angeles Dodgers",
+       "season_name": "Los Angeles Dodgers",
+       "league": "NL"
+      },
+      "position": "DH",
+      "bats": "L",
+      "stats": {
+       "G": 159,
+       "AB": 636,
+       "R": 134,
+       "H": 197,
+       "2B": 38,
+       "3B": 7,
+       "HR": 54,
+       "RBI": 130,
+       "SB": 59,
+       "BB": 81,
+       "BA": 0.31,
+       "OBP": 0.39,
+       "SLG": 0.646,
+       "OPS": 1.036
+      }
+     },
+     {
+      "rank": 17,
+      "player": {
+       "player_id": "bellico01",
+       "name": "Cody Bellinger",
+       "label": "Cody Bellinger"
+      },
+      "year": 2019,
+      "team": {
+       "team_id": "LAD",
+       "name": "Los Angeles Dodgers",
+       "season_name": "Los Angeles Dodgers",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 156,
+       "AB": 558,
+       "R": 121,
+       "H": 170,
+       "2B": 34,
+       "3B": 3,
+       "HR": 47,
+       "RBI": 115,
+       "SB": 15,
+       "BB": 95,
+       "BA": 0.305,
+       "OBP": 0.406,
+       "SLG": 0.629,
+       "OPS": 1.035
+      }
+     },
+     {
+      "rank": 18,
+      "player": {
+       "player_id": "cabremi01",
+       "name": "Miguel Cabrera",
+       "label": "Miguel Cabrera"
+      },
+      "year": 2011,
+      "team": {
+       "team_id": "DET",
+       "name": "Detroit Tigers",
+       "season_name": "Detroit Tigers",
+       "league": "AL"
+      },
+      "position": "1B",
+      "bats": "R",
+      "stats": {
+       "G": 161,
+       "AB": 572,
+       "R": 111,
+       "H": 197,
+       "2B": 48,
+       "3B": 0,
+       "HR": 30,
+       "RBI": 105,
+       "SB": 2,
+       "BB": 108,
+       "BA": 0.344,
+       "OBP": 0.448,
+       "SLG": 0.586,
+       "OPS": 1.033
+      }
+     },
+     {
+      "rank": 19,
+      "player": {
+       "player_id": "vottojo01",
+       "name": "Joey Votto",
+       "label": "Joey Votto"
+      },
+      "year": 2017,
+      "team": {
+       "team_id": "CIN",
+       "name": "Cincinnati Reds",
+       "season_name": "Cincinnati Reds",
+       "league": "NL"
+      },
+      "position": "1B",
+      "bats": "L",
+      "stats": {
+       "G": 162,
+       "AB": 559,
+       "R": 106,
+       "H": 179,
+       "2B": 34,
+       "3B": 1,
+       "HR": 36,
+       "RBI": 100,
+       "SB": 5,
+       "BB": 134,
+       "BA": 0.32,
+       "OBP": 0.454,
+       "SLG": 0.578,
+       "OPS": 1.032
+      }
+     },
+     {
+      "rank": 20,
+      "player": {
+       "player_id": "martijd02",
+       "name": "J. D. Martinez",
+       "label": "J. D. Martinez"
+      },
+      "year": 2018,
+      "team": {
+       "team_id": "BOS",
+       "name": "Boston Red Sox",
+       "season_name": "Boston Red Sox",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 150,
+       "AB": 569,
+       "R": 111,
+       "H": 188,
+       "2B": 37,
+       "3B": 2,
+       "HR": 43,
+       "RBI": 130,
+       "SB": 6,
+       "BB": 69,
+       "BA": 0.33,
+       "OBP": 0.402,
+       "SLG": 0.629,
+       "OPS": 1.031
+      }
+     },
+     {
+      "rank": 21,
+      "player": {
+       "player_id": "cruzne02",
+       "name": "Nelson Cruz",
+       "label": "Nelson Cruz (2005-2023)"
+      },
+      "year": 2019,
+      "team": {
+       "team_id": "MIN",
+       "name": "Minnesota Twins",
+       "season_name": "Minnesota Twins",
+       "league": "AL"
+      },
+      "position": "DH",
+      "bats": "R",
+      "stats": {
+       "G": 120,
+       "AB": 454,
+       "R": 81,
+       "H": 141,
+       "2B": 26,
+       "3B": 0,
+       "HR": 41,
+       "RBI": 108,
+       "SB": 0,
+       "BB": 56,
+       "BA": 0.311,
+       "OBP": 0.392,
+       "SLG": 0.639,
+       "OPS": 1.031
+      }
+     },
+     {
+      "rank": 22,
+      "player": {
+       "player_id": "vottojo01",
+       "name": "Joey Votto",
+       "label": "Joey Votto"
+      },
+      "year": 2010,
+      "team": {
+       "team_id": "CIN",
+       "name": "Cincinnati Reds",
+       "season_name": "Cincinnati Reds",
+       "league": "NL"
+      },
+      "position": "1B",
+      "bats": "L",
+      "stats": {
+       "G": 150,
+       "AB": 547,
+       "R": 106,
+       "H": 177,
+       "2B": 36,
+       "3B": 2,
+       "HR": 37,
+       "RBI": 113,
+       "SB": 16,
+       "BB": 91,
+       "BA": 0.324,
+       "OBP": 0.424,
+       "SLG": 0.6,
+       "OPS": 1.024
+      }
+     },
+     {
+      "rank": 23,
+      "player": {
+       "player_id": "ortizda01",
+       "name": "David Ortiz",
+       "label": "David Ortiz"
+      },
+      "year": 2016,
+      "team": {
+       "team_id": "BOS",
+       "name": "Boston Red Sox",
+       "season_name": "Boston Red Sox",
+       "league": "AL"
+      },
+      "position": "1B",
+      "bats": "L",
+      "stats": {
+       "G": 151,
+       "AB": 537,
+       "R": 79,
+       "H": 169,
+       "2B": 48,
+       "3B": 1,
+       "HR": 38,
+       "RBI": 127,
+       "SB": 2,
+       "BB": 80,
+       "BA": 0.315,
+       "OBP": 0.401,
+       "SLG": 0.62,
+       "OPS": 1.021
+      }
+     },
+     {
+      "rank": 24,
+      "player": {
+       "player_id": "alvaryo01",
+       "name": "Yordan Alvarez",
+       "label": "Yordan Alvarez"
+      },
+      "year": 2022,
+      "team": {
+       "team_id": "HOU",
+       "name": "Houston Astros",
+       "season_name": "Houston Astros",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 135,
+       "AB": 470,
+       "R": 95,
+       "H": 144,
+       "2B": 29,
+       "3B": 2,
+       "HR": 37,
+       "RBI": 97,
+       "SB": 1,
+       "BB": 78,
+       "BA": 0.306,
+       "OBP": 0.406,
+       "SLG": 0.613,
+       "OPS": 1.019
+      }
+     },
+     {
+      "rank": 25,
+      "player": {
+       "player_id": "bregmal01",
+       "name": "Alex Bregman",
+       "label": "Alex Bregman"
+      },
+      "year": 2019,
+      "team": {
+       "team_id": "HOU",
+       "name": "Houston Astros",
+       "season_name": "Houston Astros",
+       "league": "AL"
+      },
+      "position": "3B",
+      "bats": "R",
+      "stats": {
+       "G": 156,
+       "AB": 554,
+       "R": 122,
+       "H": 164,
+       "2B": 37,
+       "3B": 2,
+       "HR": 41,
+       "RBI": 112,
+       "SB": 5,
+       "BB": 119,
+       "BA": 0.296,
+       "OBP": 0.423,
+       "SLG": 0.592,
+       "OPS": 1.015
+      }
+     }
+    ],
+    "headline": "Aaron Judge, 2024: 1.159 OPS"
+   }
+  },
+  "seasons?start=2020&end=2025&metric=HR&order=desc&limit=25": {
+   "status": 200,
+   "body": {
+    "start": 2020,
+    "end": 2025,
+    "metric": {
+     "key": "HR",
+     "label": "HR",
+     "kind": "count",
+     "higher_is_better": true,
+     "decimals": 0
+    },
+    "order": "desc",
+    "split_mode": "team",
+    "qualification": {
+     "applies": false,
+     "min_ab": 0,
+     "qualified_ab": 437,
+     "mode": "auto",
+     "text": ""
+    },
+    "total_rows": 9706,
+    "rows": [
+     {
+      "rank": 1,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "year": 2022,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 157,
+       "AB": 570,
+       "R": 133,
+       "H": 177,
+       "2B": 28,
+       "3B": 0,
+       "HR": 62,
+       "RBI": 131,
+       "SB": 16,
+       "BB": 111,
+       "BA": 0.311,
+       "OBP": 0.425,
+       "SLG": 0.686,
+       "OPS": 1.111
+      }
+     },
+     {
+      "rank": 2,
+      "player": {
+       "player_id": "raleica01",
+       "name": "Cal Raleigh",
+       "label": "Cal Raleigh"
+      },
+      "year": 2025,
+      "team": {
+       "team_id": "SEA",
+       "name": "Seattle Mariners",
+       "season_name": "Seattle Mariners",
+       "league": "AL"
+      },
+      "position": "C",
+      "bats": "B",
+      "stats": {
+       "G": 159,
+       "AB": 596,
+       "R": 110,
+       "H": 147,
+       "2B": 24,
+       "3B": 0,
+       "HR": 60,
+       "RBI": 125,
+       "SB": 14,
+       "BB": 97,
+       "BA": 0.247,
+       "OBP": 0.359,
+       "SLG": 0.589,
+       "OPS": 0.948
+      }
+     },
+     {
+      "rank": 3,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "year": 2024,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 158,
+       "AB": 559,
+       "R": 122,
+       "H": 180,
+       "2B": 36,
+       "3B": 1,
+       "HR": 58,
+       "RBI": 144,
+       "SB": 10,
+       "BB": 133,
+       "BA": 0.322,
+       "OBP": 0.458,
+       "SLG": 0.701,
+       "OPS": 1.159
+      }
+     },
+     {
+      "rank": 4,
+      "player": {
+       "player_id": "schwaky01",
+       "name": "Kyle Schwarber",
+       "label": "Kyle Schwarber"
+      },
+      "year": 2025,
+      "team": {
+       "team_id": "PHI",
+       "name": "Philadelphia Phillies",
+       "season_name": "Philadelphia Phillies",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 162,
+       "AB": 604,
+       "R": 111,
+       "H": 145,
+       "2B": 23,
+       "3B": 2,
+       "HR": 56,
+       "RBI": 132,
+       "SB": 10,
+       "BB": 108,
+       "BA": 0.24,
+       "OBP": 0.365,
+       "SLG": 0.563,
+       "OPS": 0.928
+      }
+     },
+     {
+      "rank": 5,
+      "player": {
+       "player_id": "ohtansh01",
+       "name": "Shohei Ohtani",
+       "label": "Shohei Ohtani"
+      },
+      "year": 2025,
+      "team": {
+       "team_id": "LAD",
+       "name": "Los Angeles Dodgers",
+       "season_name": "Los Angeles Dodgers",
+       "league": "NL"
+      },
+      "position": "P",
+      "bats": "L",
+      "stats": {
+       "G": 158,
+       "AB": 611,
+       "R": 146,
+       "H": 172,
+       "2B": 25,
+       "3B": 9,
+       "HR": 55,
+       "RBI": 102,
+       "SB": 20,
+       "BB": 109,
+       "BA": 0.282,
+       "OBP": 0.392,
+       "SLG": 0.622,
+       "OPS": 1.014
+      }
+     },
+     {
+      "rank": 6,
+      "player": {
+       "player_id": "ohtansh01",
+       "name": "Shohei Ohtani",
+       "label": "Shohei Ohtani"
+      },
+      "year": 2024,
+      "team": {
+       "team_id": "LAD",
+       "name": "Los Angeles Dodgers",
+       "season_name": "Los Angeles Dodgers",
+       "league": "NL"
+      },
+      "position": "DH",
+      "bats": "L",
+      "stats": {
+       "G": 159,
+       "AB": 636,
+       "R": 134,
+       "H": 197,
+       "2B": 38,
+       "3B": 7,
+       "HR": 54,
+       "RBI": 130,
+       "SB": 59,
+       "BB": 81,
+       "BA": 0.31,
+       "OBP": 0.39,
+       "SLG": 0.646,
+       "OPS": 1.036
+      }
+     },
+     {
+      "rank": 7,
+      "player": {
+       "player_id": "olsonma02",
+       "name": "Matt Olson",
+       "label": "Matt Olson"
+      },
+      "year": 2023,
+      "team": {
+       "team_id": "ATL",
+       "name": "Atlanta Braves",
+       "season_name": "Atlanta Braves",
+       "league": "NL"
+      },
+      "position": "1B",
+      "bats": "L",
+      "stats": {
+       "G": 162,
+       "AB": 608,
+       "R": 127,
+       "H": 172,
+       "2B": 27,
+       "3B": 3,
+       "HR": 54,
+       "RBI": 139,
+       "SB": 1,
+       "BB": 104,
+       "BA": 0.283,
+       "OBP": 0.389,
+       "SLG": 0.604,
+       "OPS": 0.993
+      }
+     },
+     {
+      "rank": 8,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "year": 2025,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 152,
+       "AB": 541,
+       "R": 137,
+       "H": 179,
+       "2B": 30,
+       "3B": 2,
+       "HR": 53,
+       "RBI": 114,
+       "SB": 12,
+       "BB": 124,
+       "BA": 0.331,
+       "OBP": 0.457,
+       "SLG": 0.688,
+       "OPS": 1.144
+      }
+     },
+     {
+      "rank": 9,
+      "player": {
+       "player_id": "perezsa02",
+       "name": "Salvador Perez",
+       "label": "Salvador Perez"
+      },
+      "year": 2021,
+      "team": {
+       "team_id": "KCR",
+       "name": "Kansas City Royals",
+       "season_name": "Kansas City Royals",
+       "league": "AL"
+      },
+      "position": "C",
+      "bats": "R",
+      "stats": {
+       "G": 161,
+       "AB": 620,
+       "R": 88,
+       "H": 169,
+       "2B": 24,
+       "3B": 0,
+       "HR": 48,
+       "RBI": 121,
+       "SB": 1,
+       "BB": 28,
+       "BA": 0.273,
+       "OBP": 0.316,
+       "SLG": 0.544,
+       "OPS": 0.859
+      }
+     },
+     {
+      "rank": 10,
+      "player": {
+       "player_id": "guerrvl02",
+       "name": "Vladimir Guerrero",
+       "label": "Vladimir Guerrero (2019-2025)"
+      },
+      "year": 2021,
+      "team": {
+       "team_id": "TOR",
+       "name": "Toronto Blue Jays",
+       "season_name": "Toronto Blue Jays",
+       "league": "AL"
+      },
+      "position": "1B",
+      "bats": "R",
+      "stats": {
+       "G": 161,
+       "AB": 604,
+       "R": 123,
+       "H": 188,
+       "2B": 29,
+       "3B": 1,
+       "HR": 48,
+       "RBI": 111,
+       "SB": 4,
+       "BB": 86,
+       "BA": 0.311,
+       "OBP": 0.401,
+       "SLG": 0.601,
+       "OPS": 1.002
+      }
+     },
+     {
+      "rank": 11,
+      "player": {
+       "player_id": "schwaky01",
+       "name": "Kyle Schwarber",
+       "label": "Kyle Schwarber"
+      },
+      "year": 2023,
+      "team": {
+       "team_id": "PHI",
+       "name": "Philadelphia Phillies",
+       "season_name": "Philadelphia Phillies",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 160,
+       "AB": 585,
+       "R": 108,
+       "H": 115,
+       "2B": 19,
+       "3B": 1,
+       "HR": 47,
+       "RBI": 104,
+       "SB": 0,
+       "BB": 126,
+       "BA": 0.197,
+       "OBP": 0.343,
+       "SLG": 0.474,
+       "OPS": 0.817
+      }
+     },
+     {
+      "rank": 12,
+      "player": {
+       "player_id": "ohtansh01",
+       "name": "Shohei Ohtani",
+       "label": "Shohei Ohtani"
+      },
+      "year": 2021,
+      "team": {
+       "team_id": "LAA",
+       "name": "Los Angeles Angels",
+       "season_name": "Los Angeles Angels",
+       "league": "AL"
+      },
+      "position": "P",
+      "bats": "L",
+      "stats": {
+       "G": 158,
+       "AB": 537,
+       "R": 103,
+       "H": 138,
+       "2B": 26,
+       "3B": 8,
+       "HR": 46,
+       "RBI": 100,
+       "SB": 26,
+       "BB": 96,
+       "BA": 0.257,
+       "OBP": 0.372,
+       "SLG": 0.592,
+       "OPS": 0.965
+      }
+     },
+     {
+      "rank": 13,
+      "player": {
+       "player_id": "schwaky01",
+       "name": "Kyle Schwarber",
+       "label": "Kyle Schwarber"
+      },
+      "year": 2022,
+      "team": {
+       "team_id": "PHI",
+       "name": "Philadelphia Phillies",
+       "season_name": "Philadelphia Phillies",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 155,
+       "AB": 577,
+       "R": 100,
+       "H": 126,
+       "2B": 21,
+       "3B": 3,
+       "HR": 46,
+       "RBI": 94,
+       "SB": 10,
+       "BB": 86,
+       "BA": 0.218,
+       "OBP": 0.323,
+       "SLG": 0.504,
+       "OPS": 0.827
+      }
+     },
+     {
+      "rank": 14,
+      "player": {
+       "player_id": "alonspe01",
+       "name": "Pete Alonso",
+       "label": "Pete Alonso"
+      },
+      "year": 2023,
+      "team": {
+       "team_id": "NYM",
+       "name": "New York Mets",
+       "season_name": "New York Mets",
+       "league": "NL"
+      },
+      "position": "1B",
+      "bats": "R",
+      "stats": {
+       "G": 153,
+       "AB": 568,
+       "R": 92,
+       "H": 123,
+       "2B": 21,
+       "3B": 2,
+       "HR": 46,
+       "RBI": 118,
+       "SB": 4,
+       "BB": 65,
+       "BA": 0.217,
+       "OBP": 0.318,
+       "SLG": 0.504,
+       "OPS": 0.821
+      }
+     },
+     {
+      "rank": 15,
+      "player": {
+       "player_id": "semiema01",
+       "name": "Marcus Semien",
+       "label": "Marcus Semien"
+      },
+      "year": 2021,
+      "team": {
+       "team_id": "TOR",
+       "name": "Toronto Blue Jays",
+       "season_name": "Toronto Blue Jays",
+       "league": "AL"
+      },
+      "position": "2B",
+      "bats": "R",
+      "stats": {
+       "G": 162,
+       "AB": 652,
+       "R": 115,
+       "H": 173,
+       "2B": 39,
+       "3B": 2,
+       "HR": 45,
+       "RBI": 102,
+       "SB": 15,
+       "BB": 66,
+       "BA": 0.265,
+       "OBP": 0.334,
+       "SLG": 0.538,
+       "OPS": 0.873
+      }
+     },
+     {
+      "rank": 16,
+      "player": {
+       "player_id": "caminju01",
+       "name": "Junior Caminero",
+       "label": "Junior Caminero"
+      },
+      "year": 2025,
+      "team": {
+       "team_id": "TBR",
+       "name": "Tampa Bay Rays",
+       "season_name": "Tampa Bay Rays",
+       "league": "AL"
+      },
+      "position": "3B",
+      "bats": "R",
+      "stats": {
+       "G": 154,
+       "AB": 602,
+       "R": 93,
+       "H": 159,
+       "2B": 28,
+       "3B": 0,
+       "HR": 45,
+       "RBI": 110,
+       "SB": 7,
+       "BB": 41,
+       "BA": 0.264,
+       "OBP": 0.311,
+       "SLG": 0.535,
+       "OPS": 0.846
+      }
+     },
+     {
+      "rank": 17,
+      "player": {
+       "player_id": "ohtansh01",
+       "name": "Shohei Ohtani",
+       "label": "Shohei Ohtani"
+      },
+      "year": 2023,
+      "team": {
+       "team_id": "LAA",
+       "name": "Los Angeles Angels",
+       "season_name": "Los Angeles Angels",
+       "league": "AL"
+      },
+      "position": "P",
+      "bats": "L",
+      "stats": {
+       "G": 135,
+       "AB": 497,
+       "R": 102,
+       "H": 151,
+       "2B": 26,
+       "3B": 8,
+       "HR": 44,
+       "RBI": 95,
+       "SB": 20,
+       "BB": 91,
+       "BA": 0.304,
+       "OBP": 0.412,
+       "SLG": 0.654,
+       "OPS": 1.066
+      }
+     },
+     {
+      "rank": 18,
+      "player": {
+       "player_id": "santaan02",
+       "name": "Anthony Santander",
+       "label": "Anthony Santander"
+      },
+      "year": 2024,
+      "team": {
+       "team_id": "BAL",
+       "name": "Baltimore Orioles",
+       "season_name": "Baltimore Orioles",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "B",
+      "stats": {
+       "G": 155,
+       "AB": 595,
+       "R": 91,
+       "H": 140,
+       "2B": 25,
+       "3B": 2,
+       "HR": 44,
+       "RBI": 102,
+       "SB": 2,
+       "BB": 58,
+       "BA": 0.235,
+       "OBP": 0.308,
+       "SLG": 0.506,
+       "OPS": 0.814
+      }
+     },
+     {
+      "rank": 19,
+      "player": {
+       "player_id": "sotoju01",
+       "name": "Juan Soto",
+       "label": "Juan Soto"
+      },
+      "year": 2025,
+      "team": {
+       "team_id": "NYM",
+       "name": "New York Mets",
+       "season_name": "New York Mets",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 160,
+       "AB": 577,
+       "R": 120,
+       "H": 152,
+       "2B": 20,
+       "3B": 1,
+       "HR": 43,
+       "RBI": 105,
+       "SB": 38,
+       "BB": 127,
+       "BA": 0.263,
+       "OBP": 0.396,
+       "SLG": 0.525,
+       "OPS": 0.921
+      }
+     },
+     {
+      "rank": 20,
+      "player": {
+       "player_id": "tatisfe02",
+       "name": "Fernando Tatis",
+       "label": "Fernando Tatis (2019-2025)"
+      },
+      "year": 2021,
+      "team": {
+       "team_id": "SDP",
+       "name": "San Diego Padres",
+       "season_name": "San Diego Padres",
+       "league": "NL"
+      },
+      "position": "SS",
+      "bats": "R",
+      "stats": {
+       "G": 130,
+       "AB": 478,
+       "R": 99,
+       "H": 135,
+       "2B": 31,
+       "3B": 0,
+       "HR": 42,
+       "RBI": 97,
+       "SB": 25,
+       "BB": 62,
+       "BA": 0.282,
+       "OBP": 0.364,
+       "SLG": 0.611,
+       "OPS": 0.975
+      }
+     },
+     {
+      "rank": 21,
+      "player": {
+       "player_id": "acunaro01",
+       "name": "Ronald Acuña",
+       "label": "Ronald Acuña"
+      },
+      "year": 2023,
+      "team": {
+       "team_id": "ATL",
+       "name": "Atlanta Braves",
+       "season_name": "Atlanta Braves",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 158,
+       "AB": 643,
+       "R": 149,
+       "H": 217,
+       "2B": 35,
+       "3B": 4,
+       "HR": 41,
+       "RBI": 106,
+       "SB": 73,
+       "BB": 80,
+       "BA": 0.337,
+       "OBP": 0.416,
+       "SLG": 0.596,
+       "OPS": 1.012
+      }
+     },
+     {
+      "rank": 22,
+      "player": {
+       "player_id": "sotoju01",
+       "name": "Juan Soto",
+       "label": "Juan Soto"
+      },
+      "year": 2024,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 157,
+       "AB": 576,
+       "R": 128,
+       "H": 166,
+       "2B": 31,
+       "3B": 4,
+       "HR": 41,
+       "RBI": 109,
+       "SB": 7,
+       "BB": 129,
+       "BA": 0.288,
+       "OBP": 0.419,
+       "SLG": 0.569,
+       "OPS": 0.989
+      }
+     },
+     {
+      "rank": 23,
+      "player": {
+       "player_id": "alonspe01",
+       "name": "Pete Alonso",
+       "label": "Pete Alonso"
+      },
+      "year": 2022,
+      "team": {
+       "team_id": "NYM",
+       "name": "New York Mets",
+       "season_name": "New York Mets",
+       "league": "NL"
+      },
+      "position": "1B",
+      "bats": "R",
+      "stats": {
+       "G": 160,
+       "AB": 597,
+       "R": 95,
+       "H": 162,
+       "2B": 27,
+       "3B": 0,
+       "HR": 40,
+       "RBI": 131,
+       "SB": 5,
+       "BB": 67,
+       "BA": 0.271,
+       "OBP": 0.352,
+       "SLG": 0.518,
+       "OPS": 0.869
+      }
+     },
+     {
+      "rank": 24,
+      "player": {
+       "player_id": "troutmi01",
+       "name": "Mike Trout",
+       "label": "Mike Trout"
+      },
+      "year": 2022,
+      "team": {
+       "team_id": "LAA",
+       "name": "Los Angeles Angels",
+       "season_name": "Los Angeles Angels",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 119,
+       "AB": 438,
+       "R": 85,
+       "H": 124,
+       "2B": 28,
+       "3B": 2,
+       "HR": 40,
+       "RBI": 80,
+       "SB": 1,
+       "BB": 54,
+       "BA": 0.283,
+       "OBP": 0.369,
+       "SLG": 0.63,
+       "OPS": 0.999
+      }
+     },
+     {
+      "rank": 25,
+      "player": {
+       "player_id": "ozunama01",
+       "name": "Marcell Ozuna",
+       "label": "Marcell Ozuna"
+      },
+      "year": 2023,
+      "team": {
+       "team_id": "ATL",
+       "name": "Atlanta Braves",
+       "season_name": "Atlanta Braves",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 144,
+       "AB": 530,
+       "R": 84,
+       "H": 145,
+       "2B": 29,
+       "3B": 1,
+       "HR": 40,
+       "RBI": 100,
+       "SB": 0,
+       "BB": 57,
+       "BA": 0.274,
+       "OBP": 0.346,
+       "SLG": 0.558,
+       "OPS": 0.905
+      }
+     }
+    ],
+    "headline": "Aaron Judge, 2022: 62 home runs"
+   }
+  },
+  "leaderboards?start=2020&end=2025&metric=score&limit=25": {
+   "status": 200,
+   "body": {
+    "start": 2020,
+    "end": 2025,
+    "metric": {
+     "key": "score",
+     "label": "Score",
+     "kind": "score",
+     "higher_is_better": true,
+     "decimals": 1
+    },
+    "weights": {
+     "HR": 1,
+     "RBI": 1,
+     "SB": 1
+    },
+    "qualification": {
+     "applies": false,
+     "min_ab": 0,
+     "qualified_ab": 2349,
+     "mode": "auto",
+     "text": ""
+    },
+    "total_rows": 2840,
+    "rows": [
+     {
+      "rank": 1,
+      "player": {
+       "player_id": "ohtansh01",
+       "name": "Shohei Ohtani",
+       "label": "Shohei Ohtani"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 3020,
+       "R": 598,
+       "H": 847,
+       "2B": 151,
+       "3B": 38,
+       "HR": 240,
+       "RBI": 546,
+       "SB": 143,
+       "BB": 471,
+       "BA": 0.28,
+       "OBP": 0.38,
+       "SLG": 0.594,
+       "OPS": 0.974
+      },
+      "score": 929
+     },
+     {
+      "rank": 2,
+      "player": {
+       "player_id": "ramirjo01",
+       "name": "Jose Ramirez",
+       "label": "Jose Ramirez (2013-2025)"
+      },
+      "bats": "B",
+      "stats": {
+       "G": null,
+       "AB": 3196,
+       "R": 550,
+       "H": 892,
+       "2B": 201,
+       "3B": 21,
+       "HR": 175,
+       "RBI": 558,
+       "SB": 170,
+       "BB": 365,
+       "BA": 0.279,
+       "OBP": 0.355,
+       "SLG": 0.519,
+       "OPS": 0.874
+      },
+      "score": 903
+     },
+     {
+      "rank": 3,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2688,
+       "R": 583,
+       "H": 818,
+       "2B": 137,
+       "3B": 3,
+       "HR": 258,
+       "RBI": 584,
+       "SB": 47,
+       "BB": 541,
+       "BA": 0.304,
+       "OBP": 0.423,
+       "SLG": 0.645,
+       "OPS": 1.068
+      },
+      "score": 889
+     },
+     {
+      "rank": 4,
+      "player": {
+       "player_id": "alonspe01",
+       "name": "Pete Alonso",
+       "label": "Pete Alonso"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3166,
+       "R": 477,
+       "H": 796,
+       "2B": 153,
+       "3B": 6,
+       "HR": 211,
+       "RBI": 592,
+       "SB": 17,
+       "BB": 347,
+       "BA": 0.251,
+       "OBP": 0.337,
+       "SLG": 0.503,
+       "OPS": 0.841
+      },
+      "score": 820
+     },
+     {
+      "rank": 5,
+      "player": {
+       "player_id": "olsonma02",
+       "name": "Matt Olson",
+       "label": "Matt Olson"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 3223,
+       "R": 518,
+       "H": 832,
+       "2B": 188,
+       "3B": 7,
+       "HR": 199,
+       "RBI": 588,
+       "SB": 7,
+       "BB": 463,
+       "BA": 0.258,
+       "OBP": 0.354,
+       "SLG": 0.506,
+       "OPS": 0.86
+      },
+      "score": 794
+     },
+     {
+      "rank": 6,
+      "player": {
+       "player_id": "schwaky01",
+       "name": "Kyle Schwarber",
+       "label": "Kyle Schwarber"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2929,
+       "R": 535,
+       "H": 670,
+       "2B": 110,
+       "3B": 6,
+       "HR": 230,
+       "RBI": 529,
+       "SB": 27,
+       "BB": 520,
+       "BA": 0.229,
+       "OBP": 0.35,
+       "SLG": 0.506,
+       "OPS": 0.856
+      },
+      "score": 786
+     },
+     {
+      "rank": 7,
+      "player": {
+       "player_id": "sotoju01",
+       "name": "Juan Soto",
+       "label": "Juan Soto"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2901,
+       "R": 588,
+       "H": 812,
+       "2B": 142,
+       "3B": 10,
+       "HR": 188,
+       "RBI": 517,
+       "SB": 78,
+       "BB": 709,
+       "BA": 0.28,
+       "OBP": 0.422,
+       "SLG": 0.53,
+       "OPS": 0.952
+      },
+      "score": 783
+     },
+     {
+      "rank": 8,
+      "player": {
+       "player_id": "machama01",
+       "name": "Manny Machado",
+       "label": "Manny Machado"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3117,
+       "R": 479,
+       "H": 869,
+       "2B": 164,
+       "3B": 4,
+       "HR": 162,
+       "RBI": 546,
+       "SB": 55,
+       "BB": 302,
+       "BA": 0.279,
+       "OBP": 0.341,
+       "SLG": 0.49,
+       "OPS": 0.831
+      },
+      "score": 763
+     },
+     {
+      "rank": 9,
+      "player": {
+       "player_id": "lindofr01",
+       "name": "Francisco Lindor",
+       "label": "Francisco Lindor"
+      },
+      "bats": "B",
+      "stats": {
+       "G": null,
+       "AB": 3182,
+       "R": 533,
+       "H": 829,
+       "2B": 161,
+       "3B": 11,
+       "HR": 149,
+       "RBI": 472,
+       "SB": 123,
+       "BB": 328,
+       "BA": 0.261,
+       "OBP": 0.338,
+       "SLG": 0.459,
+       "OPS": 0.796
+      },
+      "score": 744
+     },
+     {
+      "rank": 10,
+      "player": {
+       "player_id": "tuckeky01",
+       "name": "Kyle Tucker",
+       "label": "Kyle Tucker"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2610,
+       "R": 431,
+       "H": 721,
+       "2B": 152,
+       "3B": 19,
+       "HR": 143,
+       "RBI": 475,
+       "SB": 113,
+       "BB": 353,
+       "BA": 0.276,
+       "OBP": 0.362,
+       "SLG": 0.513,
+       "OPS": 0.875
+      },
+      "score": 731
+     },
+     {
+      "rank": 11,
+      "player": {
+       "player_id": "deverra01",
+       "name": "Rafael Devers",
+       "label": "Rafael Devers"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 3090,
+       "R": 493,
+       "H": 843,
+       "2B": 196,
+       "3B": 8,
+       "HR": 172,
+       "RBI": 536,
+       "SB": 17,
+       "BB": 366,
+       "BA": 0.273,
+       "OBP": 0.354,
+       "SLG": 0.508,
+       "OPS": 0.863
+      },
+      "score": 725
+     },
+     {
+      "rank": 12,
+      "player": {
+       "player_id": "freemfr01",
+       "name": "Freddie Freeman",
+       "label": "Freddie Freeman"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 3161,
+       "R": 581,
+       "H": 980,
+       "2B": 228,
+       "3B": 11,
+       "HR": 140,
+       "RBI": 517,
+       "SB": 61,
+       "BB": 424,
+       "BA": 0.31,
+       "OBP": 0.397,
+       "SLG": 0.522,
+       "OPS": 0.919
+      },
+      "score": 718
+     },
+     {
+      "rank": 13,
+      "player": {
+       "player_id": "guerrvl02",
+       "name": "Vladimir Guerrero",
+       "label": "Vladimir Guerrero (2019-2025)"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3270,
+       "R": 519,
+       "H": 951,
+       "2B": 185,
+       "3B": 4,
+       "HR": 168,
+       "RBI": 522,
+       "SB": 26,
+       "BB": 384,
+       "BA": 0.291,
+       "OBP": 0.369,
+       "SLG": 0.504,
+       "OPS": 0.873
+      },
+      "score": 716
+     },
+     {
+      "rank": 14,
+      "player": {
+       "player_id": "hernate01",
+       "name": "Teoscar Hernandez",
+       "label": "Teoscar Hernandez"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2964,
+       "R": 415,
+       "H": 798,
+       "2B": 161,
+       "3B": 6,
+       "HR": 157,
+       "RBI": 508,
+       "SB": 48,
+       "BB": 201,
+       "BA": 0.269,
+       "OBP": 0.32,
+       "SLG": 0.487,
+       "OPS": 0.807
+      },
+      "score": 713
+     },
+     {
+      "rank": 15,
+      "player": {
+       "player_id": "suareeu01",
+       "name": "Eugenio Suarez",
+       "label": "Eugenio Suarez"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3003,
+       "R": 425,
+       "H": 687,
+       "2B": 140,
+       "3B": 4,
+       "HR": 178,
+       "RBI": 519,
+       "SB": 10,
+       "BB": 324,
+       "BA": 0.229,
+       "OBP": 0.312,
+       "SLG": 0.456,
+       "OPS": 0.768
+      },
+      "score": 707
+     },
+     {
+      "rank": 16,
+      "player": {
+       "player_id": "turnetr01",
+       "name": "Trea Turner",
+       "label": "Trea Turner"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3213,
+       "R": 538,
+       "H": 965,
+       "2B": 179,
+       "3B": 23,
+       "HR": 123,
+       "RBI": 425,
+       "SB": 156,
+       "BB": 223,
+       "BA": 0.3,
+       "OBP": 0.349,
+       "SLG": 0.485,
+       "OPS": 0.835
+      },
+      "score": 704
+     },
+     {
+      "rank": 17,
+      "player": {
+       "player_id": "perezsa02",
+       "name": "Salvador Perez",
+       "label": "Salvador Perez"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2940,
+       "R": 329,
+       "H": 770,
+       "2B": 143,
+       "3B": 1,
+       "HR": 162,
+       "RBI": 513,
+       "SB": 2,
+       "BB": 140,
+       "BA": 0.262,
+       "OBP": 0.306,
+       "SLG": 0.477,
+       "OPS": 0.783
+      },
+      "score": 677
+     },
+     {
+      "rank": 18,
+      "player": {
+       "player_id": "adamewi01",
+       "name": "Willy Adames",
+       "label": "Willy Adames"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2999,
+       "R": 449,
+       "H": 718,
+       "2B": 162,
+       "3B": 6,
+       "HR": 150,
+       "RBI": 473,
+       "SB": 53,
+       "BB": 351,
+       "BA": 0.239,
+       "OBP": 0.32,
+       "SLG": 0.447,
+       "OPS": 0.767
+      },
+      "score": 676
+     },
+     {
+      "rank": 19,
+      "player": {
+       "player_id": "garciad02",
+       "name": "Adolis Garcia",
+       "label": "Adolis Garcia"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2834,
+       "R": 399,
+       "H": 673,
+       "2B": 144,
+       "3B": 7,
+       "HR": 141,
+       "RBI": 458,
+       "SB": 74,
+       "BB": 211,
+       "BA": 0.237,
+       "OBP": 0.294,
+       "SLG": 0.442,
+       "OPS": 0.736
+      },
+      "score": 673
+     },
+     {
+      "rank": 20,
+      "player": {
+       "player_id": "semiema01",
+       "name": "Marcus Semien",
+       "label": "Marcus Semien"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3310,
+       "R": 529,
+       "H": 830,
+       "2B": 162,
+       "3B": 15,
+       "HR": 145,
+       "RBI": 444,
+       "SB": 77,
+       "BB": 330,
+       "BA": 0.251,
+       "OBP": 0.32,
+       "SLG": 0.44,
+       "OPS": 0.76
+      },
+      "score": 666
+     },
+     {
+      "rank": 21,
+      "player": {
+       "player_id": "bettsmo01",
+       "name": "Mookie Betts",
+       "label": "Mookie Betts"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2880,
+       "R": 553,
+       "H": 802,
+       "2B": 165,
+       "3B": 15,
+       "HR": 152,
+       "RBI": 443,
+       "SB": 70,
+       "BB": 365,
+       "BA": 0.278,
+       "OBP": 0.363,
+       "SLG": 0.505,
+       "OPS": 0.867
+      },
+      "score": 665
+     },
+     {
+      "rank": 22,
+      "player": {
+       "player_id": "swansda01",
+       "name": "Dansby Swanson",
+       "label": "Dansby Swanson"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3154,
+       "R": 473,
+       "H": 799,
+       "2B": 156,
+       "3B": 11,
+       "HR": 124,
+       "RBI": 442,
+       "SB": 80,
+       "BB": 290,
+       "BA": 0.253,
+       "OBP": 0.318,
+       "SLG": 0.428,
+       "OPS": 0.746
+      },
+      "score": 646
+     },
+     {
+      "rank": 23,
+      "player": {
+       "player_id": "arozara01",
+       "name": "Randy Arozarena",
+       "label": "Randy Arozarena"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2892,
+       "R": 448,
+       "H": 723,
+       "2B": 159,
+       "3B": 10,
+       "HR": 117,
+       "RBI": 388,
+       "SB": 129,
+       "BB": 325,
+       "BA": 0.25,
+       "OBP": 0.343,
+       "SLG": 0.433,
+       "OPS": 0.776
+      },
+      "score": 634
+     },
+     {
+      "rank": 24,
+      "player": {
+       "player_id": "wittbo02",
+       "name": "Bobby Witt",
+       "label": "Bobby Witt (2022-2025)"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2491,
+       "R": 403,
+       "H": 722,
+       "2B": 151,
+       "3B": 34,
+       "HR": 105,
+       "RBI": 373,
+       "SB": 148,
+       "BB": 176,
+       "BA": 0.29,
+       "OBP": 0.34,
+       "SLG": 0.504,
+       "OPS": 0.844
+      },
+      "score": 626
+     },
+     {
+      "rank": 25,
+      "player": {
+       "player_id": "harpebr03",
+       "name": "Bryce Harper",
+       "label": "Bryce Harper"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2556,
+       "R": 446,
+       "H": 730,
+       "2B": 182,
+       "3B": 5,
+       "HR": 144,
+       "RBI": 416,
+       "SB": 62,
+       "BB": 421,
+       "BA": 0.286,
+       "OBP": 0.388,
+       "SLG": 0.53,
+       "OPS": 0.918
+      },
+      "score": 622
+     }
+    ]
+   }
+  },
+  "leaderboards?start=2020&end=2025&metric=OPS&limit=25": {
+   "status": 200,
+   "body": {
+    "start": 2020,
+    "end": 2025,
+    "metric": {
+     "key": "OPS",
+     "label": "OPS",
+     "kind": "rate",
+     "higher_is_better": true,
+     "decimals": 3
+    },
+    "weights": {
+     "HR": 1,
+     "RBI": 1,
+     "SB": 1
+    },
+    "qualification": {
+     "applies": true,
+     "min_ab": 2349,
+     "qualified_ab": 2349,
+     "mode": "auto",
+     "text": "**Qualified hitters only:** ranking by OPS requires at least **2,349 AB** (about 2.7 AB per team game over 6 season(s), close to MLB's batting-title rule). Change it under *Stat minimum filters*."
+    },
+    "total_rows": 79,
+    "rows": [
+     {
+      "rank": 1,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2688,
+       "R": 583,
+       "H": 818,
+       "2B": 137,
+       "3B": 3,
+       "HR": 258,
+       "RBI": 584,
+       "SB": 47,
+       "BB": 541,
+       "BA": 0.304,
+       "OBP": 0.423,
+       "SLG": 0.645,
+       "OPS": 1.068
+      },
+      "score": 889
+     },
+     {
+      "rank": 2,
+      "player": {
+       "player_id": "ohtansh01",
+       "name": "Shohei Ohtani",
+       "label": "Shohei Ohtani"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 3020,
+       "R": 598,
+       "H": 847,
+       "2B": 151,
+       "3B": 38,
+       "HR": 240,
+       "RBI": 546,
+       "SB": 143,
+       "BB": 471,
+       "BA": 0.28,
+       "OBP": 0.38,
+       "SLG": 0.594,
+       "OPS": 0.974
+      },
+      "score": 929
+     },
+     {
+      "rank": 3,
+      "player": {
+       "player_id": "sotoju01",
+       "name": "Juan Soto",
+       "label": "Juan Soto"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2901,
+       "R": 588,
+       "H": 812,
+       "2B": 142,
+       "3B": 10,
+       "HR": 188,
+       "RBI": 517,
+       "SB": 78,
+       "BB": 709,
+       "BA": 0.28,
+       "OBP": 0.422,
+       "SLG": 0.53,
+       "OPS": 0.952
+      },
+      "score": 783
+     },
+     {
+      "rank": 4,
+      "player": {
+       "player_id": "freemfr01",
+       "name": "Freddie Freeman",
+       "label": "Freddie Freeman"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 3161,
+       "R": 581,
+       "H": 980,
+       "2B": 228,
+       "3B": 11,
+       "HR": 140,
+       "RBI": 517,
+       "SB": 61,
+       "BB": 424,
+       "BA": 0.31,
+       "OBP": 0.397,
+       "SLG": 0.522,
+       "OPS": 0.919
+      },
+      "score": 718
+     },
+     {
+      "rank": 5,
+      "player": {
+       "player_id": "harpebr03",
+       "name": "Bryce Harper",
+       "label": "Bryce Harper"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2556,
+       "R": 446,
+       "H": 730,
+       "2B": 182,
+       "3B": 5,
+       "HR": 144,
+       "RBI": 416,
+       "SB": 62,
+       "BB": 421,
+       "BA": 0.286,
+       "OBP": 0.388,
+       "SLG": 0.53,
+       "OPS": 0.918
+      },
+      "score": 622
+     },
+     {
+      "rank": 6,
+      "player": {
+       "player_id": "seageco01",
+       "name": "Corey Seager",
+       "label": "Corey Seager"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2490,
+       "R": 400,
+       "H": 709,
+       "2B": 140,
+       "3B": 5,
+       "HR": 148,
+       "RBI": 401,
+       "SB": 11,
+       "BB": 283,
+       "BA": 0.285,
+       "OBP": 0.361,
+       "SLG": 0.523,
+       "OPS": 0.884
+      },
+      "score": 560
+     },
+     {
+      "rank": 7,
+      "player": {
+       "player_id": "tuckeky01",
+       "name": "Kyle Tucker",
+       "label": "Kyle Tucker"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2610,
+       "R": 431,
+       "H": 721,
+       "2B": 152,
+       "3B": 19,
+       "HR": 143,
+       "RBI": 475,
+       "SB": 113,
+       "BB": 353,
+       "BA": 0.276,
+       "OBP": 0.362,
+       "SLG": 0.513,
+       "OPS": 0.875
+      },
+      "score": 731
+     },
+     {
+      "rank": 8,
+      "player": {
+       "player_id": "ramirjo01",
+       "name": "Jose Ramirez",
+       "label": "Jose Ramirez (2013-2025)"
+      },
+      "bats": "B",
+      "stats": {
+       "G": null,
+       "AB": 3196,
+       "R": 550,
+       "H": 892,
+       "2B": 201,
+       "3B": 21,
+       "HR": 175,
+       "RBI": 558,
+       "SB": 170,
+       "BB": 365,
+       "BA": 0.279,
+       "OBP": 0.355,
+       "SLG": 0.519,
+       "OPS": 0.874
+      },
+      "score": 903
+     },
+     {
+      "rank": 9,
+      "player": {
+       "player_id": "guerrvl02",
+       "name": "Vladimir Guerrero",
+       "label": "Vladimir Guerrero (2019-2025)"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3270,
+       "R": 519,
+       "H": 951,
+       "2B": 185,
+       "3B": 4,
+       "HR": 168,
+       "RBI": 522,
+       "SB": 26,
+       "BB": 384,
+       "BA": 0.291,
+       "OBP": 0.369,
+       "SLG": 0.504,
+       "OPS": 0.873
+      },
+      "score": 716
+     },
+     {
+      "rank": 10,
+      "player": {
+       "player_id": "bettsmo01",
+       "name": "Mookie Betts",
+       "label": "Mookie Betts"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2880,
+       "R": 553,
+       "H": 802,
+       "2B": 165,
+       "3B": 15,
+       "HR": 152,
+       "RBI": 443,
+       "SB": 70,
+       "BB": 365,
+       "BA": 0.278,
+       "OBP": 0.363,
+       "SLG": 0.505,
+       "OPS": 0.867
+      },
+      "score": 665
+     },
+     {
+      "rank": 11,
+      "player": {
+       "player_id": "deverra01",
+       "name": "Rafael Devers",
+       "label": "Rafael Devers"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 3090,
+       "R": 493,
+       "H": 843,
+       "2B": 196,
+       "3B": 8,
+       "HR": 172,
+       "RBI": 536,
+       "SB": 17,
+       "BB": 366,
+       "BA": 0.273,
+       "OBP": 0.354,
+       "SLG": 0.508,
+       "OPS": 0.863
+      },
+      "score": 725
+     },
+     {
+      "rank": 12,
+      "player": {
+       "player_id": "olsonma02",
+       "name": "Matt Olson",
+       "label": "Matt Olson"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 3223,
+       "R": 518,
+       "H": 832,
+       "2B": 188,
+       "3B": 7,
+       "HR": 199,
+       "RBI": 588,
+       "SB": 7,
+       "BB": 463,
+       "BA": 0.258,
+       "OBP": 0.354,
+       "SLG": 0.506,
+       "OPS": 0.86
+      },
+      "score": 794
+     },
+     {
+      "rank": 13,
+      "player": {
+       "player_id": "schwaky01",
+       "name": "Kyle Schwarber",
+       "label": "Kyle Schwarber"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2929,
+       "R": 535,
+       "H": 670,
+       "2B": 110,
+       "3B": 6,
+       "HR": 230,
+       "RBI": 529,
+       "SB": 27,
+       "BB": 520,
+       "BA": 0.229,
+       "OBP": 0.35,
+       "SLG": 0.506,
+       "OPS": 0.856
+      },
+      "score": 786
+     },
+     {
+      "rank": 14,
+      "player": {
+       "player_id": "marteke01",
+       "name": "Ketel Marte",
+       "label": "Ketel Marte"
+      },
+      "bats": "B",
+      "stats": {
+       "G": null,
+       "AB": 2566,
+       "R": 413,
+       "H": 718,
+       "2B": 162,
+       "3B": 15,
+       "HR": 117,
+       "RBI": 368,
+       "SB": 27,
+       "BB": 293,
+       "BA": 0.28,
+       "OBP": 0.357,
+       "SLG": 0.491,
+       "OPS": 0.849
+      },
+      "score": 512
+     },
+     {
+      "rank": 15,
+      "player": {
+       "player_id": "wittbo02",
+       "name": "Bobby Witt",
+       "label": "Bobby Witt (2022-2025)"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2491,
+       "R": 403,
+       "H": 722,
+       "2B": 151,
+       "3B": 34,
+       "HR": 105,
+       "RBI": 373,
+       "SB": 148,
+       "BB": 176,
+       "BA": 0.29,
+       "OBP": 0.34,
+       "SLG": 0.504,
+       "OPS": 0.844
+      },
+      "score": 626
+     },
+     {
+      "rank": 16,
+      "player": {
+       "player_id": "alonspe01",
+       "name": "Pete Alonso",
+       "label": "Pete Alonso"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3166,
+       "R": 477,
+       "H": 796,
+       "2B": 153,
+       "3B": 6,
+       "HR": 211,
+       "RBI": 592,
+       "SB": 17,
+       "BB": 347,
+       "BA": 0.251,
+       "OBP": 0.337,
+       "SLG": 0.503,
+       "OPS": 0.841
+      },
+      "score": 820
+     },
+     {
+      "rank": 17,
+      "player": {
+       "player_id": "ozunama01",
+       "name": "Marcell Ozuna",
+       "label": "Marcell Ozuna"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2509,
+       "R": 356,
+       "H": 664,
+       "2B": 118,
+       "3B": 1,
+       "HR": 148,
+       "RBI": 410,
+       "SB": 3,
+       "BB": 313,
+       "BA": 0.265,
+       "OBP": 0.347,
+       "SLG": 0.489,
+       "OPS": 0.836
+      },
+      "score": 561
+     },
+     {
+      "rank": 18,
+      "player": {
+       "player_id": "turnetr01",
+       "name": "Trea Turner",
+       "label": "Trea Turner"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3213,
+       "R": 538,
+       "H": 965,
+       "2B": 179,
+       "3B": 23,
+       "HR": 123,
+       "RBI": 425,
+       "SB": 156,
+       "BB": 223,
+       "BA": 0.3,
+       "OBP": 0.349,
+       "SLG": 0.485,
+       "OPS": 0.835
+      },
+      "score": 704
+     },
+     {
+      "rank": 19,
+      "player": {
+       "player_id": "rileyau01",
+       "name": "Austin Riley",
+       "label": "Austin Riley"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2870,
+       "R": 439,
+       "H": 788,
+       "2B": 157,
+       "3B": 10,
+       "HR": 151,
+       "RBI": 434,
+       "SB": 7,
+       "BB": 248,
+       "BA": 0.275,
+       "OBP": 0.339,
+       "SLG": 0.494,
+       "OPS": 0.833
+      },
+      "score": 592
+     },
+     {
+      "rank": 20,
+      "player": {
+       "player_id": "machama01",
+       "name": "Manny Machado",
+       "label": "Manny Machado"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3117,
+       "R": 479,
+       "H": 869,
+       "2B": 164,
+       "3B": 4,
+       "HR": 162,
+       "RBI": 546,
+       "SB": 55,
+       "BB": 302,
+       "BA": 0.279,
+       "OBP": 0.341,
+       "SLG": 0.49,
+       "OPS": 0.831
+      },
+      "score": 763
+     },
+     {
+      "rank": 21,
+      "player": {
+       "player_id": "goldspa01",
+       "name": "Paul Goldschmidt",
+       "label": "Paul Goldschmidt"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3036,
+       "R": 474,
+       "H": 853,
+       "2B": 185,
+       "3B": 4,
+       "HR": 129,
+       "RBI": 425,
+       "SB": 47,
+       "BB": 353,
+       "BA": 0.281,
+       "OBP": 0.358,
+       "SLG": 0.472,
+       "OPS": 0.83
+      },
+      "score": 601
+     },
+     {
+      "rank": 22,
+      "player": {
+       "player_id": "altuvjo01",
+       "name": "Jose Altuve",
+       "label": "Jose Altuve"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2896,
+       "R": 502,
+       "H": 820,
+       "2B": 156,
+       "3B": 4,
+       "HR": 127,
+       "RBI": 351,
+       "SB": 71,
+       "BB": 295,
+       "BA": 0.283,
+       "OBP": 0.354,
+       "SLG": 0.471,
+       "OPS": 0.825
+      },
+      "score": 549
+     },
+     {
+      "rank": 23,
+      "player": {
+       "player_id": "diazya01",
+       "name": "Yandy Diaz",
+       "label": "Yandy Diaz"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2723,
+       "R": 378,
+       "H": 800,
+       "2B": 151,
+       "3B": 3,
+       "HR": 85,
+       "RBI": 358,
+       "SB": 7,
+       "BB": 342,
+       "BA": 0.294,
+       "OBP": 0.376,
+       "SLG": 0.445,
+       "OPS": 0.821
+      },
+      "score": 450
+     },
+     {
+      "rank": 24,
+      "player": {
+       "player_id": "springe01",
+       "name": "George Springer",
+       "label": "George Springer"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2657,
+       "R": 452,
+       "H": 698,
+       "2B": 118,
+       "3B": 12,
+       "HR": 133,
+       "RBI": 370,
+       "SB": 73,
+       "BB": 304,
+       "BA": 0.263,
+       "OBP": 0.344,
+       "SLG": 0.466,
+       "OPS": 0.81
+      },
+      "score": 576
+     },
+     {
+      "rank": 25,
+      "player": {
+       "player_id": "hernate01",
+       "name": "Teoscar Hernandez",
+       "label": "Teoscar Hernandez"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2964,
+       "R": 415,
+       "H": 798,
+       "2B": 161,
+       "3B": 6,
+       "HR": 157,
+       "RBI": 508,
+       "SB": 48,
+       "BB": 201,
+       "BA": 0.269,
+       "OBP": 0.32,
+       "SLG": 0.487,
+       "OPS": 0.807
+      },
+      "score": 713
+     }
+    ]
+   }
+  },
+  "leaderboards?start=2020&end=2025&metric=HR&limit=25": {
+   "status": 200,
+   "body": {
+    "start": 2020,
+    "end": 2025,
+    "metric": {
+     "key": "HR",
+     "label": "HR",
+     "kind": "count",
+     "higher_is_better": true,
+     "decimals": 0
+    },
+    "weights": {
+     "HR": 1,
+     "RBI": 1,
+     "SB": 1
+    },
+    "qualification": {
+     "applies": false,
+     "min_ab": 0,
+     "qualified_ab": 2349,
+     "mode": "auto",
+     "text": ""
+    },
+    "total_rows": 2840,
+    "rows": [
+     {
+      "rank": 1,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2688,
+       "R": 583,
+       "H": 818,
+       "2B": 137,
+       "3B": 3,
+       "HR": 258,
+       "RBI": 584,
+       "SB": 47,
+       "BB": 541,
+       "BA": 0.304,
+       "OBP": 0.423,
+       "SLG": 0.645,
+       "OPS": 1.068
+      },
+      "score": 889
+     },
+     {
+      "rank": 2,
+      "player": {
+       "player_id": "ohtansh01",
+       "name": "Shohei Ohtani",
+       "label": "Shohei Ohtani"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 3020,
+       "R": 598,
+       "H": 847,
+       "2B": 151,
+       "3B": 38,
+       "HR": 240,
+       "RBI": 546,
+       "SB": 143,
+       "BB": 471,
+       "BA": 0.28,
+       "OBP": 0.38,
+       "SLG": 0.594,
+       "OPS": 0.974
+      },
+      "score": 929
+     },
+     {
+      "rank": 3,
+      "player": {
+       "player_id": "schwaky01",
+       "name": "Kyle Schwarber",
+       "label": "Kyle Schwarber"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2929,
+       "R": 535,
+       "H": 670,
+       "2B": 110,
+       "3B": 6,
+       "HR": 230,
+       "RBI": 529,
+       "SB": 27,
+       "BB": 520,
+       "BA": 0.229,
+       "OBP": 0.35,
+       "SLG": 0.506,
+       "OPS": 0.856
+      },
+      "score": 786
+     },
+     {
+      "rank": 4,
+      "player": {
+       "player_id": "alonspe01",
+       "name": "Pete Alonso",
+       "label": "Pete Alonso"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3166,
+       "R": 477,
+       "H": 796,
+       "2B": 153,
+       "3B": 6,
+       "HR": 211,
+       "RBI": 592,
+       "SB": 17,
+       "BB": 347,
+       "BA": 0.251,
+       "OBP": 0.337,
+       "SLG": 0.503,
+       "OPS": 0.841
+      },
+      "score": 820
+     },
+     {
+      "rank": 5,
+      "player": {
+       "player_id": "olsonma02",
+       "name": "Matt Olson",
+       "label": "Matt Olson"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 3223,
+       "R": 518,
+       "H": 832,
+       "2B": 188,
+       "3B": 7,
+       "HR": 199,
+       "RBI": 588,
+       "SB": 7,
+       "BB": 463,
+       "BA": 0.258,
+       "OBP": 0.354,
+       "SLG": 0.506,
+       "OPS": 0.86
+      },
+      "score": 794
+     },
+     {
+      "rank": 6,
+      "player": {
+       "player_id": "sotoju01",
+       "name": "Juan Soto",
+       "label": "Juan Soto"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2901,
+       "R": 588,
+       "H": 812,
+       "2B": 142,
+       "3B": 10,
+       "HR": 188,
+       "RBI": 517,
+       "SB": 78,
+       "BB": 709,
+       "BA": 0.28,
+       "OBP": 0.422,
+       "SLG": 0.53,
+       "OPS": 0.952
+      },
+      "score": 783
+     },
+     {
+      "rank": 7,
+      "player": {
+       "player_id": "suareeu01",
+       "name": "Eugenio Suarez",
+       "label": "Eugenio Suarez"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3003,
+       "R": 425,
+       "H": 687,
+       "2B": 140,
+       "3B": 4,
+       "HR": 178,
+       "RBI": 519,
+       "SB": 10,
+       "BB": 324,
+       "BA": 0.229,
+       "OBP": 0.312,
+       "SLG": 0.456,
+       "OPS": 0.768
+      },
+      "score": 707
+     },
+     {
+      "rank": 8,
+      "player": {
+       "player_id": "ramirjo01",
+       "name": "Jose Ramirez",
+       "label": "Jose Ramirez (2013-2025)"
+      },
+      "bats": "B",
+      "stats": {
+       "G": null,
+       "AB": 3196,
+       "R": 550,
+       "H": 892,
+       "2B": 201,
+       "3B": 21,
+       "HR": 175,
+       "RBI": 558,
+       "SB": 170,
+       "BB": 365,
+       "BA": 0.279,
+       "OBP": 0.355,
+       "SLG": 0.519,
+       "OPS": 0.874
+      },
+      "score": 903
+     },
+     {
+      "rank": 9,
+      "player": {
+       "player_id": "deverra01",
+       "name": "Rafael Devers",
+       "label": "Rafael Devers"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 3090,
+       "R": 493,
+       "H": 843,
+       "2B": 196,
+       "3B": 8,
+       "HR": 172,
+       "RBI": 536,
+       "SB": 17,
+       "BB": 366,
+       "BA": 0.273,
+       "OBP": 0.354,
+       "SLG": 0.508,
+       "OPS": 0.863
+      },
+      "score": 725
+     },
+     {
+      "rank": 10,
+      "player": {
+       "player_id": "guerrvl02",
+       "name": "Vladimir Guerrero",
+       "label": "Vladimir Guerrero (2019-2025)"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3270,
+       "R": 519,
+       "H": 951,
+       "2B": 185,
+       "3B": 4,
+       "HR": 168,
+       "RBI": 522,
+       "SB": 26,
+       "BB": 384,
+       "BA": 0.291,
+       "OBP": 0.369,
+       "SLG": 0.504,
+       "OPS": 0.873
+      },
+      "score": 716
+     },
+     {
+      "rank": 11,
+      "player": {
+       "player_id": "machama01",
+       "name": "Manny Machado",
+       "label": "Manny Machado"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3117,
+       "R": 479,
+       "H": 869,
+       "2B": 164,
+       "3B": 4,
+       "HR": 162,
+       "RBI": 546,
+       "SB": 55,
+       "BB": 302,
+       "BA": 0.279,
+       "OBP": 0.341,
+       "SLG": 0.49,
+       "OPS": 0.831
+      },
+      "score": 763
+     },
+     {
+      "rank": 12,
+      "player": {
+       "player_id": "perezsa02",
+       "name": "Salvador Perez",
+       "label": "Salvador Perez"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2940,
+       "R": 329,
+       "H": 770,
+       "2B": 143,
+       "3B": 1,
+       "HR": 162,
+       "RBI": 513,
+       "SB": 2,
+       "BB": 140,
+       "BA": 0.262,
+       "OBP": 0.306,
+       "SLG": 0.477,
+       "OPS": 0.783
+      },
+      "score": 677
+     },
+     {
+      "rank": 13,
+      "player": {
+       "player_id": "hernate01",
+       "name": "Teoscar Hernandez",
+       "label": "Teoscar Hernandez"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2964,
+       "R": 415,
+       "H": 798,
+       "2B": 161,
+       "3B": 6,
+       "HR": 157,
+       "RBI": 508,
+       "SB": 48,
+       "BB": 201,
+       "BA": 0.269,
+       "OBP": 0.32,
+       "SLG": 0.487,
+       "OPS": 0.807
+      },
+      "score": 713
+     },
+     {
+      "rank": 14,
+      "player": {
+       "player_id": "raleica01",
+       "name": "Cal Raleigh",
+       "label": "Cal Raleigh"
+      },
+      "bats": "B",
+      "stats": {
+       "G": null,
+       "AB": 2164,
+       "R": 313,
+       "H": 489,
+       "2B": 95,
+       "3B": 2,
+       "HR": 153,
+       "RBI": 376,
+       "SB": 21,
+       "BB": 266,
+       "BA": 0.226,
+       "OBP": 0.314,
+       "SLG": 0.484,
+       "OPS": 0.798
+      },
+      "score": 550
+     },
+     {
+      "rank": 15,
+      "player": {
+       "player_id": "bettsmo01",
+       "name": "Mookie Betts",
+       "label": "Mookie Betts"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2880,
+       "R": 553,
+       "H": 802,
+       "2B": 165,
+       "3B": 15,
+       "HR": 152,
+       "RBI": 443,
+       "SB": 70,
+       "BB": 365,
+       "BA": 0.278,
+       "OBP": 0.363,
+       "SLG": 0.505,
+       "OPS": 0.867
+      },
+      "score": 665
+     },
+     {
+      "rank": 16,
+      "player": {
+       "player_id": "rileyau01",
+       "name": "Austin Riley",
+       "label": "Austin Riley"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2870,
+       "R": 439,
+       "H": 788,
+       "2B": 157,
+       "3B": 10,
+       "HR": 151,
+       "RBI": 434,
+       "SB": 7,
+       "BB": 248,
+       "BA": 0.275,
+       "OBP": 0.339,
+       "SLG": 0.494,
+       "OPS": 0.833
+      },
+      "score": 592
+     },
+     {
+      "rank": 17,
+      "player": {
+       "player_id": "adamewi01",
+       "name": "Willy Adames",
+       "label": "Willy Adames"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2999,
+       "R": 449,
+       "H": 718,
+       "2B": 162,
+       "3B": 6,
+       "HR": 150,
+       "RBI": 473,
+       "SB": 53,
+       "BB": 351,
+       "BA": 0.239,
+       "OBP": 0.32,
+       "SLG": 0.447,
+       "OPS": 0.767
+      },
+      "score": 676
+     },
+     {
+      "rank": 18,
+      "player": {
+       "player_id": "lindofr01",
+       "name": "Francisco Lindor",
+       "label": "Francisco Lindor"
+      },
+      "bats": "B",
+      "stats": {
+       "G": null,
+       "AB": 3182,
+       "R": 533,
+       "H": 829,
+       "2B": 161,
+       "3B": 11,
+       "HR": 149,
+       "RBI": 472,
+       "SB": 123,
+       "BB": 328,
+       "BA": 0.261,
+       "OBP": 0.338,
+       "SLG": 0.459,
+       "OPS": 0.796
+      },
+      "score": 744
+     },
+     {
+      "rank": 19,
+      "player": {
+       "player_id": "ozunama01",
+       "name": "Marcell Ozuna",
+       "label": "Marcell Ozuna"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2509,
+       "R": 356,
+       "H": 664,
+       "2B": 118,
+       "3B": 1,
+       "HR": 148,
+       "RBI": 410,
+       "SB": 3,
+       "BB": 313,
+       "BA": 0.265,
+       "OBP": 0.347,
+       "SLG": 0.489,
+       "OPS": 0.836
+      },
+      "score": 561
+     },
+     {
+      "rank": 20,
+      "player": {
+       "player_id": "seageco01",
+       "name": "Corey Seager",
+       "label": "Corey Seager"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2490,
+       "R": 400,
+       "H": 709,
+       "2B": 140,
+       "3B": 5,
+       "HR": 148,
+       "RBI": 401,
+       "SB": 11,
+       "BB": 283,
+       "BA": 0.285,
+       "OBP": 0.361,
+       "SLG": 0.523,
+       "OPS": 0.884
+      },
+      "score": 560
+     },
+     {
+      "rank": 21,
+      "player": {
+       "player_id": "semiema01",
+       "name": "Marcus Semien",
+       "label": "Marcus Semien"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3310,
+       "R": 529,
+       "H": 830,
+       "2B": 162,
+       "3B": 15,
+       "HR": 145,
+       "RBI": 444,
+       "SB": 77,
+       "BB": 330,
+       "BA": 0.251,
+       "OBP": 0.32,
+       "SLG": 0.44,
+       "OPS": 0.76
+      },
+      "score": 666
+     },
+     {
+      "rank": 22,
+      "player": {
+       "player_id": "stantmi03",
+       "name": "Giancarlo Stanton",
+       "label": "Giancarlo Stanton"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2021,
+       "R": 257,
+       "H": 478,
+       "2B": 74,
+       "3B": 0,
+       "HR": 145,
+       "RBI": 384,
+       "SB": 1,
+       "BB": 236,
+       "BA": 0.237,
+       "OBP": 0.318,
+       "SLG": 0.488,
+       "OPS": 0.806
+      },
+      "score": 530
+     },
+     {
+      "rank": 23,
+      "player": {
+       "player_id": "harpebr03",
+       "name": "Bryce Harper",
+       "label": "Bryce Harper"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2556,
+       "R": 446,
+       "H": 730,
+       "2B": 182,
+       "3B": 5,
+       "HR": 144,
+       "RBI": 416,
+       "SB": 62,
+       "BB": 421,
+       "BA": 0.286,
+       "OBP": 0.388,
+       "SLG": 0.53,
+       "OPS": 0.918
+      },
+      "score": 622
+     },
+     {
+      "rank": 24,
+      "player": {
+       "player_id": "tuckeky01",
+       "name": "Kyle Tucker",
+       "label": "Kyle Tucker"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2610,
+       "R": 431,
+       "H": 721,
+       "2B": 152,
+       "3B": 19,
+       "HR": 143,
+       "RBI": 475,
+       "SB": 113,
+       "BB": 353,
+       "BA": 0.276,
+       "OBP": 0.362,
+       "SLG": 0.513,
+       "OPS": 0.875
+      },
+      "score": 731
+     },
+     {
+      "rank": 25,
+      "player": {
+       "player_id": "alvaryo01",
+       "name": "Yordan Alvarez",
+       "label": "Yordan Alvarez"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2142,
+       "R": 371,
+       "H": 630,
+       "2B": 130,
+       "3B": 6,
+       "HR": 143,
+       "RBI": 415,
+       "SB": 9,
+       "BB": 294,
+       "BA": 0.294,
+       "OBP": 0.385,
+       "SLG": 0.561,
+       "OPS": 0.946
+      },
+      "score": 567
+     }
+    ]
+   }
+  },
+  "leaderboards?start=2010&end=2025&metric=HR&limit=25": {
+   "status": 200,
+   "body": {
+    "start": 2010,
+    "end": 2025,
+    "metric": {
+     "key": "HR",
+     "label": "HR",
+     "kind": "count",
+     "higher_is_better": true,
+     "decimals": 0
+    },
+    "weights": {
+     "HR": 1,
+     "RBI": 1,
+     "SB": 1
+    },
+    "qualification": {
+     "applies": false,
+     "min_ab": 0,
+     "qualified_ab": 3000,
+     "mode": "auto",
+     "text": ""
+    },
+    "total_rows": 5105,
+    "rows": [
+     {
+      "rank": 1,
+      "player": {
+       "player_id": "stantmi03",
+       "name": "Giancarlo Stanton",
+       "label": "Giancarlo Stanton"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 6274,
+       "R": 943,
+       "H": 1619,
+       "2B": 313,
+       "3B": 11,
+       "HR": 453,
+       "RBI": 1169,
+       "SB": 42,
+       "BB": 805,
+       "BA": 0.258,
+       "OBP": 0.345,
+       "SLG": 0.528,
+       "OPS": 0.874
+      },
+      "score": 1664
+     },
+     {
+      "rank": 2,
+      "player": {
+       "player_id": "cruzne02",
+       "name": "Nelson Cruz",
+       "label": "Nelson Cruz (2005-2023)"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 6482,
+       "R": 945,
+       "H": 1793,
+       "2B": 323,
+       "3B": 11,
+       "HR": 409,
+       "RBI": 1167,
+       "SB": 58,
+       "BB": 642,
+       "BA": 0.277,
+       "OBP": 0.347,
+       "SLG": 0.519,
+       "OPS": 0.866
+      },
+      "score": 1634
+     },
+     {
+      "rank": 3,
+      "player": {
+       "player_id": "troutmi01",
+       "name": "Mike Trout",
+       "label": "Mike Trout"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 5967,
+       "R": 1196,
+       "H": 1754,
+       "2B": 325,
+       "3B": 55,
+       "HR": 404,
+       "RBI": 1018,
+       "SB": 214,
+       "BB": 1067,
+       "BA": 0.294,
+       "OBP": 0.406,
+       "SLG": 0.57,
+       "OPS": 0.976
+      },
+      "score": 1636
+     },
+     {
+      "rank": 4,
+      "player": {
+       "player_id": "goldspa01",
+       "name": "Paul Goldschmidt",
+       "label": "Paul Goldschmidt"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 7608,
+       "R": 1280,
+       "H": 2190,
+       "2B": 477,
+       "3B": 24,
+       "HR": 372,
+       "RBI": 1232,
+       "SB": 174,
+       "BB": 1086,
+       "BA": 0.288,
+       "OBP": 0.378,
+       "SLG": 0.504,
+       "OPS": 0.882
+      },
+      "score": 1778
+     },
+     {
+      "rank": 5,
+      "player": {
+       "player_id": "machama01",
+       "name": "Manny Machado",
+       "label": "Manny Machado"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 7424,
+       "R": 1082,
+       "H": 2069,
+       "2B": 396,
+       "3B": 18,
+       "HR": 369,
+       "RBI": 1144,
+       "SB": 113,
+       "BB": 663,
+       "BA": 0.279,
+       "OBP": 0.338,
+       "SLG": 0.486,
+       "OPS": 0.824
+      },
+      "score": 1626
+     },
+     {
+      "rank": 6,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 4105,
+       "R": 873,
+       "H": 1205,
+       "2B": 203,
+       "3B": 7,
+       "HR": 368,
+       "RBI": 830,
+       "SB": 65,
+       "BB": 817,
+       "BA": 0.294,
+       "OBP": 0.413,
+       "SLG": 0.615,
+       "OPS": 1.028
+      },
+      "score": 1263
+     },
+     {
+      "rank": 7,
+      "player": {
+       "player_id": "freemfr01",
+       "name": "Freddie Freeman",
+       "label": "Freddie Freeman"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 8114,
+       "R": 1379,
+       "H": 2431,
+       "2B": 547,
+       "3B": 33,
+       "HR": 367,
+       "RBI": 1322,
+       "SB": 104,
+       "BB": 1070,
+       "BA": 0.3,
+       "OBP": 0.386,
+       "SLG": 0.511,
+       "OPS": 0.897
+      },
+      "score": 1793
+     },
+     {
+      "rank": 8,
+      "player": {
+       "player_id": "harpebr03",
+       "name": "Bryce Harper",
+       "label": "Bryce Harper"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 6435,
+       "R": 1154,
+       "H": 1801,
+       "2B": 401,
+       "3B": 24,
+       "HR": 363,
+       "RBI": 1051,
+       "SB": 152,
+       "BB": 1105,
+       "BA": 0.28,
+       "OBP": 0.387,
+       "SLG": 0.519,
+       "OPS": 0.905
+      },
+      "score": 1566
+     },
+     {
+      "rank": 9,
+      "player": {
+       "player_id": "arenano01",
+       "name": "Nolan Arenado",
+       "label": "Nolan Arenado"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 6807,
+       "R": 992,
+       "H": 1921,
+       "2B": 405,
+       "3B": 34,
+       "HR": 353,
+       "RBI": 1184,
+       "SB": 31,
+       "BB": 577,
+       "BA": 0.282,
+       "OBP": 0.338,
+       "SLG": 0.507,
+       "OPS": 0.846
+      },
+      "score": 1568
+     },
+     {
+      "rank": 10,
+      "player": {
+       "player_id": "encared01",
+       "name": "Edwin Encarnacion",
+       "label": "Edwin Encarnacion"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 5122,
+       "R": 838,
+       "H": 1333,
+       "2B": 256,
+       "3B": 5,
+       "HR": 345,
+       "RBI": 975,
+       "SB": 41,
+       "BB": 705,
+       "BA": 0.26,
+       "OBP": 0.353,
+       "SLG": 0.514,
+       "OPS": 0.867
+      },
+      "score": 1361
+     },
+     {
+      "rank": 11,
+      "player": {
+       "player_id": "schwaky01",
+       "name": "Kyle Schwarber",
+       "label": "Kyle Schwarber"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 4544,
+       "R": 800,
+       "H": 1050,
+       "2B": 175,
+       "3B": 14,
+       "HR": 340,
+       "RBI": 784,
+       "SB": 37,
+       "BB": 764,
+       "BA": 0.231,
+       "OBP": 0.346,
+       "SLG": 0.5,
+       "OPS": 0.846
+      },
+      "score": 1161
+     },
+     {
+      "rank": 12,
+      "player": {
+       "player_id": "pujolal01",
+       "name": "Albert Pujols",
+       "label": "Albert Pujols"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 6275,
+       "R": 843,
+       "H": 1667,
+       "2B": 299,
+       "3B": 2,
+       "HR": 337,
+       "RBI": 1106,
+       "SB": 56,
+       "BB": 562,
+       "BA": 0.266,
+       "OBP": 0.328,
+       "SLG": 0.475,
+       "OPS": 0.803
+      },
+      "score": 1499
+     },
+     {
+      "rank": 13,
+      "player": {
+       "player_id": "santaca01",
+       "name": "Carlos Santana",
+       "label": "Carlos Santana"
+      },
+      "bats": "B",
+      "stats": {
+       "G": null,
+       "AB": 7815,
+       "R": 1107,
+       "H": 1880,
+       "2B": 404,
+       "3B": 17,
+       "HR": 335,
+       "RBI": 1136,
+       "SB": 65,
+       "BB": 1330,
+       "BA": 0.241,
+       "OBP": 0.352,
+       "SLG": 0.425,
+       "OPS": 0.777
+      },
+      "score": 1536
+     },
+     {
+      "rank": 14,
+      "player": {
+       "player_id": "martijd02",
+       "name": "J. D. Martinez",
+       "label": "J. D. Martinez"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 6152,
+       "R": 897,
+       "H": 1741,
+       "2B": 390,
+       "3B": 24,
+       "HR": 331,
+       "RBI": 1071,
+       "SB": 26,
+       "BB": 601,
+       "BA": 0.283,
+       "OBP": 0.348,
+       "SLG": 0.516,
+       "OPS": 0.863
+      },
+      "score": 1428
+     },
+     {
+      "rank": 15,
+      "player": {
+       "player_id": "suareeu01",
+       "name": "Eugenio Suarez",
+       "label": "Eugenio Suarez"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 5820,
+       "R": 831,
+       "H": 1434,
+       "2B": 262,
+       "3B": 15,
+       "HR": 325,
+       "RBI": 949,
+       "SB": 36,
+       "BB": 632,
+       "BA": 0.246,
+       "OBP": 0.328,
+       "SLG": 0.464,
+       "OPS": 0.792
+      },
+      "score": 1310
+     },
+     {
+      "rank": 16,
+      "player": {
+       "player_id": "mccutan01",
+       "name": "Andrew McCutchen",
+       "label": "Andrew McCutchen"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 7917,
+       "R": 1216,
+       "H": 2142,
+       "2B": 425,
+       "3B": 41,
+       "HR": 320,
+       "RBI": 1098,
+       "SB": 198,
+       "BB": 1129,
+       "BA": 0.271,
+       "OBP": 0.365,
+       "SLG": 0.456,
+       "OPS": 0.821
+      },
+      "score": 1616
+     },
+     {
+      "rank": 17,
+      "player": {
+       "player_id": "vottojo01",
+       "name": "Joey Votto",
+       "label": "Joey Votto"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 6173,
+       "R": 1009,
+       "H": 1801,
+       "2B": 382,
+       "3B": 18,
+       "HR": 303,
+       "RBI": 959,
+       "SB": 68,
+       "BB": 1231,
+       "BA": 0.292,
+       "OBP": 0.413,
+       "SLG": 0.507,
+       "OPS": 0.92
+      },
+      "score": 1330
+     },
+     {
+      "rank": 18,
+      "player": {
+       "player_id": "rizzoan01",
+       "name": "Anthony Rizzo",
+       "label": "Anthony Rizzo"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 6288,
+       "R": 922,
+       "H": 1644,
+       "2B": 338,
+       "3B": 22,
+       "HR": 303,
+       "RBI": 965,
+       "SB": 72,
+       "BB": 781,
+       "BA": 0.261,
+       "OBP": 0.361,
+       "SLG": 0.467,
+       "OPS": 0.828
+      },
+      "score": 1340
+     },
+     {
+      "rank": 19,
+      "player": {
+       "player_id": "perezsa02",
+       "name": "Salvador Perez",
+       "label": "Salvador Perez"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 6477,
+       "R": 710,
+       "H": 1712,
+       "2B": 320,
+       "3B": 11,
+       "HR": 303,
+       "RBI": 1016,
+       "SB": 6,
+       "BB": 271,
+       "BA": 0.264,
+       "OBP": 0.301,
+       "SLG": 0.457,
+       "OPS": 0.759
+      },
+      "score": 1325
+     },
+     {
+      "rank": 20,
+      "player": {
+       "player_id": "cabremi01",
+       "name": "Miguel Cabrera",
+       "label": "Miguel Cabrera"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 6435,
+       "R": 921,
+       "H": 1954,
+       "2B": 374,
+       "3B": 5,
+       "HR": 302,
+       "RBI": 1128,
+       "SB": 16,
+       "BB": 812,
+       "BA": 0.304,
+       "OBP": 0.382,
+       "SLG": 0.504,
+       "OPS": 0.886
+      },
+      "score": 1446
+     },
+     {
+      "rank": 21,
+      "player": {
+       "player_id": "ozunama01",
+       "name": "Marcell Ozuna",
+       "label": "Marcell Ozuna"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 6045,
+       "R": 823,
+       "H": 1627,
+       "2B": 280,
+       "3B": 21,
+       "HR": 296,
+       "RBI": 948,
+       "SB": 29,
+       "BB": 604,
+       "BA": 0.269,
+       "OBP": 0.336,
+       "SLG": 0.469,
+       "OPS": 0.806
+      },
+      "score": 1273
+     },
+     {
+      "rank": 22,
+      "player": {
+       "player_id": "springe01",
+       "name": "George Springer",
+       "label": "George Springer"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 5555,
+       "R": 982,
+       "H": 1480,
+       "2B": 249,
+       "3B": 23,
+       "HR": 293,
+       "RBI": 796,
+       "SB": 120,
+       "BB": 676,
+       "BA": 0.266,
+       "OBP": 0.353,
+       "SLG": 0.478,
+       "OPS": 0.831
+      },
+      "score": 1209
+     },
+     {
+      "rank": 23,
+      "player": {
+       "player_id": "bettsmo01",
+       "name": "Mookie Betts",
+       "label": "Mookie Betts"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 6083,
+       "R": 1166,
+       "H": 1767,
+       "2B": 394,
+       "3B": 41,
+       "HR": 291,
+       "RBI": 913,
+       "SB": 196,
+       "BB": 736,
+       "BA": 0.29,
+       "OBP": 0.369,
+       "SLG": 0.512,
+       "OPS": 0.881
+      },
+      "score": 1400
+     },
+     {
+      "rank": 24,
+      "player": {
+       "player_id": "olsonma02",
+       "name": "Matt Olson",
+       "label": "Matt Olson"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 4496,
+       "R": 712,
+       "H": 1155,
+       "2B": 250,
+       "3B": 7,
+       "HR": 288,
+       "RBI": 808,
+       "SB": 9,
+       "BB": 613,
+       "BA": 0.257,
+       "OBP": 0.351,
+       "SLG": 0.508,
+       "OPS": 0.859
+      },
+      "score": 1105
+     },
+     {
+      "rank": 25,
+      "player": {
+       "player_id": "bautijo02",
+       "name": "Jose Bautista",
+       "label": "Jose Bautista (2004-2018)"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 4297,
+       "R": 781,
+       "H": 1078,
+       "2B": 222,
+       "3B": 9,
+       "HR": 285,
+       "RBI": 764,
+       "SB": 56,
+       "BB": 812,
+       "BA": 0.251,
+       "OBP": 0.373,
+       "SLG": 0.506,
+       "OPS": 0.879
+      },
+      "score": 1105
+     }
+    ]
+   }
+  },
+  "players/search?q=judge&limit=8": {
+   "status": 200,
+   "body": {
+    "query": "judge",
+    "results": [
+     {
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "first_season": 2016,
+      "last_season": 2025,
+      "career_primary_position": "OF",
+      "bats": "R",
+      "throws": "R",
+      "last_team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "hall_of_fame": false
+     },
+     {
+      "player": {
+       "player_id": "jurgebi01",
+       "name": "Billy Jurges",
+       "label": "Billy Jurges"
+      },
+      "first_season": 1931,
+      "last_season": 1947,
+      "career_primary_position": "SS",
+      "bats": "R",
+      "throws": "R",
+      "last_team": {
+       "team_id": "CHC",
+       "name": "Chicago Cubs",
+       "season_name": "Chicago Cubs",
+       "league": "NL"
+      },
+      "hall_of_fame": false
+     },
+     {
+      "player": {
+       "player_id": "hudgeda01",
+       "name": "Dave Hudgens",
+       "label": "Dave Hudgens"
+      },
+      "first_season": 1983,
+      "last_season": 1983,
+      "career_primary_position": "1B",
+      "bats": "L",
+      "throws": "L",
+      "last_team": {
+       "team_id": "OAK",
+       "name": "Athletics",
+       "season_name": "Athletics",
+       "league": "AL"
+      },
+      "hall_of_fame": false
+     },
+     {
+      "player": {
+       "player_id": "jungeer01",
+       "name": "Eric Junge",
+       "label": "Eric Junge"
+      },
+      "first_season": 2002,
+      "last_season": 2003,
+      "career_primary_position": "P",
+      "bats": "R",
+      "throws": "R",
+      "last_team": {
+       "team_id": "PHI",
+       "name": "Philadelphia Phillies",
+       "season_name": "Philadelphia Phillies",
+       "league": "NL"
+      },
+      "hall_of_fame": false
+     },
+     {
+      "player": {
+       "player_id": "judenje01",
+       "name": "Jeff Juden",
+       "label": "Jeff Juden"
+      },
+      "first_season": 1991,
+      "last_season": 1999,
+      "career_primary_position": "P",
+      "bats": "R",
+      "throws": "R",
+      "last_team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "hall_of_fame": false
+     },
+     {
+      "player": {
+       "player_id": "hudgeji01",
+       "name": "Jimmy Hudgens",
+       "label": "Jimmy Hudgens"
+      },
+      "first_season": 1923,
+      "last_season": 1926,
+      "career_primary_position": "1B",
+      "bats": "L",
+      "throws": "R",
+      "last_team": {
+       "team_id": "CIN",
+       "name": "Cincinnati Reds",
+       "season_name": "Cincinnati Reds",
+       "league": "NL"
+      },
+      "hall_of_fame": false
+     },
+     {
+      "player": {
+       "player_id": "judgejo01",
+       "name": "Joe Judge",
+       "label": "Joe Judge"
+      },
+      "first_season": 1915,
+      "last_season": 1934,
+      "career_primary_position": "1B",
+      "bats": "L",
+      "throws": "L",
+      "last_team": {
+       "team_id": "BOS",
+       "name": "Boston Red Sox",
+       "season_name": "Boston Red Sox",
+       "league": "AL"
+      },
+      "hall_of_fame": false
+     },
+     {
+      "player": {
+       "player_id": "mccrewa01",
+       "name": "Judge McCredie",
+       "label": "Judge McCredie"
+      },
+      "first_season": 1903,
+      "last_season": 1903,
+      "career_primary_position": "OF",
+      "bats": "L",
+      "throws": "R",
+      "last_team": {
+       "team_id": "LAD",
+       "name": "Los Angeles Dodgers",
+       "season_name": "Brooklyn Dodgers",
+       "league": "NL"
+      },
+      "hall_of_fame": false
+     }
+    ],
+    "truncated": true
+   }
+  },
+  "players/judgeaa01/seasons": {
+   "status": 200,
+   "body": {
+    "player": {
+     "player": {
+      "player_id": "judgeaa01",
+      "name": "Aaron Judge",
+      "label": "Aaron Judge"
+     },
+     "first_season": 2016,
+     "last_season": 2025,
+     "career_primary_position": "OF",
+     "bats": "R",
+     "throws": "R",
+     "last_team": {
+      "team_id": "NYY",
+      "name": "New York Yankees",
+      "season_name": "New York Yankees",
+      "league": "AL"
+     },
+     "hall_of_fame": false
+    },
+    "start": 2016,
+    "end": 2025,
+    "split_mode": "team",
+    "seasons": [
+     {
+      "year": 2016,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "stats": {
+       "G": 27,
+       "AB": 84,
+       "R": 10,
+       "H": 15,
+       "2B": 2,
+       "3B": 0,
+       "HR": 4,
+       "RBI": 10,
+       "SB": 0,
+       "BB": 9,
+       "BA": 0.179,
+       "OBP": 0.263,
+       "SLG": 0.345,
+       "OPS": 0.608
+      }
+     },
+     {
+      "year": 2017,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "stats": {
+       "G": 155,
+       "AB": 542,
+       "R": 128,
+       "H": 154,
+       "2B": 24,
+       "3B": 3,
+       "HR": 52,
+       "RBI": 114,
+       "SB": 9,
+       "BB": 127,
+       "BA": 0.284,
+       "OBP": 0.422,
+       "SLG": 0.627,
+       "OPS": 1.049
+      }
+     },
+     {
+      "year": 2018,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "stats": {
+       "G": 112,
+       "AB": 413,
+       "R": 77,
+       "H": 115,
+       "2B": 22,
+       "3B": 0,
+       "HR": 27,
+       "RBI": 67,
+       "SB": 6,
+       "BB": 76,
+       "BA": 0.278,
+       "OBP": 0.392,
+       "SLG": 0.528,
+       "OPS": 0.919
+      }
+     },
+     {
+      "year": 2019,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "stats": {
+       "G": 102,
+       "AB": 378,
+       "R": 75,
+       "H": 103,
+       "2B": 18,
+       "3B": 1,
+       "HR": 27,
+       "RBI": 55,
+       "SB": 3,
+       "BB": 64,
+       "BA": 0.272,
+       "OBP": 0.381,
+       "SLG": 0.54,
+       "OPS": 0.921
+      }
+     },
+     {
+      "year": 2020,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "stats": {
+       "G": 28,
+       "AB": 101,
+       "R": 23,
+       "H": 26,
+       "2B": 3,
+       "3B": 0,
+       "HR": 9,
+       "RBI": 22,
+       "SB": 0,
+       "BB": 10,
+       "BA": 0.257,
+       "OBP": 0.336,
+       "SLG": 0.554,
+       "OPS": 0.891
+      }
+     },
+     {
+      "year": 2021,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "stats": {
+       "G": 148,
+       "AB": 550,
+       "R": 89,
+       "H": 158,
+       "2B": 24,
+       "3B": 0,
+       "HR": 39,
+       "RBI": 98,
+       "SB": 6,
+       "BB": 75,
+       "BA": 0.287,
+       "OBP": 0.373,
+       "SLG": 0.544,
+       "OPS": 0.916
+      }
+     },
+     {
+      "year": 2022,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "stats": {
+       "G": 157,
+       "AB": 570,
+       "R": 133,
+       "H": 177,
+       "2B": 28,
+       "3B": 0,
+       "HR": 62,
+       "RBI": 131,
+       "SB": 16,
+       "BB": 111,
+       "BA": 0.311,
+       "OBP": 0.425,
+       "SLG": 0.686,
+       "OPS": 1.111
+      }
+     },
+     {
+      "year": 2023,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "stats": {
+       "G": 106,
+       "AB": 367,
+       "R": 79,
+       "H": 98,
+       "2B": 16,
+       "3B": 0,
+       "HR": 37,
+       "RBI": 75,
+       "SB": 3,
+       "BB": 88,
+       "BA": 0.267,
+       "OBP": 0.406,
+       "SLG": 0.613,
+       "OPS": 1.019
+      }
+     },
+     {
+      "year": 2024,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "stats": {
+       "G": 158,
+       "AB": 559,
+       "R": 122,
+       "H": 180,
+       "2B": 36,
+       "3B": 1,
+       "HR": 58,
+       "RBI": 144,
+       "SB": 10,
+       "BB": 133,
+       "BA": 0.322,
+       "OBP": 0.458,
+       "SLG": 0.701,
+       "OPS": 1.159
+      }
+     },
+     {
+      "year": 2025,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "stats": {
+       "G": 152,
+       "AB": 541,
+       "R": 137,
+       "H": 179,
+       "2B": 30,
+       "3B": 2,
+       "HR": 53,
+       "RBI": 114,
+       "SB": 12,
+       "BB": 124,
+       "BA": 0.331,
+       "OBP": 0.457,
+       "SLG": 0.688,
+       "OPS": 1.144
+      }
+     }
+    ]
+   }
+  },
+  "seasons": {
+   "status": 200,
+   "body": {
+    "start": 2010,
+    "end": 2025,
+    "metric": {
+     "key": "HR",
+     "label": "HR",
+     "kind": "count",
+     "higher_is_better": true,
+     "decimals": 0
+    },
+    "order": "desc",
+    "split_mode": "team",
+    "qualification": {
+     "applies": false,
+     "min_ab": 0,
+     "qualified_ab": 437,
+     "mode": "auto",
+     "text": ""
+    },
+    "total_rows": 24261,
+    "rows": [
+     {
+      "rank": 1,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "year": 2022,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 157,
+       "AB": 570,
+       "R": 133,
+       "H": 177,
+       "2B": 28,
+       "3B": 0,
+       "HR": 62,
+       "RBI": 131,
+       "SB": 16,
+       "BB": 111,
+       "BA": 0.311,
+       "OBP": 0.425,
+       "SLG": 0.686,
+       "OPS": 1.111
+      }
+     },
+     {
+      "rank": 2,
+      "player": {
+       "player_id": "raleica01",
+       "name": "Cal Raleigh",
+       "label": "Cal Raleigh"
+      },
+      "year": 2025,
+      "team": {
+       "team_id": "SEA",
+       "name": "Seattle Mariners",
+       "season_name": "Seattle Mariners",
+       "league": "AL"
+      },
+      "position": "C",
+      "bats": "B",
+      "stats": {
+       "G": 159,
+       "AB": 596,
+       "R": 110,
+       "H": 147,
+       "2B": 24,
+       "3B": 0,
+       "HR": 60,
+       "RBI": 125,
+       "SB": 14,
+       "BB": 97,
+       "BA": 0.247,
+       "OBP": 0.359,
+       "SLG": 0.589,
+       "OPS": 0.948
+      }
+     },
+     {
+      "rank": 3,
+      "player": {
+       "player_id": "stantmi03",
+       "name": "Giancarlo Stanton",
+       "label": "Giancarlo Stanton"
+      },
+      "year": 2017,
+      "team": {
+       "team_id": "MIA",
+       "name": "Miami Marlins",
+       "season_name": "Miami Marlins",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 159,
+       "AB": 597,
+       "R": 123,
+       "H": 168,
+       "2B": 32,
+       "3B": 0,
+       "HR": 59,
+       "RBI": 132,
+       "SB": 2,
+       "BB": 85,
+       "BA": 0.281,
+       "OBP": 0.376,
+       "SLG": 0.631,
+       "OPS": 1.007
+      }
+     },
+     {
+      "rank": 4,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "year": 2024,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 158,
+       "AB": 559,
+       "R": 122,
+       "H": 180,
+       "2B": 36,
+       "3B": 1,
+       "HR": 58,
+       "RBI": 144,
+       "SB": 10,
+       "BB": 133,
+       "BA": 0.322,
+       "OBP": 0.458,
+       "SLG": 0.701,
+       "OPS": 1.159
+      }
+     },
+     {
+      "rank": 5,
+      "player": {
+       "player_id": "schwaky01",
+       "name": "Kyle Schwarber",
+       "label": "Kyle Schwarber"
+      },
+      "year": 2025,
+      "team": {
+       "team_id": "PHI",
+       "name": "Philadelphia Phillies",
+       "season_name": "Philadelphia Phillies",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 162,
+       "AB": 604,
+       "R": 111,
+       "H": 145,
+       "2B": 23,
+       "3B": 2,
+       "HR": 56,
+       "RBI": 132,
+       "SB": 10,
+       "BB": 108,
+       "BA": 0.24,
+       "OBP": 0.365,
+       "SLG": 0.563,
+       "OPS": 0.928
+      }
+     },
+     {
+      "rank": 6,
+      "player": {
+       "player_id": "ohtansh01",
+       "name": "Shohei Ohtani",
+       "label": "Shohei Ohtani"
+      },
+      "year": 2025,
+      "team": {
+       "team_id": "LAD",
+       "name": "Los Angeles Dodgers",
+       "season_name": "Los Angeles Dodgers",
+       "league": "NL"
+      },
+      "position": "P",
+      "bats": "L",
+      "stats": {
+       "G": 158,
+       "AB": 611,
+       "R": 146,
+       "H": 172,
+       "2B": 25,
+       "3B": 9,
+       "HR": 55,
+       "RBI": 102,
+       "SB": 20,
+       "BB": 109,
+       "BA": 0.282,
+       "OBP": 0.392,
+       "SLG": 0.622,
+       "OPS": 1.014
+      }
+     },
+     {
+      "rank": 7,
+      "player": {
+       "player_id": "bautijo02",
+       "name": "Jose Bautista",
+       "label": "Jose Bautista (2004-2018)"
+      },
+      "year": 2010,
+      "team": {
+       "team_id": "TOR",
+       "name": "Toronto Blue Jays",
+       "season_name": "Toronto Blue Jays",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 161,
+       "AB": 569,
+       "R": 109,
+       "H": 148,
+       "2B": 35,
+       "3B": 3,
+       "HR": 54,
+       "RBI": 124,
+       "SB": 9,
+       "BB": 100,
+       "BA": 0.26,
+       "OBP": 0.378,
+       "SLG": 0.617,
+       "OPS": 0.995
+      }
+     },
+     {
+      "rank": 8,
+      "player": {
+       "player_id": "ohtansh01",
+       "name": "Shohei Ohtani",
+       "label": "Shohei Ohtani"
+      },
+      "year": 2024,
+      "team": {
+       "team_id": "LAD",
+       "name": "Los Angeles Dodgers",
+       "season_name": "Los Angeles Dodgers",
+       "league": "NL"
+      },
+      "position": "DH",
+      "bats": "L",
+      "stats": {
+       "G": 159,
+       "AB": 636,
+       "R": 134,
+       "H": 197,
+       "2B": 38,
+       "3B": 7,
+       "HR": 54,
+       "RBI": 130,
+       "SB": 59,
+       "BB": 81,
+       "BA": 0.31,
+       "OBP": 0.39,
+       "SLG": 0.646,
+       "OPS": 1.036
+      }
+     },
+     {
+      "rank": 9,
+      "player": {
+       "player_id": "olsonma02",
+       "name": "Matt Olson",
+       "label": "Matt Olson"
+      },
+      "year": 2023,
+      "team": {
+       "team_id": "ATL",
+       "name": "Atlanta Braves",
+       "season_name": "Atlanta Braves",
+       "league": "NL"
+      },
+      "position": "1B",
+      "bats": "L",
+      "stats": {
+       "G": 162,
+       "AB": 608,
+       "R": 127,
+       "H": 172,
+       "2B": 27,
+       "3B": 3,
+       "HR": 54,
+       "RBI": 139,
+       "SB": 1,
+       "BB": 104,
+       "BA": 0.283,
+       "OBP": 0.389,
+       "SLG": 0.604,
+       "OPS": 0.993
+      }
+     },
+     {
+      "rank": 10,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "year": 2025,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 152,
+       "AB": 541,
+       "R": 137,
+       "H": 179,
+       "2B": 30,
+       "3B": 2,
+       "HR": 53,
+       "RBI": 114,
+       "SB": 12,
+       "BB": 124,
+       "BA": 0.331,
+       "OBP": 0.457,
+       "SLG": 0.688,
+       "OPS": 1.144
+      }
+     },
+     {
+      "rank": 11,
+      "player": {
+       "player_id": "alonspe01",
+       "name": "Pete Alonso",
+       "label": "Pete Alonso"
+      },
+      "year": 2019,
+      "team": {
+       "team_id": "NYM",
+       "name": "New York Mets",
+       "season_name": "New York Mets",
+       "league": "NL"
+      },
+      "position": "1B",
+      "bats": "R",
+      "stats": {
+       "G": 161,
+       "AB": 597,
+       "R": 103,
+       "H": 155,
+       "2B": 30,
+       "3B": 2,
+       "HR": 53,
+       "RBI": 120,
+       "SB": 1,
+       "BB": 72,
+       "BA": 0.26,
+       "OBP": 0.358,
+       "SLG": 0.583,
+       "OPS": 0.941
+      }
+     },
+     {
+      "rank": 12,
+      "player": {
+       "player_id": "davisch02",
+       "name": "Chris Davis",
+       "label": "Chris Davis"
+      },
+      "year": 2013,
+      "team": {
+       "team_id": "BAL",
+       "name": "Baltimore Orioles",
+       "season_name": "Baltimore Orioles",
+       "league": "AL"
+      },
+      "position": "1B",
+      "bats": "L",
+      "stats": {
+       "G": 160,
+       "AB": 584,
+       "R": 103,
+       "H": 167,
+       "2B": 42,
+       "3B": 1,
+       "HR": 53,
+       "RBI": 138,
+       "SB": 4,
+       "BB": 72,
+       "BA": 0.286,
+       "OBP": 0.37,
+       "SLG": 0.634,
+       "OPS": 1.004
+      }
+     },
+     {
+      "rank": 13,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "year": 2017,
+      "team": {
+       "team_id": "NYY",
+       "name": "New York Yankees",
+       "season_name": "New York Yankees",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 155,
+       "AB": 542,
+       "R": 128,
+       "H": 154,
+       "2B": 24,
+       "3B": 3,
+       "HR": 52,
+       "RBI": 114,
+       "SB": 9,
+       "BB": 127,
+       "BA": 0.284,
+       "OBP": 0.422,
+       "SLG": 0.627,
+       "OPS": 1.049
+      }
+     },
+     {
+      "rank": 14,
+      "player": {
+       "player_id": "suareeu01",
+       "name": "Eugenio Suarez",
+       "label": "Eugenio Suarez"
+      },
+      "year": 2019,
+      "team": {
+       "team_id": "CIN",
+       "name": "Cincinnati Reds",
+       "season_name": "Cincinnati Reds",
+       "league": "NL"
+      },
+      "position": "3B",
+      "bats": "R",
+      "stats": {
+       "G": 159,
+       "AB": 575,
+       "R": 87,
+       "H": 156,
+       "2B": 22,
+       "3B": 2,
+       "HR": 49,
+       "RBI": 103,
+       "SB": 3,
+       "BB": 70,
+       "BA": 0.271,
+       "OBP": 0.358,
+       "SLG": 0.572,
+       "OPS": 0.93
+      }
+     },
+     {
+      "rank": 15,
+      "player": {
+       "player_id": "solerjo01",
+       "name": "Jorge Soler",
+       "label": "Jorge Soler"
+      },
+      "year": 2019,
+      "team": {
+       "team_id": "KCR",
+       "name": "Kansas City Royals",
+       "season_name": "Kansas City Royals",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 162,
+       "AB": 589,
+       "R": 95,
+       "H": 156,
+       "2B": 33,
+       "3B": 1,
+       "HR": 48,
+       "RBI": 117,
+       "SB": 3,
+       "BB": 73,
+       "BA": 0.265,
+       "OBP": 0.354,
+       "SLG": 0.569,
+       "OPS": 0.922
+      }
+     },
+     {
+      "rank": 16,
+      "player": {
+       "player_id": "perezsa02",
+       "name": "Salvador Perez",
+       "label": "Salvador Perez"
+      },
+      "year": 2021,
+      "team": {
+       "team_id": "KCR",
+       "name": "Kansas City Royals",
+       "season_name": "Kansas City Royals",
+       "league": "AL"
+      },
+      "position": "C",
+      "bats": "R",
+      "stats": {
+       "G": 161,
+       "AB": 620,
+       "R": 88,
+       "H": 169,
+       "2B": 24,
+       "3B": 0,
+       "HR": 48,
+       "RBI": 121,
+       "SB": 1,
+       "BB": 28,
+       "BA": 0.273,
+       "OBP": 0.316,
+       "SLG": 0.544,
+       "OPS": 0.859
+      }
+     },
+     {
+      "rank": 17,
+      "player": {
+       "player_id": "daviskh01",
+       "name": "Khris Davis",
+       "label": "Khris Davis"
+      },
+      "year": 2018,
+      "team": {
+       "team_id": "OAK",
+       "name": "Athletics",
+       "season_name": "Athletics",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 151,
+       "AB": 576,
+       "R": 98,
+       "H": 142,
+       "2B": 28,
+       "3B": 1,
+       "HR": 48,
+       "RBI": 123,
+       "SB": 0,
+       "BB": 59,
+       "BA": 0.247,
+       "OBP": 0.326,
+       "SLG": 0.549,
+       "OPS": 0.874
+      }
+     },
+     {
+      "rank": 18,
+      "player": {
+       "player_id": "guerrvl02",
+       "name": "Vladimir Guerrero",
+       "label": "Vladimir Guerrero (2019-2025)"
+      },
+      "year": 2021,
+      "team": {
+       "team_id": "TOR",
+       "name": "Toronto Blue Jays",
+       "season_name": "Toronto Blue Jays",
+       "league": "AL"
+      },
+      "position": "1B",
+      "bats": "R",
+      "stats": {
+       "G": 161,
+       "AB": 604,
+       "R": 123,
+       "H": 188,
+       "2B": 29,
+       "3B": 1,
+       "HR": 48,
+       "RBI": 111,
+       "SB": 4,
+       "BB": 86,
+       "BA": 0.311,
+       "OBP": 0.401,
+       "SLG": 0.601,
+       "OPS": 1.002
+      }
+     },
+     {
+      "rank": 19,
+      "player": {
+       "player_id": "trumbma01",
+       "name": "Mark Trumbo",
+       "label": "Mark Trumbo"
+      },
+      "year": 2016,
+      "team": {
+       "team_id": "BAL",
+       "name": "Baltimore Orioles",
+       "season_name": "Baltimore Orioles",
+       "league": "AL"
+      },
+      "position": "OF",
+      "bats": "R",
+      "stats": {
+       "G": 159,
+       "AB": 613,
+       "R": 94,
+       "H": 157,
+       "2B": 27,
+       "3B": 1,
+       "HR": 47,
+       "RBI": 108,
+       "SB": 2,
+       "BB": 51,
+       "BA": 0.256,
+       "OBP": 0.316,
+       "SLG": 0.533,
+       "OPS": 0.85
+      }
+     },
+     {
+      "rank": 20,
+      "player": {
+       "player_id": "schwaky01",
+       "name": "Kyle Schwarber",
+       "label": "Kyle Schwarber"
+      },
+      "year": 2023,
+      "team": {
+       "team_id": "PHI",
+       "name": "Philadelphia Phillies",
+       "season_name": "Philadelphia Phillies",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 160,
+       "AB": 585,
+       "R": 108,
+       "H": 115,
+       "2B": 19,
+       "3B": 1,
+       "HR": 47,
+       "RBI": 104,
+       "SB": 0,
+       "BB": 126,
+       "BA": 0.197,
+       "OBP": 0.343,
+       "SLG": 0.474,
+       "OPS": 0.817
+      }
+     },
+     {
+      "rank": 21,
+      "player": {
+       "player_id": "davisch02",
+       "name": "Chris Davis",
+       "label": "Chris Davis"
+      },
+      "year": 2015,
+      "team": {
+       "team_id": "BAL",
+       "name": "Baltimore Orioles",
+       "season_name": "Baltimore Orioles",
+       "league": "AL"
+      },
+      "position": "1B",
+      "bats": "L",
+      "stats": {
+       "G": 160,
+       "AB": 573,
+       "R": 100,
+       "H": 150,
+       "2B": 31,
+       "3B": 0,
+       "HR": 47,
+       "RBI": 117,
+       "SB": 2,
+       "BB": 84,
+       "BA": 0.262,
+       "OBP": 0.361,
+       "SLG": 0.562,
+       "OPS": 0.923
+      }
+     },
+     {
+      "rank": 22,
+      "player": {
+       "player_id": "bellico01",
+       "name": "Cody Bellinger",
+       "label": "Cody Bellinger"
+      },
+      "year": 2019,
+      "team": {
+       "team_id": "LAD",
+       "name": "Los Angeles Dodgers",
+       "season_name": "Los Angeles Dodgers",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 156,
+       "AB": 558,
+       "R": 121,
+       "H": 170,
+       "2B": 34,
+       "3B": 3,
+       "HR": 47,
+       "RBI": 115,
+       "SB": 15,
+       "BB": 95,
+       "BA": 0.305,
+       "OBP": 0.406,
+       "SLG": 0.629,
+       "OPS": 1.035
+      }
+     },
+     {
+      "rank": 23,
+      "player": {
+       "player_id": "schwaky01",
+       "name": "Kyle Schwarber",
+       "label": "Kyle Schwarber"
+      },
+      "year": 2022,
+      "team": {
+       "team_id": "PHI",
+       "name": "Philadelphia Phillies",
+       "season_name": "Philadelphia Phillies",
+       "league": "NL"
+      },
+      "position": "OF",
+      "bats": "L",
+      "stats": {
+       "G": 155,
+       "AB": 577,
+       "R": 100,
+       "H": 126,
+       "2B": 21,
+       "3B": 3,
+       "HR": 46,
+       "RBI": 94,
+       "SB": 10,
+       "BB": 86,
+       "BA": 0.218,
+       "OBP": 0.323,
+       "SLG": 0.504,
+       "OPS": 0.827
+      }
+     },
+     {
+      "rank": 24,
+      "player": {
+       "player_id": "alonspe01",
+       "name": "Pete Alonso",
+       "label": "Pete Alonso"
+      },
+      "year": 2023,
+      "team": {
+       "team_id": "NYM",
+       "name": "New York Mets",
+       "season_name": "New York Mets",
+       "league": "NL"
+      },
+      "position": "1B",
+      "bats": "R",
+      "stats": {
+       "G": 153,
+       "AB": 568,
+       "R": 92,
+       "H": 123,
+       "2B": 21,
+       "3B": 2,
+       "HR": 46,
+       "RBI": 118,
+       "SB": 4,
+       "BB": 65,
+       "BA": 0.217,
+       "OBP": 0.318,
+       "SLG": 0.504,
+       "OPS": 0.821
+      }
+     },
+     {
+      "rank": 25,
+      "player": {
+       "player_id": "ohtansh01",
+       "name": "Shohei Ohtani",
+       "label": "Shohei Ohtani"
+      },
+      "year": 2021,
+      "team": {
+       "team_id": "LAA",
+       "name": "Los Angeles Angels",
+       "season_name": "Los Angeles Angels",
+       "league": "AL"
+      },
+      "position": "P",
+      "bats": "L",
+      "stats": {
+       "G": 158,
+       "AB": 537,
+       "R": 103,
+       "H": 138,
+       "2B": 26,
+       "3B": 8,
+       "HR": 46,
+       "RBI": 100,
+       "SB": 26,
+       "BB": 96,
+       "BA": 0.257,
+       "OBP": 0.372,
+       "SLG": 0.592,
+       "OPS": 0.965
+      }
+     }
+    ],
+    "headline": "Aaron Judge, 2022: 62 home runs"
+   }
+  },
+  "leaderboards": {
+   "status": 200,
+   "body": {
+    "start": 2020,
+    "end": 2025,
+    "metric": {
+     "key": "score",
+     "label": "Score",
+     "kind": "score",
+     "higher_is_better": true,
+     "decimals": 1
+    },
+    "weights": {
+     "HR": 1,
+     "RBI": 1,
+     "SB": 1
+    },
+    "qualification": {
+     "applies": false,
+     "min_ab": 0,
+     "qualified_ab": 2349,
+     "mode": "auto",
+     "text": ""
+    },
+    "total_rows": 2840,
+    "rows": [
+     {
+      "rank": 1,
+      "player": {
+       "player_id": "ohtansh01",
+       "name": "Shohei Ohtani",
+       "label": "Shohei Ohtani"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 3020,
+       "R": 598,
+       "H": 847,
+       "2B": 151,
+       "3B": 38,
+       "HR": 240,
+       "RBI": 546,
+       "SB": 143,
+       "BB": 471,
+       "BA": 0.28,
+       "OBP": 0.38,
+       "SLG": 0.594,
+       "OPS": 0.974
+      },
+      "score": 929
+     },
+     {
+      "rank": 2,
+      "player": {
+       "player_id": "ramirjo01",
+       "name": "Jose Ramirez",
+       "label": "Jose Ramirez (2013-2025)"
+      },
+      "bats": "B",
+      "stats": {
+       "G": null,
+       "AB": 3196,
+       "R": 550,
+       "H": 892,
+       "2B": 201,
+       "3B": 21,
+       "HR": 175,
+       "RBI": 558,
+       "SB": 170,
+       "BB": 365,
+       "BA": 0.279,
+       "OBP": 0.355,
+       "SLG": 0.519,
+       "OPS": 0.874
+      },
+      "score": 903
+     },
+     {
+      "rank": 3,
+      "player": {
+       "player_id": "judgeaa01",
+       "name": "Aaron Judge",
+       "label": "Aaron Judge"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2688,
+       "R": 583,
+       "H": 818,
+       "2B": 137,
+       "3B": 3,
+       "HR": 258,
+       "RBI": 584,
+       "SB": 47,
+       "BB": 541,
+       "BA": 0.304,
+       "OBP": 0.423,
+       "SLG": 0.645,
+       "OPS": 1.068
+      },
+      "score": 889
+     },
+     {
+      "rank": 4,
+      "player": {
+       "player_id": "alonspe01",
+       "name": "Pete Alonso",
+       "label": "Pete Alonso"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3166,
+       "R": 477,
+       "H": 796,
+       "2B": 153,
+       "3B": 6,
+       "HR": 211,
+       "RBI": 592,
+       "SB": 17,
+       "BB": 347,
+       "BA": 0.251,
+       "OBP": 0.337,
+       "SLG": 0.503,
+       "OPS": 0.841
+      },
+      "score": 820
+     },
+     {
+      "rank": 5,
+      "player": {
+       "player_id": "olsonma02",
+       "name": "Matt Olson",
+       "label": "Matt Olson"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 3223,
+       "R": 518,
+       "H": 832,
+       "2B": 188,
+       "3B": 7,
+       "HR": 199,
+       "RBI": 588,
+       "SB": 7,
+       "BB": 463,
+       "BA": 0.258,
+       "OBP": 0.354,
+       "SLG": 0.506,
+       "OPS": 0.86
+      },
+      "score": 794
+     },
+     {
+      "rank": 6,
+      "player": {
+       "player_id": "schwaky01",
+       "name": "Kyle Schwarber",
+       "label": "Kyle Schwarber"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2929,
+       "R": 535,
+       "H": 670,
+       "2B": 110,
+       "3B": 6,
+       "HR": 230,
+       "RBI": 529,
+       "SB": 27,
+       "BB": 520,
+       "BA": 0.229,
+       "OBP": 0.35,
+       "SLG": 0.506,
+       "OPS": 0.856
+      },
+      "score": 786
+     },
+     {
+      "rank": 7,
+      "player": {
+       "player_id": "sotoju01",
+       "name": "Juan Soto",
+       "label": "Juan Soto"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2901,
+       "R": 588,
+       "H": 812,
+       "2B": 142,
+       "3B": 10,
+       "HR": 188,
+       "RBI": 517,
+       "SB": 78,
+       "BB": 709,
+       "BA": 0.28,
+       "OBP": 0.422,
+       "SLG": 0.53,
+       "OPS": 0.952
+      },
+      "score": 783
+     },
+     {
+      "rank": 8,
+      "player": {
+       "player_id": "machama01",
+       "name": "Manny Machado",
+       "label": "Manny Machado"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3117,
+       "R": 479,
+       "H": 869,
+       "2B": 164,
+       "3B": 4,
+       "HR": 162,
+       "RBI": 546,
+       "SB": 55,
+       "BB": 302,
+       "BA": 0.279,
+       "OBP": 0.341,
+       "SLG": 0.49,
+       "OPS": 0.831
+      },
+      "score": 763
+     },
+     {
+      "rank": 9,
+      "player": {
+       "player_id": "lindofr01",
+       "name": "Francisco Lindor",
+       "label": "Francisco Lindor"
+      },
+      "bats": "B",
+      "stats": {
+       "G": null,
+       "AB": 3182,
+       "R": 533,
+       "H": 829,
+       "2B": 161,
+       "3B": 11,
+       "HR": 149,
+       "RBI": 472,
+       "SB": 123,
+       "BB": 328,
+       "BA": 0.261,
+       "OBP": 0.338,
+       "SLG": 0.459,
+       "OPS": 0.796
+      },
+      "score": 744
+     },
+     {
+      "rank": 10,
+      "player": {
+       "player_id": "tuckeky01",
+       "name": "Kyle Tucker",
+       "label": "Kyle Tucker"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2610,
+       "R": 431,
+       "H": 721,
+       "2B": 152,
+       "3B": 19,
+       "HR": 143,
+       "RBI": 475,
+       "SB": 113,
+       "BB": 353,
+       "BA": 0.276,
+       "OBP": 0.362,
+       "SLG": 0.513,
+       "OPS": 0.875
+      },
+      "score": 731
+     },
+     {
+      "rank": 11,
+      "player": {
+       "player_id": "deverra01",
+       "name": "Rafael Devers",
+       "label": "Rafael Devers"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 3090,
+       "R": 493,
+       "H": 843,
+       "2B": 196,
+       "3B": 8,
+       "HR": 172,
+       "RBI": 536,
+       "SB": 17,
+       "BB": 366,
+       "BA": 0.273,
+       "OBP": 0.354,
+       "SLG": 0.508,
+       "OPS": 0.863
+      },
+      "score": 725
+     },
+     {
+      "rank": 12,
+      "player": {
+       "player_id": "freemfr01",
+       "name": "Freddie Freeman",
+       "label": "Freddie Freeman"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 3161,
+       "R": 581,
+       "H": 980,
+       "2B": 228,
+       "3B": 11,
+       "HR": 140,
+       "RBI": 517,
+       "SB": 61,
+       "BB": 424,
+       "BA": 0.31,
+       "OBP": 0.397,
+       "SLG": 0.522,
+       "OPS": 0.919
+      },
+      "score": 718
+     },
+     {
+      "rank": 13,
+      "player": {
+       "player_id": "guerrvl02",
+       "name": "Vladimir Guerrero",
+       "label": "Vladimir Guerrero (2019-2025)"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3270,
+       "R": 519,
+       "H": 951,
+       "2B": 185,
+       "3B": 4,
+       "HR": 168,
+       "RBI": 522,
+       "SB": 26,
+       "BB": 384,
+       "BA": 0.291,
+       "OBP": 0.369,
+       "SLG": 0.504,
+       "OPS": 0.873
+      },
+      "score": 716
+     },
+     {
+      "rank": 14,
+      "player": {
+       "player_id": "hernate01",
+       "name": "Teoscar Hernandez",
+       "label": "Teoscar Hernandez"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2964,
+       "R": 415,
+       "H": 798,
+       "2B": 161,
+       "3B": 6,
+       "HR": 157,
+       "RBI": 508,
+       "SB": 48,
+       "BB": 201,
+       "BA": 0.269,
+       "OBP": 0.32,
+       "SLG": 0.487,
+       "OPS": 0.807
+      },
+      "score": 713
+     },
+     {
+      "rank": 15,
+      "player": {
+       "player_id": "suareeu01",
+       "name": "Eugenio Suarez",
+       "label": "Eugenio Suarez"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3003,
+       "R": 425,
+       "H": 687,
+       "2B": 140,
+       "3B": 4,
+       "HR": 178,
+       "RBI": 519,
+       "SB": 10,
+       "BB": 324,
+       "BA": 0.229,
+       "OBP": 0.312,
+       "SLG": 0.456,
+       "OPS": 0.768
+      },
+      "score": 707
+     },
+     {
+      "rank": 16,
+      "player": {
+       "player_id": "turnetr01",
+       "name": "Trea Turner",
+       "label": "Trea Turner"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3213,
+       "R": 538,
+       "H": 965,
+       "2B": 179,
+       "3B": 23,
+       "HR": 123,
+       "RBI": 425,
+       "SB": 156,
+       "BB": 223,
+       "BA": 0.3,
+       "OBP": 0.349,
+       "SLG": 0.485,
+       "OPS": 0.835
+      },
+      "score": 704
+     },
+     {
+      "rank": 17,
+      "player": {
+       "player_id": "perezsa02",
+       "name": "Salvador Perez",
+       "label": "Salvador Perez"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2940,
+       "R": 329,
+       "H": 770,
+       "2B": 143,
+       "3B": 1,
+       "HR": 162,
+       "RBI": 513,
+       "SB": 2,
+       "BB": 140,
+       "BA": 0.262,
+       "OBP": 0.306,
+       "SLG": 0.477,
+       "OPS": 0.783
+      },
+      "score": 677
+     },
+     {
+      "rank": 18,
+      "player": {
+       "player_id": "adamewi01",
+       "name": "Willy Adames",
+       "label": "Willy Adames"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2999,
+       "R": 449,
+       "H": 718,
+       "2B": 162,
+       "3B": 6,
+       "HR": 150,
+       "RBI": 473,
+       "SB": 53,
+       "BB": 351,
+       "BA": 0.239,
+       "OBP": 0.32,
+       "SLG": 0.447,
+       "OPS": 0.767
+      },
+      "score": 676
+     },
+     {
+      "rank": 19,
+      "player": {
+       "player_id": "garciad02",
+       "name": "Adolis Garcia",
+       "label": "Adolis Garcia"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2834,
+       "R": 399,
+       "H": 673,
+       "2B": 144,
+       "3B": 7,
+       "HR": 141,
+       "RBI": 458,
+       "SB": 74,
+       "BB": 211,
+       "BA": 0.237,
+       "OBP": 0.294,
+       "SLG": 0.442,
+       "OPS": 0.736
+      },
+      "score": 673
+     },
+     {
+      "rank": 20,
+      "player": {
+       "player_id": "semiema01",
+       "name": "Marcus Semien",
+       "label": "Marcus Semien"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3310,
+       "R": 529,
+       "H": 830,
+       "2B": 162,
+       "3B": 15,
+       "HR": 145,
+       "RBI": 444,
+       "SB": 77,
+       "BB": 330,
+       "BA": 0.251,
+       "OBP": 0.32,
+       "SLG": 0.44,
+       "OPS": 0.76
+      },
+      "score": 666
+     },
+     {
+      "rank": 21,
+      "player": {
+       "player_id": "bettsmo01",
+       "name": "Mookie Betts",
+       "label": "Mookie Betts"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2880,
+       "R": 553,
+       "H": 802,
+       "2B": 165,
+       "3B": 15,
+       "HR": 152,
+       "RBI": 443,
+       "SB": 70,
+       "BB": 365,
+       "BA": 0.278,
+       "OBP": 0.363,
+       "SLG": 0.505,
+       "OPS": 0.867
+      },
+      "score": 665
+     },
+     {
+      "rank": 22,
+      "player": {
+       "player_id": "swansda01",
+       "name": "Dansby Swanson",
+       "label": "Dansby Swanson"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 3154,
+       "R": 473,
+       "H": 799,
+       "2B": 156,
+       "3B": 11,
+       "HR": 124,
+       "RBI": 442,
+       "SB": 80,
+       "BB": 290,
+       "BA": 0.253,
+       "OBP": 0.318,
+       "SLG": 0.428,
+       "OPS": 0.746
+      },
+      "score": 646
+     },
+     {
+      "rank": 23,
+      "player": {
+       "player_id": "arozara01",
+       "name": "Randy Arozarena",
+       "label": "Randy Arozarena"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2892,
+       "R": 448,
+       "H": 723,
+       "2B": 159,
+       "3B": 10,
+       "HR": 117,
+       "RBI": 388,
+       "SB": 129,
+       "BB": 325,
+       "BA": 0.25,
+       "OBP": 0.343,
+       "SLG": 0.433,
+       "OPS": 0.776
+      },
+      "score": 634
+     },
+     {
+      "rank": 24,
+      "player": {
+       "player_id": "wittbo02",
+       "name": "Bobby Witt",
+       "label": "Bobby Witt (2022-2025)"
+      },
+      "bats": "R",
+      "stats": {
+       "G": null,
+       "AB": 2491,
+       "R": 403,
+       "H": 722,
+       "2B": 151,
+       "3B": 34,
+       "HR": 105,
+       "RBI": 373,
+       "SB": 148,
+       "BB": 176,
+       "BA": 0.29,
+       "OBP": 0.34,
+       "SLG": 0.504,
+       "OPS": 0.844
+      },
+      "score": 626
+     },
+     {
+      "rank": 25,
+      "player": {
+       "player_id": "harpebr03",
+       "name": "Bryce Harper",
+       "label": "Bryce Harper"
+      },
+      "bats": "L",
+      "stats": {
+       "G": null,
+       "AB": 2556,
+       "R": 446,
+       "H": 730,
+       "2B": 182,
+       "3B": 5,
+       "HR": 144,
+       "RBI": 416,
+       "SB": 62,
+       "BB": 421,
+       "BA": 0.286,
+       "OBP": 0.388,
+       "SLG": 0.53,
+       "OPS": 0.918
+      },
+      "score": 622
+     }
+    ]
+   }
+  },
+  "seasons?start=2010&end=2025&metric=WAR&order=desc&limit=25": {
+   "status": 422,
+   "body": {
+    "error": {
+     "code": "invalid_metric",
+     "message": "'WAR' is not a Historical Explorer stat.",
+     "details": {
+      "allowed": [
+       "R",
+       "AB",
+       "H",
+       "2B",
+       "3B",
+       "HR",
+       "RBI",
+       "SB",
+       "BB",
+       "BA",
+       "OBP",
+       "SLG",
+       "OPS",
+       "yearID"
+      ]
+     }
+    }
+   }
+  },
+  "leaderboards?start=2030&end=2031&metric=HR&limit=25": {
+   "status": 422,
+   "body": {
+    "error": {
+     "code": "invalid_date_range",
+     "message": "Seasons 2030–2031 are outside the data (1871–2025).",
+     "details": {
+      "available": [
+       1871,
+       2025
+      ]
+     }
+    }
+   }
+  },
+  "players/nobody99/seasons": {
+   "status": 404,
+   "body": {
+    "error": {
+     "code": "player_not_found",
+     "message": "No player with id 'nobody99'."
+    }
+   }
+  },
+  "seasons?start=2010&end=2025&metric=HR&order=desc&limit=25&min_HR=100": {
+   "status": 200,
+   "body": {
+    "start": 2010,
+    "end": 2025,
+    "metric": {
+     "key": "HR",
+     "label": "HR",
+     "kind": "count",
+     "higher_is_better": true,
+     "decimals": 0
+    },
+    "order": "desc",
+    "split_mode": "team",
+    "qualification": {
+     "applies": false,
+     "min_ab": 0,
+     "qualified_ab": 437,
+     "mode": "auto",
+     "text": ""
+    },
+    "total_rows": 0,
+    "rows": [],
+    "headline": null
+   }
+  }
+ }
+}

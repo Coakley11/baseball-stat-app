@@ -32,7 +32,7 @@ the pinned schema, and it runs first in `npm run check`.
 | 7 | No catalog endpoint | catalog (metrics, defaults, years) | Interim, see the next table. Year bounds come from `/health.seasons`. **R1** replaces it |
 | 8 | `rows` ≤ 200, no offset, no export | full table | The table shows the returned page plus "Showing N of total_rows". Paging and export wait on **R6** |
 | 9 | No `player_id` filter on `/seasons`, and rows below the minimum are dropped | the one-player view, with below-minimum rows marked | **Hidden in API mode** (client capability `playerSeasonRanking: false`) until **R8** |
-| 10 | `LeaderboardRow` has no seasons count | `seasons` | **Empty.** Cards show the API's `G` (games) instead |
+| 10 | `LeaderboardRow` has no seasons count, and `stats.G` is `null` on leaderboard rows (the span aggregation doesn't total games) | `seasons` | **Empty.** Cards show no sub-line. They would show `G` if the API filled it; a seasons/games total belongs with R1/R6 |
 | 11 | `LeaderboardRow.score` sits beside `stats` | `stats.score` | Copied into the stats map unchanged |
 | 12 | `TeamRef {team_id, name, season_name, league}` | `team` string | `team` = `team_id` (short labels); `teamName` = `season_name ?? name` (the table, like Streamlit's historical team name) |
 | 13 | `StatLine` keys `G…OPS` with `2B`/`3B` wire names; rates rounded to 3 | `StatLine` record | Used as-is |

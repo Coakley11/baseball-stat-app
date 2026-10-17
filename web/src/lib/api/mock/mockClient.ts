@@ -82,6 +82,7 @@ export function createMockClient(options: MockClientOptions = {}): BaseballClien
 
   return {
     source: "mock",
+    capabilities: { playerSeasonRanking: true },
 
     async getCatalog(request) {
       await wait(Math.min(latencyMs, 100), request?.signal);

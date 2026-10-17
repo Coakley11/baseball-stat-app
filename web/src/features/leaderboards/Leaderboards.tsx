@@ -16,11 +16,12 @@ import {
   Podium,
   SectionHeader,
 } from "@/components/ui/primitives";
-import { useBaseballQuery, type Catalog, type LeaderboardResult, type QueryState } from "@/lib/api";
+import { useBaseballClient, useBaseballQuery, type Catalog, type LeaderboardEntry, type LeaderboardResult, type QueryState } from "@/lib/api";
 import { formatCount, formatStat, formatYearRange } from "@/lib/format";
 
 import { historicalHref } from "../historical/params";
 import { metricOf, questionSummary, type ReadableParams } from "../shared/params";
+import { qualificationLabel } from "../shared/qualification";
 import { ParamIssueView, QueryErrorView } from "../shared/QueryProblem";
 import { MetricSelect, QuestionBar, YearRangeFields } from "../shared/QuestionControls";
 import shared from "../shared/questions.module.css";
@@ -81,7 +82,14 @@ function LeaderboardsWithCatalog({ catalog, params }: { catalog: Catalog; params
         {result.status === "success" && result.data.score && (
           <div>
             <h3 className={shared.subheading}>How the score works</h3>
-            <p>{result.data.score.summary}</p>
+            {result.data.score.summary ? (
+              <p>{result.data.score.summary}</p>
+            ) : (
+              <p>
+                Weights in this score:{" "}
+                {result.data.score.weights.map((w) => `${metricOf(catalog, w.metric)?.label ?? w.metric} ×${w.weight}`).join(", ")}.
+              </p>
+            )}
           </div>
         )}
         <p className={shared.note}>
@@ -98,14 +106,14 @@ function ResultArea({ state, result, catalog }: { state: LeaderboardUrlState; re
   if (result.status === "error") return <QueryErrorView error={result.error} retry={result.retry} resetHref={LEADERBOARDS_PATH} />;
   if (result.status !== "success") return <LoadingState label="Ranking players" />;
   const data = result.data;
-  if (!data.answer || data.entries.length === 0) {
+  if (data.entries.length === 0) {
     const qualified = data.qualification.kind === "qualified" || data.qualification.kind === "manual";
     return (
       <EmptyState
         title={qualified ? "No qualified hitters" : "No players match"}
         message={
           qualified
-            ? `Nobody reaches the at-bat minimum for ${formatYearRange(data.query.yearRange)} (${data.qualification.summary}). Try a longer span of seasons.`
+            ? `Nobody reaches the at-bat minimum for ${formatYearRange(data.query.yearRange)} (${qualificationLabel(data.qualification)}). Try a longer span of seasons.`
             : `Nobody matches this question for ${formatYearRange(data.query.yearRange)}. Try other seasons or another stat.`
         }
         action={<ButtonLink href={LEADERBOARDS_PATH}>Start from the default question</ButtonLink>}
@@ -115,22 +123,34 @@ function ResultArea({ state, result, catalog }: { state: LeaderboardUrlState; re
   return <LeaderboardAnswer result={data} catalog={catalog} />;
 }
 
+function playerCardSub(entry: LeaderboardEntry): string | undefined {
+  if (entry.seasons !== null) return `${entry.seasons} season${entry.seasons === 1 ? "" : "s"}`;
+  const games = entry.stats.G;
+  return games !== null && games !== undefined ? `${formatCount(games)} games` : undefined;
+}
+
 function LeaderboardAnswer({ result, catalog }: { result: LeaderboardResult; catalog: Catalog }) {
   const podiumId = useId();
   const chartId = useId();
-  const { metric, qualification, query } = result;
-  const answer = result.answer!;
+  const playerView = useBaseballClient().capabilities.playerSeasonRanking;
+  const { answer, metric, qualification, query } = result;
   const podium = result.entries.slice(0, 3);
   const leader = result.entries[0]!;
   const range = formatYearRange(query.yearRange);
+  const qualificationText = qualificationLabel(qualification);
 
   return (
     <>
-      <AnswerCard kicker={`Ranked by ${metric.name} · ${range}`} headline={answer.headline} detail={answer.detail} />
+      {/* Without an API answer (handoff R3), a title that states the question and claims nothing. */}
+      <AnswerCard
+        kicker={`Ranked by ${metric.name} · ${range}`}
+        headline={answer?.headline ?? `Leaders by ${metric.name}, ${range}`}
+        detail={answer?.detail ?? undefined}
+      />
 
       <div className={shared.chips}>
-        {qualification.kind !== "not_applicable" && qualification.summary && (
-          <Badge tone={qualification.kind === "none" ? "warn" : "accent"}>{qualification.summary}</Badge>
+        {qualification.kind !== "not_applicable" && qualificationText && (
+          <Badge tone={qualification.kind === "none" ? "warn" : "accent"}>{qualificationText}</Badge>
         )}
         <Badge>
           {formatCount(result.totalRanked)} {qualification.kind === "qualified" ? "qualified hitters" : "players"} ranked
@@ -145,7 +165,7 @@ function LeaderboardAnswer({ result, catalog }: { result: LeaderboardResult; cat
               <PlayerCard
                 rank={entry.rank}
                 name={entry.player.name}
-                sub={`${entry.seasons} season${entry.seasons === 1 ? "" : "s"}`}
+                sub={playerCardSub(entry)}
                 value={formatStat(entry.stats[metric.key], metric.format)}
                 valueLabel={metric.label}
                 lead={entry.rank === 1}
@@ -173,20 +193,43 @@ function LeaderboardAnswer({ result, catalog }: { result: LeaderboardResult; cat
         />
       </section>
 
-      <NextActions result={result} catalog={catalog} leaderId={leader.player.id} leaderName={leader.player.name} />
+      <NextActions
+        result={result}
+        catalog={catalog}
+        leaderId={leader.player.id}
+        leaderName={leader.player.name}
+        playerView={playerView}
+      />
     </>
   );
 }
 
-function NextActions({ result, catalog, leaderId, leaderName }: { result: LeaderboardResult; catalog: Catalog; leaderId: string; leaderName: string }) {
+function NextActions({
+  result,
+  catalog,
+  leaderId,
+  leaderName,
+  playerView,
+}: {
+  result: LeaderboardResult;
+  catalog: Catalog;
+  leaderId: string;
+  leaderName: string;
+  playerView: boolean;
+}) {
   const { query, metric } = result;
   const seasonMetric = catalog.historical.metrics.includes(metric.key) ? metric.key : catalog.historical.metric;
   return (
     <ActionRow label="Next steps">
-      <ButtonLink variant="primary" href={historicalHref({ metric: seasonMetric, playerId: leaderId }, catalog)}>
-        {leaderName}&apos;s best seasons
-      </ButtonLink>
-      <ButtonLink href={historicalHref({ yearRange: query.yearRange, metric: seasonMetric }, catalog)}>
+      {playerView && (
+        <ButtonLink variant="primary" href={historicalHref({ metric: seasonMetric, playerId: leaderId }, catalog)}>
+          {leaderName}&apos;s best seasons
+        </ButtonLink>
+      )}
+      <ButtonLink
+        variant={playerView ? "secondary" : "primary"}
+        href={historicalHref({ yearRange: query.yearRange, metric: seasonMetric }, catalog)}
+      >
         Best single seasons, {formatYearRange(query.yearRange)}
       </ButtonLink>
     </ActionRow>
@@ -197,7 +240,7 @@ function FullRanking({ result, catalog }: { result: LeaderboardResult; catalog: 
   const columns = result.columns.map((key) => ({ key, def: metricOf(catalog, key) }));
   return (
     <div>
-      <h3 className={shared.subheading}>Full ranking</h3>
+      <h3 className={shared.subheading}>Ranking table</h3>
       <div className={shared.tableScroll} role="region" aria-label="Full ranking" tabIndex={0}>
         <table className={shared.table}>
           <caption>

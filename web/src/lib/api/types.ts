@@ -57,7 +57,10 @@ export interface PlayerSeason {
   id: string;
   player: Pick<PlayerSummary, "id" | "name">;
   year: number;
+  /** Short team id ("NYY"). */
   team: string | null;
+  /** That season's team name ("New York Yankees"), when the source provides it. */
+  teamName: string | null;
   position: string | null;
   stats: StatLine;
   /**
@@ -70,12 +73,15 @@ export interface PlayerSeason {
 
 /**
  * The sample-size rule a rate-stat ranking is using (rate_stat_qualification.py).
- * `not_applicable` for counting stats. The frontend shows `summary` verbatim.
+ * `not_applicable` for counting stats. The frontend shows `summary` verbatim when present.
  */
 export interface QualificationInfo {
   kind: "qualified" | "manual" | "none" | "not_applicable";
-  /** "Qualified hitters · at least 2,349 AB over 2020–2025" */
-  summary: string;
+  /**
+   * "Qualified hitters · at least 2,349 AB over 2020–2025". `null` until the API publishes
+   * surface-neutral copy (handoff R4); the UI then shows only the number.
+   */
+  summary: string | null;
   minAtBats: number | null;
   scope: "season" | "span";
 }
@@ -84,8 +90,11 @@ export interface QualificationInfo {
 export interface Answer {
   /** Short claim: "Aaron Judge, 2024: 1.159 OPS". */
   headline: string;
-  /** One or two scoped sentences: "…is the highest among the 2,412 seasons shown (2010–2025)." */
-  detail: string;
+  /**
+   * One or two scoped sentences: "…is the highest among the 2,412 seasons shown (2010–2025)."
+   * `null` when the source doesn't provide it (real API until handoff R2/R3).
+   */
+  detail: string | null;
   /** Optional context line, e.g. "2024 · NYY · CF". */
   context: string | null;
 }
@@ -163,15 +172,15 @@ export interface LeaderboardQuery {
 export interface LeaderboardEntry {
   rank: number;
   player: Pick<PlayerSummary, "id" | "name">;
-  /** Seasons played inside the range. */
-  seasons: number;
+  /** Seasons played inside the range; `null` when the source doesn't report it (real API). */
+  seasons: number | null;
   /** Totals (and rates from totals) over the range. */
   stats: StatLine;
 }
 
 export interface ScoreDefinition {
-  /** "HR + RBI + SB, each weighted 1" */
-  summary: string;
+  /** "HR + RBI + SB, each weighted 1"; `null` until the API words it (handoff R3). */
+  summary: string | null;
   weights: { metric: MetricKey; weight: number }[];
 }
 

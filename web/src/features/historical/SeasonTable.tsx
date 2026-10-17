@@ -60,7 +60,7 @@ export function SeasonTable({ result, catalog }: { result: HistoricalExplorerRes
               ) : (
                 <td className={shared.textCell}>{season.year}</td>
               )}
-              <td className={shared.textCell}>{season.team ?? MISSING}</td>
+              <td className={shared.textCell}>{season.teamName ?? season.team ?? MISSING}</td>
               <td className={shared.textCell}>{season.position ?? MISSING}</td>
               {columns.map(({ key, def }) => (
                 <td key={key} className={key === result.metric.key ? shared.sortedCol : undefined}>
