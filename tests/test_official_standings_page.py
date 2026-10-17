@@ -31,8 +31,12 @@ class StandingsPageWiringTests(unittest.TestCase):
     def test_page_renders_official_standings_before_the_roster_snapshot(self):
         src = APP.read_text(encoding="utf-8")
         page = src[src.index('elif active_page == "Fantasy Standings Tracker":'):]
-        official = page.index("render_official_standings(st, active_league_context)")
-        snapshot = page.index('st.subheader("Current Roster Snapshot (not official standings)")')
+        # U1: the answer (your place, from official standings), then the official table, then
+        # the current-roster analysis — which never looks like the standings.
+        answer = page.index("render_league_answer(st, st.session_state, _answer_ctx, navigate_to_page)")
+        official = page.index("render_official_standings(st, _answer_ctx)")
+        snapshot = page.index("st.subheader(_SNAPSHOT_LABEL)")
+        self.assertLess(answer, official)
         self.assertLess(official, snapshot)
         self.assertNotIn('st.subheader("Live Fantasy Standings")', src)
 

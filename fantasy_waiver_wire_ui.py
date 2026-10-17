@@ -202,6 +202,73 @@ def _render_add_player_card(
             )
 
 
+def _render_u1_waiver_answer(
+    st: Any,
+    *,
+    needs: dict[str, Any],
+    adds: pd.DataFrame,
+    my_roster: pd.DataFrame,
+    my_team: str,
+    position_filter: str,
+    open_slots: list[str],
+    league_name: str,
+    player_action_cb=None,
+) -> None:
+    """Your biggest needs, then the top three adds with why each helps. Buttons only plan or
+    compare — a move happens only through Confirm Waiver Move."""
+    import u1_answers as u1a
+    import ui_hierarchy as u1
+
+    where = "" if str(position_filter or "All positions") == "All positions" else f" at {position_filter}"
+    u1.answer_card(
+        st,
+        u1a.needs_headline(needs),
+        f"Best free agents for {my_team or 'your team'}{where}, picked for those needs from current-season stats.",
+        kicker=" · ".join(x for x in ("Waiver wire", league_name) if x),
+    )
+    if open_slots:
+        u1.chips(st, [(f"Open roster spot: {', '.join(str(s) for s in open_slots[:4])}", "warn")])
+    if adds is None or adds.empty:
+        st.info("No recommended adds for this filter. Try All positions under Explore more.")
+        return
+    for i, (_, row) in enumerate(adds.head(3).iterrows()):
+        name = str(row.get("Player") or row.get("fullName") or "")
+        positions = str(row.get("Eligible Positions") or row.get("Primary Position") or "").strip()
+        team = str(row.get("MLB Team") or row.get("Team") or "").strip()
+        why = str(row.get("Why Add") or "").strip()
+        line = format_current_stat_line(row)
+        comparison = u1a.starter_comparison(row, my_roster)
+        # Not _card_key(): that prefix opts into the phone photo-card grid (48 px first column).
+        card_key = "u1-waiver-top-" + str(i) + "-" + "".join(ch if ch.isalnum() else "-" for ch in name)[:40]
+        with st.container(border=True, key=card_key):
+            pos_html = "".join(f'<span class="u1-pos">{u1.esc(p.strip())}</span>' for p in positions.split(",") if p.strip())
+            st.markdown(
+                f'<div class="u1-card-title">{i + 1}. {u1.esc(name)} {pos_html}</div>'
+                f'<div class="u1-muted">{u1.esc(team)}{" · " if team and line else ""}{u1.esc(line)}</div>'
+                + (f'<div class="u1-card-body"><strong>Why this helps:</strong> {u1.esc(why)}</div>' if why else "")
+                + (f'<div class="u1-muted">{u1.esc(comparison)}</div>' if comparison else ""),
+                unsafe_allow_html=True,
+            )
+            safe_key = "".join(ch if ch.isalnum() else "_" for ch in name)[:40]
+            # Full-width primary action, then two short secondary actions side by side (fits 360 px).
+            st.button("Consider add", key=f"u1_waiver_consider_{i}_{safe_key}", type="primary",
+                      use_container_width=True, on_click=_on_plan_add_click, args=(name,))
+            if player_action_cb:
+                try:
+                    from mobile_foundation import mobile_wrap_row
+
+                    row_ctx = mobile_wrap_row(st, f"u1-waiver-actions-{i}")
+                except ImportError:
+                    row_ctx = st.container()
+                with row_ctx:
+                    cols = st.columns(2)
+                cols[0].button("Compare", key=f"u1_waiver_compare_{i}_{safe_key}", use_container_width=True,
+                               on_click=player_action_cb("Send to Comparison Tool", name))
+                cols[1].button("See trend", key=f"u1_waiver_trend_{i}_{safe_key}", use_container_width=True,
+                               on_click=player_action_cb("Send to Trend Page", name))
+    st.caption("“Consider add” puts the player in the move planner below. Nothing changes until you confirm a move.")
+
+
 def _render_drop_player_card(
     st: Any,
     row: pd.Series,
@@ -631,7 +698,10 @@ def render_waiver_wire_page(
     league_roster_stats: pd.DataFrame | None = None,
     normalize_name_fn=None,
     page_label_fn=None,
+    player_action_cb=None,
 ) -> None:
+    """``player_action_cb(action, player)`` (optional) returns a button callback that sends a
+    player to Comparison / Trend; the app passes its own so this module never imports it."""
     context = get_active_league_context(session)
     if not context:
         st.warning(
@@ -721,11 +791,6 @@ def render_waiver_wire_page(
             "load MLB API or CSV current-season stats, then return here."
         )
         return
-
-    st.caption(
-        "Waiver analysis uses **current-season MLB stats** and your **Fantasy Source** — "
-        "not projections, ADP, Fantasy Edge, or draft-risk metrics."
-    )
 
     try:
         from fantasy_in_season_state import prepare_fantasy_in_season_hydration
@@ -843,6 +908,15 @@ def render_waiver_wire_page(
         _has_slots = False
         open_slots = []
 
+    import ui_hierarchy as u1
+
+    # U1: answer first — your needs and the top adds — filled in once the filter is applied.
+    answer_slot = st.container()
+    u1.section_label(st, "Explore more · position filter, all recommendations, player pool and moves")
+    st.caption(
+        "Recommendations use **current-season MLB stats** for players in your league — "
+        "not projections, draft rankings or draft-risk scores."
+    )
     st.markdown("##### Position filter")
     position_filter = st.selectbox(
         "Filter available players by position",
@@ -853,8 +927,14 @@ def render_waiver_wire_page(
     )
     filtered_pool = _apply_waiver_position_filter(waiver_pool, position_filter)
     adds = _apply_waiver_position_filter(adds, position_filter) if not adds.empty else adds
+    with answer_slot:
+        _render_u1_waiver_answer(
+            st, needs=needs, adds=adds, my_roster=my_roster, my_team=my_team, position_filter=position_filter,
+            open_slots=open_slots, league_name=str(context.get("league_name") or context.get("display_name") or ""),
+            player_action_cb=player_action_cb,
+        )
 
-    st.markdown("##### League snapshot")
+    st.markdown("##### Your category ranks")
     rank_lines = format_league_rank_lines(needs, categories=waiver_cats)
     if rank_lines:
         st.caption(" · ".join(rank_lines))
@@ -874,7 +954,7 @@ def render_waiver_wire_page(
     except ImportError:
         tx_mode = "add_drop"
 
-    st.markdown("##### Waiver Transaction")
+    st.markdown("##### Make a move (add / drop)")
     if tx_mode == "add_only":
         st.caption(
             "**Roster has open spots.** Select waiver players to add without a drop. "
@@ -987,14 +1067,14 @@ def render_waiver_wire_page(
     except ImportError:
         pass
 
-    st.markdown("##### 1. Top Recommended Adds")
+    st.markdown("##### All recommended adds")
     if adds.empty:
         st.info("No waiver recommendations yet — load current-season stats and check your league context.")
     else:
         for i, (_, row) in enumerate(adds.head(15).iterrows()):
             _render_add_player_card(st, row, key_prefix=f"waiver_rec_{i}")
 
-    st.markdown("##### 2. Recommended Drops")
+    st.markdown("##### Recommended drops")
     if drops.empty:
         st.info("No drop candidates on your roster yet.")
     else:
@@ -1010,7 +1090,7 @@ def render_waiver_wire_page(
                 button_label=label,
             )
 
-    st.markdown("##### 3. Available Player Pool")
+    st.markdown("##### All available players")
     st.caption(
         f"{len(filtered_pool)} waiver-eligible players for **{position_filter}**. "
         "Search and sort in the table — use **Plan Add** cards above or the planner below."
@@ -1049,7 +1129,7 @@ def render_waiver_wire_page(
             _pool_view_display, use_container_width=True, hide_index=True, column_config=_pool_pin_cfg or None
         )
 
-    st.markdown("##### 4. Manual Add / Drop Actions")
+    st.markdown("##### Plan an add / drop by hand")
     st.caption("Pick an add and a drop below, or use **Plan Add** / **Plan Drop** cards above.")
     manual_add_options = [""] + add_options
     manual_drop_options = [""] + drop_options

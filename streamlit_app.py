@@ -29441,16 +29441,35 @@ elif active_page == "Fantasy Standings Tracker":
     except ImportError:
         pass
 
-    render_section_header(
-        "📊 Fantasy Standings Tracker",
-        "Upload current-season player stats and score all drafted fantasy teams by roto or points-league rules."
-    )
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "📊 League Standings", "Where your team stands, what's working, and what to do next.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     _prepare_and_show_draft_shared_settings(
         active_page,
         format_key="standings_scoring_format",
     )
+    # U1: the official answer first (place, gap, strengths, closest gains, this week, next steps).
+    # It needs only the season ledger, not current MLB stats.
+    try:
+        from fantasy_league_context import get_active_league_context as _get_ctx_for_answer
+        from league_home_ui import render_league_answer
+
+        _answer_ctx = _get_ctx_for_answer(st.session_state)
+        render_league_answer(st, st.session_state, _answer_ctx, navigate_to_page)
+    except ImportError:
+        _answer_ctx = None
+    u1.section_label(st, "Explore more · full standings, completed weeks and current-roster analysis")
+    _uses_season_ledger_early = False
+    if _answer_ctx is not None:
+        try:
+            from fantasy_season_results_ui import render_official_standings
+
+            # Official standings detail: the sum of finalized scoring periods.
+            _uses_season_ledger_early = render_official_standings(st, _answer_ctx)
+        except ImportError:
+            pass
 
     try:
         from draft_archive_ui import render_active_saved_draft_chip
@@ -29469,6 +29488,14 @@ elif active_page == "Fantasy Standings Tracker":
         except Exception:
             pass
 
+    from fantasy_standings_snapshot import SNAPSHOT_LABEL as _SNAPSHOT_LABEL
+
+    st.subheader(_SNAPSHOT_LABEL)
+    st.caption(
+        "Season-to-date stats of the players on each roster today, ranked like roto. Useful for "
+        "analysis, but it is not the league standings: a player counts for whoever owns him now, "
+        "whenever he played."
+    )
     _standings_format_options = ["5x5 Roto", "Points League"]
     validate_state_option("standings_scoring_format", _standings_format_options, "5x5 Roto")
     def _standings_format_changed():
@@ -29836,15 +29863,8 @@ elif active_page == "Fantasy Standings Tracker":
         elif active_archive and roster_stats.empty and not _used_standings_cache:
             st.warning("Loaded saved draft has no roster players to score.")
 
-        _uses_season_ledger = False
-        if _use_full_league_context and active_league_context is not None:
-            try:
-                from fantasy_season_results_ui import render_official_standings
-
-                # Official standings: the sum of finalized scoring periods.
-                _uses_season_ledger = render_official_standings(st, active_league_context)
-            except ImportError:
-                _uses_season_ledger = False
+        # Official standings were rendered above (U1); only remember whether this league uses them.
+        _uses_season_ledger = bool(_uses_season_ledger_early)
 
         if not roster_stats.empty:
             _show_multi_team_rosters = _use_full_league_context or not active_archive
@@ -29860,12 +29880,7 @@ elif active_page == "Fantasy Standings Tracker":
                 file_name="fantasy_rosters_current_stats.csv",
                 display_rows=300,
             )
-            st.subheader("Current Roster Snapshot (not official standings)")
-            st.caption(
-                "Season-to-date stats of the players on each roster today, ranked like roto. Useful for "
-                "analysis, but it is not the league standings: a player counts for whoever owns him now, "
-                "whenever he played."
-            )
+            st.markdown(f"**{_SNAPSHOT_LABEL}: ranking table**")
             try:
                 from fantasy_weekly_hitter_scoring import cumulative_standings_rows
 
@@ -30311,28 +30326,11 @@ elif active_page == "Waiver Wire / Add-Drop Center":
 
     _page_perf_start(active_page)
     _maybe_render_account_pref_sync(active_page)
-    render_section_header(
-        "🔄 Waiver Wire / Add-Drop Center",
-        "Improve your active fantasy team using current-season category performance, waiver pool adds, and paired add/drop planning.",
-    )
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "🔄 Waiver Wire", "Who to pick up for your team, and why.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
-    try:
-        from draft_archive_ui import render_active_saved_draft_chip
-
-        render_active_saved_draft_chip(
-            st,
-            st.session_state,
-            key_prefix="waiver_archive",
-            page_label_fn=page_option_label,
-        )
-    except (ImportError, TypeError):
-        try:
-            from draft_archive_ui import render_active_draft_summary
-
-            render_active_draft_summary(st, st.session_state)
-        except Exception:
-            pass
     _waiver_hitter_stats = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
     try:
         from fantasy_league_context import get_active_league_context
@@ -30355,7 +30353,25 @@ elif active_page == "Waiver Wire / Add-Drop Center":
         league_roster_stats=_waiver_roster_stats,
         normalize_name_fn=normalize_player_name_for_merge,
         page_label_fn=page_option_label,
+        player_action_cb=_u1_player_action_cb,
     )
+    # U1: the active-league card (switch league, open saved drafts) sits below the page content.
+    try:
+        from draft_archive_ui import render_active_saved_draft_chip
+
+        render_active_saved_draft_chip(
+            st,
+            st.session_state,
+            key_prefix="waiver_archive",
+            page_label_fn=page_option_label,
+        )
+    except (ImportError, TypeError):
+        try:
+            from draft_archive_ui import render_active_draft_summary
+
+            render_active_draft_summary(st, st.session_state)
+        except Exception:
+            pass
     save_page_state(active_page)
     _render_consolidated_page_diagnostics(active_page)
     _page_perf_end(active_page)
