@@ -79,6 +79,17 @@ def qualification_text(session: Mapping[str, Any], prefix: str, sort_stat: str, 
         manual = session.get(rsq.mode_key(prefix)) == rsq.MODE_MANUAL
     except Exception:
         return ""
+    return qualification_summary(value, manual=manual, sort_stat=sort_stat, year_range=year_range,
+                                 per_season=per_season)
+
+
+def qualification_summary(value: int, *, manual: bool, sort_stat: str, year_range: Any,
+                          per_season: bool = False) -> str:
+    """``qualification_text`` from an already-resolved minimum (no session state): the API
+    passes the state ``rate_stat_qualification.resolve_ab_minimum`` returned."""
+    if sort_stat not in RATE_STATS:
+        return ""
+    value = int(value or 0)
     if value <= 0:
         return "No at-bat minimum · part-time players can lead this list"
     if per_season:
@@ -121,14 +132,18 @@ def season_answer(rows: pd.DataFrame, sort_stat: str, year_range: Any, *, ascend
         "body": body,
         "context": context,
         "tiles": tiles,
+        "tile_stats": [s for s in tile_stats if s in rows.columns],
         "player": name,
         "qualification": qualification,
     }
 
 
 def leaderboard_answer(rows: pd.DataFrame, sort_stat: str, year_range: Any, *,
-                       weights: Mapping[str, float] | None = None, qualification: str = "") -> dict[str, Any] | None:
-    """Answer for a ranked multi-season leaderboard (totals over the range)."""
+                       weights: Mapping[str, float] | None = None, qualification: str = "",
+                       control_hint: bool = True) -> dict[str, Any] | None:
+    """Answer for a ranked multi-season leaderboard (totals over the range).
+    ``control_hint=False`` leaves out the sentence pointing at the page's weight controls
+    (copy for surfaces other than the Streamlit page)."""
     if rows is None or rows.empty or sort_stat not in rows.columns:
         return None
     ranked = rows[pd.to_numeric(rows[sort_stat], errors="coerce").notna()]
@@ -143,7 +158,7 @@ def leaderboard_answer(rows: pd.DataFrame, sort_stat: str, year_range: Any, *,
         what = ("Score adds up " + " + ".join(parts) + f" over {span}" if parts else f"Score over {span}")
         if any(s in RATE_STATS for s, _w in used):
             what += " (rate stats count ×100)"
-        what += ". Change the weights under Explore more."
+        what += ". Change the weights under Explore more." if control_hint else "."
     elif sort_stat in RATE_STATS:
         name_ = stat_name(sort_stat)
         what = f"{name_[0].upper() + name_[1:]} from each player's combined totals over {span}."

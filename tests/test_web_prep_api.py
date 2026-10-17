@@ -51,7 +51,8 @@ class ResponseSchemaTests(unittest.TestCase):
 
     def test_qualification_and_metric_metadata_travel_with_rankings(self):
         r = get("/api/v1/seasons", start=2024, end=2024, metric="OPS", limit=3).json()
-        self.assertEqual(r["metric"], {"key": "OPS", "label": "OPS", "kind": "rate", "higher_is_better": True, "decimals": 3})
+        self.assertEqual(r["metric"], {"key": "OPS", "label": "OPS", "name": "OPS", "kind": "rate", "higher_is_better": True,
+                                       "decimals": 3})
         self.assertTrue(r["qualification"]["applies"])
         self.assertEqual(r["qualification"]["mode"], "auto")
         self.assertGreater(r["qualification"]["min_ab"], 400)
@@ -176,7 +177,10 @@ from baseball_api.app import app
 c = TestClient(app)
 codes = [c.get(u, params=p).status_code for u, p in [
     ("/api/v1/players/search", {"q": "judge"}), ("/api/v1/players/judgeaa01/seasons", {}),
-    ("/api/v1/seasons", {"limit": 5}), ("/api/v1/leaderboards", {"limit": 5})]]
+    ("/api/v1/seasons", {"limit": 5}), ("/api/v1/leaderboards", {"limit": 5}),
+    ("/api/v1/catalog", {}), ("/api/v1/players/judgeaa01", {}),
+    ("/api/v1/seasons", {"player_id": "judgeaa01", "metric": "OPS", "include_below_minimum": "true"}),
+    ("/api/v1/seasons", {"format": "csv", "limit": 50}), ("/api/v1/leaderboards", {"format": "csv"})]]
 loaded = [m for m in ("streamlit", "baseball_persistent_state", "suite_user_persistence", "suite_storage",
                       "suite_activity_client", "supabase", "baseball_billing") if m in sys.modules]
 print(json.dumps({"codes": codes, "loaded": loaded, "writes": sorted(set(writes))}))
@@ -190,7 +194,7 @@ class NoStreamlitExecutionTests(unittest.TestCase):
                              capture_output=True, text=True, timeout=600)
         self.assertEqual(out.returncode, 0, out.stderr[-2000:])
         result = json.loads(out.stdout.strip().splitlines()[-1])
-        self.assertEqual(result["codes"], [200, 200, 200, 200])
+        self.assertEqual(result["codes"], [200] * 9)
         self.assertEqual(result["loaded"], [], "an endpoint pulled in Streamlit or a persistence module")
         self.assertEqual(result["writes"], [], "an endpoint opened a file for writing, renamed or deleted one")
 

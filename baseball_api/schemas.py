@@ -22,7 +22,9 @@ API_VERSION = "v1"
 
 
 class _Model(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # Every field is always serialized, so the schema marks defaulted fields required too
+    # (generated TypeScript types then say `x: T | null`, not `x?: T`).
+    model_config = ConfigDict(extra="forbid", frozen=True, json_schema_serialization_defaults_required=True)
 
 
 # ---------------------------------------------------------------- shared
@@ -34,7 +36,10 @@ class ErrorBody(_Model):
         "not_found", "internal_error",
     ]
     message: str = Field(description="Plain-language, safe to show. Never a traceback or Streamlit text.")
-    details: dict[str, object] | None = Field(default=None, description="Structured extras, e.g. candidates.")
+    details: dict[str, object] | None = Field(default=None, description="Structured extras, e.g. candidates. "
+                                                                       "Left out when there are none.")
+    # details is omitted (not null) when empty, so the schema keeps it optional
+    model_config = ConfigDict(json_schema_serialization_defaults_required=False)
 
 
 class ErrorResponse(_Model):
@@ -56,7 +61,8 @@ class PlayerRef(_Model):
 
 class MetricInfo(_Model):
     key: str
-    label: str
+    label: str = Field(description="Short column label the app shows (AVG for BA).")
+    name: str = Field(description="Plain-language name for sentences and titles, e.g. 'home runs', 'batting average'.")
     kind: Literal["count", "rate", "score", "year"]
     higher_is_better: bool = True
     decimals: int = Field(description="Display precision the app uses (rates 3, counts 0, score 1).")
@@ -67,7 +73,12 @@ class Qualification(_Model):
     min_ab: int
     qualified_ab: int = Field(description="The qualifying AB for the range under the app's rule.")
     mode: Literal["auto", "manual"]
-    text: str = Field(description="The same caption the app shows next to the ranking.")
+    text: str = Field(description="The Streamlit page's caption (Markdown, names its controls). Kept for parity; "
+                                  "other surfaces use summary / explanation.")
+    summary: str = Field(default="", description="Short plain-text line the page shows as a chip, e.g. "
+                                                 "'Qualified hitters · at least 2,349 AB over 2020–2025'. Empty for counting stats.")
+    explanation: str | None = Field(default=None, description="One or two plain-text sentences on the rule in force "
+                                                              "(no Markdown, no control names). Null for counting stats.")
 
 
 class StatLine(_Model):
@@ -85,7 +96,8 @@ class StatLine(_Model):
     OBP: float | None = None
     SLG: float | None = None
     OPS: float | None = None
-    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True, serialize_by_alias=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True, serialize_by_alias=True,
+                              json_schema_serialization_defaults_required=True)
 
 
 # ---------------------------------------------------------------- health
@@ -136,13 +148,31 @@ class PlayerSeasonsResult(_Model):
 # ---------------------------------------------------------------- historical explorer / leaderboards
 
 class SeasonRow(_Model):
-    rank: int
+    rank: int | None = Field(description="1-based rank in the full result. Null only for a season below the "
+                                         "active minimum (include_below_minimum=true).")
     player: PlayerRef
     year: int
     team: TeamRef | None
     position: str | None
     bats: str | None = None
     stats: StatLine
+    meets_minimum: bool = Field(default=True, description="False: below the active AB / stat minimums, shown "
+                                                          "only with include_below_minimum=true, never ranked.")
+
+
+class SeasonAnswer(_Model):
+    """The Historical Explorer answer card for these rows (u1_answers.season_answer)."""
+    headline: str
+    body: str
+    context: str = Field(description="Year · team · position of the top season.")
+    tile_metrics: list[str] = Field(description="Metric keys of the stat tiles, in order. Values are in rows[0].stats.")
+
+
+class LeaderboardAnswer(_Model):
+    """The Leaderboards answer card (u1_answers.leaderboard_answer), without page-control wording."""
+    headline: str
+    body: str
+    context: str = Field(description="What is ranked, e.g. 'Ranked by home runs'.")
 
 
 class SeasonLeadersResult(_Model):
@@ -153,9 +183,14 @@ class SeasonLeadersResult(_Model):
     order: Literal["desc", "asc"]
     split_mode: Literal["team", "combined"]
     qualification: Qualification
-    total_rows: int = Field(description="Seasons that pass the filters (before the limit).")
+    total_rows: int = Field(description="Rows in the full result before paging (with include_below_minimum, "
+                                        "below-minimum seasons are counted too).")
+    ranked_rows: int = Field(description="Seasons that pass the filters and minimums (the ranked part of the result).")
+    offset: int = Field(default=0, description="0-based position of rows[0] in the full result.")
+    player_id: str | None = Field(default=None, description="Set when the result is one player's seasons.")
     rows: list[SeasonRow]
-    headline: str | None = Field(default=None, description="The page's own answer headline for these rows.")
+    headline: str | None = Field(default=None, description="Same as answer.headline (kept for v1 compatibility).")
+    answer: SeasonAnswer | None = Field(default=None, description="Null when no season matches.")
 
 
 class LeaderboardRow(_Model):
@@ -173,8 +208,76 @@ class LeaderboardResult(_Model):
     metric: MetricInfo
     weights: dict[str, float] = Field(description="Weights behind 'score' (rate stats count ×100).")
     qualification: Qualification
-    total_rows: int
+    total_rows: int = Field(description="Players that pass the minimums (before paging).")
+    offset: int = Field(default=0, description="0-based position of rows[0] in the full result.")
     rows: list[LeaderboardRow]
+    answer: LeaderboardAnswer | None = Field(default=None, description="Null when no player matches.")
+
+
+# ---------------------------------------------------------------- catalog
+
+class Option(_Model):
+    value: str = Field(description="What the query parameter accepts.")
+    label: str
+
+
+class SeasonSpan(_Model):
+    first: int
+    last: int
+
+
+class HistoricalDefaults(_Model):
+    start: int
+    end: int
+    metric: str
+    order: Literal["desc", "asc"]
+    split: Literal["team", "combined"] = Field(description="combined is combine=true on /seasons.")
+    bats: list[str] = Field(description="Every batting hand (the page starts with all selected).")
+    positions: list[str] = Field(description="Every season primary position (the page starts with all selected).")
+    position_source: Literal["season", "career"]
+    teams: list[str]
+
+
+class HistoricalFilters(_Model):
+    bats: list[Option]
+    positions: list[str] = Field(description="Position options for position_source=season.")
+    positions_by_source: dict[str, list[str]] = Field(description="season / career → position options.")
+    position_sources: list[Option]
+    teams: list[Option] = Field(description="Exactly the values teams= accepts.")
+    minimum_columns: list[str] = Field(description="Stats accepted as min_{STAT}. The AB minimum is min_ab.")
+
+
+class HistoricalCatalog(_Model):
+    metrics: list[str] = Field(description="The page's Sort by options.")
+    defaults: HistoricalDefaults
+    filters: HistoricalFilters
+
+
+class LeaderboardDefaults(_Model):
+    start: int
+    end: int
+    metric: str
+    weights: dict[str, float]
+    limit: int
+
+
+class LeaderboardCatalog(_Model):
+    metrics: list[str] = Field(description="The page's Sort by options.")
+    defaults: LeaderboardDefaults
+    weight_stats: list[str]
+    weight_bounds: list[float] = Field(description="[min, max] per weight.")
+    weight_step: float
+    limit_bounds: list[int] = Field(description="[min, max] of the page's Top N control (the API accepts 1–200).")
+    minimum_columns: list[str] = Field(description="Stats accepted as min_{STAT}. The AB minimum is min_ab.")
+
+
+class Catalog(_Model):
+    """Product configuration for the controls, so a client never hard-codes it."""
+    api_version: str = API_VERSION
+    seasons: SeasonSpan
+    metrics: list[MetricInfo] = Field(description="Every metric key used anywhere in the API.")
+    historical: HistoricalCatalog
+    leaderboards: LeaderboardCatalog
 
 
 # ---------------------------------------------------------------- documented, not yet served (contracts only)

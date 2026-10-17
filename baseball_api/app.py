@@ -43,7 +43,10 @@ def _json(payload: Any, status: int = 200, headers: dict[str, str] | None = None
 
 
 def _error(err: ApiError) -> Response:
-    return _json(err.body(), status=err.status)
+    headers = None
+    if err.code == "data_unavailable" and (err.details or {}).get("retry_after"):
+        headers = {"Retry-After": str(err.details["retry_after"])}  # still loading, unlike missing data
+    return _json(err.body(), status=err.status, headers=headers)
 
 
 # ---------------------------------------------------------------- query parsing (strict, typed)
@@ -98,11 +101,22 @@ def _weights(request: Request) -> dict[str, float] | None:
     return out
 
 
-def _endpoint(fn: Callable[[Request], BaseModel]):
-    """Wrap a handler: business call timed separately from serialization; errors → JSON."""
+def _format(request: Request) -> str:
+    fmt = request.query_params.get("format", "json")
+    if fmt not in ("json", "csv"):
+        raise ApiError("invalid_parameter", "format must be 'json' or 'csv'.")
+    return fmt
+
+
+def _endpoint(fn: Callable[[Request], BaseModel | Response], *, needs_data: bool = True):
+    """Wrap a handler: business call timed separately from serialization; errors → JSON.
+    While the startup preload is still reading the data, data routes answer 503 with
+    Retry-After instead of waiting on it."""
     async def handler(request: Request) -> Response:
         t0 = time.perf_counter()
         try:
+            if needs_data:
+                svc.STORE.get(wait=False)
             model = fn(request)
         except ApiError as err:
             return _error(err)
@@ -110,8 +124,10 @@ def _endpoint(fn: Callable[[Request], BaseModel]):
             log.exception("api handler failed: %s", request.url.path)
             return _error(ApiError("internal_error", "Something went wrong. Try again."))
         t1 = time.perf_counter()
-        body = model.model_dump(mode="json", by_alias=True)
-        resp = _json(body)
+        if isinstance(model, Response):
+            resp = model
+        else:
+            resp = _json(model.model_dump(mode="json", by_alias=True))
         t2 = time.perf_counter()
         resp.headers["Server-Timing"] = f"business;dur={(t1 - t0) * 1000:.1f}, serialize;dur={(t2 - t1) * 1000:.1f}"
         resp.headers["Cache-Control"] = "public, max-age=300"
@@ -133,25 +149,49 @@ def _resolve(request: Request):
     return svc.resolve_player(request.query_params.get("name", ""))
 
 
+def _catalog(request: Request):
+    return svc.catalog()
+
+
+def _player(request: Request):
+    return svc.player(request.path_params["player_id"])
+
+
+def _csv(text: str, file_name: str) -> Response:
+    return Response(text, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{file_name}"'})
+
+
 def _seasons_for_player(request: Request):
     return svc.player_seasons(request.path_params["player_id"], start=_int(request, "start"), end=_int(request, "end"),
                               split=request.query_params.get("split", "team"))
 
 
 def _season_leaders(request: Request):
-    return svc.season_leaders(
+    fmt = _format(request)
+    params = dict(
         start=_int(request, "start"), end=_int(request, "end"), metric=request.query_params.get("metric", "HR"),
-        order=request.query_params.get("order", "desc"), limit=_int(request, "limit"), bats=_list(request, "bats"),
-        positions=_list(request, "positions"), position_source=request.query_params.get("position_source", "season"),
-        teams=_list(request, "teams"), combine=_bool(request, "combine", False), min_ab=_int(request, "min_ab"),
-        qualified=_bool(request, "qualified", True), minimums=_minimums(request))
+        order=request.query_params.get("order", "desc"), limit=_int(request, "limit"), offset=_int(request, "offset"),
+        bats=_list(request, "bats"), positions=_list(request, "positions"),
+        position_source=request.query_params.get("position_source", "season"), teams=_list(request, "teams"),
+        combine=_bool(request, "combine", False), min_ab=_int(request, "min_ab"),
+        qualified=_bool(request, "qualified", True), minimums=_minimums(request),
+        player_id=request.query_params.get("player_id") or None,
+        include_below_minimum=_bool(request, "include_below_minimum", False))
+    if fmt == "csv":
+        return _csv(svc.season_leaders_csv(**params), "historical_explorer.csv")
+    return svc.season_leaders(**params)
 
 
 def _leaderboard(request: Request):
-    return svc.leaderboard(
+    fmt = _format(request)
+    params = dict(
         start=_int(request, "start"), end=_int(request, "end"), metric=request.query_params.get("metric", "score"),
-        limit=_int(request, "limit"), weights=_weights(request), min_ab=_int(request, "min_ab"),
-        qualified=_bool(request, "qualified", True), minimums=_minimums(request))
+        limit=_int(request, "limit"), offset=_int(request, "offset"), weights=_weights(request),
+        min_ab=_int(request, "min_ab"), qualified=_bool(request, "qualified", True), minimums=_minimums(request))
+    if fmt == "csv":
+        return _csv(svc.leaderboard_csv(**params), "leaderboards.csv")
+    return svc.leaderboard(**params)
 
 
 async def _openapi(_request: Request) -> Response:
@@ -169,10 +209,12 @@ async def _server_error(_request: Request, _exc: Exception) -> Response:
 
 
 ROUTES = [
-    Route(f"{PREFIX}/health", _endpoint(_health), methods=["GET"]),
+    Route(f"{PREFIX}/health", _endpoint(_health, needs_data=False), methods=["GET"]),
+    Route(f"{PREFIX}/catalog", _endpoint(_catalog), methods=["GET"]),
     Route(f"{PREFIX}/players/search", _endpoint(_search), methods=["GET"]),
     Route(f"{PREFIX}/players/resolve", _endpoint(_resolve), methods=["GET"]),
     Route(PREFIX + "/players/{player_id:str}/seasons", _endpoint(_seasons_for_player), methods=["GET"]),
+    Route(PREFIX + "/players/{player_id:str}", _endpoint(_player), methods=["GET"]),
     Route(f"{PREFIX}/seasons", _endpoint(_season_leaders), methods=["GET"]),
     Route(f"{PREFIX}/leaderboards", _endpoint(_leaderboard), methods=["GET"]),
     Route(f"{PREFIX}/openapi.json", _openapi, methods=["GET"]),
