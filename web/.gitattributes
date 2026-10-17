@@ -1,0 +1,4 @@
+# The pinned API schema and the types generated from it stay LF everywhere, so
+# `npm run api:types:check` compares like with like on Windows checkouts too.
+openapi/*.json text eol=lf
+src/lib/api/generated/** text eol=lf
