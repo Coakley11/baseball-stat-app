@@ -34,6 +34,7 @@ NAV_LABELS: dict[str, str] = {
     "Waiver Wire / Add-Drop Center": "🔄 Waiver Wire",
     "Comparison Tool": "📈 Compare Players",
     "Fantasy Sleepers & Busts": "💎 Sleepers & Busts",
+    "Fantasy Lineup Assistant": "🧠 Lineup & Trades",  # U3: the page also holds the Trade Center
 }
 
 

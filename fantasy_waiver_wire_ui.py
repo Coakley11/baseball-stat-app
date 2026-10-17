@@ -481,15 +481,19 @@ def _render_waiver_manage_team(st: Any, session: dict[str, Any], context: dict[s
     options = [own_team] + proxy if own_team else proxy
     if session.get(WAIVER_MANAGE_TEAM_KEY) not in options:
         session[WAIVER_MANAGE_TEAM_KEY] = options[0]
-    choice = st.selectbox(
-        "Manage team",
-        options,
-        key=WAIVER_MANAGE_TEAM_KEY,
-        format_func=lambda t: f"{t} (your team)" if t == own_team else f"{t} — unclaimed, commissioner",
-        help="As commissioner you can make waiver moves for teams no manager has claimed yet.",
-    )
+    import ui_hierarchy as ui
+
+    # U3: commissioner controls sit in their own marked panel; the proxy notice stays visible.
+    with ui.commissioner_panel(st):
+        choice = st.selectbox(
+            "Manage team",
+            options,
+            key=WAIVER_MANAGE_TEAM_KEY,
+            format_func=lambda t: f"{t} (your team)" if t == own_team else f"{t} — unclaimed, commissioner",
+            help="As commissioner you can make waiver moves for teams no manager has claimed yet.",
+        )
     if choice and choice != own_team:
-        st.info(f"**Commissioner acting for {choice}.** Moves are logged as commissioner actions.")
+        ui.proxy_banner(st, f"Commissioner acting for {choice}", "Moves are logged as commissioner actions.")
         return choice
     return ""
 

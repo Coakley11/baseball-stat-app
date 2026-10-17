@@ -47,8 +47,13 @@ def _default_first_day() -> date:
     return today - timedelta(days=today.weekday())  # Monday of this week
 
 
-def render_season_calendar_setup(st: Any, session: dict[str, Any], context: dict[str, Any], *, is_commissioner: bool) -> bool:
-    """Commissioner sets the scoring periods once. Returns True when the league has a calendar."""
+def render_season_calendar_setup(
+    st: Any, session: dict[str, Any], context: dict[str, Any], *, is_commissioner: bool, panel: Any = None
+) -> bool:
+    """Commissioner sets the scoring periods once. Returns True when the league has a calendar.
+
+    ``panel``: the page's Commissioner Tools panel; the setup then renders there as a section
+    (expanders can't nest) instead of in its own expander."""
     if get_season_ledger(context) and list_periods(context):
         return True
     if not is_commissioner:
@@ -57,7 +62,10 @@ def render_season_calendar_setup(st: Any, session: dict[str, Any], context: dict
             "but official weekly results start once the calendar exists."
         )
         return False
-    with st.expander("Set the season calendar (official weekly scoring)", expanded=False):
+    title = "Set the season calendar (official weekly scoring)"
+    with (panel if panel is not None else st.expander(title, expanded=False)):
+        if panel is not None:
+            st.markdown(f"**{title}**")
         st.caption(
             "Official standings add up finalized scoring periods. Each period has fixed dates; "
             "a finalized period never changes, even after later drops or trades."

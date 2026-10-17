@@ -70,6 +70,8 @@ U1_CSS = """<style>
 .u1-bar-row.lead .u1-bar-track > span { opacity: 1; }
 .u1-bar-row .u1-bar-val { font-size: 0.86rem; color: #33475b; min-width: 3.2em; text-align: right; }
 .u1-bar-row.lead .u1-bar-val { font-weight: 700; color: #0b2540; }
+.u1-commish { border: 1px solid #e3d6f2; border-left: 4px solid #6b3fa0; border-radius: 10px; background: #f8f4fc;
+  padding: 9px 12px; margin: 0.25rem 0 0.5rem 0; color: #3b2160; font-size: 0.92rem; }
 </style>"""
 
 
@@ -203,6 +205,29 @@ def info_cards(st: Any, cards: Sequence[dict[str, Any]]) -> None:
         items.append(f'<div class="u1-card{tone}"><div class="u1-card-title">{esc(card.get("title"))}</div>{sub}{facts_html}{body}</div>')
     if items:
         st.markdown(f'<div class="u1-cards">{"".join(items)}</div>', unsafe_allow_html=True)
+
+
+COMMISSIONER_PANEL_LABEL = "🛡️ Commissioner Tools"
+
+
+def commissioner_panel(st: Any, *, expanded: bool = False) -> Any:
+    """One clearly marked panel for commissioner-only controls (U3), kept apart from the owner's
+    own team management. Returns the expander; callers fill it with ``with panel:`` as the page
+    renders (it keeps its place on the page). The label is the same everywhere, so its
+    open/closed state survives reruns. Callers show it only to commissioners."""
+    panel = st.expander(COMMISSIONER_PANEL_LABEL, expanded=expanded)
+    with panel:
+        st.caption("Only the commissioner sees these. They change the league, or a team no manager has "
+                   "claimed yet, and are logged as commissioner actions.")
+    return panel
+
+
+def proxy_banner(st: Any, text: str, detail: str = "") -> None:
+    """Always-visible notice while the commissioner acts for another team, e.g.
+    "Commissioner acting for Team 3" (``TeamControl.banner()``)."""
+    inject_css(st)
+    detail_html = f" {esc(detail)}" if detail else ""
+    st.markdown(f'<div class="u1-commish">🛡️ <b>{esc(text)}.</b>{detail_html}</div>', unsafe_allow_html=True)
 
 
 @contextmanager

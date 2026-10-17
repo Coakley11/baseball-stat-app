@@ -2765,9 +2765,9 @@ PAGE_GUIDES = {
         "outputs": "Team ranks and category breakdowns (loads stats for Lineup Assistant too).",
     },
     "Fantasy Lineup Assistant": {
-        "purpose": "Start/sit guidance and position-valid recommended lineups.",
-        "when": "Each scoring period with current stats loaded from Standings Tracker.",
-        "outputs": "Starters by slot, bench list, and lineup diagnosis.",
+        "purpose": "Set your weekly starting lineup (Lineup Management), or build, check and propose trades (Trade Center).",
+        "when": "Each scoring period, and whenever you are weighing a trade.",
+        "outputs": "Whether this week's lineup is complete and saved, the lineup board (starters, open spots, bench), and a trade verdict card; start/sit recommendations and lineup diagnosis under Explore more.",
     },
     "Waiver Wire / Add-Drop Center": {
         "purpose": "Waiver pool, team needs, add/drop recommendations, and weekly transaction planner.",
@@ -30324,13 +30324,13 @@ elif active_page == "Fantasy Lineup Assistant":
             _lineup_team_hdr = get_active_fantasy_team(st.session_state)
         except ImportError:
             _lineup_team_hdr = str(st.session_state.get("lineup_team") or st.session_state.get("room_your_team") or "").strip()
-    if _lineup_team_hdr:
-        _lineup_title = f"Fantasy Lineup Assistant — {_lineup_team_hdr}"
-    else:
-        _lineup_title = "Fantasy Lineup Assistant / Start-Sit AI"
-    render_section_header(
-        _lineup_title,
-        "Set your weekly starting lineup, then optionally review Start-Sit recommendations.",
+    import ui_hierarchy as u1
+
+    # U3: one plain title (sidebar label "Lineup & Trades"; the page key is unchanged).
+    u1.page_head(
+        st,
+        "🧠 Lineup & Trades",
+        (f"{_lineup_team_hdr}: " if _lineup_team_hdr else "") + "set this week's starters, or build and check a trade.",
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
@@ -30341,23 +30341,6 @@ elif active_page == "Fantasy Lineup Assistant":
     _xfer_cats = st.session_state.pop("lineup_context_category_needs", None)
     if _xfer_cats:
         st.info(f"Category focus from Standings: **{', '.join(_xfer_cats)}**")
-
-    try:
-        from draft_archive_ui import render_active_saved_draft_chip
-
-        render_active_saved_draft_chip(
-            st,
-            st.session_state,
-            key_prefix="lineup_archive",
-            page_label_fn=page_option_label,
-        )
-    except (ImportError, TypeError):
-        try:
-            from draft_archive_ui import render_active_draft_summary
-
-            render_active_draft_summary(st, st.session_state)
-        except Exception:
-            pass
 
     roster_stats = st.session_state.get("fantasy_current_roster_stats", pd.DataFrame()).copy()
     try:
@@ -30593,6 +30576,7 @@ elif active_page == "Fantasy Lineup Assistant":
                 safe_collection_len=safe_collection_len,
                 lineup_default_hitting_slots=LINEUP_DEFAULT_HITTING_SLOTS,
                 resolve_lineup_scoring_format=resolve_lineup_scoring_format,
+                nav_callback=_u1_nav_cb,
             )
             render_lineup_management_page(
                 st,
@@ -30602,6 +30586,23 @@ elif active_page == "Fantasy Lineup Assistant":
                 lineup_teams=lineup_teams,
                 deps=_lineup_deps,
             )
+    # U1/U3: the active-league card (switch league, open saved drafts) sits below the page content.
+    try:
+        from draft_archive_ui import render_active_saved_draft_chip
+
+        render_active_saved_draft_chip(
+            st,
+            st.session_state,
+            key_prefix="lineup_archive",
+            page_label_fn=page_option_label,
+        )
+    except (ImportError, TypeError):
+        try:
+            from draft_archive_ui import render_active_draft_summary
+
+            render_active_draft_summary(st, st.session_state)
+        except Exception:
+            pass
     save_page_state(active_page)
     flush_fantasy_section_edits(st.session_state, "lineup", st, reason="fantasy_lineup_page_save")
     _render_consolidated_page_diagnostics(active_page)

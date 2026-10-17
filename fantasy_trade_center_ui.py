@@ -1136,7 +1136,10 @@ def render_commissioner_trade_panel(st: Any, session: dict[str, Any]) -> None:
     flash = session.pop("tc_commissioner_trade_flash", None)
     if flash:
         st.success(str(flash))
-    with st.expander("Commissioner: trade involving an unclaimed team", expanded=False):
+    import ui_hierarchy as ui
+
+    with ui.commissioner_panel(st):
+        st.markdown("**Trade involving an unclaimed team**")
         st.caption(
             "Unclaimed teams have no manager yet, so as commissioner you act for them. "
             "Teams with a manager are never changed here — send them a normal proposal."

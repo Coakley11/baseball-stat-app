@@ -291,7 +291,7 @@ class WeeklyLineupPageSmokeTests(unittest.TestCase):
         markdown_calls = [str(c.args[0]) for c in st.markdown.call_args_list if c.args]
         html_calls = [str(c.args[0]) for c in getattr(st, "html", MagicMock()).call_args_list if c.args]
         combined = " ".join(markdown_calls + html_calls)
-        self.assertIn("fl-team-header", combined)
+        self.assertIn("u1-answer", combined)  # U3: the lineup answer card replaced the team header
 
 
 if __name__ == "__main__":
