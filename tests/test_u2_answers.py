@@ -131,5 +131,30 @@ class ValuationAnswerTests(unittest.TestCase):
         self.assertIn("position-need boost", ans["body"])
 
 
+class SleeperAndMlAnswerTests(unittest.TestCase):
+    def test_sleepers_and_busts_respect_edge_sign(self):
+        s = pd.DataFrame({"fullName": ["S1", "S2"], "Model Rank": [10, 50], "Market Rank": [40, 50], "Fantasy Edge": [30, 0]})
+        b = pd.DataFrame({"fullName": ["B1"], "Model Rank": [90], "Market Rank": [20], "Fantasy Edge": [-70], "proj_HR": [25]})
+        ans = u2a.sleeper_bust_answer(s, b, n=3, matched=100, fantasy_format="5x5 Roto")
+        self.assertEqual([c["title"] for c in ans["sleepers"]], ["S1"], "an edge of 0 is not a sleeper")
+        self.assertIn("The market ranks B1 70 spots higher than our model supports", ans["busts"][0]["body"])
+        self.assertIn("not predictions", ans["body"])
+        self.assertNotIn("him", ans["busts"][0]["body"].split())
+
+    def test_ml_answer_uses_model_accuracy_and_no_interval(self):
+        view = pd.DataFrame({"fullName": ["A", "B"], "Predicted OPS": [0.9, 0.95], "prediction_year": [2026, 2026],
+                             "Projection Confidence": ["High Confidence", "Risky Projection"]})
+        ans = u2a.ml_answer(view, "Predicted OPS", models={"OPS": {"mae": 0.073, "r2": 0.31}}, player_count=2)
+        self.assertEqual(ans["headline"], "Top projected OPS for 2026: B, .950")
+        self.assertIn("misses by about .073", ans["body"])
+        self.assertNotIn("±", ans["body"])
+        self.assertNotIn("interval", ans["body"].lower())
+        self.assertEqual(ans["rows"][0]["sub"], "Risky Projection")
+
+    def test_ml_position_sort_falls_back_to_ops(self):
+        view = pd.DataFrame({"fullName": ["A", "B"], "Predicted OPS": [0.9, 0.8], "Position": ["SS", "C"]})
+        self.assertEqual(u2a.ml_answer(view, "Position")["sorted_by"], "Predicted OPS")
+
+
 if __name__ == "__main__":
     unittest.main()

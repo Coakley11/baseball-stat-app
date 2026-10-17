@@ -33,6 +33,7 @@ NAV_LABELS: dict[str, str] = {
     "Fantasy Standings Tracker": "📊 League Standings",
     "Waiver Wire / Add-Drop Center": "🔄 Waiver Wire",
     "Comparison Tool": "📈 Compare Players",
+    "Fantasy Sleepers & Busts": "💎 Sleepers & Busts",
 }
 
 

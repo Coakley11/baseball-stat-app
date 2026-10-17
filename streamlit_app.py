@@ -1867,6 +1867,67 @@ def _render_u2_valuation_answer(rows, model_rows, chart_rows, w_current, w_trend
     u1.action_row(st, actions, key="value", primary=None)
 
 
+def _render_u2_sleeper_answer(sleepers, busts, *, matched, fantasy_format):
+    """Sleepers & Busts answer: definitions, up to three sleeper and three bust-risk cards from
+    the page's own model/market ranks, next steps."""
+    import u1_answers as u1a
+    import u2_answers as u2a
+    import ui_hierarchy as u1
+
+    answer = u2a.sleeper_bust_answer(sleepers, busts, n=3, matched=matched, fantasy_format=fantasy_format)
+    if answer is None:
+        u1.answer_card(st, "No model–market gaps to show",
+                       "No player here has both a model rank and a market rank. Loosen the filters under Explore more.", tone="warn")
+        return
+    u1.answer_card(st, answer["headline"], answer["body"], kicker="Model rank vs market rank")
+    if answer["sleepers"]:
+        u1.section_label(st, "Sleepers · model likes them more than the market")
+        u1.info_cards(st, answer["sleepers"])
+    if answer["busts"]:
+        u1.section_label(st, "Bust risks · market likes them more than the model")
+        u1.info_cards(st, answer["busts"])
+    actions = []
+    pair = answer["players"]
+    if len(pair) == 2:
+        actions.append((f"Compare {u1a.last_name(pair[0])} & {u1a.last_name(pair[1])}", _u2_compare_pair_cb(pair)))
+    if pair:
+        actions.append((f"{u1a.last_name(pair[0])}'s trend", _u1_player_action_cb("Send to Trend Page", pair[0])))
+    actions.append(("Draft Assistant", _u1_nav_cb("Draft Assistant Simulator")))
+    u1.action_row(st, actions, key="sleepers", primary=None)
+
+
+def _render_u2_ml_answer(stored_df, position_filter, sort_by, models, status):
+    """ML Predictions answer: the top projected hitters for the chosen sort (display-only view
+    of the stored projections), the model's holdout accuracy for that stat, next steps."""
+    import u1_answers as u1a
+    import u2_answers as u2a
+    import ui_hierarchy as u1
+
+    if not st.session_state.get("ml_predictions_have_run", False) or not _ml_is_nonempty_dataframe(stored_df):
+        u1.answer_card(st, "Generate projections to see next season's leaders",
+                       "Click Generate / Refresh ML Predictions above. The model estimates next-season performance "
+                       "from recent seasons, aging curves and similar players; settings are under Explore more.",
+                       kicker="ML Predictions")
+        return
+    view = _ml_apply_display_view(stored_df, position_filter, sort_by)
+    answer = u2a.ml_answer(view, sort_by, models=models, player_count=int((status or {}).get("player_count") or len(stored_df)))
+    if answer is None:
+        u1.answer_card(st, "No projections match this position",
+                       "Clear Fantasy Position above, or regenerate with a wider scope under Explore more.", tone="warn")
+        return
+    kicker = f"Ranked by {answer['sorted_by']}" + (f" (table sorted by {sort_by})" if sort_by in ("Position", "Team") else "")
+    u1.answer_card(st, answer["headline"], answer["body"], kicker=kicker)
+    u1.ranked_list(st, answer["rows"])
+    actions = []
+    pair = answer["players"]
+    if len(pair) == 2:
+        actions.append((f"Compare {u1a.last_name(pair[0])} & {u1a.last_name(pair[1])}", _u2_compare_pair_cb(pair)))
+    if pair:
+        actions.append((f"{u1a.last_name(pair[0])}'s trend", _u1_player_action_cb("Send to Trend Page", pair[0])))
+    actions.append(("Sleepers & Busts", _u1_nav_cb("Fantasy Sleepers & Busts")))
+    u1.action_row(st, actions, key="ml", primary=None)
+
+
 def plot_player_stat_trends(ax, df, player_ids, stat_col, mode="Actual Values", smooth_window=3):
     """Plot one stat for multiple players using actual values or a moving-average smooth."""
     for pid in player_ids:
@@ -18754,10 +18815,9 @@ elif active_page == "Fantasy Sleepers & Busts":
     except ImportError:
         pass
 
-    render_section_header(
-        "💎 Fantasy Sleepers & Busts",
-        "Compare projections against FantasyPros rankings and ADP to find market sleepers and bust risks."
-    )
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "💎 Sleepers & Busts", "Where our model and the draft market disagree, in both directions.")
     render_page_guide(active_page)
     try:
         from fantasy_context_ui import render_research_sync_badge
@@ -18779,16 +18839,10 @@ elif active_page == "Fantasy Sleepers & Busts":
             "FantasyPros_2026_Hitter_MLB_ADP_Rankings.csv to the same folder/repository as streamlit_app.py."
         )
 
-    with st.expander("Column glossary", expanded=False):
-        st.markdown(
-            "**Fantasy Edge** = Market Rank − Model Rank (positive = sleeper, negative = bust risk). "
-            "**Player Grade** = projection score; **Current Production** = recent actual stats."
-        )
-
     _fantasy_window_options = [3, 4, 5]
     _fantasy_format_options = ["5x5 Roto", "Points League"]
     with mobile_wrap_row(st, "sleepers-top-filters"):
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2 = st.columns(2)
     with c1:
         validate_state_option("fantasy_market_window", _fantasy_window_options, 3)
         fantasy_window = st.selectbox("Projection Window (Years)", _fantasy_window_options, key="fantasy_market_window", on_change=fantasy_filter_changed)
@@ -18803,6 +18857,15 @@ elif active_page == "Fantasy Sleepers & Busts":
             fantasy_filter_changed()
             force_save_baseball_state(st, reason="global_settings_changed")
         fantasy_format = st.selectbox("Fantasy Format", _fantasy_format_options, key="fantasy_market_format", on_change=_fantasy_market_format_changed)
+    sleepers_answer_slot = st.container()
+    u1.section_label(st, "Explore more · glossary, minimums, scoring, filters, the edge map and full tables")
+    with st.expander("Column glossary", expanded=False):
+        st.markdown(
+            "**Fantasy Edge** = Market Rank − Model Rank (positive = sleeper, negative = bust risk). "
+            "**Player Grade** = projection score; **Current Production** = recent actual stats."
+        )
+    with mobile_wrap_row(st, "sleepers-explore-minimums"):
+        c3, c4 = st.columns(2)
     with c3:
         validate_number_state("fantasy_market_min_g", 50, min_value=0, max_value=800)
         fantasy_min_g = st.number_input(
@@ -19276,6 +19339,9 @@ elif active_page == "Fantasy Sleepers & Busts":
                 pass
 
     if fantasy_df.empty:
+        with sleepers_answer_slot:
+            u1.answer_card(st, "No players match these filters",
+                           "Lower Minimum Games / AB or loosen the rank cutoffs under Explore more.", tone="warn")
         st.warning("No players met the fantasy filters. Try lowering minimum AB/G, expanding age/position filters, or loosening the sleeper/bust relevance filters.")
     else:
         top_sleeper = fantasy_df.sort_values("Fantasy Edge", ascending=False).iloc[0]
@@ -19505,6 +19571,9 @@ elif active_page == "Fantasy Sleepers & Busts":
         busts = fantasy_output_pool.sort_values("Fantasy Edge", ascending=True).head(fantasy_top_n).copy()
         sleepers["Reason"] = sleepers.apply(lambda r: make_fantasy_market_reason(r, "sleeper"), axis=1)
         busts["Reason"] = busts.apply(lambda r: make_fantasy_market_reason(r, "bust"), axis=1)
+        with sleepers_answer_slot:
+            _render_u2_sleeper_answer(sleepers, busts, matched=int(fantasy_df["Market Rank"].notna().sum()) if "Market Rank" in fantasy_df.columns else 0,
+                                      fantasy_format=str(fantasy_format))
 
         display_cols = [
             "fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge",
@@ -30968,10 +31037,9 @@ elif active_page == "ML Predictions":
             "ML Projections — Star Player Forecasts",
             "Aaron Judge, Ohtani, Soto, and Gunnar Henderson with feature-importance insights preloaded.",
         )
-    render_section_header(
-        "🤖 ML Predictions",
-        "Generate next-season projections using machine learning, aging curves, regression-to-the-mean, and similar-player comparisons."
-    )
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "🤖 ML Predictions", "Next-season projections for each hitter, from a model trained on past seasons.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
 
@@ -30990,6 +31058,62 @@ elif active_page == "ML Predictions":
         init_state_once("ml_auto_apply_tuning", True)
         init_state_once("ml_position_filter", "All positions")
         init_state_once("ml_sort_by", "Predicted OPS")
+
+        with mobile_wrap_row(st, "ml-table-controls"):
+            _ml_tbl_c1, _ml_tbl_c2 = st.columns(2)
+        with _ml_tbl_c1:
+            try:
+                from fantasy_position_sync import (
+                    FANTASY_POSITION_MULTI_OPTIONS,
+                    make_research_position_on_change,
+                    prepare_research_position_filter,
+                )
+
+                prepare_research_position_filter(
+                    st.session_state,
+                    page="ML Predictions",
+                    widget_key="ml_position_filter",
+                )
+                if isinstance(st.session_state.get("ml_position_filter"), str):
+                    legacy = st.session_state.get("ml_position_filter", "")
+                    st.session_state["ml_position_filter"] = (
+                        [] if legacy in ("All positions", "All", "") else [legacy]
+                    )
+                ml_position_filter = st.multiselect(
+                    "Fantasy Position",
+                    list(FANTASY_POSITION_MULTI_OPTIONS),
+                    key="ml_position_filter",
+                    help="Select one or more positions (empty = all).",
+                    on_change=make_research_position_on_change(
+                        "ML Predictions", "ml_position_filter", extra=projections_filter_changed
+                    ),
+                )
+            except ImportError:
+                validate_state_option("ml_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
+                ml_position_filter = st.selectbox(
+                    "Fantasy Position",
+                    FANTASY_POSITION_FILTER_OPTIONS,
+                    key="ml_position_filter",
+                    help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
+                    on_change=projections_filter_changed,
+                )
+        with _ml_tbl_c2:
+            validate_state_option("ml_sort_by", ML_DISPLAY_SORT_OPTIONS, "Predicted OPS")
+            ml_sort_by = st.selectbox(
+                "Sort Projections By",
+                ML_DISPLAY_SORT_OPTIONS,
+                key="ml_sort_by",
+                help="Display-only — does not regenerate ML projections.",
+                on_change=projections_filter_changed,
+            )
+        st.button(
+            "Generate / Refresh ML Predictions",
+            type="primary",
+            key="ml_predictions_refresh_button",
+            on_click=_on_ml_predictions_refresh_click,
+        )
+        ml_answer_slot = st.container()
+        u1.section_label(st, "Explore more · lookback, minimums, scope, model tuning, accuracy, the full table and feature importance")
 
         with mobile_wrap_row(st, "ml-top-filters"):
             c1, c2, c3 = st.columns(3)
@@ -31072,21 +31196,6 @@ elif active_page == "ML Predictions":
             if not st.session_state.get("ml_auto_apply_tuning", True):
                 st.caption("Auto-apply is off — use this button after changing sliders.")
 
-        st.button(
-            "Generate / Refresh ML Predictions",
-            type="primary",
-            key="ml_predictions_refresh_button",
-            on_click=_on_ml_predictions_refresh_click,
-        )
-
-        if not st.session_state.get("ml_predictions_have_run", False):
-            pp.render_professional_empty(
-                st,
-                "Select projection settings and generate a forecast. The model will estimate "
-                "next-season performance using historical trends, aging curves, and machine learning.",
-                title="Generate ML projections",
-            )
-
         _ml_pipeline_ran = _ml_execute_pipeline_if_needed(
             yearly_source=yearly_df,
             ml_lookback=ml_lookback,
@@ -31108,6 +31217,8 @@ elif active_page == "ML Predictions":
         ml_models = st.session_state.get("_ml_proj_models", {})
         age_curve_df = st.session_state.get("_ml_proj_age_curve_df", pd.DataFrame())
         status = st.session_state.get(ML_PREDICTIONS_STATUS_KEY) or {}
+        with ml_answer_slot:
+            _render_u2_ml_answer(stored_df, ml_position_filter, ml_sort_by, ml_models, status)
 
         if st.session_state.get("ml_predictions_have_run", False):
             if status:
@@ -31198,53 +31309,6 @@ elif active_page == "ML Predictions":
                     render_output_table(metrics_table, key="ml_accuracy", file_name="ml_model_accuracy.csv")
 
         st.subheader("Next-Season ML Projections")
-        with mobile_wrap_row(st, "ml-table-controls"):
-            _ml_tbl_c1, _ml_tbl_c2 = st.columns(2)
-        with _ml_tbl_c1:
-            try:
-                from fantasy_position_sync import (
-                    FANTASY_POSITION_MULTI_OPTIONS,
-                    make_research_position_on_change,
-                    prepare_research_position_filter,
-                )
-
-                prepare_research_position_filter(
-                    st.session_state,
-                    page="ML Predictions",
-                    widget_key="ml_position_filter",
-                )
-                if isinstance(st.session_state.get("ml_position_filter"), str):
-                    legacy = st.session_state.get("ml_position_filter", "")
-                    st.session_state["ml_position_filter"] = (
-                        [] if legacy in ("All positions", "All", "") else [legacy]
-                    )
-                ml_position_filter = st.multiselect(
-                    "Fantasy Position",
-                    list(FANTASY_POSITION_MULTI_OPTIONS),
-                    key="ml_position_filter",
-                    help="Select one or more positions (empty = all).",
-                    on_change=make_research_position_on_change(
-                        "ML Predictions", "ml_position_filter", extra=projections_filter_changed
-                    ),
-                )
-            except ImportError:
-                validate_state_option("ml_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
-                ml_position_filter = st.selectbox(
-                    "Fantasy Position",
-                    FANTASY_POSITION_FILTER_OPTIONS,
-                    key="ml_position_filter",
-                    help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
-                    on_change=projections_filter_changed,
-                )
-        with _ml_tbl_c2:
-            validate_state_option("ml_sort_by", ML_DISPLAY_SORT_OPTIONS, "Predicted OPS")
-            ml_sort_by = st.selectbox(
-                "Sort Projections By",
-                ML_DISPLAY_SORT_OPTIONS,
-                key="ml_sort_by",
-                help="Display-only — does not regenerate ML projections.",
-                on_change=projections_filter_changed,
-            )
 
         if st.session_state.get("ml_predictions_have_run", False):
             if not _ml_is_nonempty_dataframe(stored_df):

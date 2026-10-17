@@ -53,6 +53,10 @@ U1_CSS = """<style>
 .u1-card { border: 1px solid #dfe7ef; border-radius: 10px; padding: 12px 14px; background: #fff; min-width: 0; }
 .u1-card .u1-card-title { font-weight: 700; color: #0b2540; font-size: 1.02rem; }
 .u1-card .u1-card-body { font-size: 0.88rem; color: #4a5d70; margin-top: 3px; }
+.u1-card.good { border-top: 3px solid #2e7d4f; } .u1-card.warn { border-top: 3px solid #b26a00; }
+.u1-card .u1-card-sub { font-size: 0.8rem; color: #5a6f82; }
+.u1-facts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 6px 0 2px 0; }
+.u1-fact { font-size: 0.8rem; color: #5a6f82; } .u1-fact b { color: #0b2540; font-size: 0.95rem; }
 .u1-progress { height: 7px; background: #eef2f6; border-radius: 4px; overflow: hidden; margin: 4px 0 2px 0; }
 .u1-progress > span { display: block; height: 7px; background: #1f5fa8; border-radius: 4px; }
 .u1-muted { font-size: 0.82rem; color: #5a6f82; }
@@ -184,6 +188,21 @@ def stat_bars(st: Any, groups: Sequence[dict[str, Any]]) -> None:
         parts.append(f'<div class="u1-bar-group"><div class="u1-bar-label">{esc(group.get("label"))}</div>{"".join(rows)}</div>')
     if parts:
         st.markdown(f'<div class="u1-bars">{"".join(parts)}</div>', unsafe_allow_html=True)
+
+
+def info_cards(st: Any, cards: Sequence[dict[str, Any]]) -> None:
+    """Compact cards: title, sub-line, facts [(label, value)], body, tone ("" | "good" | "warn").
+    Wraps to one column on phones."""
+    items = []
+    for card in cards:
+        tone = f" {card['tone']}" if card.get("tone") in ("good", "warn") else ""
+        sub = f'<div class="u1-card-sub">{esc(card.get("sub"))}</div>' if card.get("sub") else ""
+        facts = "".join(f'<span class="u1-fact">{esc(k)} <b>{esc(v)}</b></span>' for k, v in (card.get("facts") or []))
+        facts_html = f'<div class="u1-facts">{facts}</div>' if facts else ""
+        body = f'<div class="u1-card-body">{esc(card.get("body"))}</div>' if card.get("body") else ""
+        items.append(f'<div class="u1-card{tone}"><div class="u1-card-title">{esc(card.get("title"))}</div>{sub}{facts_html}{body}</div>')
+    if items:
+        st.markdown(f'<div class="u1-cards">{"".join(items)}</div>', unsafe_allow_html=True)
 
 
 @contextmanager

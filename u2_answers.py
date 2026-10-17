@@ -355,3 +355,112 @@ def valuation_answer(rows: pd.DataFrame, model_rows: pd.DataFrame, *, w_current:
     return {"headline": f"Top valuation, {span}: {name}", "body": body, "tiles": tiles, "player": name,
             "next": [str(n) for n in ranked["fullName"].head(2).tolist()], "trend_word": trend_word}
 
+
+def _proj_bits(row: Mapping[str, Any]) -> str:
+    bits = []
+    for label, keys, rate in (("HR", ("Projected HR", "proj_HR"), False), ("RBI", ("Projected RBI", "proj_RBI"), False),
+                              ("SB", ("Projected SB", "proj_SB"), False), ("OPS", ("Projected OPS", "proj_OPS"), True)):
+        v = next((_num(row.get(k)) for k in keys if _num(row.get(k)) is not None), None)
+        if v is not None:
+            bits.append(f"{fmt_stat('OPS', v)} OPS" if rate else f"{int(round(v)):,} {label}")
+    return ", ".join(bits)
+
+
+def sleeper_bust_answer(sleepers: pd.DataFrame, busts: pd.DataFrame, *, n: int = 4, matched: int = 0,
+                        fantasy_format: str = "") -> dict[str, Any] | None:
+    """Sleepers & Busts: the biggest gaps between our model's rank and the market's
+    (FantasyPros / ADP). ``Fantasy Edge`` = Market Rank − Model Rank, as the page computes it.
+    Sleeper = edge > 0 (model ranks the player better than the market); bust risk = edge < 0.
+    These are ranking gaps, not predictions."""
+    def cards(df: pd.DataFrame, kind: str) -> list[dict[str, Any]]:
+        if df is None or df.empty or "Fantasy Edge" not in df.columns:
+            return []
+        edge = pd.to_numeric(df["Fantasy Edge"], errors="coerce")
+        keep = df[edge > 0] if kind == "sleeper" else df[edge < 0]
+        out = []
+        for _, r in keep.head(n).iterrows():
+            name = str(r.get("fullName") or r.get("Player") or "").strip()
+            model, market, e = _num(r.get("Model Rank")), _num(r.get("Market Rank")), _num(r.get("Fantasy Edge"))
+            if model is None or market is None or e is None:
+                continue
+            gap = abs(int(round(e)))
+            if kind == "sleeper":
+                body = f"Our model ranks {last_name(name)} {gap} spot{'s' if gap != 1 else ''} higher than the market does."
+            else:
+                body = f"The market ranks {last_name(name)} {gap} spot{'s' if gap != 1 else ''} higher than our model supports."
+            proj = _proj_bits(r)
+            if proj:
+                body += f" Model projection: {proj}."
+            sub = " · ".join(x for x in (str(r.get("Primary Position") or "").strip(), str(r.get("Team") or "").strip()) if x and x != "Unknown")
+            out.append({"title": name, "sub": sub, "body": body,
+                        "facts": [("Model", f"#{int(model)}"), ("Market", f"#{int(market)}"), ("Fantasy Edge", f"{int(round(e)):+d}")],
+                        "tone": "good" if kind == "sleeper" else "warn"})
+        return out
+
+    s_cards, b_cards = cards(sleepers, "sleeper"), cards(busts, "bust")
+    if not s_cards and not b_cards:
+        return None
+    if s_cards:
+        top = s_cards[0]
+        headline = f"Biggest sleeper: {top['title']} (model {top['facts'][0][1]}, market {top['facts'][1][1]})"
+    else:
+        headline = "No sleepers in this pool: the market ranks everyone at or above our model"
+    body = ("Sleeper = our model ranks the player better than the market (FantasyPros rankings and ADP). "
+            "Bust risk = the market's price is higher than our model supports. These are ranking gaps, not predictions of how a season will go.")
+    if matched:
+        body += f" {matched:,} players have both a model and a market rank"
+        body += f" ({fantasy_format})." if fantasy_format else "."
+    return {"headline": headline, "body": body, "sleepers": s_cards, "busts": b_cards,
+            "players": [c["title"] for c in s_cards[:2]]}
+
+
+def _ml_value(col: str, value: Any) -> str:
+    stat = col.replace("Predicted ", "")
+    if col.startswith("Predicted "):
+        return fmt_stat(stat, value)
+    v = _num(value)
+    if v is None:
+        return "—"
+    return f"{v:.2f}" if "Score" in col else f"{v:,.1f}"
+
+
+def ml_answer(view: pd.DataFrame, sort_col: str, *, models: Mapping[str, Any] | None = None,
+              player_count: int = 0, n: int = 5) -> dict[str, Any] | None:
+    """ML Predictions: the top projected hitters for the chosen stat, with the model's own
+    holdout accuracy for that stat (MAE, R²) and its confidence label. No interval is shown
+    because the model does not produce one. Position/Team sorts fall back to Predicted OPS."""
+    if view is None or view.empty:
+        return None
+    col = sort_col if sort_col in view.columns and sort_col not in ("Position", "Team") else "Predicted OPS"
+    if col not in view.columns:
+        return None
+    ranked = view.assign(_v=pd.to_numeric(view[col], errors="coerce")).dropna(subset=["_v"])
+    if ranked.empty:
+        return None
+    ranked = ranked.sort_values("_v", ascending=False, kind="stable").head(n)
+    top = ranked.iloc[0]
+    year = top.get("prediction_year")
+    year_text = f" for {int(year)}" if _num(year) is not None else ""
+    label = col.replace("Predicted ", "projected ") if col.startswith("Predicted ") else col
+    name = str(top.get("fullName") or top.get("Player") or "").strip()
+    headline = f"Top {label}{year_text}: {name}, {_ml_value(col, top['_v'])}"
+    total = int(player_count or len(view))
+    body = f"Top {len(ranked)} of {total:,} hitters projected{year_text}."
+    stat = col.replace("Predicted ", "")
+    info = (models or {}).get(stat) if col.startswith("Predicted ") else None
+    if isinstance(info, Mapping) and _num(info.get("mae")) is not None:
+        mae = float(info["mae"])
+        mae_text = fmt_stat(stat, mae) if stat in RATE_STATS else f"{mae:.1f}"
+        body += f" Model check: on held-out seasons the {stat} model misses by about {mae_text} on average"
+        r2 = _num(info.get("r2"))
+        body += f" (R² {r2:.2f})." if r2 is not None else "."
+    if "Projection Confidence" in ranked.columns:
+        body += " Confidence (High / Medium / Risky) is the model's label from sample size and volatility, not a statistical range."
+    rows = []
+    for i, (_, r) in enumerate(ranked.iterrows(), start=1):
+        sub = " · ".join(x for x in (str(r.get("Position") or "").strip(), str(r.get("primaryTeamID") or "").strip(),
+                                     str(r.get("Projection Confidence") or "").strip()) if x and x.lower() != "nan")
+        rows.append({"rank": i, "name": str(r.get("fullName") or r.get("Player") or "").strip(), "sub": sub,
+                     "value": _ml_value(col, r["_v"])})
+    return {"headline": headline, "body": body, "rows": rows, "sorted_by": col,
+            "players": [r["name"] for r in rows[:2]]}

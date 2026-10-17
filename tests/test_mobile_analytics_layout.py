@@ -133,6 +133,7 @@ class FilterRowWrapWiringTests(unittest.TestCase):
         "trend-explore-filters",
         "trend-dash-mode",
         "sleepers-top-filters",
+        "sleepers-explore-minimums",
         "sleepers-rank-cutoffs",
         "sleepers-points-p1",
         "sleepers-points-p2",
