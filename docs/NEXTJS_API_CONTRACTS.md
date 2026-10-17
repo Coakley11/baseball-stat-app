@@ -1,7 +1,10 @@
 # Next.js migration: Python API contracts and readiness
 
-Status: WEB-PREP1 (audit, contracts, typed schemas, the historical layer extracted from
-`streamlit_app.py`) and WEB-PREP2 (a read-only API proof) on `ui/u4-migration-readiness`.
+Status:
+- WEB-PREP1 (audit, contracts, typed schemas, the historical layer extracted from
+  `streamlit_app.py`) and WEB-PREP2 (a read-only API proof) on `ui/u4-migration-readiness`.
+- WEB-M2 API contracts (R1–R8 of the web handoff) on `api/web-m2-contracts`, from `a9a80f7`. See
+  [WEB-M2 additions](#web-m2-additions-r1r8).
 
 There is no Next.js code in this repository. A separate frontend worktree owns that.
 
@@ -96,11 +99,13 @@ the agreed shape for later phases, and its response model is already in the Open
 | Endpoint | Response model | Status |
 |---|---|---|
 | `GET /health` | `HealthInfo` | Served |
+| `GET /catalog` | `Catalog` (control options, labels, defaults) | Served (WEB-M2) |
 | `GET /players/search?q=judge&limit=10` | `PlayerSearchResult` | Served |
 | `GET /players/resolve?name=Frank Thomas` | `PlayerSummary` (409 `ambiguous_player` lists candidates) | Served |
+| `GET /players/{player_id}` | `PlayerSummary` | Served (WEB-M2) |
 | `GET /players/{player_id}/seasons?start=&end=&split=team\|combined` | `PlayerSeasonsResult` | Served |
-| `GET /seasons?start=&end=&metric=HR&order=desc&limit=25&bats=&positions=&position_source=season\|career&teams=&combine=&min_ab=&qualified=true&min_HR=…` | `SeasonLeadersResult` (Historical Explorer) | Served |
-| `GET /leaderboards?start=&end=&metric=score&weights=HR:1,RBI:1,SB:1&limit=25&min_ab=&qualified=true&min_X=…` | `LeaderboardResult` | Served |
+| `GET /seasons?start=&end=&metric=HR&order=desc&limit=25&offset=0&format=json\|csv&bats=&positions=&position_source=season\|career&teams=&combine=&min_ab=&qualified=true&min_HR=…&player_id=&include_below_minimum=` | `SeasonLeadersResult` (Historical Explorer), or its CSV | Served |
+| `GET /leaderboards?start=&end=&metric=score&weights=HR:1,RBI:1,SB:1&limit=25&offset=0&format=json\|csv&min_ab=&qualified=true&min_X=…` | `LeaderboardResult`, or its CSV | Served |
 | `GET /openapi.json` | OpenAPI 3.1 | Served |
 | `GET /players/{player_id}/career?start=&end=` | `CareerSummary` | Planned (after the Career extraction) |
 | `POST /players/compare` `{player_ids[], start, end}` | `ComparisonResult` | Planned (read-only POST: the body carries a list) |
@@ -120,8 +125,8 @@ Defaults match the pages, so a frontend that sends no options sees what Streamli
 
 The models live in `baseball_api/schemas.py`:
 - **Served now:** `PlayerSummary`, `PlayerSeason`, `SeasonRow`, `SeasonLeadersResult`,
-  `LeaderboardResult`, `Qualification`, `MetricInfo`, `StatLine`, `TeamRef`, `PlayerRef`,
-  `HealthInfo`, `ErrorResponse`.
+  `SeasonAnswer`, `LeaderboardResult`, `LeaderboardAnswer`, `Qualification`, `MetricInfo`,
+  `StatLine`, `TeamRef`, `PlayerRef`, `HealthInfo`, `Catalog` (with its parts), `ErrorResponse`.
 - **Contract-only for later phases:** `CareerSummary`, `ComparisonResult`, `TrendResult`,
   `ValuationResult`, `LeagueSummary`, `StandingsResult`, `LineupReport`, `TradeEvaluation`.
 
@@ -132,6 +137,10 @@ How they behave:
   and lists are limited to 200 per request.
 - **Wire names match the pages.** `StatLine` serializes the doubles and triples keys as `2B` and
   `3B`, same as the app.
+- **Required means always sent.** Every response field is always serialized (null when empty), so
+  the schema lists every field as required, and generated types say `x: T | null`, not `x?: T`. The
+  one exception is `ErrorBody.details`, which is left out when there are none. A test walks real
+  responses against the schema in both directions.
 
 ## B4. Identity
 
@@ -155,11 +164,11 @@ Every error is `{"error": {"code", "message", "details?"}}` (`ErrorResponse`):
 | `ambiguous_player` | 409 | a name matches several players (`details.candidates`) |
 | `invalid_metric` | 422 | stat not offered on that page (`details.allowed`) |
 | `invalid_date_range` | 422 | start after end, or outside the data (`details.available`) |
-| `invalid_parameter` | 422 | malformed number/flag/list, limit outside 1–200, unknown minimum or weight |
+| `invalid_parameter` | 422 | malformed number/flag/list, limit outside 1–200, negative offset, unknown minimum or weight, `min_AB` (use `min_ab`), `include_below_minimum` without `player_id`, `format` not json/csv |
 | `no_active_league` | 404 | (planned) the user has no active league |
 | `unauthorized_team` | 403 | (planned) not the owner or commissioner proxy |
 | `missing_finalized_weeks` | 409 | (planned) official standings requested before any finalized period |
-| `data_unavailable` | 503 | data files missing or still loading failed |
+| `data_unavailable` | 503 | the data is still loading (`Retry-After` header, `details.retry_after`), or the data files are missing (no `Retry-After`) |
 | `not_found` | 404 | unknown route |
 | `internal_error` | 500 | anything unexpected: a generic message, never a traceback; logged server-side |
 
@@ -168,11 +177,13 @@ Unsupported methods get 405.
 ## B6. Display data vs business data
 
 A ranking response carries what the U1–U4 hierarchy needs to draw its answer card, chart and table:
-- the rows;
-- `total_rows`;
-- `metric` metadata (label, kind, precision, direction);
-- `qualification` (applies, min AB, qualified AB, auto/manual, and the page's own caption);
-- for Historical Explorer, the page's answer `headline`.
+- the rows (`offset` paging; ranks are absolute);
+- `total_rows` (and `ranked_rows` on `/seasons`);
+- `metric` metadata (key, label, plain-language `name`, kind, precision, direction);
+- `qualification`: applies, min AB, qualified AB, auto/manual, the page's caption (`text`,
+  Markdown, Streamlit only), the chip line (`summary`) and a plain-text `explanation`;
+- `answer`: the page's answer card (headline, body, context, and the tile metrics on
+  `/seasons`).
 
 Visual decisions stay in the frontend: tiles, chart type, colors, layout. Plain-language answer
 sentences come from the same pure `u*_answers` functions the pages use, so both surfaces say the
@@ -193,9 +204,9 @@ pydantic model → JSON. Each response carries `Server-Timing: business;dur=…,
 
 **Data load.** Lahman data loads once per process in a background thread at startup.
 
-**OpenAPI.** `GET /api/v1/openapi.json` is an OpenAPI 3.1 document: the 6 API paths and 29 component
-schemas. Every `$ref` resolves (tested). It is suitable for `openapi-typescript` /
-`openapi-fetch`.
+**OpenAPI.** `GET /api/v1/openapi.json` is an OpenAPI 3.1 document: the 8 API paths and 39 component
+schemas. Every `$ref` resolves (tested). The two ranking paths also declare their `text/csv` response,
+and every 503 declares `Retry-After`. It is suitable for `openapi-typescript` / `openapi-fetch`.
 
 **Tests:**
 - `tests/test_web_prep_history_parity.py`: the moved historical layer equals the original
@@ -214,26 +225,91 @@ schemas. Every `$ref` resolves (tested). It is suitable for `openapi-typescript`
   - a generic 500 with no leak;
   - security (no paths or secrets, GET only, no CORS or cookies by default);
   - OpenAPI integrity;
-  - **no-Streamlit execution:** in a fresh process, the four endpoints run without importing
-    `streamlit` or any persistence/auth/billing module. A Python audit hook records zero file
-    writes, renames or deletes. A negative control proves the hook sees writes.
+  - **no-Streamlit execution:** in a fresh process, every served endpoint (catalog, player, the
+    one-player view and both CSV exports included) runs without importing `streamlit` or any
+    persistence/auth/billing module. A Python audit hook records zero file writes, renames or
+    deletes. A negative control proves the hook sees writes.
+- `tests/test_web_m2_api.py`: R1–R8 and the optional items on real data (see below).
+
+## WEB-M2 additions (R1–R8)
+
+Requested in `web/nextjs-foundation:docs/WEB_M2_API_HANDOFF.md` (pinned against `a9a80f7`). All
+changes are additive within v1. Every new string comes from the Python functions the pages already
+use.
+
+| Item | What the API returns | Source | Proof |
+|---|---|---|---|
+| **R1** catalog | `GET /catalog`: `seasons {first,last}`; `metrics[]` (key, label, name, kind, decimals, higher_is_better) for every key the API uses; `historical {metrics, defaults, filters}`; `leaderboards {metrics, defaults, weight_stats, weight_bounds, weight_step, limit_bounds, minimum_columns}` | the pages' option lists and builders; the endpoints' own default constants | Option lists are read from the `streamlit_app.py` source and the pages' builder expressions and compared. `/seasons` and `/leaderboards` with no parameters equal the catalog defaults, sent explicitly. Every `teams` value is accepted and matches seasons. |
+| **R2** HE answer | `SeasonLeadersResult.answer {headline, body, context, tile_metrics}` (null when nothing matches). `headline` is kept. | `u1_answers.season_answer` (now also returns its tile keys) | AppTest: equals the Streamlit answer card's headline, body, kicker and tiles (labels and values), for HR and OPS. |
+| **R3** Leaderboards answer | `LeaderboardResult.answer {headline, body, context}` | `u1_answers.leaderboard_answer(control_hint=False)`: the same text without "Change the weights under Explore more." The page still shows it. | AppTest: headline and kicker equal. The body equals the page's body minus that sentence (score and OBP). No control wording, across metrics and weights. |
+| **R4** qualification copy | `Qualification.summary`: the page's chip line. `Qualification.explanation`: plain text. `text` is unchanged. | `u1_answers.qualification_summary` (the pure core `qualification_text` now calls); `rate_stat_qualification.qualification_explanation` (shares the caption's basis wording) | AppTest: `summary` equals the page chip (OPS / OBP; none for counting stats). On 9 cases (auto, manual, zero, short seasons, capped spans) neither field has Markdown or control names. The Streamlit caption is byte-identical. |
+| **R5** stat names | `MetricInfo.name` ("home runs", "batting average", "score"; "games" and "season" for G / yearID) | `u1_answers.STAT_NAMES` | Equal for every key. |
+| **R6** paging, CSV | `offset` on `/seasons` and `/leaderboards` (ranks stay absolute; `answer` describes the whole result). `format=csv`: the page's export columns and rounding. Without `limit`, every ranked row. | the pages' `render_output_table` CSV path (`format_display_table` rounding, `to_csv(index=False)`) | Pages tile the full ranking. AppTest: the HE CSV's first 250 rows equal the page's table byte for byte, and its row count equals "Rows Returned". The Leaderboards CSV with the page's Top N equals the page's table. |
+| **R7** search speed | Same results, faster: the matching takes a median of ~60 ms on 24,000 labels (was ~1.2–1.4 s); `/players/search` takes 114 ms over HTTP (max 139 ms, target 300 ms) | `draft_player_names.search_draft_pool_names`, shared by the API and the app's Draft Room search | Equal to the `a9a80f7` implementation on 108 queries × 2 limits: typos, accents, punctuation, 2-character and multi-word queries, and 60 random label fragments with swapped letters. See below. |
+| **R8** one player | `/seasons?player_id=`: the whole page pipeline runs, then rows are limited to that player (ranks 1…n among the player's seasons, same qualification). Without `start`/`end` the range is the player's career. `include_below_minimum=true` (needs `player_id`) appends the player's seasons below the minimums with `meets_minimum: false` and `rank: null`. | `baseball_history.historical_rows` + `apply_stat_minimums` | Equal to the full Historical Explorer result filtered to the `playerID`, for 4 players (split / combined, a stat minimum). Below-minimum seasons have AB under the minimum, and ranked plus below-minimum covers every season once. |
+| optional | `GET /players/{id}`: the summary only | `_summary` | Equal to `/players/{id}/seasons`' `player`. |
+| optional | While the startup preload holds the data lock, data routes answer `503 data_unavailable` with `Retry-After: 5` instead of blocking for ~18 s. `/health` never waits. | `HistoryStore.get(wait=False)` | Tested with the load lock held. Missing data still returns 503, without `Retry-After`. |
+
+**How R7 stays identical.** Matching is unchanged: a name matches if its normalized key starts
+with the query, or any word fuzzily matches the query on its first `len(q)` letters (difflib ratio
+≥ 0.75). Three exact shortcuts:
+- normalized names are memoized;
+- a word's result depends only on its first `len(q)` letters, so each distinct prefix is scored
+  once per search;
+- before difflib, a prefix is ruled out if it shares too few characters with the query. The ratio
+  is matches/len(q), and matches can't exceed the shared character count (difflib's own
+  `quick_ratio` bound), so no match is dropped.
+
+The API also warms the name cache when the data loads.
+
+**Regression.** The focused suites (draft, live, import, shared, multiplayer, u1/u2, historical,
+leaderboard, career, qualification, web_prep, player names, search, HOF, answers: 268 files) ran on
+`a9a80f7` and on this branch:
+- **a9a80f7:** 1,960 passed.
+- **This branch:** 1,986 passed (the difference is the new tests).
+- **Failures:** the same 124 on both, and the same 6 files crash on both. Nothing is new.
+
+**AMI.** This branch does not modify `streamlit_app.py`, so it adds no conflict there beyond what
+`a9a80f7` (the WEB-PREP1 extraction) already has with `feature/ami-foundation`. The shared files it
+does change (`u1_answers.py`, `rate_stat_qualification.py`, `draft_player_names.py`) are identical
+on `a9a80f7` and on `feature/ami-foundation`.
+
+**Notes for the frontend:**
+- `historical.metrics` is the page's Sort by list. `/seasons` also accepts `yearID` (API only).
+- `positions` follows `position_source`: use `positions_by_source`.
+- Bats labels are Left / Right / Both. The page shows the raw L / R / B.
+- The CSV never includes below-minimum seasons. The Leaderboards page exports its Top N, so pass
+  `limit` for the same file.
+- `SeasonRow.rank` is now `integer | null`. It is null only with `include_below_minimum=true`.
 
 ## B10. Performance
 
-API, warm, median of 10 requests over real HTTP (uvicorn on the same shared, loaded machine):
+API, warm, median of 10 requests over real HTTP (uvicorn on the same shared machine). The search
+row is 12 different queries, so the memo never answers.
 
-| Endpoint | Business | Serialize | Total HTTP |
+| Endpoint | WEB-PREP2 (total) | WEB-M2 business | WEB-M2 total HTTP (max) |
 |---|---|---|---|
-| Player seasons (Judge, career) | 69 ms | 0.3 ms | 76 ms |
-| Historical Explorer, HR, 2010–2025, top 25 | 232 ms | 0.9 ms | 247 ms |
-| Historical Explorer, OPS (qualified), top 25 | 184 ms | 0.7 ms | 200 ms |
-| Leaderboards, score, 2020–2025, top 25 | 91 ms | 1.0 ms | 96 ms |
-| Player search, new query | 1,364 ms | 0.2 ms | 1,373 ms |
+| Player search, new query | 1,373 ms | 95 ms | **114 ms** (139) |
+| `GET /catalog` | — | 0.3 ms | 4 ms |
+| `GET /players/{id}` | — | 2 ms | 15 ms |
+| Player seasons (Judge, career) | 76 ms | 42 ms | 49 ms |
+| Historical Explorer, HR, 2010–2025, top 25 | 247 ms | 253 ms | 260 ms |
+| Historical Explorer, OPS (qualified), top 25 | 200 ms | 197 ms | 201 ms |
+| Historical Explorer, OPS, `offset=100&limit=50` | — | 210 ms | 221 ms |
+| One player (Judge, OPS, `include_below_minimum`) | — | 150 ms | 159 ms |
+| Historical Explorer CSV, every row (24,261 rows, 1.9 MB) | — | 495 ms | 514 ms |
+| Leaderboards, score, 2020–2025, top 25 | 96 ms | 71 ms | 78 ms |
+
+Search is faster for two reasons:
+- the matching itself is ~60 ms (R7);
+- each result's summary now reads that player's rows through an index built at load (1 ms), not
+  a scan of the yearly table (13 ms). The summaries are identical on 303 sampled players.
 
 Notes on the table:
 - **Cold start.** Server up in 2.3 s; data loaded in 18.3 s, once per process, in the
   background.
 - **Repeated searches** are memoized (milliseconds).
+- **While loading,** data routes answer 503 with `Retry-After` (WEB-M2) instead of waiting.
 - **The same pages in Streamlit,** full load to idle in the same window: Historical Explorer
   22–26 s, Leaderboards 18–33 s.
 
@@ -244,10 +320,10 @@ today is the Streamlit script rerun:
 
 It is not the statistics.
 
-**Search** is the one slow business call. The app's picker matching runs a fuzzy word comparison
-(difflib) across ~24,000 labels on every query. A candidate prefilter (prefix index, then fuzzy
-match only on candidates) would make it near-instant. It changes matching only at the edges, so it
-should be a deliberate follow-up, applied to both surfaces.
+**Search** was the one slow business call: a fuzzy word comparison (difflib) across ~24,000
+labels on every query. WEB-M2 R7 made it fast without changing any match (see
+[WEB-M2 additions](#web-m2-additions-r1r8)). The change is in the shared function, so the app's
+Draft Room search gets it too.
 
 ## B11. Security boundary
 
