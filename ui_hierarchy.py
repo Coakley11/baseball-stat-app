@@ -53,9 +53,35 @@ U1_CSS = """<style>
 .u1-card { border: 1px solid #dfe7ef; border-radius: 10px; padding: 12px 14px; background: #fff; min-width: 0; }
 .u1-card .u1-card-title { font-weight: 700; color: #0b2540; font-size: 1.02rem; }
 .u1-card .u1-card-body { font-size: 0.88rem; color: #4a5d70; margin-top: 3px; }
+.u1-card.good { border-top: 3px solid #2e7d4f; } .u1-card.warn { border-top: 3px solid #b26a00; }
+.u1-card .u1-card-sub { font-size: 0.8rem; color: #5a6f82; }
+.u1-facts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 6px 0 2px 0; }
+.u1-fact { font-size: 0.8rem; color: #5a6f82; } .u1-fact b { color: #0b2540; font-size: 0.95rem; }
 .u1-progress { height: 7px; background: #eef2f6; border-radius: 4px; overflow: hidden; margin: 4px 0 2px 0; }
 .u1-progress > span { display: block; height: 7px; background: #1f5fa8; border-radius: 4px; }
 .u1-muted { font-size: 0.82rem; color: #5a6f82; }
+.u1-bars { margin: 0.2rem 0 0.6rem 0; }
+.u1-bar-group { padding: 6px 0 4px 0; border-bottom: 1px solid #eef2f6; }
+.u1-bar-group .u1-bar-label { font-size: 0.74rem; font-weight: 700; letter-spacing: 0.05em; color: #5a6f82; text-transform: uppercase; }
+.u1-bar-row { display: grid; grid-template-columns: minmax(64px, 28%) minmax(0, 1fr) auto; align-items: center; gap: 8px; margin: 2px 0; }
+.u1-bar-row .u1-bar-name { font-size: 0.86rem; color: #33475b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.u1-bar-track { height: 10px; background: #eef2f6; border-radius: 5px; overflow: hidden; }
+.u1-bar-track > span { display: block; height: 10px; border-radius: 5px; opacity: 0.55; }
+.u1-bar-row.lead .u1-bar-track > span { opacity: 1; }
+.u1-bar-row .u1-bar-val { font-size: 0.86rem; color: #33475b; min-width: 3.2em; text-align: right; }
+.u1-bar-row.lead .u1-bar-val { font-weight: 700; color: #0b2540; }
+.u1-commish { border: 1px solid #e3d6f2; border-left: 4px solid #6b3fa0; border-radius: 10px; background: #f8f4fc;
+  padding: 9px 12px; margin: 0.25rem 0 0.5rem 0; color: #3b2160; font-size: 0.92rem; }
+.u1-trade { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; align-items: stretch; margin: 0.3rem 0 0.5rem 0; }
+.u1-trade-side { border: 1px solid #dfe7ef; border-radius: 10px; padding: 10px 12px; background: #fff; min-width: 0; }
+.u1-trade-side.give { border-top: 3px solid #b26a00; } .u1-trade-side.receive { border-top: 3px solid #2e7d4f; }
+.u1-trade-side .u1-kicker { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #5a6f82; }
+.u1-trade-arrow { align-self: center; justify-self: center; font-size: 1.4rem; font-weight: 700; color: #1f5fa8; }
+.u1-trade-player { padding: 5px 0; border-bottom: 1px solid #eef2f6; min-width: 0; }
+.u1-trade-player:last-child { border-bottom: none; }
+.u1-trade-player .u1-name { font-weight: 600; color: #0b2540; overflow-wrap: anywhere; }
+.u1-trade-player .u1-sub { font-size: 0.8rem; color: #5a6f82; }
+@media (max-width: 640px) { .u1-trade { grid-template-columns: minmax(0, 1fr); } .u1-trade-arrow { transform: rotate(90deg); } }
 </style>"""
 
 
@@ -150,6 +176,87 @@ def action_row(st: Any, actions: Sequence[tuple[str, Callable[[], None]]], *, ke
     for i, ((label, callback), col) in enumerate(zip(actions, cols)):
         col.button(label, key=f"u1_action_{key}_{i}", on_click=callback, use_container_width=True,
                    type="primary" if primary is not None and i == primary else "secondary")
+
+
+PLAYER_COLORS = ("#1f77b4", "#ff7f0e", "#2ca02c")  # matplotlib's default cycle, so the trend chart matches
+
+
+def stat_bars(st: Any, groups: Sequence[dict[str, Any]]) -> None:
+    """Head-to-head bars: one group per metric, one bar per player, the leader in full colour.
+
+    ``groups``: [{"label": "HR", "rows": [{"name", "value", "fraction" (0–1), "lead" (bool)}]}].
+    Player colours follow row order, so the first player is always blue."""
+    parts = []
+    for group in groups:
+        rows = []
+        for i, row in enumerate(group.get("rows") or []):
+            width = max(0.0, min(1.0, float(row.get("fraction") or 0.0))) * 100
+            lead = " lead" if row.get("lead") else ""
+            rows.append(
+                f'<div class="u1-bar-row{lead}"><span class="u1-bar-name">{esc(row.get("name"))}</span>'
+                f'<span class="u1-bar-track"><span style="width:{width:.1f}%;background:{PLAYER_COLORS[i % len(PLAYER_COLORS)]}"></span></span>'
+                f'<span class="u1-bar-val">{esc(row.get("value"))}</span></div>'
+            )
+        parts.append(f'<div class="u1-bar-group"><div class="u1-bar-label">{esc(group.get("label"))}</div>{"".join(rows)}</div>')
+    if parts:
+        st.markdown(f'<div class="u1-bars">{"".join(parts)}</div>', unsafe_allow_html=True)
+
+
+def info_cards(st: Any, cards: Sequence[dict[str, Any]]) -> None:
+    """Compact cards: title, sub-line, facts [(label, value)], body, tone ("" | "good" | "warn").
+    Wraps to one column on phones."""
+    items = []
+    for card in cards:
+        tone = f" {card['tone']}" if card.get("tone") in ("good", "warn") else ""
+        sub = f'<div class="u1-card-sub">{esc(card.get("sub"))}</div>' if card.get("sub") else ""
+        facts = "".join(f'<span class="u1-fact">{esc(k)} <b>{esc(v)}</b></span>' for k, v in (card.get("facts") or []))
+        facts_html = f'<div class="u1-facts">{facts}</div>' if facts else ""
+        body = f'<div class="u1-card-body">{esc(card.get("body"))}</div>' if card.get("body") else ""
+        items.append(f'<div class="u1-card{tone}"><div class="u1-card-title">{esc(card.get("title"))}</div>{sub}{facts_html}{body}</div>')
+    if items:
+        st.markdown(f'<div class="u1-cards">{"".join(items)}</div>', unsafe_allow_html=True)
+
+
+COMMISSIONER_PANEL_LABEL = "🛡️ Commissioner Tools"
+
+
+def commissioner_panel(st: Any, *, expanded: bool = False) -> Any:
+    """One clearly marked panel for commissioner-only controls (U3), kept apart from the owner's
+    own team management. Returns the expander; callers fill it with ``with panel:`` as the page
+    renders (it keeps its place on the page). The label is the same everywhere, so its
+    open/closed state survives reruns. Callers show it only to commissioners."""
+    panel = st.expander(COMMISSIONER_PANEL_LABEL, expanded=expanded)
+    with panel:
+        st.caption("Only the commissioner sees these. They change the league, or a team no manager has "
+                   "claimed yet, and are logged as commissioner actions.")
+    return panel
+
+
+def proxy_banner(st: Any, text: str, detail: str = "") -> None:
+    """Always-visible notice while the commissioner acts for another team, e.g.
+    "Commissioner acting for Team 3" (``TeamControl.banner()``)."""
+    inject_css(st)
+    detail_html = f" {esc(detail)}" if detail else ""
+    st.markdown(f'<div class="u1-commish">🛡️ <b>{esc(text)}.</b>{detail_html}</div>', unsafe_allow_html=True)
+
+
+def trade_sides(st: Any, give: Sequence[dict[str, Any]], receive: Sequence[dict[str, Any]], *,
+                give_title: str = "You give", receive_title: str = "You receive") -> None:
+    """You give ⇄ You receive: one card per side, each player with position badges and a stat
+    line. Rows: {"player", "position" ("SS/2B"), "stats_line"}. Stacks on phones."""
+    def side(rows: Sequence[dict[str, Any]], title: str, cls: str) -> str:
+        items = "".join(
+            '<div class="u1-trade-player"><div class="u1-name">'
+            + "".join(f'<span class="u1-pos">{esc(p.strip())}</span>'
+                      for p in str(r.get("position") or "").replace(",", "/").split("/") if p.strip() and p.strip() != "—")
+            + f'{esc(r.get("player"))}</div><div class="u1-sub">{esc(r.get("stats_line") or "")}</div></div>'
+            for r in rows
+        ) or '<div class="u1-muted">No players</div>'
+        return f'<div class="u1-trade-side {cls}"><div class="u1-kicker">{esc(title)}</div>{items}</div>'
+
+    st.markdown(f'<div class="u1-trade">{side(give, give_title, "give")}'
+                f'<div class="u1-trade-arrow">⇄</div>{side(receive, receive_title, "receive")}</div>',
+                unsafe_allow_html=True)
 
 
 @contextmanager

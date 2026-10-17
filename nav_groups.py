@@ -25,13 +25,16 @@ NAV_ORDER: tuple[str, ...] = tuple(page for _section, pages in NAV_SECTIONS for 
 PAGE_SECTION: dict[str, str] = {page: section for section, pages in NAV_SECTIONS for page in pages}
 SECTION_ORDER: tuple[str, ...] = tuple(section for section, _pages in NAV_SECTIONS)
 
-# Sidebar/phone display labels. Keys never change; only what the user reads. U1 renames only
-# pages whose own page title changes with it (League Standings, Waiver Wire); the other pages
-# keep the name their page header shows until their redesign (U2/U3).
+# Sidebar/phone display labels. Keys never change; only what the user reads. A page is renamed
+# only when its own title changes with it (U1: League Standings, Waiver Wire; U2/U3: Compare
+# Players, Sleepers & Busts, Lineup & Trades). Old labels still resolve to the key.
 NAV_LABELS: dict[str, str] = {
     HOME_PAGE: "🏠 Home",
     "Fantasy Standings Tracker": "📊 League Standings",
     "Waiver Wire / Add-Drop Center": "🔄 Waiver Wire",
+    "Comparison Tool": "📈 Compare Players",
+    "Fantasy Sleepers & Busts": "💎 Sleepers & Busts",
+    "Fantasy Lineup Assistant": "🧠 Lineup & Trades",  # U3: the page also holds the Trade Center
 }
 
 

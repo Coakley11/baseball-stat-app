@@ -76,6 +76,31 @@ def trade_roster_warnings(
     stats_pool: pd.DataFrame | None = None,
 ) -> list[str]:
     """Legality warnings for both rosters after the trade (empty list = no new problems)."""
+    return [
+        issue["message"]
+        for issue in trade_roster_issues(
+            context,
+            proposer_team=proposer_team,
+            recipient_team=recipient_team,
+            proposer_gives=proposer_gives,
+            proposer_receives=proposer_receives,
+            stats_pool=stats_pool,
+        )
+    ]
+
+
+def trade_roster_issues(
+    context: dict[str, Any] | None,
+    *,
+    proposer_team: str,
+    recipient_team: str,
+    proposer_gives: list[str],
+    proposer_receives: list[str],
+    stats_pool: pd.DataFrame | None = None,
+) -> list[dict[str, Any]]:
+    """The same checks as ``trade_roster_warnings``, one record per warning:
+    ``team``, ``kind`` ("slot": a required lineup slot it can no longer fill; "over": above
+    the roster size, so a drop is needed; "under": open roster spots), ``slot`` and ``message``."""
     if not isinstance(context, dict):
         return []
     rosters = context.get("league_rosters") or {}
@@ -102,7 +127,7 @@ def trade_roster_warnings(
     def moving(team: str, names: list[str]) -> list[dict[str, Any]]:
         return [p for p in players(team) if any(_same_player(str(p.get("player_name") or ""), n) for n in names)]
 
-    warnings: list[str] = []
+    warnings: list[dict[str, Any]] = []
     for team, out_names, other, in_names in (
         (proposer, proposer_gives, recipient, proposer_receives),
         (recipient, proposer_receives, proposer, proposer_gives),
@@ -119,18 +144,19 @@ def trade_roster_warnings(
             for slot in sorted(open_after, key=slots.index):
                 new_gap = open_after[slot] - open_before.get(slot, 0)
                 if new_gap > 0:
-                    warnings.append(_slot_gap_message(label, slot, open_after[slot], required[slot]))
+                    warnings.append({"team": team, "kind": "slot", "slot": slot,
+                                     "message": _slot_gap_message(label, slot, open_after[slot], required[slot])})
         if capacity:
             size = len(after)
             if size > capacity and size > len(before):
-                warnings.append(
+                warnings.append({"team": team, "kind": "over", "slot": "", "message": (
                     f"{label[0].upper() + label[1:]} would carry {size} players — {size - capacity} over the "
                     f"{capacity}-player roster, so a drop will be needed."
-                )
+                )})
             elif size < capacity and size < len(before):
                 spots = capacity - size
-                warnings.append(
+                warnings.append({"team": team, "kind": "under", "slot": "", "message": (
                     f"{label[0].upper() + label[1:]} would carry {size} players, leaving "
                     f"{spots} open roster spot{'s' if spots != 1 else ''}."
-                )
+                )})
     return warnings

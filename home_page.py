@@ -17,7 +17,7 @@ HOME_PAGE = "Home"
 TASKS: tuple[tuple[str, str, str, str, str], ...] = (
     ("🔎", "Explore Players", "Look up any player's seasons and careers, back to 1871.", "Find a player", "Historical Explorer"),
     ("📈", "Compare Players", "Put two or three players side by side.", "Compare players", "Comparison Tool"),
-    ("📝", "Prepare for a Draft", "Run a mock draft with pick-by-pick advice.", "Start a mock draft", "Draft Assistant Simulator"),
+    ("📝", "Prepare for a Draft", "Draft live with your league, practice on your own, or review saved drafts.", "Start a mock draft", "Draft Assistant Simulator"),
     ("🏆", "Manage My League", "Standings, lineups, waivers and trades.", "Open my league", "Fantasy Standings Tracker"),
 )
 
@@ -115,6 +115,26 @@ def league_summary(context: dict[str, Any] | None, my_team: str, *, is_commissio
                          week_text=week_text, next_action=action, leaderboard=tuple(board))
 
 
+DRAFT_TASK = "Prepare for a Draft"
+
+
+def _render_draft_choices(st: Any, go: Callable[[str], Callable[[], None]]) -> None:
+    """The Draft landing (U3A): four ways in, two per row, each opening the matching tool."""
+    from draft_tools import HOME_DRAFT_CHOICES
+
+    for row, pair in enumerate((HOME_DRAFT_CHOICES[:2], HOME_DRAFT_CHOICES[2:])):
+        try:
+            from mobile_foundation import mobile_wrap_row
+
+            wrap = mobile_wrap_row(st, f"home-draft-row-{row}")
+        except ImportError:
+            wrap = st.container()
+        with wrap:
+            cols = st.columns(2)
+        for col, (label, page) in zip(cols, pair):
+            col.button(label, key=f"home_draft_{page}", on_click=go(page), use_container_width=True)
+
+
 def render_home(st: Any, session: Any, *, navigate: Callable[..., Any], render_tutorial_bar: Callable[[], None] | None = None) -> None:
     import ui_hierarchy as ui
 
@@ -130,7 +150,10 @@ def render_home(st: Any, session: Any, *, navigate: Callable[..., Any], render_t
             with col.container(border=True):
                 st.markdown(f'<div class="u1-card-title">{icon} {ui.esc(title)}</div>'
                             f'<div class="u1-card-body">{ui.esc(body)}</div>', unsafe_allow_html=True)
-                st.button(button, key=f"home_task_{page}", on_click=go(page), use_container_width=True)
+                if title == DRAFT_TASK:
+                    _render_draft_choices(st, go)
+                else:
+                    st.button(button, key=f"home_task_{page}", on_click=go(page), use_container_width=True)
 
     _render_league_block(st, session, go)
 

@@ -32,6 +32,7 @@ class LineupManagementDeps:
     safe_collection_len: Callable[..., int]
     lineup_default_hitting_slots: tuple[str, ...]
     resolve_lineup_scoring_format: Callable[..., str]
+    nav_callback: Callable[[str], Callable[[], None]] | None = None  # page -> on_click that only navigates
 
 
 def render_lineup_management_page(
@@ -69,10 +70,17 @@ def render_lineup_management_page(
                 lineup_team=str(lineup_team or ""),
                 on_open_waiver_wire=deps.open_waiver_wire_from_lineup_slot,
                 scored_roster=_lineup_scored_for_weekly,
+                nav_callback=deps.nav_callback,
             )
         except ImportError:
             pass
 
+    try:
+        import ui_hierarchy as ui
+
+        ui.section_label(st, "Explore more · start/sit recommendations, lineup diagnosis, category needs")
+    except ImportError:
+        pass
     _lineup_format_options = ["5x5 Roto", "Points League", "Head-to-Head Categories"]
     with st.expander("Start-Sit recommendations", expanded=False):
         l2, l3 = st.columns(2)

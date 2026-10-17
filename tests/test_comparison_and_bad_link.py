@@ -24,7 +24,7 @@ class ComparisonGuardTests(unittest.TestCase):
         self.assertLess(run - same, 300)
 
     def test_empty_and_single_player_states_explain_next_step(self):
-        self.assertIn("Choose up to three players in **Select up to 3 players**", SRC)
+        self.assertIn("Choose two or three players in the box above", SRC)  # U2: empty-state answer card
         self.assertIn("Add a second player above to compare them side by side.", SRC)
         self.assertIn("Pick two different players", SRC)
 
