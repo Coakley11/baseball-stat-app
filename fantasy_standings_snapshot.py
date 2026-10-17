@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 SNAPSHOT_KIND = "current_roster_snapshot"
-SNAPSHOT_LABEL = "Current Roster Snapshot (not official standings)"
+SNAPSHOT_LABEL = "How current rosters would rank (not official standings)"
 
 
 def score_current_roster_standings(roster_df, scoring_format="5x5 Roto"):

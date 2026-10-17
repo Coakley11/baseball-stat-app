@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import re
 from pathlib import Path
@@ -876,11 +877,16 @@ def render_top_n_leaderboard_bar_chart(
     top_n: int = 10,
     people_df: pd.DataFrame | None = None,
     use_api: bool = False,
+    label_col: str | None = None,
 ) -> None:
-    """HTML top-N horizontal bar chart with player headshots."""
+    """HTML top-N horizontal bar chart with player headshots.
+
+    ``label_col`` (optional) is the text shown for each row (e.g. "Aaron Judge (2024)" for a
+    season list); the headshot is still looked up by ``name_col``."""
     if df is None or df.empty or value_col not in df.columns or name_col not in df.columns:
         return
-    chart_df = df[[name_col, value_col]].copy()
+    cols = [name_col, value_col] + ([label_col] if label_col and label_col in df.columns and label_col not in (name_col, value_col) else [])
+    chart_df = df[cols].copy()
     chart_df[value_col] = pd.to_numeric(chart_df[value_col], errors="coerce")
     chart_df = chart_df.dropna(subset=[value_col]).sort_values(value_col, ascending=False).head(int(top_n))
     if chart_df.empty:
@@ -903,7 +909,7 @@ def render_top_n_leaderboard_bar_chart(
         rows_html.append(
             f'<div class="bb-lb-row">'
             f'<div class="bb-lb-photo">{head}</div>'
-            f'<div class="bb-lb-name">{name}</div>'
+            f'<div class="bb-lb-name">{html.escape(str(row[label_col])) if label_col and label_col in chart_df.columns else name}</div>'
             f'<div class="bb-lb-bar-wrap"><div class="bb-lb-bar" style="width:{pct:.1f}%;"></div></div>'
             f'<div class="bb-lb-val">{val_text}</div>'
             f"</div>"

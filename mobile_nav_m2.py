@@ -30,41 +30,26 @@ except ImportError:  # pragma: no cover - foundation module always present in-re
 QUICK_NAV_ROOT_KEY = "m-quick-nav-root"
 QUICK_NAV_SELECT_KEY = "_mobile_quick_nav_select"
 
-# Every PAGE_OPTIONS entry must appear here exactly once — validated against the
-# live streamlit_app.PAGE_OPTIONS list by tests/test_mobile_nav_m2.py so a newly
-# added page can't silently fall out of the mobile quick-nav.
-PAGE_GROUPS: dict[str, str] = {
-    "Historical Explorer": "Explore & Analyze",
-    "Career Totals": "Explore & Analyze",
-    "Leaderboards": "Explore & Analyze",
-    "Comparison Tool": "Explore & Analyze",
-    "Trend Value": "Explore & Analyze",
-    "Valuation": "Explore & Analyze",
-    "ML Predictions": "Explore & Analyze",
-    "Fantasy Sleepers & Busts": "Explore & Analyze",
-    "Draft Room Simulator": "Draft Tools",
-    "Draft Assistant Simulator": "Draft Tools",
-    "Draft Lab / Simulation": "Draft Tools",
-    "Saved Draft Library": "Draft Tools",
-    "Live Draft Room": "Live Draft",
-    "Fantasy Standings Tracker": "Fantasy Team",
-    "Fantasy Lineup Assistant": "Fantasy Team",
-    "Waiver Wire / Add-Drop Center": "Fantasy Team",
-    # Added at integration: monetization M3 registers this page in PAGE_OPTIONS,
-    # and without an entry here it fell through to the ungrouped tail on phones.
-    "Pricing & Upgrade": "Account",
-}
+# Sections come from nav_groups (shared with the desktop sidebar headings). Every PAGE_OPTIONS
+# entry must appear there exactly once — validated against the live streamlit_app.PAGE_OPTIONS
+# list by tests/test_mobile_nav_m2.py so a newly added page can't silently fall out of the
+# phone navigation.
+from nav_groups import NAV_SECTIONS, PAGE_SECTION, SECTION_ORDER
+
+PAGE_GROUPS: dict[str, str] = dict(PAGE_SECTION)
 
 # Fixed display order for groups; anything not in PAGE_GROUPS is appended,
 # ungrouped, at the end — so a future page that forgets to register a group
 # stays reachable (never silently dropped) instead of erroring.
-GROUP_ORDER: tuple[str, ...] = ("Explore & Analyze", "Draft Tools", "Live Draft", "Fantasy Team", "Account")
+GROUP_ORDER: tuple[str, ...] = SECTION_ORDER
+QUICK_NAV_SECTION_KEY = "_mobile_quick_nav_section"
 
 __all__ = (
     "PAGE_GROUPS",
     "GROUP_ORDER",
     "QUICK_NAV_ROOT_KEY",
     "QUICK_NAV_SELECT_KEY",
+    "QUICK_NAV_SECTION_KEY",
     "grouped_page_options",
     "render_mobile_quick_nav",
     "mobile_header_compaction_css",
@@ -153,28 +138,46 @@ def render_mobile_quick_nav(
     costs no flex gap. A ``<style>`` still applies inside a ``display: none`` parent.
     """
     ordered = grouped_page_options(page_options)
+    # Two levels on phones: section pills (Home · Players · Insights · Draft · My League ·
+    # Account), then the current section's pages. Both route through the one sidebar page key.
+    section = PAGE_GROUPS.get(active_page, "")
+    sections = [g for g in GROUP_ORDER if any(PAGE_GROUPS.get(p) == g for p in ordered)]
+    section_pages = [p for p in ordered if PAGE_GROUPS.get(p) == section] or ordered
     try:
-        current_index = ordered.index(active_page)
+        current_index = section_pages.index(active_page)
     except ValueError:
         current_index = 0
-    # Keep the widget's own session-state key in lockstep with the resolved
+    # Keep the widgets' own session-state keys in lockstep with the resolved
     # active_page for THIS rerun. Without this, navigating via the sidebar (or a
     # deep link) would leave this selectbox showing a stale prior selection —
     # Streamlit widgets prefer their session_state[key] over `index=` once set.
     if st.session_state.get(QUICK_NAV_SELECT_KEY) != active_page:
         st.session_state[QUICK_NAV_SELECT_KEY] = active_page
+    if section and st.session_state.get(QUICK_NAV_SECTION_KEY) != section:
+        st.session_state[QUICK_NAV_SECTION_KEY] = section
 
     def _format(page: str) -> str:
-        group = PAGE_GROUPS.get(page, "")
-        label = page_option_label(page)
-        return f"{group} · {label}" if group else label
+        return page_option_label(page)
+
+    def _format_section(group: str) -> str:
+        return "🏠 Home" if group == "Home" else group
+
+    def _go(target: str) -> None:
+        if not target or target == st.session_state.get(main_sidebar_page_key):
+            return
+        st.session_state[main_sidebar_page_key] = target
+        on_sidebar_page_change()
 
     def _on_change() -> None:
-        picked = st.session_state.get(QUICK_NAV_SELECT_KEY)
-        if not picked or picked == st.session_state.get(main_sidebar_page_key):
+        _go(st.session_state.get(QUICK_NAV_SELECT_KEY))
+
+    def _on_section() -> None:
+        picked = st.session_state.get(QUICK_NAV_SECTION_KEY)
+        if not picked or picked == section:
+            st.session_state[QUICK_NAV_SECTION_KEY] = section  # tapping the open section keeps it
             return
-        st.session_state[main_sidebar_page_key] = picked
-        on_sidebar_page_change()
+        first = next((p for p in ordered if PAGE_GROUPS.get(p) == picked), None)
+        _go(first)
 
     with st.container(key=QUICK_NAV_ROOT_KEY):
         # Each <style> block and the label start on their own line (CommonMark HTML
@@ -190,12 +193,22 @@ def render_mobile_quick_nav(
             # <nav> is a CommonMark block tag like <div>, so parsing is unchanged too.
             # The pin emoji is decorative and hidden from the accessibility tree.
             + f'<nav class="m-quick-nav-current" aria-label="Current page">'
-            + f'<span aria-hidden="true">\U0001f4cd</span> {page_option_label(active_page)}</nav>',
+            + f'<span aria-hidden="true">📍</span> {page_option_label(active_page)}</nav>',
             unsafe_allow_html=True,
         )
+        if len(sections) > 1 and hasattr(st, "pills"):
+            st.pills(
+                "Section",
+                sections,
+                selection_mode="single",
+                format_func=_format_section,
+                key=QUICK_NAV_SECTION_KEY,
+                on_change=_on_section,
+                label_visibility="collapsed",
+            )
         st.selectbox(
             "Jump to page",
-            ordered,
+            section_pages,
             index=current_index,
             format_func=_format,
             key=QUICK_NAV_SELECT_KEY,

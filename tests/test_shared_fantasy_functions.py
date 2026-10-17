@@ -204,7 +204,8 @@ class CurrentRosterStandingsTests(unittest.TestCase):
     def test_snapshot_is_labeled_not_official(self):
         self.assertIn("not official", SNAPSHOT_LABEL)
         src = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
-        self.assertIn(f'st.subheader("{SNAPSHOT_LABEL}")', src)
+        self.assertIn("from fantasy_standings_snapshot import SNAPSHOT_LABEL as _SNAPSHOT_LABEL", src)
+        self.assertIn("st.subheader(_SNAPSHOT_LABEL)", src)
 
 
 class TradeEvaluationTests(unittest.TestCase):

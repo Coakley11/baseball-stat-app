@@ -876,7 +876,7 @@ def render_global_app_chrome(active_page: str) -> None:
         render_mobile_quick_nav(
             st,
             active_page=active_page,
-            page_options=PAGE_OPTIONS,
+            page_options=PAGE_OPTIONS,  # grouped by mobile_nav_m2 via nav_groups
             page_option_label=page_option_label,
             main_sidebar_page_key=MAIN_SIDEBAR_PAGE_KEY,
             on_sidebar_page_change=_on_sidebar_page_change,
@@ -899,8 +899,13 @@ def render_global_app_chrome(active_page: str) -> None:
         # Active draft: do not spend the first viewport on the brand hero.
         with _ldr_m_hook("ldr-m-brand"):
             st.caption("⚾ Baseball Explorer · Live Draft")
+    elif active_page != "Home" and active_page not in DRAFT_FOCUS_PAGES:
+        # U1: no brand hero or tutorial prompt above page content. Pages open on their own
+        # title; the sidebar logo (and the header icon on phones) still carries the brand.
+        # Home shows the compact brand line and offers the tutorial at its foot.
+        pass
     else:
-        compact = active_page in DRAFT_FOCUS_PAGES
+        compact = active_page in DRAFT_FOCUS_PAGES or active_page == "Home"
         if compact:
             st.markdown("""
 <div class="title-box" style="padding:14px 18px;margin-bottom:12px;">
@@ -916,8 +921,7 @@ def render_global_app_chrome(active_page: str) -> None:
     </div>
 </div>
 """, unsafe_allow_html=True)
-    if not suppress_tutorial:
-        app_tutorial.render_tutorial_header_bar()
+    # U1: the "New here? Start Tutorial" prompt is rendered at the foot of Home (home_page).
 
 from stat_helpers import fmt_int, fmt_rate_3, normalize_series, safe_numeric_series  # noqa: E402,F401  (shared with the fantasy modules)
 
@@ -1514,6 +1518,81 @@ def build_player_label_map(df):
     options = df[["playerID", "fullName"]].drop_duplicates().sort_values(["fullName", "playerID"])
     return {f"{row.fullName} ({row.playerID})": row.playerID for row in options.itertuples()}
 
+
+
+def _u1_nav_cb(page):
+    """Button callback: go to ``page`` through the normal scheduled-navigation path."""
+    return lambda: navigate_to_page(page, from_callback=True)
+
+
+def _u1_player_action_cb(action, player):
+    """Button callback: the same player action the Player Actions menu runs (send to
+    Comparison / Trend), then go to that page. Never drafts, trades or saves a move."""
+    def _cb():
+        label_map = get_clean_player_label_map_yearly(yearly_df)
+        msg, nav = dispatch_player_action(player, action, None, None, label_map)
+        st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = msg
+        if nav:
+            _schedule_player_action_page_nav(nav)
+    return _cb
+
+
+def _render_u1_season_answer(rows, sort_stat, year_range, *, ascending, team_col, qualification_prefix):
+    """Historical Explorer answer: top season, its numbers, the top-10 chart, next steps."""
+    import u1_answers as u1a
+    import ui_hierarchy as u1
+
+    qual = u1a.qualification_text(st.session_state, qualification_prefix, sort_stat, year_range, per_season=True)
+    answer = u1a.season_answer(rows, sort_stat, year_range, ascending=ascending, team_col=team_col, qualification=qual)
+    if answer is None:
+        u1.answer_card(st, "No seasons match these filters",
+                       "Widen the year range or relax the filters under Explore more.", tone="warn")
+        return
+    u1.answer_card(st, answer["headline"], answer["body"], kicker=answer["context"])
+    u1.metric_tiles(st, answer["tiles"])
+    if qual:
+        u1.chips(st, [(qual, "")])
+    chart_rows = rows
+    if "yearID" in rows.columns and "fullName" in rows.columns:
+        import u1_answers as _u1a
+
+        chart_rows = rows.assign(_season_label=[
+            f"{_u1a.short_name(n)} ({y})" for n, y in zip(rows["fullName"].astype(str), rows["yearID"].astype("Int64").astype(str))
+        ])
+    top_bar_chart(chart_rows, "fullName", sort_stat, f"Top 10 seasons by {sort_stat}", always_show=True,
+                  label_col="_season_label" if "_season_label" in chart_rows.columns else None)
+    player = answer["player"]
+    last = u1a.last_name(player)
+    u1.action_row(st, [
+        (f"Compare {last}", _u1_player_action_cb("Send to Comparison Tool", player)),
+        (f"{last}'s trend", _u1_player_action_cb("Send to Trend Page", player)),
+        ("Career totals", _u1_nav_cb("Career Totals")),
+        ("Leaderboards", _u1_nav_cb("Leaderboards")),
+    ], key="hist", primary=None)
+
+
+def _render_u1_leaderboard_answer(rows, sort_stat, year_range, *, weights, qualification_prefix):
+    """Leaderboards answer: who leads, what is ranked, the qualification rule, top 3, chart, next steps."""
+    import u1_answers as u1a
+    import ui_hierarchy as u1
+
+    qual = u1a.qualification_text(st.session_state, qualification_prefix, sort_stat, year_range)
+    answer = u1a.leaderboard_answer(rows, sort_stat, year_range, weights=weights, qualification=qual)
+    if answer is None:
+        u1.answer_card(st, "No players match these filters",
+                       "Widen the year range or relax the minimums under Explore more.", tone="warn")
+        return
+    u1.answer_card(st, answer["headline"], answer["body"], kicker=f"Ranked by {u1a.stat_name(sort_stat)}")
+    if qual:
+        u1.chips(st, [(qual, "")])
+    top_bar_chart(rows, "fullName", sort_stat, f"Top 10 by {sort_stat}", always_show=True)
+    player = answer["player"]
+    last = u1a.last_name(player)
+    u1.action_row(st, [
+        (f"Compare {last}", _u1_player_action_cb("Send to Comparison Tool", player)),
+        (f"{last}'s trend", _u1_player_action_cb("Send to Trend Page", player)),
+        ("Season view", _u1_nav_cb("Historical Explorer")),
+    ], key="leaders", primary=None)
 
 
 def plot_player_stat_trends(ax, df, player_ids, stat_col, mode="Actual Values", smooth_window=3):
@@ -2344,10 +2423,12 @@ def _maybe_render_account_pref_sync(page_key: str) -> None:
             pass
 
 
-def top_bar_chart(df, name_col, value_col, title, top_n=10):
+def top_bar_chart(df, name_col, value_col, title, top_n=10, *, always_show=False, label_col=None):
+    """Top-N bar chart. ``always_show`` (U1 answer-first pages) skips the "Show …" checkbox;
+    ``label_col`` is the row text when it should differ from the name (e.g. "Judge (2024)")."""
     if df.empty or value_col not in df.columns or name_col not in df.columns:
         return
-    show_chart = st.checkbox(
+    show_chart = always_show or st.checkbox(
         f"Show {title}",
         value=pp.chart_default_visible(st),
         key=f"bar_chart_{hashlib.md5(str(title).encode('utf-8')).hexdigest()[:10]}",
@@ -2356,7 +2437,8 @@ def top_bar_chart(df, name_col, value_col, title, top_n=10):
     if not show_chart:
         st.caption("Optional chart skipped for faster page load.")
         return
-    chart_df = df[[name_col, value_col]].copy()
+    _chart_cols = [name_col, value_col] + ([label_col] if label_col and label_col in df.columns else [])
+    chart_df = df[_chart_cols].copy()
     chart_df[value_col] = pd.to_numeric(chart_df[value_col], errors="coerce")
     chart_df = chart_df.dropna(subset=[value_col]).sort_values(value_col, ascending=False).head(top_n)
     if chart_df.empty:
@@ -2376,6 +2458,7 @@ def top_bar_chart(df, name_col, value_col, title, top_n=10):
             top_n=top_n,
             people_df=people_df,
             use_api=False,
+            label_col=label_col if label_col and label_col in chart_df.columns else None,
         )
         return
     except ImportError:
@@ -11851,6 +11934,9 @@ PAGE_OPTIONS = [
     "Fantasy Lineup Assistant",
     "Waiver Wire / Add-Drop Center",
     "Pricing & Upgrade",
+    # U1: appended (not first) so PAGE_OPTIONS[0] keeps its fallback role; the sidebar lists
+    # pages in nav_groups.NAV_ORDER, where Home comes first.
+    "Home",
 ]
 _PAGE_OPTION_SET = frozenset(PAGE_OPTIONS)
 
@@ -11879,7 +11965,14 @@ PAGE_OPTION_LABELS = {
     "Pricing & Upgrade": "💳 Pricing & Upgrade",
     "Trade Analyzer / Roster Move Assistant": "🔁 Trade Analyzer / Roster Move Assistant",
 }
-_PAGE_LABEL_TO_KEY = {label: key for key, label in PAGE_OPTION_LABELS.items()}
+_PAGE_LABEL_TO_KEY = {label: key for key, label in PAGE_OPTION_LABELS.items()}  # pre-U1 labels stay readable
+try:
+    from nav_groups import NAV_LABELS as _U1_NAV_LABELS
+
+    PAGE_OPTION_LABELS.update(_U1_NAV_LABELS)
+except ImportError:
+    PAGE_OPTION_LABELS["Home"] = "🏠 Home"
+_PAGE_LABEL_TO_KEY.update({label: key for key, label in PAGE_OPTION_LABELS.items()})
 
 
 def page_option_label(page_key: str) -> str:
@@ -14108,14 +14201,23 @@ try:
 except Exception:
     pass
 
+# A genuinely new visit (no deep link, nothing restored, no page chosen yet) opens Home.
+# Deep links, restored sessions and explicit navigation have set active_page by now.
 validate_state_option(
     MAIN_SIDEBAR_PAGE_KEY,
     PAGE_OPTIONS,
-    st.session_state.get("active_page", "Historical Explorer"),
+    st.session_state.get("active_page", "Home"),
 )
+try:
+    from nav_groups import ordered_pages as _nav_ordered_pages, sidebar_section_css as _nav_section_css
+
+    _SIDEBAR_PAGE_ORDER = _nav_ordered_pages(PAGE_OPTIONS)
+    st.sidebar.markdown(_nav_section_css(MAIN_SIDEBAR_PAGE_KEY, _SIDEBAR_PAGE_ORDER), unsafe_allow_html=True)
+except ImportError:
+    _SIDEBAR_PAGE_ORDER = list(PAGE_OPTIONS)
 _selected_page = st.sidebar.radio(
     "Choose Page",
-    PAGE_OPTIONS,
+    _SIDEBAR_PAGE_ORDER,
     key=MAIN_SIDEBAR_PAGE_KEY,
     format_func=page_option_label,
     on_change=_on_sidebar_page_change,
@@ -15212,6 +15314,13 @@ elif active_page == "Pricing & Upgrade":
     render_pricing_page(st, st.session_state, _monetization_snapshot)
 
 
+elif active_page == "Home":
+    from home_page import render_home
+
+    render_home(st, st.session_state, navigate=navigate_to_page,
+                render_tutorial_bar=app_tutorial.render_tutorial_header_bar)
+
+
 elif active_page == "Historical Explorer":
     try:
         from app_page_generation import note_page_renderer
@@ -15244,15 +15353,10 @@ elif active_page == "Historical Explorer":
     try:
         from hall_of_fame_data import CAREER_HOF_CASE_MODE_KEY
 
+        # U1: the checkbox itself renders under "Explore more"; its value is read here first.
         init_state_once(CAREER_HOF_CASE_MODE_KEY, False)
-        st.checkbox(
-            "Hall of Fame Case Mode",
-            key=CAREER_HOF_CASE_MODE_KEY,
-            help="Shared with Career Totals — enables Hall of Fame cohort tools and scatterplot Color By on both pages.",
-            on_change=historical_filter_changed,
-        )
     except ImportError:
-        pass
+        CAREER_HOF_CASE_MODE_KEY = None
 
     hof_case_mode = ensure_hof_case_scope_ui_state(st.session_state)
     hist_hof_filter = HOF_FILTER_ALL
@@ -15266,10 +15370,9 @@ elif active_page == "Historical Explorer":
             developer_mode=True,
         )
 
-    render_section_header(
-        "🔎 Historical Explorer",
-        "Find individual player seasons. Split-team seasons can stay as separate team rows or be combined into one primary-team season row."
-    )
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "🔎 Historical Explorer", "The best single seasons for any years and stat, back to 1871.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     try:
@@ -15280,7 +15383,7 @@ elif active_page == "Historical Explorer":
         pass
 
     with mobile_wrap_row(st, "historical-top-filters"):
-        hc1, hc2, hc3 = st.columns([2.2, 1.2, 1.2])
+        hc1, hc2 = st.columns([2.2, 1.2])
     sort_options_hist = [
         "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"
     ]
@@ -15312,12 +15415,14 @@ elif active_page == "Historical Explorer":
             key="historical_sort_stat_filter",
             on_change=historical_filter_changed,
         )
-    with hc3:
-        validate_state_option("historical_sort_order_filter", ["Descending", "Ascending"], "Descending")
-        hist_sort_order = st.selectbox(
-            "Order",
-            ["Descending", "Ascending"],
-            key="historical_sort_order_filter",
+    # U1: the answer (leader, summary, chart, next steps) is filled in here once the rows are known.
+    hist_answer_slot = st.container()
+    u1.section_label(st, "Explore more · filters, all seasons and charts")
+    if CAREER_HOF_CASE_MODE_KEY:
+        st.checkbox(
+            "Hall of Fame Case Mode",
+            key=CAREER_HOF_CASE_MODE_KEY,
+            help="Shared with Career Totals — enables Hall of Fame cohort tools and scatterplot Color By on both pages.",
             on_change=historical_filter_changed,
         )
 
@@ -15332,6 +15437,13 @@ elif active_page == "Historical Explorer":
             )
 
     with st.expander("Advanced filters", expanded=False):
+        validate_state_option("historical_sort_order_filter", ["Descending", "Ascending"], "Descending")
+        hist_sort_order = st.selectbox(
+            "Order",
+            ["Descending", "Ascending"],
+            key="historical_sort_order_filter",
+            on_change=historical_filter_changed,
+        )
         with mobile_wrap_row(st, "historical-advanced-filters"):
             c2, c_mode, c3, c4 = st.columns([1.0, 1.25, 1.0, 1.35])
         with c2:
@@ -15481,7 +15593,15 @@ elif active_page == "Historical Explorer":
     if hist_sort_stat in hist_display_raw.columns:
         hist_display_raw = hist_display_raw.sort_values(by=hist_sort_stat, ascending=(hist_sort_order == "Ascending"), na_position="last")
 
-    top_bar_chart(hist_display_raw, "fullName", hist_sort_stat, f"Top 10 Seasons by {hist_sort_stat}")
+    with hist_answer_slot:
+        _render_u1_season_answer(
+            hist_display_raw,
+            hist_sort_stat,
+            hist_year_range,
+            ascending=(hist_sort_order == "Ascending"),
+            team_col=team_col_for_display,
+            qualification_prefix="hist",
+        )
 
     c7, c8, c9 = st.columns(3)
     c7.metric("Rows Returned", len(hist_display_raw))
@@ -16417,12 +16537,14 @@ elif active_page == "Leaderboards":
     prepare_leaderboards_page(st.session_state)
     prepare_leaderboards_filters(st.session_state)
 
-    render_section_header("🏆 Leaderboards", "Build custom offensive rankings with weighted stats, filters, summary cards, and charts.")
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "🏆 Leaderboards", "Who leads over a span of seasons — in one stat or a custom score.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     leaders_sort_options = ["score", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
     with mobile_wrap_row(st, "leaderboards-top-filters"):
-        c1, c2, c3 = st.columns([2, 1, 1])
+        c1, c3 = st.columns([2, 1])
     with c1:
         prepare_leaderboards_year_range(
             st.session_state,
@@ -16443,15 +16565,6 @@ elif active_page == "Leaderboards":
             key="leaders_year_range_filter",
             on_change=leaderboards_filter_changed,
         )
-    with c2:
-        init_state_once("leaders_top_n_filter", 25)
-        top_n_leaders = st.slider(
-            "Show Top N Players",
-            min_value=5,
-            max_value=100,
-            key="leaders_top_n_filter",
-            on_change=leaderboards_filter_changed,
-        )
     with c3:
         validate_state_option("leaders_sort_stat_filter", leaders_sort_options, "score")
         sort_stat_leaders = st.selectbox(
@@ -16460,6 +16573,18 @@ elif active_page == "Leaderboards":
             key="leaders_sort_stat_filter",
             on_change=leaderboards_filter_changed,
         )
+
+    # U1: the answer (leader, what is ranked, qualification, top 3, chart, next steps) goes here.
+    leaders_answer_slot = st.container()
+    u1.section_label(st, "Explore more · weights, minimums and the full ranking")
+    init_state_once("leaders_top_n_filter", 25)
+    top_n_leaders = st.slider(
+        "Show Top N Players",
+        min_value=5,
+        max_value=100,
+        key="leaders_top_n_filter",
+        on_change=leaderboards_filter_changed,
+    )
 
     weight_stats = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
     _default_weights = {"HR": 1.0, "RBI": 1.0, "SB": 1.0}
@@ -16501,9 +16626,15 @@ elif active_page == "Leaderboards":
     for stat, weight in weight_values.items():
         leaderboard["score"] += weight * (leaderboard[stat] * 100 if stat in RATE_STATS else leaderboard[stat])
 
-    top_bar_chart(leaderboard, "fullName", sort_stat_leaders, f"Top 10 by {sort_stat_leaders}")
-
     leaderboard_sorted = leaderboard.sort_values(sort_stat_leaders, ascending=False, na_position="last")
+    with leaders_answer_slot:
+        _render_u1_leaderboard_answer(
+            leaderboard_sorted,
+            sort_stat_leaders,
+            range_leaders,
+            weights=weight_values,
+            qualification_prefix="leaders",
+        )
     leaderboard_display = leaderboard_sorted.head(top_n_leaders)[[
         "fullName", "bats", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS", "score"
     ]].rename(columns={"fullName": "Player", "bats": "Bats", "score": "Score"})
@@ -29021,16 +29152,35 @@ elif active_page == "Fantasy Standings Tracker":
     except ImportError:
         pass
 
-    render_section_header(
-        "📊 Fantasy Standings Tracker",
-        "Upload current-season player stats and score all drafted fantasy teams by roto or points-league rules."
-    )
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "📊 League Standings", "Where your team stands, what's working, and what to do next.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     _prepare_and_show_draft_shared_settings(
         active_page,
         format_key="standings_scoring_format",
     )
+    # U1: the official answer first (place, gap, strengths, closest gains, this week, next steps).
+    # It needs only the season ledger, not current MLB stats.
+    try:
+        from fantasy_league_context import get_active_league_context as _get_ctx_for_answer
+        from league_home_ui import render_league_answer
+
+        _answer_ctx = _get_ctx_for_answer(st.session_state)
+        render_league_answer(st, st.session_state, _answer_ctx, navigate_to_page)
+    except ImportError:
+        _answer_ctx = None
+    u1.section_label(st, "Explore more · full standings, completed weeks and current-roster analysis")
+    _uses_season_ledger_early = False
+    if _answer_ctx is not None:
+        try:
+            from fantasy_season_results_ui import render_official_standings
+
+            # Official standings detail: the sum of finalized scoring periods.
+            _uses_season_ledger_early = render_official_standings(st, _answer_ctx)
+        except ImportError:
+            pass
 
     try:
         from draft_archive_ui import render_active_saved_draft_chip
@@ -29049,6 +29199,14 @@ elif active_page == "Fantasy Standings Tracker":
         except Exception:
             pass
 
+    from fantasy_standings_snapshot import SNAPSHOT_LABEL as _SNAPSHOT_LABEL
+
+    st.subheader(_SNAPSHOT_LABEL)
+    st.caption(
+        "Season-to-date stats of the players on each roster today, ranked like roto. Useful for "
+        "analysis, but it is not the league standings: a player counts for whoever owns him now, "
+        "whenever he played."
+    )
     _standings_format_options = ["5x5 Roto", "Points League"]
     validate_state_option("standings_scoring_format", _standings_format_options, "5x5 Roto")
     def _standings_format_changed():
@@ -29416,15 +29574,8 @@ elif active_page == "Fantasy Standings Tracker":
         elif active_archive and roster_stats.empty and not _used_standings_cache:
             st.warning("Loaded saved draft has no roster players to score.")
 
-        _uses_season_ledger = False
-        if _use_full_league_context and active_league_context is not None:
-            try:
-                from fantasy_season_results_ui import render_official_standings
-
-                # Official standings: the sum of finalized scoring periods.
-                _uses_season_ledger = render_official_standings(st, active_league_context)
-            except ImportError:
-                _uses_season_ledger = False
+        # Official standings were rendered above (U1); only remember whether this league uses them.
+        _uses_season_ledger = bool(_uses_season_ledger_early)
 
         if not roster_stats.empty:
             _show_multi_team_rosters = _use_full_league_context or not active_archive
@@ -29440,12 +29591,7 @@ elif active_page == "Fantasy Standings Tracker":
                 file_name="fantasy_rosters_current_stats.csv",
                 display_rows=300,
             )
-            st.subheader("Current Roster Snapshot (not official standings)")
-            st.caption(
-                "Season-to-date stats of the players on each roster today, ranked like roto. Useful for "
-                "analysis, but it is not the league standings: a player counts for whoever owns him now, "
-                "whenever he played."
-            )
+            st.markdown(f"**{_SNAPSHOT_LABEL}: ranking table**")
             try:
                 from fantasy_weekly_hitter_scoring import cumulative_standings_rows
 
@@ -29891,28 +30037,11 @@ elif active_page == "Waiver Wire / Add-Drop Center":
 
     _page_perf_start(active_page)
     _maybe_render_account_pref_sync(active_page)
-    render_section_header(
-        "🔄 Waiver Wire / Add-Drop Center",
-        "Improve your active fantasy team using current-season category performance, waiver pool adds, and paired add/drop planning.",
-    )
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "🔄 Waiver Wire", "Who to pick up for your team, and why.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
-    try:
-        from draft_archive_ui import render_active_saved_draft_chip
-
-        render_active_saved_draft_chip(
-            st,
-            st.session_state,
-            key_prefix="waiver_archive",
-            page_label_fn=page_option_label,
-        )
-    except (ImportError, TypeError):
-        try:
-            from draft_archive_ui import render_active_draft_summary
-
-            render_active_draft_summary(st, st.session_state)
-        except Exception:
-            pass
     _waiver_hitter_stats = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
     try:
         from fantasy_league_context import get_active_league_context
@@ -29935,7 +30064,25 @@ elif active_page == "Waiver Wire / Add-Drop Center":
         league_roster_stats=_waiver_roster_stats,
         normalize_name_fn=normalize_player_name_for_merge,
         page_label_fn=page_option_label,
+        player_action_cb=_u1_player_action_cb,
     )
+    # U1: the active-league card (switch league, open saved drafts) sits below the page content.
+    try:
+        from draft_archive_ui import render_active_saved_draft_chip
+
+        render_active_saved_draft_chip(
+            st,
+            st.session_state,
+            key_prefix="waiver_archive",
+            page_label_fn=page_option_label,
+        )
+    except (ImportError, TypeError):
+        try:
+            from draft_archive_ui import render_active_draft_summary
+
+            render_active_draft_summary(st, st.session_state)
+        except Exception:
+            pass
     save_page_state(active_page)
     _render_consolidated_page_diagnostics(active_page)
     _page_perf_end(active_page)
