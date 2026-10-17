@@ -79,3 +79,48 @@ Missing until the API adds them: the detail sentence, context line and metric ti
 Missing until the API adds them: the answer sentence and score sentence (R3).
 
 **Hidden:** the "One player" view (R8).
+
+## Verification (WEB-M2 integration slice)
+
+Run against the exported API at `a9a80f7` over the real Lahman data. Nothing in the u4 worktree
+or branch was touched: the export was made by `git archive` into a temporary directory and run
+with bytecode writing off.
+
+- **`npm run check`:** passes. It runs `api:types:check` (no drift), typecheck, lint, 100
+  unit/component tests in 15 files and the production build.
+- **`npm run test:live`:** 8 live tests pass:
+  - the schema paths match the pin;
+  - the interim stat lists, defaults, labels and formats equal the live API;
+  - the Historical Explorer and leaderboard mappings equal the direct API responses;
+  - live errors map correctly;
+  - player search works.
+- **Production safety:**
+  - `next build` with `NEXT_PUBLIC_BASEBALL_DATA_SOURCE=mock` exits 1;
+  - a normal production build contains no fixture content, source maps included;
+  - the browser never calls the Python origin directly: every request goes through
+    `/api/baseball/*`.
+- **Browser (Chromium, production build + proxy + real API), 23 checks pass:**
+  - widths 1280 / 430 / 390 / 360 on both pages, for HR/score and OPS;
+  - API headlines and values equal the API responses;
+  - no sample badge;
+  - no one-player control, and a one-player deep link gets the honest state with no request
+    sent;
+  - stat change and Back on a 360 px phone;
+  - an outage shows the error state, and Retry recovers;
+  - an unknown stat is caught;
+  - an arbitrary range (1990–2000) is answered from real data;
+  - no horizontal overflow; the answer starts at about 274 px on phones;
+  - axe-core: 0 violations in light and dark.
+
+## Real data vs the WEB-M1 samples
+
+The sample numbers were placeholders, and the real API differs, as expected:
+
+| Example | WEB-M1 sample | Real API |
+|---|---|---|
+| Historical Explorer total (2010–2025, HR) | 9,718 seasons | 24,261 |
+| Qualified hitters, OPS 2020–2025 | 142 | 79 |
+| Judge OPS 2020–2025 | 1.058 | 1.068 |
+| Name spelling | "José Ramírez" | "Jose Ramirez" (Lahman) |
+
+None of the sample values can reach a production build.

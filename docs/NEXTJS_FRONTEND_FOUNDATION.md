@@ -145,9 +145,18 @@ The Streamlit Home's league summary needs auth and league data, so it is not in 
 page component
   → useBaseballQuery(key, client => client.getX(query))    lib/api/useBaseballQuery.ts
   → BaseballClient interface                                lib/api/client.ts
-  → fixture adapter (today)                                 lib/api/mock/mockClient.ts
-  → HTTP adapter (next)                                     not written: contracts pending
+  → HTTP adapter (default, WEB-M2)                          lib/api/http/ (generated wire types)
+      → same-origin proxy /api/baseball/*                   app/api/baseball/[...path], lib/api/proxy.ts
+      → Python API ${BASEBALL_API_ORIGIN}/api/v1/*          baseball_api (pinned: openapi/)
+  → fixture adapter (local development only)                lib/api/mock/ via `baseball-sample-data`
 ```
+
+The data source is chosen once, in `lib/api/provider.tsx`. The real API is the default.
+`NEXT_PUBLIC_BASEBALL_DATA_SOURCE=mock` selects fixtures outside production only, and
+`next build` refuses it. Production builds alias the fixture module to a data-free stub, so no
+fixture ships. Clients declare `capabilities`; the real API has `playerSeasonRanking: false`, so
+the one-player view is hidden there. Contract status, field by field:
+`docs/WEB_M2_SCHEMA_COMPATIBILITY.md`.
 
 - Pages import only from `@/lib/api` (the types, the hook, `useBaseballClient`). No page or
   component imports a fixture.
@@ -160,14 +169,17 @@ page component
 Client methods: `getCatalog()`, `searchPlayers(text)`, `getPlayer(id)`,
 `getHistoricalExplorer(query)`, `getLeaderboard(query)`.
 
-### TypeScript models (temporary)
+### TypeScript models
 
-`src/lib/api/types.ts` holds hand-written models designed around a clean JSON contract, not
-Streamlit's DataFrames: `Catalog`, `MetricDefinition`, `YearRange`, `PlayerSummary`,
-`PlayerSeason`, `StatLine`, `QualificationInfo`, `Answer`, `HistoricalExplorerQuery/Result`,
-`SeasonChart`, `LeaderboardQuery/Result/Entry`, `ScoreDefinition`. **Replace this file with
-types generated from the Python OpenAPI schema** (or re-export them from it) when that schema
-exists. Pages will then show compile errors only where the shape really changed.
+- **Wire types are generated, not written by hand.**
+  `src/lib/api/generated/baseball-api.ts` comes from the pinned schema
+  (`openapi/baseball-api.json`) via `npm run api:types`, and `npm run api:types:check` catches
+  drift.
+- **Only the HTTP adapter reads wire types.** Pages use the view models in
+  `src/lib/api/types.ts` (`Catalog`, `MetricDefinition`, `PlayerSeason`, `QualificationInfo`,
+  `Answer`, `HistoricalExplorerResult`, `LeaderboardResult`, …).
+- **Missing fields stay empty.** Where the API doesn't provide a field yet, it is nullable or
+  empty; it is never filled in by the frontend.
 
 ## 7. Sample data (fixtures)
 
@@ -189,7 +201,10 @@ Located in `src/lib/api/mock/fixtures/`. The rules:
   position, a below-minimum season on a timeline, a span-minimum exclusion (Acuña) and a tie
   at .863.
 - **Forcing states:** add `?mock=loading|slow|unavailable|empty` to any page URL.
-- When the API arrives, the HTTP adapter replaces this one. The fixtures stay for tests only.
+- **Since WEB-M2,** fixtures are for local UI work and UI-behaviour tests only. Tests of what
+  the pages show for real data use **recorded real API responses** (`src/test/recorded/`,
+  recorded from the pinned API by `npm run api:record`) replayed through the real HTTP adapter.
+  Live integration tests (`npm run test:live`) run against a running API.
 
 ## 8. Charts
 
@@ -236,12 +251,15 @@ dark values. The palette continues the Streamlit U1 colours (navy ink, `#1f5fa8`
 
 ## 11. What is real vs sample
 
-| Real now | Sample (fixtures) |
-|---|---|
-| Shell, navigation, routing, URL state, Back/Forward | Every number, name list, rank and sentence |
-| All loading / empty / error states and their triggers | Catalog (metrics, defaults, year bounds): mirrors `streamlit_app.py` |
-| Formatting (`.311`, `1,234`, `—` for missing) | Player search results |
-| Accessibility, responsive layout, dark mode | Qualification text and flags |
+Since WEB-M2 the pages run on the real Python API by default.
+
+| From the real API (pinned `a9a80f7`) | Interim, until the API serves it | Not shown on real data yet |
+|---|---|---|
+| Every number, name, rank, total and team | Stat lists, defaults, labels and formats (checked against the live API; R1) | Answer detail, context and metric tiles (R2) |
+| Historical Explorer headline | Stat names fall back to API labels ("HR"; R5) | Leaderboards answer sentence (R3); a data-free title is shown |
+| Qualification numbers (`min_ab`, mode) | | Qualification wording (R4); the number is shown |
+| Year bounds (`/health`), player search | | One-player rankings (R8): hidden |
+| Errors (422 / 404 / 503 envelopes) | | Full tables and export beyond 25 rows (R6) |
 
 ## 12. Backend contracts needed
 
