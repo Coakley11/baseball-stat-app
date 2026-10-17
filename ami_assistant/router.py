@@ -16,15 +16,16 @@ follow-ups — the conversation subject or the players selected on the page.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
 from typing import Any
 
 from ami_assistant.capabilities import APP_DATA, EXTERNAL_CURRENT, PRODUCT_HELP
 from ami_assistant.context import DRAFT_PAGES, AmiPageContext
 from ami_assistant.conversation import ConversationState
 from ami_assistant.data import BaseballDataset
+from ami_assistant.fantasy_router import F_WAIVER, FANTASY_INTENTS, fantasy_plan
 from ami_assistant.glossary import match_term
 from ami_assistant.page_help import PAGE_HELP, find_howto, find_page
+from ami_assistant.plans import Plan, ToolCall
 from ami_assistant.players import (
     AMBIGUOUS,
     BASE_STOPWORDS,
@@ -103,6 +104,8 @@ POSITION_NAMES = {"SS": "shortstops", "C": "catchers", "1B": "first basemen", "2
                   "3B": "third basemen", "OF": "outfielders", "DH": "designated hitters", "P": "pitchers"}
 
 ACTION_VERBS: tuple[tuple[str, str], ...] = (
+    ("use suggested lineup", "use_suggested_lineup"), ("use the suggested lineup", "use_suggested_lineup"),
+    ("finalize", "finalize_week"), ("lock", "change_lineup"),
     ("set my lineup", "change_lineup"), ("set the lineup", "change_lineup"), ("pick up", "add_waiver_player"),
     ("draft", "draft_player"), ("pick", "draft_player"), ("select", "draft_player"), ("take", "draft_player"),
     ("queue", "queue_player"), ("add", "add_waiver_player"), ("claim", "add_waiver_player"),
@@ -112,13 +115,16 @@ ACTION_VERBS: tuple[tuple[str, str], ...] = (
     ("save", "app_change"), ("delete", "app_change"), ("reset", "app_change"), ("undo", "app_change"),
 )
 _ACTION_LEAD = r"^(?:ami[,:]?\s+)?(?:please\s+|can you\s+|could you\s+|would you\s+|go ahead and\s+|now\s+)*"
+_NAVIGATE = re.compile(r"^(?:please\s+)?(?:open|go to|take me to|navigate to|bring up|switch to)\s+(?P<target>.+?)(?:\s+page)?[?.!]?$")
 _HOWTO = re.compile(
     r"^(?:how (?:do|can|would|should|could) (?:i|we|you)|how to|where (?:do|can|would|should) i|where(?:'s| is| are)"
     r"|show me how|steps to|walk me through|is there a way to)\b"
 )
 _DEFINITION = re.compile(r"^(?:what(?:'s| is| are| does| do)|whats|define|explain|meaning of|what do you mean by)\b")
+_PROJECTION = re.compile(r"\b(?:project(?:s|ed|ion|ions)?|forecast\w*|predict(?:s|ed|ion|ions)?|next season|next year)\b")
 _CAPABILITIES = re.compile(r"\b(?:what can you (?:do|answer|help)|what do you know|who are you|what are you|what should i ask)\b|^help$")
-_PAGE_HELP = re.compile(r"\b(?:this page|this screen|this chart|this table|this tool|am i looking at|i'm looking at|on here)\b")
+_PAGE_TASKS = re.compile(r"\bwhat (?:can|should|do) i (?:do|see|find|use) (?:on|in)\b")
+_PAGE_HELP = re.compile(r"\b(?:this page|this screen|this chart|this table|this tool|am i looking at|i'm looking at|on here|(?:do|see|find|start) here)\b")
 _EXTERNAL = re.compile(
     r"\b(?:today|tonight|yesterday|right now|currently|so far this (?:season|year)|this (?:season|year)|live score"
     r"|injur(?:y|ed|ies)|news|rumou?rs?|trade deadline|on the il|box score|(?:al|nl|mlb) standings"
@@ -154,34 +160,6 @@ _COMPARE_SLOTS = (
     re.compile(r"\bcompare (.+?) (?:and|with|to|vs\.?|versus) (.+?)(?=$|[?.!,]| over | from | in | since | for | during | between | on | across )", re.I),
     re.compile(r"^(?:who was better[,:]? )?(.+?) (?:vs\.?|versus) (.+?)(?=$|[?.!,]| over | from | in | since | for )", re.I),
 )
-
-
-@dataclass
-class ToolCall:
-    name: str
-    args: dict[str, Any]
-
-
-@dataclass
-class Plan:
-    intent: str
-    grounding: str
-    calls: list[ToolCall] = field(default_factory=list)
-    players: list[PlayerRef] = field(default_factory=list)
-    year_range: tuple[int, int] | None = None
-    window: int | None = None
-    stats: list[str] = field(default_factory=list)
-    focus: str = ""
-    position: str = ""
-    page: str = ""
-    action: str = ""
-    clarification: str = ""
-    notes: list[str] = field(default_factory=list)
-    used_context: list[str] = field(default_factory=list)
-
-    @property
-    def tool_names(self) -> list[str]:
-        return [c.name for c in self.calls]
 
 
 def _low(text: str) -> str:
@@ -348,11 +326,35 @@ class Router:
         if action:
             return self._action_plan(q, action)
 
+        # "Open Fantasy Standings" / "Take me to Waiver Wire": AMI explains where it is (it doesn't navigate).
+        nav = _NAVIGATE.match(low.strip())
+        if nav and find_page(nav.group("target")) is not None:
+            page = find_page(nav.group("target"))
+            return Plan(HELP_PAGE, PRODUCT_HELP, [ToolCall("explain_app_page", {"page": page.key})], page=page.key)
+
+        # "What can I do on Home?" names the page it's about.
+        named = find_page(q) if _PAGE_TASKS.search(low) else None
+        if named is not None:
+            return Plan(HELP_PAGE, PRODUCT_HELP, [ToolCall("explain_app_page", {"page": named.key})], page=named.key)
+
+        # League questions before the live-MLB check: "how would my current roster rank right now?"
+        # is about the user's league, not today's MLB.
+        fplan = fantasy_plan(q, ctx, conv)
+        if fplan is not None:
+            return fplan
+
         year_range, window, career = parse_years(q, latest) if self.ds else (None, None, False)
         if self.ds and year_range and year_range[0] > latest:
             return Plan(EXTERNAL, EXTERNAL_CURRENT, year_range=year_range)
         if _EXTERNAL.search(low) and not _SELF.search(low) and not _PAGE_HELP.search(low):
             return Plan(EXTERNAL, EXTERNAL_CURRENT)
+
+        # Projections live on ML Predictions, which AMI can't read yet. Never answer a "next season"
+        # question with historical numbers.
+        if _PROJECTION.search(low) and not _HOWTO.search(low.strip()) and not _DEFINITION.search(low.strip()):
+            return Plan(CLARIFY, APP_DATA, page="ML Predictions", clarification=(
+                "AMI can't read the app's projections yet, so it won't guess next-season numbers from past seasons. "
+                "Open **ML Predictions** (under Insights) for the model's next-season projections."))
 
         if _CAPABILITIES.search(low.strip()):
             return Plan(CAPABILITIES, PRODUCT_HELP)
@@ -452,21 +454,13 @@ class Router:
         if positions_need:
             return Plan(DRAFT_NEEDS, APP_DATA, [ToolCall("get_team_needs", {})])
         if _FANTASY.search(low) or (_SELF.search(low) and not mentioned):
-            if re.search(r"\btrade", low):
-                tool_name = "evaluate_trade"
-            elif re.search(r"\b(?:waiver|free agent|drop|pick up|add|i need an?)\b", low):
-                tool_name = "get_available_free_agents"
-            elif re.search(r"\b(?:lineup|start|sit|bench)\b", low):
-                tool_name = "get_lineup"
-            elif re.search(r"\b(?:standings|categor)", low):
-                tool_name = "get_standings"
-            else:
-                tool_name = "get_team_roster"
-            calls = [ToolCall(tool_name, {"position": position} if tool_name == "get_available_free_agents" and position else {})]
-            howto = find_howto(q) or (find_howto("waivers") if tool_name == "get_available_free_agents" else None)
+            # League questions the fantasy router didn't recognize ("Who should I drop?", "I need a
+            # shortstop"): roster moves are Waiver Wire territory, which AMI can't read yet.
+            howto = find_howto(q) or find_howto("waivers")
+            calls = [ToolCall("get_waiver_recommendations", {"position": position} if position else {})]
             if howto:
                 calls.append(ToolCall("find_feature", {"task": howto.key}))
-            return Plan(FANTASY, APP_DATA, calls, position=position)
+            return Plan(F_WAIVER, PRODUCT_HELP, calls, position=position)
         return None
 
     # ---- stats ---------------------------------------------------------------------

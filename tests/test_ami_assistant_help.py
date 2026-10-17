@@ -7,10 +7,11 @@ import unittest
 from pathlib import Path
 
 from ami_assistant.glossary import TERMS
-from ami_assistant.page_help import HOWTOS, MONOLITH, PAGE_HELP
+from ami_assistant.page_help import HOWTOS, MONOLITH, PAGE_HELP, display_label, find_page
 from ami_assistant.tools import REGISTRY
 from draft_score_display import SCORE_TOOLTIPS
 from mobile_nav_m2 import PAGE_GROUPS
+from nav_groups import HOME_PAGE, PAGE_SECTION
 from page_guides import PAGE_GUIDES
 from tests.ami_assistant_fixtures import page_section
 
@@ -44,15 +45,65 @@ class PageHelpCoverageTests(unittest.TestCase):
         for key in options:
             ph = PAGE_HELP[key]
             self.assertTrue(ph.purpose, key)
-            self.assertEqual(ph.group, PAGE_GROUPS.get(key, ""), key)
-            self.assertIn(f"Choose Page → {key}", ph.navigation())
+            self.assertEqual(ph.group, PAGE_GROUPS.get(key, ""), key)  # phone sections == U1 nav sections
+            self.assertEqual(ph.group, PAGE_SECTION.get(key, ""), key)
+            # Navigation names the label the user sees (U1 renames) and its section.
+            self.assertIn(f"**{display_label(key)}**", ph.navigation())
+            if key != HOME_PAGE:
+                self.assertIn(f"**{PAGE_SECTION[key]}**", ph.navigation())
+
+    def test_u1_display_labels_and_old_names(self) -> None:
+        self.assertEqual(display_label("Fantasy Standings Tracker"), "League Standings")
+        self.assertEqual(display_label("Waiver Wire / Add-Drop Center"), "Waiver Wire")
+        self.assertEqual(display_label("Comparison Tool"), "Comparison Tool")
+        # Old page names are still understood.
+        for old in ("Open Fantasy Standings", "fantasy standings tracker", "live fantasy standings", "League Standings"):
+            self.assertEqual(find_page(old).key, "Fantasy Standings Tracker", old)
+
+    def test_u1_headlines_are_the_page_headings(self) -> None:
+        for key, ph in PAGE_HELP.items():
+            if ph.headline:
+                self.assertTrue(label_in(ph.headline, page_source(key)), f"{key}: headline not found on the page")
+
+    def test_home_help_lists_the_real_task_cards(self) -> None:
+        from home_page import TASKS
+
+        home = PAGE_HELP[HOME_PAGE]
+        for _icon, _title, _body, button, page in TASKS:
+            self.assertIn(button, home.controls)
+            self.assertIn(page, PAGE_HELP)
+
+    def test_quoted_u1_copy_matches_the_app(self) -> None:
+        from ami_assistant.glossary import CONSIDER_ADD_CAPTION
+
+        self.assertIn(CONSIDER_ADD_CAPTION, (ROOT / "fantasy_waiver_wire_ui.py").read_text(encoding="utf-8"))
+        doc = (ROOT / "suggested_lineup.py").read_text(encoding="utf-8")
+        self.assertIn("never saves, locks or finalizes", doc)
+        self.assertIn("presses Save Lineup", doc)
+        self.assertIn("does not save, lock or finalize", TERMS["use_suggested_lineup"].definition)
+
+    def test_every_suggested_question_gets_a_real_answer(self) -> None:
+        from ami_assistant import router as r
+        from ami_assistant.context import build_ami_context
+        from ami_assistant.conversation import ConversationState
+        from tests.ami_assistant_fixtures import synthetic_dataset
+
+        router = r.Router(synthetic_dataset())
+        for key, ph in PAGE_HELP.items():
+            for q in ph.questions:
+                plan = router.route(q, build_ami_context({}, key), ConversationState())
+                self.assertNotEqual(plan.intent, r.CLARIFY, f"{key}: {q!r} -> {plan.clarification}")
 
     def test_guides_are_the_ones_the_app_renders(self) -> None:
         self.assertIn("from page_guides import PAGE_GUIDES", APP)
         self.assertNotIn("PAGE_GUIDES = {", APP)
         for key, ph in PAGE_HELP.items():
-            if key in PAGE_GUIDES:
+            if ph.headline:
+                self.assertEqual(ph.purpose, ph.headline)  # U1 pages lead with their page heading
+            elif key in PAGE_GUIDES:
                 self.assertEqual(ph.purpose, PAGE_GUIDES[key]["purpose"])
+            if key in PAGE_GUIDES:
+                self.assertEqual(ph.when, PAGE_GUIDES[key]["when"])
 
     def test_pricing_purpose_is_the_page_caption(self) -> None:
         src = (ROOT / "baseball_monetization_ui.py").read_text(encoding="utf-8")
@@ -107,6 +158,13 @@ class GlossaryTests(unittest.TestCase):
         for key in TERMS:
             res = REGISTRY.call("explain_metric", {"term": key})
             self.assertTrue(res.ok and res.data["definition"], key)
+
+    def test_definitions_name_pages_by_their_sidebar_labels(self) -> None:
+        from ami_assistant.engine import ask
+
+        answer = ask("What is official standings?", session_state={}, active_page="Home").answer
+        self.assertIn("You'll see it on: League Standings", answer)
+        self.assertNotIn("Fantasy Standings Tracker", answer)
 
 
 class AppWiringTests(unittest.TestCase):

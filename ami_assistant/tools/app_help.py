@@ -7,12 +7,19 @@ from ami_assistant.page_help import HOWTO_BY_KEY, PAGE_HELP, find_howto, find_pa
 from ami_assistant.tools.registry import BAD_ARGUMENT, ToolResult, fail, tool
 
 
+def _home_tasks() -> list[dict[str, str]]:
+    """Home's task cards, straight from ``home_page.TASKS`` (icon, title, line, button, page key)."""
+    from home_page import TASKS
+
+    return [{"title": title, "line": line, "button": button, "page": page} for _icon, title, line, button, page in TASKS]
+
+
 @tool(
     "explain_app_page",
     capability="app_guidance",
     description="What a Baseball Explorer page does, when to use it, its main controls, related terms and how to get there.",
     parameters={"properties": {"page": {"type": "string"}}, "required": ["page"]},
-    reuses=("page_guides.PAGE_GUIDES", "mobile_nav_m2.PAGE_GROUPS"),
+    reuses=("page_guides.PAGE_GUIDES", "nav_groups.PAGE_SECTION / NAV_LABELS", "home_page.TASKS"),
 )
 def explain_app_page(*, page: str) -> ToolResult:
     ph = PAGE_HELP.get(page) or find_page(page)
@@ -22,9 +29,12 @@ def explain_app_page(*, page: str) -> ToolResult:
         tool="explain_app_page",
         ok=True,
         data={
-            "page": ph.key,
+            "page": ph.label,  # what the user sees (U1 renames); the key stays below
+            "page_key": ph.key,
             "group": ph.group,
             "purpose": ph.purpose,
+            "explore_more": ph.explore_more,
+            "tasks": _home_tasks() if ph.key == "Home" else [],
             "when": ph.when,
             "outputs": ph.outputs,
             "tips": list(ph.tips),
@@ -75,7 +85,8 @@ def find_feature(*, task: str) -> ToolResult:
         ok=True,
         data={
             "task": h.title,
-            "page": h.page,
+            "page": ph.label,
+            "page_key": h.page,
             "navigation": ph.navigation(),
             "steps": list(h.steps),
             "note": h.note,

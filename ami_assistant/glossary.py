@@ -15,7 +15,12 @@ import re
 from dataclasses import dataclass
 
 from draft_score_display import DISPLAY_PICK_SCORE, DISPLAY_PLAYER_GRADE, DISPLAY_RELATIVE_GRADE, DISPLAY_ROSTER_FIT, SCORE_TOOLTIPS
+from fantasy_read_api import ELIGIBILITY_RULE, OFFICIAL_BASIS, OFFICIAL_LABEL, SNAPSHOT_BASIS
+from fantasy_standings_snapshot import SNAPSHOT_LABEL
 from page_guides import PAGE_GUIDES
+
+# The Waiver Wire card caption, quoted verbatim (tests pin it to fantasy_waiver_wire_ui.py).
+CONSIDER_ADD_CAPTION = "“Consider add” puts the player in the move planner below. Nothing changes until you confirm a move."
 from rate_stat_qualification import AB_PER_TEAM_GAME, MULTI_SEASON_CAP_AB
 from trend_slopes import RATE_SHRINK_PA
 
@@ -109,6 +114,54 @@ def _terms() -> list[Term]:
         ),
         Term(
             "ba", "BA", "Batting average: H ÷ AB.", (), ("ba", "batting average", "average", "avg"), "lahman_data.add_rate_stats",
+        ),
+        Term(
+            "official_standings", OFFICIAL_LABEL,
+            f"The league's standings. {OFFICIAL_BASIS} Not the same as **{SNAPSHOT_LABEL}**, which is a what-if on "
+            f"today's rosters: {SNAPSHOT_BASIS}",
+            ("Fantasy Standings Tracker", "Home"),
+            ("official standings", "league standings", "standings", "official vs current", "difference between official"),
+            "fantasy_read_api.OFFICIAL_BASIS / SNAPSHOT_BASIS",
+        ),
+        Term(
+            "current_roster_snapshot", SNAPSHOT_LABEL,
+            f"{SNAPSHOT_BASIS} Use it to see how your roster stacks up now; for where you actually stand, "
+            f"use **{OFFICIAL_LABEL}**.",
+            ("Fantasy Standings Tracker",),
+            ("current roster", "current rosters", "current roster snapshot", "roster snapshot",
+             "how current rosters would rank"),
+            "fantasy_read_api.SNAPSHOT_BASIS / fantasy_standings_snapshot.SNAPSHOT_LABEL",
+        ),
+        Term(
+            "eligibility", "Position eligibility",
+            f"{ELIGIBILITY_RULE} The same rule decides what Save Lineup accepts; nothing is assumed from a player's "
+            "reputation (no automatic 1B↔3B or 2B↔SS).",
+            ("Fantasy Lineup Assistant", "Waiver Wire / Add-Drop Center"),
+            ("eligibility", "eligible", "position eligibility", "multi-position"),
+            "fantasy_read_api.ELIGIBILITY_RULE",
+        ),
+        Term(
+            "use_suggested_lineup", "Use Suggested Lineup",
+            "Use Suggested Lineup fills the editable lineup with the recommended starters. It does not save, lock or "
+            "finalize the lineup; review it and then press Save Lineup.",
+            ("Fantasy Lineup Assistant",),
+            ("use suggested lineup", "suggested lineup"),
+            "suggested_lineup.py (module docstring)",
+        ),
+        Term(
+            "consider_add", "Consider add",
+            CONSIDER_ADD_CAPTION.replace("“Consider add”", "**Consider add**"),
+            ("Waiver Wire / Add-Drop Center",),
+            ("consider add",),
+            "fantasy_waiver_wire_ui caption",
+        ),
+        Term(
+            "explore_more", "Explore more",
+            "Redesigned pages lead with the answer and one chart; the filters, full tables, advanced settings and "
+            "methodology are still there, under the **Explore more** label further down the page.",
+            ("Historical Explorer", "Leaderboards", "Fantasy Standings Tracker", "Waiver Wire / Add-Drop Center"),
+            ("explore more",),
+            "docs/U1_UI_HIERARCHY.md",
         ),
         Term(
             "sleeper", "Sleeper / Bust",

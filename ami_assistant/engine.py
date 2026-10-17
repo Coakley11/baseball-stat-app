@@ -13,6 +13,7 @@ from ami_assistant.capabilities import GROUNDING_LABELS
 from ami_assistant.context import build_ami_context
 from ami_assistant.conversation import Turn, load_conversation, save_conversation
 from ami_assistant.data import BaseballDataset, dataset_from_yearly, load_standalone_dataset
+from ami_assistant.fantasy_router import FANTASY_INTENTS
 from ami_assistant.provider import AnswerProvider, ComposeRequest, DeterministicProvider
 from ami_assistant.router import STAT_INTENTS, Router
 from ami_assistant.tools import REGISTRY
@@ -104,6 +105,10 @@ def ask(
                     position=plan.position,
                     page=ctx.page,
                 )
+            elif plan.intent in FANTASY_INTENTS:
+                # Same league/team every turn (resolved fresh); remember the slot, player and week.
+                conv.remember(intent=plan.intent, position=plan.position, page=ctx.page,
+                              subject_player=plan.subject, week=plan.week)
             conv.add_turn(Turn(q, composed.text, plan.intent, plan.grounding, [e["tool"] for e in tool_log]))
             save_conversation(session_state, conv)
         timings["total_ms"] = _ms(t_all)

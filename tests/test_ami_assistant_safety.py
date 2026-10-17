@@ -89,15 +89,24 @@ class ReadOnlyTests(unittest.TestCase):
 
     def test_unwired_fantasy_tools_are_not_offered_to_a_model(self) -> None:
         offered = {s["name"] for s in REGISTRY.schemas()}
-        for name in ("get_active_league", "get_team_roster", "get_lineup", "get_standings", "get_available_free_agents", "evaluate_trade"):
-            self.assertNotIn(name, offered)
-            self.assertFalse(REGISTRY.get(name).wired)
+        self.assertNotIn("get_waiver_recommendations", offered)
+        self.assertFalse(REGISTRY.get("get_waiver_recommendations").wired)
+
+    def test_no_tool_can_change_the_app(self) -> None:
+        # The app supports these actions; AMI must not, in any spelling.
+        writes = ("save", "use_suggested", "draft_player", "queue", "add_waiver", "drop", "accept", "propose",
+                  "execute", "finalize", "commission", "claim", "set_", "submit", "delete", "rename", "activate")
+        for name in REGISTRY.names():
+            self.assertFalse(any(w in name for w in writes), name)
 
     def test_package_imports_no_storage_auth_billing_network_or_model_sdk(self) -> None:
         forbidden = ("suite_storage", "suite_auth", "suite_cloud_state", "suite_user_persistence", "baseball_billing",
                      "baseball_persistent_state", "draft_room_supabase", "fantasy_shared_league", "requests", "urllib",
                      "http", "socket", "anthropic", "openai", "subprocess", "draft_state", "applied_math_context",
-                     "live_draft_pick_commit", "draft_actions", "fantasy_waiver_wire", "fantasy_trade_proposals")
+                     "live_draft_pick_commit", "draft_actions", "fantasy_waiver_wire", "fantasy_trade_proposals",
+                     # League state is read only through fantasy_league_peek / fantasy_read_api.
+                     "fantasy_league_context", "resolved_fantasy_context", "fantasy_weekly_lineup",
+                     "suggested_lineup", "fantasy_team_control", "fantasy_trade_legality", "draft_archive_state")
         for path in PKG.rglob("*.py"):
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
                 names = [a.name for a in node.names] if isinstance(node, ast.Import) else (
@@ -138,10 +147,18 @@ class SecretTests(unittest.TestCase):
 
     def test_context_reads_only_allowlisted_keys(self) -> None:
         allowed = {k for page in PAGE_KEYS.values() for keys in page.values() for k in keys} | {"_ami_draft_snapshot"}
-        for page in (*PAGE_KEYS, "Draft Assistant Simulator", "Fantasy Lineup Assistant", ""):
+        from ami_assistant.context import LEAGUE_PAGES
+
+        for page in (*PAGE_KEYS, "Draft Assistant Simulator", ""):
             session = RecordingSession(secret_session())
             build_ami_context(session, page)
             self.assertTrue(session.read <= allowed, (page, session.read - allowed))
+        # League pages resolve the league through fantasy_league_peek (it reads what the page resolvers
+        # read, on a copy); only the small league summary reaches the context.
+        for page in LEAGUE_PAGES:
+            ctx = build_ami_context(secret_session(), page)
+            self.assertLessEqual(set(ctx.league), {"league_name", "my_team", "access_mode", "week_label", "week_status"})
+            self.assertEqual(find_secrets(ctx.as_dict()), [])
 
     def test_secret_values_in_allowed_keys_are_dropped(self) -> None:
         ctx = build_ami_context({"compare_players": [SECRETS["stripe_secret_key"], "Aaron Judge"],

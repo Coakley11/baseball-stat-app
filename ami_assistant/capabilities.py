@@ -62,12 +62,15 @@ CAPABILITIES: tuple[Capability, ...] = (
         notes="Reads the recommendations Draft Assistant / Live Draft Room computed; never recomputes or drafts.",
     ),
     Capability(
-        "fantasy_team", "Fantasy team intelligence", DEFERRED,
-        ("I need a shortstop. What can I do?", "Who should I drop?", "Would this trade improve my team?",
-         "What categories am I weakest in?", "Who should I start this week?"),
-        ("get_active_league", "get_team_roster", "get_lineup", "get_standings", "get_available_free_agents",
-         "evaluate_trade"),
-        notes="Contracts defined; wired after the Phase C fantasy model is accepted (see tools/fantasy.py).",
+        "fantasy_team", "Fantasy league (read-only)", LIVE,
+        ("Where am I in the standings?", "Where could I gain a roto point?", "What happened last week?",
+         "Can Springer play shortstop?", "Would trading Judge for Tucker leave me without a catcher?",
+         "How would my current roster rank right now?"),
+        ("get_active_league", "get_official_standings", "get_current_roster_standings", "get_week", "get_week_lineup",
+         "explain_player_week", "get_lineup_report", "check_slot_eligibility", "find_eligible_players",
+         "evaluate_trade", "get_waiver_recommendations"),
+        notes=("Built on fantasy_read_api / fantasy_league_peek (Phase D). Official standings and the current-roster "
+               "what-if are never mixed. Waiver recommendations wait on a shared waiver reader."),
     ),
     Capability(
         "future_actions", "Actions (draft, waivers, trades, lineup)", DISABLED,
@@ -101,7 +104,13 @@ FUTURE_ACTIONS: tuple[FutureAction, ...] = (
     FutureAction("execute_trade", "Propose or accept a trade", "Fantasy Lineup Assistant → Trade Center",
                  "fantasy_trade_proposals + fantasy_trade_legality (Phase C3)"),
     FutureAction("change_lineup", "Change the starting lineup", "Fantasy Lineup Assistant → Lineup Management",
-                 "fantasy_weekly_lineup (Phase C)"),
+                 "fantasy_season_ledger.save_period_lineup / fantasy_weekly_lineup.save_weekly_lineup"),
+    FutureAction("use_suggested_lineup", "Use the suggested lineup", "Fantasy Lineup Assistant → Lineup Management",
+                 "suggested_lineup (fills the board only; Save Lineup still required)"),
+    FutureAction("finalize_week", "Finalize a scoring week", "League Standings (commissioner)",
+                 "fantasy_season_results.finalize_period"),
+    FutureAction("commissioner_action", "Act as commissioner", "League Standings / Lineup (commissioner)",
+                 "fantasy_team_control + the page's own commissioner flows"),
 )
 FUTURE_ACTION_KEYS = frozenset(a.key for a in FUTURE_ACTIONS)
 CAPABILITY_BY_KEY = {c.key: c for c in CAPABILITIES}

@@ -8,7 +8,8 @@ Trend Value / Valuation (streamlit_app.py) both:
 3. fit per-season slopes over the *whole window's* rows (``trend_slopes.trend_slopes`` — rate
    stats are weighted by plate appearances and shrunk toward that window's league rate, so
    the full window must be passed, not one player's rows);
-4. Valuation: merge, zero-fill missing trends, ``valuation_scores.add_valuation_scores``.
+4. Valuation: keep hitters only (``valuation_scores.valuation_hitter_pool``, window AB >= 10 —
+   Phase D7), merge, zero-fill missing trends, ``valuation_scores.add_valuation_scores``.
 
 Draft-sync removal and roster-need boosts are user-specific page options AMI does not apply;
 results say so.
@@ -27,7 +28,14 @@ from ami_assistant.tools.stats import RATE_STATS, _num, _resolve_id, round_rates
 from lahman_data import add_rate_stats
 from projection_breakdown import classify_trend_direction
 from trend_slopes import RATE_SHRINK_PA, trend_slopes
-from valuation_scores import PERF_COUNT_WEIGHTS, PERF_RATE_WEIGHTS, TREND_WEIGHTS, add_valuation_scores
+from valuation_scores import (
+    PERF_COUNT_WEIGHTS,
+    PERF_RATE_WEIGHTS,
+    TREND_WEIGHTS,
+    VALUATION_MIN_AB,
+    add_valuation_scores,
+    valuation_hitter_pool,
+)
 
 TREND_STATS = ("R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS")
 WINDOW_TOTAL_COLS = ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF")
@@ -265,7 +273,8 @@ def valuation_pool(ds: BaseballDataset, window: int, min_games: int, w_current: 
     years = window_years(ds, window)
 
     def build() -> pd.DataFrame:
-        pool = window_pool(window_rows(ds, years), min_games)
+        # The page's own pool rule (Phase D7): games filter, then hitters only (window AB >= 10).
+        pool = valuation_hitter_pool(window_pool(window_rows(ds, years), min_games))
         pool = pool.merge(trend_table(ds, years), on="playerID", how="left")
         for stat in TREND_STATS:  # add_latest_and_projection_columns zero-fills missing trends
             col = f"{stat}_trend"
@@ -307,7 +316,8 @@ def _contributions(row: pd.Series) -> tuple[list[dict[str, Any]], list[dict[str,
             "top_n": {"type": "integer", "minimum": 1, "maximum": 25},
         }
     },
-    reuses=("valuation_scores.add_valuation_scores", "trend_slopes.trend_slopes", "lahman_data.add_rate_stats"),
+    reuses=("valuation_scores.valuation_hitter_pool", "valuation_scores.add_valuation_scores", "trend_slopes.trend_slopes",
+            "lahman_data.add_rate_stats"),
     needs_dataset=True,
 )
 def get_player_valuation(
@@ -347,6 +357,7 @@ def get_player_valuation(
         "top": board,
         "method": VALUATION_METHOD,
         "page_notes": [
+            f"Hitters only: players with fewer than {VALUATION_MIN_AB} window at-bats (pitchers' batting lines) are left out, as on the page.",
             "All positions; the page's Fantasy Position filter changes the pool and therefore every score.",
             "Draft Room sync and roster-need boosts for your active team are not applied here.",
         ],
@@ -356,11 +367,13 @@ def get_player_valuation(
         hit = pool[pool["playerID"] == pid]
         if hit.empty:
             rows = dataset.player_rows(pid)
-            games = int(rows.loc[rows["yearID"].isin(years), "G"].sum())
+            in_window = rows["yearID"].isin(years)
+            games, at_bats = int(rows.loc[in_window, "G"].sum()), int(rows.loc[in_window, "AB"].sum())
             return fail(
                 "get_player_valuation",
                 NOT_IN_POOL,
-                f"{ref.name} played {games} games in {years[0]}–{years[-1]}; the Valuation pool needs at least {int(min_games)}.",
+                f"{ref.name} had {games} games and {at_bats} at-bats in {years[0]}–{years[-1]}; the Valuation pool "
+                f"needs at least {int(min_games)} games and {VALUATION_MIN_AB} at-bats (hitters only).",
                 player=ref.as_dict(),
                 **data,
             )

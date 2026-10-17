@@ -19,7 +19,7 @@ from lahman_data import add_rate_stats
 from leaderboard_aggregation import aggregate_leaderboard_career_totals, filter_yearly_for_leaderboards
 from rate_stat_qualification import qualified_ab, season_lengths
 from tests.ami_assistant_fixtures import monolith_functions, page_section
-from valuation_scores import add_valuation_scores
+from valuation_scores import VALUATION_MIN_AB, add_valuation_scores, valuation_hitter_pool
 
 WINDOW_COLS = ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF")
 
@@ -42,7 +42,7 @@ class PageSourceStillMatchesTests(unittest.TestCase):
         steps = [
             'recent_data_value = yearly_df[yearly_df["yearID"].isin(recent_years_value)].copy().sort_values(["playerID", "yearID"])',
             "agg_value = aggregate_recent_player_totals(",
-            'agg_value = agg_value[agg_value["G"] >= min_g_value].copy()',
+            'agg_value = valuation_hitter_pool(agg_value[agg_value["G"] >= min_g_value])',
             "trend_value = compute_player_trend_table(",
             'valuation_df = agg_value.merge(trend_value, on="playerID", how="left")',
             "valuation_df = add_latest_and_projection_columns(valuation_df, recent_data_value)",
@@ -95,7 +95,7 @@ VALUATION_STEPS = {
     'recent_data_value = yearly_df[yearly_df["yearID"].isin(recent_years_value)].copy().sort_values(["playerID", "yearID"])': "mirrored",
     'recent_data_value = recent_data_value[~recent_data_value["fullName"].astype(str).isin(set(value_drafted_names))].copy()': "not applied (Draft Room sync)",
     "agg_value = aggregate_recent_player_totals(": "mirrored",
-    'agg_value = agg_value[agg_value["G"] >= min_g_value].copy()': "mirrored",
+    'agg_value = valuation_hitter_pool(agg_value[agg_value["G"] >= min_g_value])': "mirrored (valuation_scores.valuation_hitter_pool, Phase D7)",
     'agg_value = apply_stat_min_filters(agg_value, "value", on_change=valuation_filter_changed)': "mirrored at defaults (no minimums)",
     "trend_value = compute_player_trend_table(": "mirrored",
     'valuation_df = agg_value.merge(trend_value, on="playerID", how="left")': "mirrored",
@@ -156,7 +156,7 @@ class TrendAndValuationParityTests(RealDataCase):
             years = list(range(self.ds.latest_season - window + 1, self.ds.latest_season + 1))
             recent = self.yearly[self.yearly["yearID"].isin(years)].copy().sort_values(["playerID", "yearID"])
             agg = fns["aggregate_recent_player_totals"](recent, WINDOW_COLS)
-            agg = agg[agg["G"] >= min_g].copy()
+            agg = valuation_hitter_pool(agg[agg["G"] >= min_g])  # the page's own step (Phase D7)
             trend = fns["compute_player_trend_table"](recent, TREND_STATS)
             page = fns["add_latest_and_projection_columns"](agg.merge(trend, on="playerID", how="left"), recent)
             add_valuation_scores(page, w_c, w_t)
@@ -167,6 +167,27 @@ class TrendAndValuationParityTests(RealDataCase):
             self.assertEqual(len(merged), len(ami))
             for col in ("Valuation_Score", "Perf_Score", "Trend_Score"):
                 np.testing.assert_allclose(merged[f"{col}_page"], merged[f"{col}_ami"], rtol=0, atol=1e-12)
+            # Rank parity: the page sorts by Valuation_Score; AMI's rank is the same ordering.
+            page_rank = page.set_index("playerID")["Valuation_Score"].rank(ascending=False, method="min").astype(int)
+            pd.testing.assert_series_equal(ami.set_index("playerID")["rank"].sort_index(), page_rank.sort_index(),
+                                           check_names=False)
+
+    def test_hitter_pool_excludes_pitchers_and_keeps_two_way_ohtani(self) -> None:
+        from ami_assistant.tools.value import window_pool
+
+        years = list(range(self.ds.latest_season - 2, self.ds.latest_season + 1))
+        before = window_pool(window_rows(self.ds, years), 50)
+        dropped = set(before.loc[before["AB"] < VALUATION_MIN_AB, "playerID"])
+        self.assertGreater(len(dropped), 100)  # the D7 problem was real: hundreds of relievers
+        ami, _ = valuation_pool(self.ds, 3, 50, 1.0, 1.0)
+        self.assertFalse(dropped & set(ami["playerID"]))
+        self.assertTrue((ami["AB"] >= VALUATION_MIN_AB).all())
+        self.assertIn("ohtansh01", set(ami["playerID"]))
+        pitcher = sorted(dropped)[0]
+        res = self.call("get_player_valuation", player_id=pitcher)
+        self.assertEqual(res.error_code, codes.NOT_IN_POOL)
+        self.assertIn("at-bats", res.message)
+        self.assertTrue(self.call("get_player_valuation", player_id="ohtansh01").ok)
 
     def test_player_valuation_reports_the_pool_row(self) -> None:
         res = self.call("get_player_valuation", player_id="judgeaa01")
@@ -278,8 +299,8 @@ class FailureStateTests(RealDataCase):
     def test_missing_draft_context_and_league(self) -> None:
         self.assertEqual(self.call("get_draft_recommendations").error_code, codes.MISSING_DRAFT_CONTEXT)
         self.assertEqual(self.call("get_team_needs").error_code, codes.MISSING_DRAFT_CONTEXT)
-        league = self.call("get_active_league")
-        self.assertEqual(league.error_code, codes.NOT_WIRED)
+        league = self.call("get_active_league")  # wired to fantasy_read_api since the Phase D reconciliation
+        self.assertEqual(league.error_code, codes.MISSING_ACTIVE_LEAGUE)
         self.assertIn("Saved Draft Library", league.message)
 
 

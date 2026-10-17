@@ -21,15 +21,21 @@ log = logging.getLogger(__name__)
 LAST_KEY = "_ami_assistant_last"
 QUESTION_KEY = "ami_assistant_question"
 FORM_KEY = "ami_assistant_form"
-PLACEHOLDERS = {
-    "Comparison Tool": "e.g. Who had more power?",
-    "Trend Value": "e.g. Why does this player's trend look strong?",
-    "Valuation": "e.g. Why is he ranked this high?",
-    "Leaderboards": "e.g. Who led in OPS from 2022 to 2025?",
-    "Career Totals": "e.g. Who are the best shortstops in this range?",
-    "Draft Assistant Simulator": "e.g. Who should I draft next?",
-    "Live Draft Room": "e.g. Why is this player recommended?",
-}
+DEFAULT_PLACEHOLDER = "e.g. Compare Aaron Judge and Juan Soto"
+
+
+def suggested_questions(page: str) -> tuple[str, ...]:
+    """The page's suggested questions (page_help metadata) — for the placeholder now, and for the
+    future phone header entry / question chips. Every one is tested to route to a real answer."""
+    from ami_assistant.page_help import PAGE_HELP
+
+    ph = PAGE_HELP.get(page)
+    return tuple(ph.questions) if ph else ()
+
+
+def placeholder_for(page: str) -> str:
+    questions = suggested_questions(page)
+    return f"e.g. {questions[0]}" if questions else DEFAULT_PLACEHOLDER
 
 
 def _debug_visible(st: Any) -> bool:
@@ -74,7 +80,7 @@ def _panel_body(st: Any, active_page: str, yearly_df: Any) -> None:
         question = st.text_input(
             "Ask AMI",
             key=QUESTION_KEY,
-            placeholder=PLACEHOLDERS.get(ctx.page, "e.g. Compare Aaron Judge and Juan Soto"),
+            placeholder=placeholder_for(ctx.page),
             max_chars=500,
             label_visibility="collapsed",
         )

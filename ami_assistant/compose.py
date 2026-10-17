@@ -11,11 +11,14 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from ami_assistant import fantasy_router as fr
 from ami_assistant import router as r
 from ami_assistant.capabilities import CAPABILITIES, DEFERRED, DISABLED, FUTURE_ACTIONS, SNAPSHOT
+from ami_assistant.context import display_label
 from ami_assistant.data import DATA_SOURCE_LABEL
 from ami_assistant.glossary import TERMS
 from ami_assistant.tools.registry import ToolResult
+from fantasy_read_api import ELIGIBILITY_RULE
 
 RATE = {"BA", "OBP", "SLG", "OPS"}
 STAT_NAMES = {
@@ -116,11 +119,11 @@ class Composer:
 
     def compose(self, plan: "r.Plan", results: dict[str, list[ToolResult]], question: str = "") -> ComposedAnswer:
         self.question = str(question or "")
-        if plan.intent == r.CLARIFY:
+        if plan.intent == r.CLARIFY or (plan.clarification and not plan.calls):
             return ComposedAnswer(plan.clarification)
         failed = [res for calls in results.values() for res in calls if not res.ok]
         handler = getattr(self, f"_{plan.intent}", None)
-        if failed and plan.intent not in (r.FANTASY, r.ACTION, r.DRAFT_STRATEGY):
+        if failed and plan.intent not in (r.FANTASY, r.ACTION, r.DRAFT_STRATEGY, fr.F_WAIVER):
             return ComposedAnswer(_failure(failed[0]))
         if handler is None:
             return ComposedAnswer("Could you rephrase that?")
@@ -137,6 +140,16 @@ class Composer:
             src = next((res.data.get("source_page") for calls in results.values() for res in calls
                         if res.ok and res.data.get("source_page")), "")
             return [f"Your {src or 'draft page'}'s current recommendations (this session)"]
+        if plan.intent in fr.FANTASY_INTENTS and plan.grounding != "product_help":
+            first = next((res.data for calls in results.values() for res in calls if res.ok), None)
+            if not first:
+                return []
+            bits = []
+            if first.get("label"):
+                bits.append(str(first["label"]))  # the shared API's own label: official vs current-roster
+            league = first.get("league_name")
+            bits.append(f"Your league{f' ({league})' if league else ''}, read-only")
+            return bits
         if plan.grounding == "product_help":
             return ["Baseball Explorer's page guides and controls"]
         return []
@@ -156,7 +169,12 @@ class Composer:
             lines.append(f"**When to use it:** {d['when']}")
         if d.get("outputs"):
             lines.append(f"**You'll see:** {d['outputs']}")
-        if d.get("controls"):
+        if d.get("tasks"):
+            lines.append("**Start here:**\n" + "\n".join(f"- **{t['title']}** — {t['line']} (button: “{t['button']}”)"
+                                                         for t in d["tasks"]))
+        if d.get("explore_more"):
+            lines.append(d["explore_more"])
+        if d.get("controls") and not d.get("tasks"):
             lines.append("**Main controls:** " + ", ".join(f"“{c}”" for c in d["controls"][:7] if "{" not in c))
         tips = d.get("tips", [])[:3]
         bullets = [f"- {tip}" for tip in tips]
@@ -175,7 +193,7 @@ class Composer:
         d = _first(results, "explain_metric").data
         text = f"**{d['term']}** — {d['definition']}"
         if d.get("shown_on"):
-            text += f"\n\nYou'll see it on: {', '.join(d['shown_on'])}."
+            text += f"\n\nYou'll see it on: {', '.join(display_label(k) for k in d['shown_on'])}."
         return text
 
     def _help_howto(self, plan, results) -> str:
@@ -554,6 +572,275 @@ class Composer:
             d = howto.data
             steps = [d["navigation"], *d["steps"]]
             parts.append(f"Here's how to do it on **{d['page']}**:\n" + "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1)))
+        return "\n\n".join(parts)
+
+    # ---- fantasy league (read-only) -------------------------------------------------
+    @staticmethod
+    def _access_line(access: dict[str, Any] | None) -> str:
+        """Only when it matters: a commissioner viewing an unclaimed team, or a team you don't manage."""
+        if not access or access.get("mode") == "owner":
+            return ""
+        return f"_{access.get('text', '')}_"
+
+    @staticmethod
+    def _pts(value: Any) -> str:
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        return str(int(v)) if v.is_integer() else f"{v:g}"
+
+    def _fantasy_league(self, plan, results) -> str:
+        d = _first(results, "get_active_league").data
+        lines = [f"**{d.get('league_name') or 'Your league'}** — {len(d.get('teams') or [])} teams"]
+        access = d.get("access") or {}
+        if d.get("my_team"):
+            lines.append(access.get("text") or f"Your team: {d['my_team']}.")
+        if access.get("is_commissioner"):
+            lines.append("You're the commissioner of this league.")
+        week = d.get("current_week")
+        if week:
+            lines.append(f"Current week: {week['label']} ({week['dates']}), {week['status']}.")
+        elif not d.get("has_season_calendar"):
+            lines.append("No season calendar is set yet, so there are no scoring weeks or official standings.")
+        if d.get("finalized_weeks"):
+            lines.append(f"Finalized weeks: {', '.join(str(w) for w in d['finalized_weeks'])}.")
+        return "\n\n".join(lines)
+
+    def _no_official(self, d: dict[str, Any]) -> str:
+        note = d.get("note") or "There are no official standings yet."
+        return (f"**{d['label']}:** {note} Official standings are the sum of completed weeks, so they start once the "
+                "first week is finalized. For a what-if on today's rosters, ask “How would my current roster rank?”")
+
+    def _fantasy_standings(self, plan, results) -> str:
+        d = _first(results, "get_official_standings").data
+        if not d.get("rows"):
+            return self._no_official(d)
+        pos = d.get("position")
+        team = d["team"]
+        if not pos:
+            return f"{team} isn't in the official standings table."
+        tie = "tied for " if pos["tied"] else ""
+        who = "You're" if (d.get("access") or {}).get("mode") == "owner" else f"{team} is"
+        weeks = len(d.get("finalized_weeks") or [])
+        head = f"**{who} {tie}{ordinal(pos['rank'])} of {d['team_count']}** with {self._pts(pos['points'])} points"
+        if pos["rank"] == 1 and not pos["tied"]:
+            head += "."
+        else:
+            head += f" — {self._pts(pos['behind_first'])} behind first"
+            # The next team up only adds something when it isn't (one of) the leaders.
+            if pos.get("next_team_up") and pos.get("behind_next") and pos["behind_next"] != pos["behind_first"]:
+                head += f", {self._pts(pos['behind_next'])} behind {pos['next_team_up']}"
+            head += "."
+        lines = [head, f"{d['label']} after {weeks} completed week{'s' if weeks != 1 else ''}. {d['basis']}"]
+        lines.append("\n".join(f"{r['Rank']}. {r['Team']} — {self._pts(r['Total Points'])} pts" for r in d["rows"]))
+        access_line = self._access_line(d.get("access"))
+        if access_line:
+            lines.append(access_line)
+        return "\n\n".join(lines)
+
+    def _fantasy_gains(self, plan, results) -> str:
+        d = _first(results, "get_official_standings").data
+        if not d.get("rows"):
+            return self._no_official(d)
+        team = d["team"]
+        opps = d.get("opportunities") or []
+        lines = [f"**Where {team} could gain roto points** ({d['label']}, closest gap first):"]
+        if opps:
+            lines.append("\n".join(f"- {o}" for o in opps))
+            lines.append("_Passing the next team in a category gains you points there. These are the same gaps League "
+                         "Standings shows as “Closest gain”; nothing is projected._")
+        else:
+            lines.append("You already lead every category you can lead — no team is directly ahead of you in any of them.")
+        if d.get("strengths"):
+            lines.append("Already first in: " + ", ".join(d["strengths"]) + ".")
+        access_line = self._access_line(d.get("access"))
+        if access_line:
+            lines.append(access_line)
+        return "\n\n".join(lines)
+
+    def _fantasy_strengths(self, plan, results) -> str:
+        d = _first(results, "get_official_standings").data
+        if not d.get("rows"):
+            return self._no_official(d)
+        cats = sorted(d.get("by_category") or [], key=lambda c: (c.get("points") or 0), reverse=True)
+        lines = [f"**{d['team']}'s categories** ({d['label']}, category points — higher is better):"]
+        lines.append("\n".join(f"- {c['category']}: {self._pts(c['points'])} pts ({fmt(c['category'] if c['category'] != 'AVG' else 'BA', c['value'])})"
+                               for c in cats))
+        if d.get("strengths"):
+            lines.append("Strongest: " + ", ".join(d["strengths"]) + ".")
+        if cats:
+            lines.append(f"Weakest: {cats[-1]['category']} ({self._pts(cats[-1]['points'])} pts).")
+        return "\n\n".join(lines)
+
+    def _fantasy_roster_snapshot(self, plan, results) -> str:
+        d = _first(results, "get_current_roster_standings").data
+        team = d["team"]
+        pos = d.get("position")
+        lines = [f"**{d['label']}**"]
+        if pos:
+            tie = "tied for " if pos.get("tied") else ""
+            lines.append(f"On today's rosters, {team} would rank **{tie}{ordinal(pos['rank'])}** with "
+                         f"{self._pts(pos['points'])} roto points.")
+        lines.append("\n".join(f"{self._pts(r['League Rank'])}. {r['Fantasy Team']} — {self._pts(r['Total Roto Points'])} pts"
+                               for r in d.get("rows") or []))
+        lines.append(f"_{d['basis']} For where you actually stand, ask “Where am I in the standings?”_")
+        return "\n\n".join(lines)
+
+    def _fantasy_week(self, plan, results) -> str:
+        d = _first(results, "get_week").data
+        w = d["week"]
+        head = f"**{w['label']}** ({w['dates']}) — {w['status']}."
+        if not w["finalized"]:
+            more = {"upcoming": "It hasn't started.", "active": "It's in progress; it counts once the commissioner finalizes it.",
+                    "locked": "It has ended and is waiting for the commissioner to finalize it."}.get(w["status"], "")
+            return f"{head} {more}".strip()
+        lines = [head]
+        if d.get("rank"):
+            lines.append(f"{d['team']} finished **{ordinal(d['rank'])}** that week with {self._pts(d['points'])} points.")
+        if d.get("lineup_missing"):
+            lines.append("No lineup was saved for that week, so the team scored zero.")
+        if d.get("totals"):
+            t, rates = d["totals"], d.get("rates") or {}
+            avg = rates.get("AVG")
+            lines.append(f"Starters' totals: {t.get('R', 0)} R, {t.get('HR', 0)} HR, {t.get('RBI', 0)} RBI, {t.get('SB', 0)} SB"
+                         + (f", {fmt('BA', avg)} AVG" if avg is not None else "") + ".")
+        if d.get("table"):
+            lines.append("\n".join(f"{r['Rank']}. {r['Team']} — {self._pts(r['Total Points'])} pts" for r in d["table"]))
+        lines.append("_A finalized week never changes: it counts the lineup used that week, whatever happens later._")
+        return "\n\n".join(lines)
+
+    def _fantasy_week_lineup(self, plan, results) -> str:
+        d = _first(results, "get_week_lineup").data
+        w = d["week"]
+        if not d.get("saved"):
+            return f"No lineup is saved for {d['team']} in {w['label']} ({w['dates']}, {w['status']})."
+        lines = [f"**{d['team']} — {w['label']} lineup** ({w['dates']}, {w['status']})"]
+        lines.append("\n".join(f"- {s['slot']}: {s['player']}" for s in d.get("starters") or []))
+        if d.get("bench"):
+            lines.append("Bench: " + ", ".join(d["bench"]) + ".")
+        if d.get("empty_slots"):
+            lines.append("Empty: " + ", ".join(d["empty_slots"]) + ".")
+        if d.get("set_after_lock"):
+            lines.append("_The commissioner set this lineup after the week started._")
+        return "\n\n".join(lines)
+
+    def _fantasy_player_week(self, plan, results) -> str:
+        d = _first(results, "explain_player_week").data
+        w, p = d["week"], d["player"]
+        reason = d.get("reason")
+        if reason == "not_final":
+            return f"{w['label']} isn't final yet ({w['status']}), so nothing has been scored for it."
+        texts = {
+            "counted": f"{p} did count in {w['label']}: started at {d.get('slot')} for {d['team']}.",
+            "no_stats": f"{p} was in the {w['label']} lineup at {d.get('slot')}, but no stats were found for {p} in "
+                        f"those dates, so nothing was added.",
+            "bench": f"{p} was on the bench in the {w['label']} lineup. Only starters count.",
+            "no_lineup": f"{d['team']} had no lineup saved for {w['label']}, so nobody counted.",
+            "not_in_lineup": f"{p} wasn't in {d['team']}'s {w['label']} lineup (not a starter and not on the bench "
+                             f"when it was saved), so {p} didn't count. Players added later count from the next week they start.",
+        }
+        text = texts.get(reason, "")
+        if reason == "not_in_lineup":
+            if not d.get("on_a_roster"):
+                text += f" {p} isn't on any roster in this league."
+            elif d.get("owner_now") and d["owner_now"] != d["team"]:
+                text += f" {p} is on {d['owner_now']}'s roster now."
+        stats = d.get("stats")
+        if reason == "counted" and stats:
+            text += f" {p} contributed {stats.get('H', 0)}-for-{stats.get('AB', 0)}, {stats.get('HR', 0)} HR, {stats.get('R', 0)} R, {stats.get('RBI', 0)} RBI, {stats.get('SB', 0)} SB."
+        return text
+
+    def _fantasy_lineup(self, plan, results) -> str:
+        d = _first(results, "get_lineup_report").data
+        lines = [f"**Recommended starters for {d['team']}** (the Lineup Assistant's picks, Save Lineup's slot rule):"]
+        lines.append("\n".join(f"- {r['slot']}: {r['player']}" + (f" ({r['call']})" if r.get("call") else "")
+                               for r in d.get("recommended") or []))
+        if d.get("bench"):
+            lines.append("On the bench in this recommendation: " + ", ".join(d["bench"]) + ".")
+        if d.get("missing_slots"):
+            lines.append("Can't fill from this roster: " + ", ".join(d["missing_slots"]) + ".")
+        lines.append("_Use Suggested Lineup puts these on the board; it does not save, lock or finalize — press Save Lineup "
+                     "after reviewing. AMI can't change your lineup._")
+        access_line = self._access_line(d.get("access"))
+        if access_line:
+            lines.append(access_line)
+        return "\n\n".join(lines)
+
+    def _fantasy_empty_slots(self, plan, results) -> str:
+        d = _first(results, "get_lineup_report").data
+        missing = d.get("missing_slots") or []
+        if missing:
+            text = f"**{d['team']} can't fill: {', '.join(missing)}** — no rostered player is eligible there."
+        else:
+            text = f"**Every lineup slot can be filled** from {d['team']}'s roster."
+        extra = []
+        for w in d.get("slot_warnings") or []:
+            extra.append(f"- {w}")
+        if extra:
+            text += "\n\n" + "\n".join(extra)
+        weakest = d.get("weakest")
+        if weakest:
+            text += "\n\nWeakest area in the lineup diagnosis: " + (", ".join(weakest) if isinstance(weakest, list) else str(weakest)) + "."
+        return text + f"\n\n_{ELIGIBILITY_RULE} This is the rule Save Lineup checks._"
+
+    def _fantasy_slot_eligibility(self, plan, results) -> str:
+        d = _first(results, "check_slot_eligibility").data
+        verdict = "Yes" if d["eligible"] else "No"
+        return f"**{verdict}.** {d['reason']}\n\n_{d['rule']} This is the rule Save Lineup checks._"
+
+    def _fantasy_find_eligible(self, plan, results) -> str:
+        d = _first(results, "find_eligible_players").data
+        slot = d["slot_name"]
+        people = d.get("eligible") or []
+        if d.get("bench_only") and d.get("lineup_saved"):
+            subject = f"bench players who can play {slot}"
+        else:
+            subject = f"players who can play {slot}"
+        if not people:
+            text = f"**No** — {d['team']} has no {subject}."
+        else:
+            names = []
+            for e in people:
+                tag = " (starting this week)" if e.get("starting") else ""
+                names.append(f"{e['player']}{tag} — eligible at {', '.join(e['eligible_positions'])}")
+            text = f"**Yes** — {d['team']}'s {subject}:\n" + "\n".join(f"- {n}" for n in names)
+        if d.get("bench_only") and not d.get("lineup_saved"):
+            text += "\n\n_No lineup is saved for the current week, so this lists the whole roster._"
+        return text + f"\n\n_{d['rule']}_"
+
+    def _fantasy_trade(self, plan, results) -> str:
+        d = _first(results, "evaluate_trade").data
+        lines = [f"**{d['team']} gives {', '.join(d['give'])} · gets {', '.join(d['receive'])}** (with {d['partner']})"]
+        slot = d.get("slot_check")
+        if slot:
+            after = slot["eligible_after"]
+            if after:
+                lines.append(f"You'd still have a {slot['slot_name']}: {', '.join(after)}.")
+            else:
+                lines.append(f"**Yes — this would leave you without an eligible {slot['slot_name']}.**")
+        if d.get("legality_warnings"):
+            lines.append("Roster/lineup warnings:\n" + "\n".join(f"- {w}" for w in d["legality_warnings"]))
+        elif not slot:
+            lines.append("No roster or lineup problems for either team.")
+        if d.get("verdict_text"):
+            lines.append(f"Value: {d['verdict_text']}")
+        if not d.get("proposal_ok") and d.get("proposal_message"):
+            lines.append(f"It couldn't be proposed as is: {d['proposal_message']}")
+        access_line = self._access_line(d.get("access"))
+        if access_line:
+            lines.append(access_line)
+        lines.append(f"_{d['basis']} AMI only evaluates; propose trades in Trade Center._")
+        return "\n\n".join(lines)
+
+    def _fantasy_waiver(self, plan, results) -> str:
+        res = _first(results, "get_waiver_recommendations")
+        parts = [res.message if res is not None else "AMI can't read the Waiver Wire's recommendations yet."]
+        if plan.position:
+            parts[0] += f" For {plan.position}, use the Waiver Wire's position filter."
+        howto = _first(results, "find_feature")
+        if howto is not None and howto.ok:
+            parts.append(f"On **{howto.data['page']}**:\n" + "\n".join(f"- {s}" for s in howto.data["steps"]))
         return "\n\n".join(parts)
 
 

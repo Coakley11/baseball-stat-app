@@ -33,6 +33,9 @@ class ConversationState:
     stats: list[str] = field(default_factory=list)
     position: str = ""
     page: str = ""
+    # Fantasy follow-ups: the roster player last discussed (as typed) and the week.
+    subject_player: str = ""
+    week: int | None = None
     turns: list[Turn] = field(default_factory=list)
 
     def remember(
@@ -46,6 +49,8 @@ class ConversationState:
         stats: list[str] | None = None,
         position: str = "",
         page: str = "",
+        subject_player: str = "",
+        week: int | None = None,
     ) -> None:
         """Update the subject only with what this turn actually established."""
         self.intent = intent
@@ -62,6 +67,10 @@ class ConversationState:
             self.stats = list(stats)
         if position:
             self.position = position
+        if subject_player:
+            self.subject_player = subject_player
+        if week:
+            self.week = int(week)
         self.page = page or self.page
 
     def add_turn(self, turn: Turn) -> None:
@@ -81,6 +90,8 @@ class ConversationState:
             "stats": list(self.stats),
             "position": self.position,
             "page": self.page,
+            "subject_player": self.subject_player,
+            "week": self.week,
             "turns": [t.__dict__.copy() for t in self.turns],
         }
 
@@ -97,6 +108,8 @@ class ConversationState:
             stats=[str(x) for x in raw.get("stats") or []],
             position=str(raw.get("position") or ""),
             page=str(raw.get("page") or ""),
+            subject_player=str(raw.get("subject_player") or ""),
+            week=raw.get("week") if isinstance(raw.get("week"), int) else None,
         )
         for t in raw.get("turns") or []:
             if isinstance(t, dict):

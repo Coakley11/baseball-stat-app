@@ -117,15 +117,75 @@ class IntentRoutingTests(unittest.TestCase):
         self.assertEqual(route("Why is Bobby Witt recommended?", page="Draft Assistant Simulator").tool_names,
                          ["explain_draft_recommendation"])
 
-    def test_fantasy_team_questions_route_to_unwired_contracts(self) -> None:
-        for question, tool_name in (("I need a shortstop. What can I do?", "get_available_free_agents"),
-                                    ("Who should I drop?", "get_available_free_agents"),
-                                    ("Would this trade improve my team?", "evaluate_trade"),
-                                    ("Who should I start this week?", "get_lineup"),
-                                    ("What categories am I weakest in?", "get_standings")):
+    def test_fantasy_questions_route_to_read_only_league_tools(self) -> None:
+        from ami_assistant import fantasy_router as fr
+
+        for question, intent, tool_name in (
+            ("Where am I in the standings?", fr.F_STANDINGS, "get_official_standings"),
+            ("What place am I in?", fr.F_STANDINGS, "get_official_standings"),
+            ("How far am I from first?", fr.F_STANDINGS, "get_official_standings"),
+            ("Where could I gain a roto point?", fr.F_GAINS, "get_official_standings"),
+            ("What categories am I weakest in?", fr.F_STRENGTHS, "get_official_standings"),
+            ("How would my current roster rank right now?", fr.F_SNAPSHOT, "get_current_roster_standings"),
+            ("What happened last week?", fr.F_WEEK, "get_week"),
+            ("Has this week been finalized?", fr.F_WEEK, "get_week"),
+            ("Who was in my Week 1 lineup?", fr.F_WEEK_LINEUP, "get_week_lineup"),
+            ("Why didn't Mike Trout count last week?", fr.F_PLAYER_WEEK, "explain_player_week"),
+            ("Who should I start this week?", fr.F_LINEUP, "get_lineup_report"),
+            ("What's on my bench?", fr.F_LINEUP, "get_lineup_report"),
+            ("Which positions are empty?", fr.F_EMPTY, "get_lineup_report"),
+            ("Do I have an eligible shortstop?", fr.F_FIND_ELIGIBLE, "find_eligible_players"),
+            ("Can George Springer play 3B?", fr.F_ELIGIBLE, "check_slot_eligibility"),
+            ("Would trading Aaron Judge for Kyle Tucker leave me without a catcher?", fr.F_TRADE, "evaluate_trade"),
+            ("Who should I drop?", fr.F_WAIVER, "get_waiver_recommendations"),
+            ("I need a shortstop. What can I do?", fr.F_WAIVER, "get_waiver_recommendations"),
+            ("Which league am I in?", fr.F_LEAGUE, "get_active_league"),
+        ):
             plan = route(question)
-            self.assertEqual(plan.intent, r.FANTASY, question)
-            self.assertEqual(plan.calls[0].name, tool_name, question)
+            self.assertEqual((plan.intent, plan.tool_names[0] if plan.calls else ""), (intent, tool_name), question)
+
+    def test_standings_means_official_and_the_snapshot_needs_asking(self) -> None:
+        from ami_assistant import fantasy_router as fr
+
+        self.assertEqual(route("Where am I in the standings right now?").intent, fr.F_STANDINGS)
+        self.assertEqual(route("Show me the league standings").intent, fr.F_STANDINGS)
+        self.assertEqual(route("How would my current roster rank?").intent, fr.F_SNAPSHOT)
+        diff = route("What's the difference between official standings and current roster rankings?")
+        self.assertEqual((diff.intent, diff.calls[0].args), (r.HELP_METRIC, {"term": "official_standings"}))
+
+    def test_fantasy_names_slots_and_trade_sides(self) -> None:
+        plan = route("Would trading Cal Raleigh and Aaron Judge for Kyle Tucker leave me without a catcher?")
+        self.assertEqual(plan.calls[0].args, {"give": ["Cal Raleigh", "Aaron Judge"], "receive": ["Kyle Tucker"], "slot": "C"})
+        elig = route("Can George Springer play third base?")
+        self.assertEqual(elig.calls[0].args, {"player": "George Springer", "slot": "3B"})
+        self.assertEqual(route("Can Springer play OF?").calls[0].args["slot"], "OF")
+        # "of"/"c" as ordinary words are not slots.
+        self.assertEqual(route("Do I have anyone on my bench who can help at shortstop?").calls[0].args,
+                         {"slot": "SS", "bench_only": True})
+        # "this trade" without players can't be read from Trade Center yet: ask for names.
+        unclear = route("Would this trade leave me without a catcher?")
+        self.assertEqual(unclear.calls, [])
+        self.assertIn("Name the players", unclear.clarification)
+
+    def test_league_instructions_and_navigation(self) -> None:
+        for question, action in (("Use suggested lineup for me", "use_suggested_lineup"), ("Finalize week 2", "finalize_week"),
+                                 ("Lock my lineup", "change_lineup"), ("Trade Judge for Tucker", "execute_trade")):
+            plan = route(question)
+            self.assertEqual((plan.intent, plan.action), (r.ACTION, action), question)
+        nav = route("Open Fantasy Standings")
+        self.assertEqual((nav.intent, nav.calls[0].args), (r.HELP_PAGE, {"page": "Fantasy Standings Tracker"}))
+        self.assertEqual(route("What does Use Suggested Lineup do?").calls[0].args, {"term": "use_suggested_lineup"})
+        self.assertEqual(route("What does Consider add do?").calls[0].args, {"term": "consider_add"})
+
+    def test_home_help(self) -> None:
+        self.assertEqual(route("What can I do here?", page="Home").calls[0].args, {"page": "Home"})
+        # A named page wins over the page being viewed, and over league routing.
+        self.assertEqual(route("What can I do on Home?", page="Valuation").calls[0].args, {"page": "Home"})
+        self.assertEqual(route("What can I do on the Waiver Wire?").calls[0].args,
+                         {"page": "Waiver Wire / Add-Drop Center"})
+        self.assertEqual(route("Where should I go to compare players?").calls[0].args, {"task": "compare_players"})
+        self.assertEqual(route("How do I manage my league?").calls[0].args, {"task": "manage_league"})
+        self.assertEqual(route("Where do I start a draft?").calls[0].args, {"task": "start_draft"})
 
     def test_requests_to_change_things_are_refused(self) -> None:
         for question, action in (("Draft Bobby Witt for me", "draft_player"), ("Add Juan Soto to my team", "add_waiver_player"),

@@ -44,7 +44,7 @@ or account state, and it does not replace the existing Command Center hand-off.
 | App guidance | **Live** | "What can I do on this page?", "How do I compare two players?", "Where do I make a trade?", "What does Decision Score mean?" | `explain_app_page`, `explain_metric`, `find_feature` |
 | Historical analytics | **Live** | compare, career, seasons, leaderboards, trends, valuation, rate-stat qualification | `search_players`, `get_player_profile`, `get_player_seasons`, `compare_players`, `get_leaderboard`, `get_player_trends`, `get_trend_leaders`, `get_player_valuation` |
 | Draft intelligence | **Live, read-only from page snapshot** | "Who should I draft next?", "Why is X recommended?", "What positions am I weak at?", "Best available shortstops?", "Need or best available?" | `get_active_draft_context`, `get_draft_recommendations`, `explain_draft_recommendation`, `get_team_needs`, `get_sleepers_busts` |
-| Fantasy team intelligence | **Contract only (Phase C)** | "I need a shortstop", "Who should I drop?", "Would this trade help?", "Weakest categories?", "Who should I start?" | `get_active_league`, `get_team_roster`, `get_lineup`, `get_standings`, `get_available_free_agents`, `evaluate_trade` (all return `not_wired`) |
+| Fantasy league (read-only) | **Live (Phase D shared interfaces)** — see `docs/AMI_PHASE_D_RECONCILIATION.md` | "Where am I in the standings?", "Where could I gain a roto point?", "What happened last week?", "Can Springer play shortstop?", "Would trading Judge for Tucker leave me without a catcher?" | `get_active_league`, `get_official_standings`, `get_current_roster_standings`, `get_week`, `get_week_lineup`, `explain_player_week`, `get_lineup_report`, `check_slot_eligibility`, `find_eligible_players`, `evaluate_trade`; `get_waiver_recommendations` still returns `not_wired` |
 | Future actions | **Declared, disabled** | draft, queue, add, drop, trade, change lineup | none callable (`FUTURE_ACTIONS`) |
 
 **Grounding categories.** Every answer carries one label:
@@ -98,7 +98,8 @@ Each page record has:
 - typical questions;
 - related terms;
 - next step;
-- navigation: sidebar **Choose Page**, or **Jump to page** + group on phones.
+- navigation (U1): the sidebar section (`nav_groups.PAGE_SECTION`: Players, Insights, Draft, My League, Account) and the label the user sees (`nav_groups.NAV_LABELS`, e.g. **League Standings** for the `Fantasy Standings Tracker` key); on phones, the Section pills + **Jump to page**. Page keys stay authoritative; old names stay as aliases.
+- U1 pages also carry their page heading (`headline`), what sits under **Explore more**, and per-page suggested questions (each one is tested to route to a real answer).
 
 There are 14 step-by-step how-tos: compare, trade, waivers, lineup, Historical Explorer, leaderboards, career totals, trends, valuation, draft help, live draft, active draft, standings and upgrade.
 
@@ -120,11 +121,12 @@ Tests fail if:
 - player trends and trend leaders;
 - player valuation and the valuation board;
 - draft recommendations, explanations, needs and need-vs-best-available, from the draft page's snapshot;
-- sleepers/busts as last shown on that page.
+- sleepers/busts as last shown on that page;
+- fantasy league questions (official standings, gains and category strengths, the current-roster what-if when asked for it, weeks and weekly lineups, why a player did or didn't count, lineup report and empty slots, slot eligibility, trade effects) — read-only, see `docs/AMI_PHASE_D_RECONCILIATION.md`.
 
 **Answered honestly but not served:**
 
-- fantasy-team questions (roster, waivers, trades, lineup, standings): AMI says the connection waits on Phase C and gives the exact steps on the right page;
+- waiver recommendations and the trade being built in Trade Center: no shared reader yet; AMI says so and gives the steps on the page;
 - live/current MLB questions and seasons after 2025;
 - requests to change anything: refused, with the steps to do it in the UI.
 
@@ -157,7 +159,7 @@ No adapter is included, because no model or credentials exist to test one agains
 
 ## 9. Security and privacy
 
-- Read-only by construction. No mutating tool can be registered. Future actions are declarations only. Fantasy tools are unwired and not offered to a model.
+- Read-only by construction. No mutating tool can be registered. Future actions are declarations only. Fantasy tools read the league only through `fantasy_read_api` / `fantasy_league_peek` (an isolated copy of the session); a runtime test proves every fantasy tool and question leaves the session byte-identical. The unwired waiver tool is not offered to a model.
 - A static test bans AMI imports of storage, auth, billing, network, model-SDK and transaction modules. It also forbids tools from writing to `session`. A runtime test proves draft Q&A leaves session state identical.
 - Secrets are screened (Stripe keys and ids, JWTs, Supabase keys, model keys, DB URLs, private keys, password assignments, file paths) in context, draft snapshot text and payloads. A test seeds all of them and checks the model payload and the visible answer.
 - Visibility: AMI reads only the public Lahman dataset and the current user's own session. It reads no other workspace, no Supabase and no shared-league store, so it can't see more than the UI shows that user.
@@ -172,19 +174,13 @@ AMI introduces no new source. It uses:
 
 Answers are bounded: leaderboards default to 10 rows with a hard cap of 50, and one player's season table at a time. Answers credit "Lahman Baseball Database (Sean Lahman / SABR)". AMI does not dump datasets.
 
-## 11. Waiting on Phase C (`quality/rest-of-app`)
+## 11. Fantasy interfaces (Phase D)
 
-| AMI contract | Needs from Phase C |
-|---|---|
-| `get_active_league` | accepted active-league resolver (`resolved_fantasy_context` / `fantasy_league_context`) |
-| `get_team_roster` | canonical league roster store + position eligibility |
-| `get_lineup` | weekly lineup model (`fantasy_weekly_lineup`, `fantasy_lineup_fill`) |
-| `get_standings` | roto scoring with tie splitting and team rates (C4) |
-| `get_available_free_agents` | roster-aware waiver recommendations (C2) |
-| `evaluate_trade` | trade evaluation + `fantasy_trade_legality` (C3) |
-| all future actions | canonical transaction functions + authorization, then an explicit-confirmation UI |
-
-None of these interfaces is guessed here. Each tool returns `not_wired` until it is wired deliberately.
+The Phase C contracts were replaced by tools over the shared read-only interfaces
+(`quality/shared-functions @ ec1dfcd`). What each tool consumes, and the interfaces still
+missing (waivers, the Trade Center draft, a week view, player ownership), are in
+`docs/AMI_PHASE_D_RECONCILIATION.md`. All future actions still need canonical transaction
+functions + authorization, then an explicit-confirmation UI.
 
 ## 12. UI and performance
 
