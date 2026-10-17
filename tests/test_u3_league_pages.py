@@ -1,12 +1,13 @@
 """U3B–U3D: the Lineup page leads with whether this week's lineup is complete and saved,
-and commissioner controls sit in one marked panel."""
+commissioner controls sit in one marked panel, and an analyzed trade leads with a
+You give ⇄ You receive verdict card built only from the trade engine's own output."""
 
 import re
 import unittest
 from contextlib import nullcontext
 from pathlib import Path
 
-from u3_answers import lineup_answer
+from u3_answers import ROSTER_ISSUE_LABEL, lineup_answer, trade_verdict
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
@@ -64,6 +65,96 @@ class LineupAnswerTests(unittest.TestCase):
 
     def test_proxy_is_named_in_the_kicker(self):
         self.assertEqual(_lineup(proxy=True)["kicker"], "Commissioner acting for Team 1 · Week 3")
+
+
+def _analysis(verdict="Neutral", gain=0.4):
+    return {
+        "title": "Analysis: Cat for Short", "verdict": verdict, "weighted_gain": gain,
+        "category_rows": [{"category": "HR", "change": 6.0}, {"category": "SB", "change": -4.0}, {"category": "BA", "change": 0.012}],
+        "helps": ["HR", "BA"], "hurts": ["SB"],
+        "player_rows": [{"side": "Give", "player": "Cat", "position": "C", "stats_line": "10 HR"},
+                        {"side": "Receive", "player": "Short", "position": "SS/2B", "stats_line": "16 HR"}],
+        "positions_lost": ["C"], "positions_gained": ["SS/2B"],
+    }
+
+
+class TradeVerdictTests(unittest.TestCase):
+    def test_labels_follow_the_engine_classification(self):
+        for engine, label, tone in (("Good for your team", "Favors your team", "good"),
+                                    ("Bad for your team", "Favors the other team", "warn"),
+                                    ("Neutral", "Balanced", "")):
+            with self.subTest(engine=engine):
+                v = trade_verdict(_analysis(engine), my_team="Team 1", partner="Team 2")
+                self.assertEqual((v["label"], v["tone"]), (label, tone))
+                self.assertIn("favors Team 2", v["body"])
+
+    def test_roster_issue_on_your_team_overrides_the_label(self):
+        issues = [{"team": "Team 1", "kind": "slot", "slot": "C", "message": "leaves your team without a C"},
+                  {"team": "Team 2", "kind": "slot", "slot": "SS", "message": "leaves Team 2 without a SS"}]
+        v = trade_verdict(_analysis("Good for your team", 3.1), my_team="Team 1", partner="Team 2", roster_issues=issues)
+        self.assertEqual(v["label"], ROSTER_ISSUE_LABEL)
+        self.assertEqual(v["headline"], "Creates roster issue · value favors your team")
+        self.assertEqual(v["my_issues"], ["leaves your team without a C"])
+        self.assertEqual(v["other_notes"], ["leaves Team 2 without a SS"])
+
+    def test_open_roster_spots_are_not_a_roster_issue(self):
+        issues = [{"team": "Team 1", "kind": "under", "slot": "", "message": "Your team would carry 9 players"}]
+        v = trade_verdict(_analysis("Neutral"), my_team="Team 1", roster_issues=issues)
+        self.assertEqual(v["label"], "Balanced")
+        self.assertEqual(v["other_notes"], ["Your team would carry 9 players"])
+
+    def test_tiles_and_category_chips_come_from_the_analysis(self):
+        v = trade_verdict(_analysis("Good for your team", 3.14), my_team="Team 1")
+        self.assertEqual(v["tiles"][0], ("Value difference", "+3.1", "need-weighted"))
+        self.assertEqual(v["tiles"][1][1], "C")
+        self.assertEqual(v["tiles"][2][1], "SS/2B")
+        self.assertEqual([c for c, _t in v["chips"]], ["HR +6", "BA +.012", "SB −4"])
+
+
+class TradeRosterIssueParityTests(unittest.TestCase):
+    def test_warnings_are_the_issue_messages(self):
+        import fantasy_trade_legality as legality
+
+        src = (ROOT / "fantasy_trade_legality.py").read_text(encoding="utf-8")
+        fn = src[src.index("def trade_roster_warnings("):src.index("def trade_roster_issues(")]
+        self.assertIn('issue["message"]', fn)
+        self.assertIn("trade_roster_issues(", fn)
+        self.assertEqual(legality.trade_roster_warnings(None, proposer_team="A", recipient_team="B",
+                                                       proposer_gives=[], proposer_receives=[]), [])
+
+
+class TradeStatLineTests(unittest.TestCase):
+    def test_zero_counting_stat_is_not_shown_as_a_rate(self):
+        import pandas as pd
+        from fantasy_trade_player_index import format_player_stat_line
+
+        df = pd.DataFrame([{"Player": "Walker", "R": 73, "HR": 29, "RBI": 87, "SB": 0, "BA": 0.226, "G": 156}])
+        self.assertEqual(format_player_stat_line(df, "Walker"), "R 73 · HR 29 · RBI 87 · SB 0 · AVG .226 · G 156")
+
+
+class PhoneGapCssTests(unittest.TestCase):
+    def test_invisible_carriers_leave_the_flow_without_nested_has(self):
+        from mobile_foundation import mobile_foundation_css
+
+        css = mobile_foundation_css()
+        rule = css[css.index("8b."):]
+        self.assertIn(".st-key-_url_page_sync_event {", rule)
+        self.assertIn("> style:only-child) {", rule)
+        self.assertEqual(rule.count("position: absolute !important;"), 2)
+        self.assertNotIn("display: none", rule, "the URL-sync iframe must keep running: take it out of the flow, don't hide it")
+        code = re.sub(r"/\*.*?\*/", "", rule, flags=re.S).replace(":has(", "\0")
+        stack, depth = [], 0  # stack: depth at which each open :has( started
+        for ch in code:
+            if ch == "\0":
+                self.assertFalse(stack, "a :has() nested inside :has() voids the whole CSS rule")
+                stack.append(depth)
+                depth += 1
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if stack and stack[-1] == depth:
+                    stack.pop()
 
 
 class FakeExpander:
@@ -157,6 +248,26 @@ class LineupPageOrderTests(unittest.TestCase):
         self.assertLess(body.index("render_lineup_management_page("), body.index("render_active_saved_draft_chip("),
                         "the active-league card sits below the page content")
         self.assertIn("nav_callback=_u1_nav_cb", body)
+
+
+class TradeCardWiringTests(unittest.TestCase):
+    def test_card_leads_and_details_stay_available(self):
+        fn = TRADE[TRADE.index("def _render_analysis_panel("):TRADE.index("def _render_analysis_details(")]
+        order = [fn.index(s) for s in ("ui.trade_sides(", "ui.answer_card(", "ui.metric_tiles(", 'st.expander("Detailed calculation"')]
+        self.assertEqual(order, sorted(order))
+        details = TRADE[TRADE.index("def _render_analysis_details("):]
+        details = details[:details.index("\ndef ", 10)]
+        for kept in ("Verdict:", "verdict_text", "Players in the deal", "Current-season statistical comparison",
+                     "Projected category direction", "Roster and position impact", "interpretation"):
+            self.assertIn(kept, details)
+
+    def test_one_analysis_slot_above_the_buttons(self):
+        fn = TRADE[TRADE.index("def _render_build_analyze("):]
+        fn = fn[:fn.index("\ndef ", 10)]
+        self.assertEqual(fn.count("_render_analysis_panel(st, "), 3)
+        self.assertEqual(fn.count("with analysis_slot.container():"), 3)
+        self.assertLess(fn.index("analysis_slot = st.empty()"), fn.index('"Analyze Exact Trade",'))
+        self.assertLess(fn.index("roster_issues = _trade_roster_issues("), fn.index("analysis_slot = st.empty()"))
 
 
 if __name__ == "__main__":

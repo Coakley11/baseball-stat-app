@@ -177,8 +177,9 @@ class RemainingWorkflowFilterRowWrapTests(unittest.TestCase):
             self.assertIn("st.columns(", next_line, f"{key!r} wrap body is not a columns() call: {next_line!r}")
 
     def test_total_wrap_row_count_matches_m3_through_m6(self) -> None:
-        # 3 (M3/M4 Live Draft setup) + 21 (M5) + 6 (M6) = 30.
-        self.assertEqual(APP_SRC.count('with mobile_wrap_row(st, "'), 30)
+        # 3 (M3/M4 Live Draft setup) + 21 (M5) + 6 (M6) = 30, + 2 (U2: the Trend Value and
+        # Sleepers & Busts "Explore more" filter rows) = 32.
+        self.assertEqual(APP_SRC.count('with mobile_wrap_row(st, "'), 32)
 
 
 if __name__ == "__main__":

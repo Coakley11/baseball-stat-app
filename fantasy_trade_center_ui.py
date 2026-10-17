@@ -313,9 +313,43 @@ def _render_player_lines(st: Any, roster_stats: pd.DataFrame, names: list[str], 
         st.caption(stats)
 
 
-def _render_analysis_panel(st: Any, analysis: dict[str, Any], roster_stats: pd.DataFrame) -> None:
+def _render_analysis_panel(
+    st: Any,
+    analysis: dict[str, Any],
+    roster_stats: pd.DataFrame,
+    *,
+    my_team: str = "",
+    partner: str = "",
+    roster_issues: list[dict[str, Any]] | None = None,
+) -> None:
+    """U3 verdict card: You give ⇄ You receive, the trade engine's own verdict in plain words,
+    value difference, positions, your roster check and category impact. The full calculation
+    is unchanged under "Detailed calculation"."""
+    import ui_hierarchy as ui
+    from u3_answers import trade_verdict
+
     title = str(analysis.get("title") or "Trade analysis")
-    st.markdown(f"### {html_lib.escape(title)}")
+    card = trade_verdict(
+        analysis,
+        my_team=my_team,
+        partner=partner,
+        roster_issues=roster_issues or [],
+        format_change=lambda cat, value: format_trade_category_value(cat, value, is_change=True),
+    )
+    ui.inject_css(st)
+    ui.trade_sides(st, card["give"], card["receive"])
+    ui.answer_card(st, card["headline"], card["body"], kicker=title, tone=card["tone"])
+    ui.metric_tiles(st, card["tiles"])
+    ui.chips(st, card["chips"])
+    for message in card["my_issues"]:
+        st.warning(message)
+    for message in card["other_notes"]:
+        st.info(message)
+    with st.expander("Detailed calculation", expanded=False):
+        _render_analysis_details(st, analysis)
+
+
+def _render_analysis_details(st: Any, analysis: dict[str, Any]) -> None:
     st.markdown(
         f"""<div class="tc-analysis">
 <b>Verdict:</b> {html_lib.escape(str(analysis.get('verdict') or '—'))}<br/>
@@ -422,6 +456,31 @@ def render_trade_roster_warnings(
     for message in warnings:
         st.warning(message)
     return warnings
+
+
+def _trade_roster_issues(
+    session: dict[str, Any],
+    *,
+    proposer_team: str,
+    recipient_team: str,
+    proposer_gives: list[str],
+    proposer_receives: list[str],
+) -> list[dict[str, Any]]:
+    """The same roster checks as ``render_trade_roster_warnings``, as records (team, kind, message)."""
+    try:
+        from fantasy_league_context import get_active_league_context
+        from fantasy_trade_legality import trade_roster_issues
+
+        return trade_roster_issues(
+            get_active_league_context(session),
+            proposer_team=proposer_team,
+            recipient_team=recipient_team,
+            proposer_gives=proposer_gives,
+            proposer_receives=proposer_receives,
+            stats_pool=session.get("_fantasy_current_hitter_stats"),
+        )
+    except Exception:
+        return []
 
 
 def _render_idea_card(
@@ -741,6 +800,22 @@ def _render_build_analyze(
     persisted_analysis = shared.get("analysis") if isinstance(shared.get("analysis"), dict) else None
     verdict = str((persisted_analysis or {}).get("verdict") or "")
     analysis_rendered = False
+    # Roster checks for this exact trade, computed once: shown in the verdict card after an
+    # analysis, or as plain warnings before one.
+    roster_issues: list[dict[str, Any]] = []
+    partner_name = other_team if other_team and other_team != ANY_TRADE_PARTNER else ""
+    if give_players and receive_players and partner_name:
+        roster_issues = _trade_roster_issues(
+            session,
+            proposer_team=my_team,
+            recipient_team=partner_name,
+            proposer_gives=list(give_players),
+            proposer_receives=list(receive_players),
+        )
+    # U3: one place for the verdict card, above the action buttons, also on the run where
+    # Analyze is clicked (st.empty: a new analysis replaces the restored one).
+    analysis_slot = st.empty()
+    card_kwargs = {"my_team": my_team, "partner": partner_name, "roster_issues": roster_issues}
     if auto_analyze and give_players and receive_players:
         package = build_trade_analysis_package(
             give_players=give_players,
@@ -754,8 +829,9 @@ def _render_build_analyze(
             source_offer_id=str(shared.get("source_offer_id") or ""),
             source_idea_id=str(shared.get("source_idea_id") or ""),
         )
-        _render_analysis_panel(st, package, roster_stats)
-        st.success("Analysis complete.")
+        with analysis_slot.container():
+            _render_analysis_panel(st, package, roster_stats, **card_kwargs)
+            st.success("Analysis complete.")
         shared["analysis"] = package
         verdict = str(package.get("verdict") or "")
         analysis_rendered = True
@@ -764,19 +840,11 @@ def _render_build_analyze(
             "source_offer_id": shared.get("source_offer_id"),
         }
     elif analysis_matches_selection(persisted_analysis, give=give_players, receive=receive_players):
-        _render_analysis_panel(st, persisted_analysis, roster_stats)
+        with analysis_slot.container():
+            _render_analysis_panel(st, persisted_analysis, roster_stats, **card_kwargs)
         verdict = str(persisted_analysis.get("verdict") or "")
         analysis_rendered = True
-
-    if give_players and receive_players and other_team and other_team != ANY_TRADE_PARTNER:
-        render_trade_roster_warnings(
-            st,
-            session,
-            proposer_team=my_team,
-            recipient_team=other_team,
-            proposer_gives=list(give_players),
-            proposer_receives=list(receive_players),
-        )
+    warnings_slot = st.container()
 
     try:
         from fantasy_mobile_layout import phone_wrap_row
@@ -822,8 +890,9 @@ def _render_build_analyze(
             source_offer_id=str(shared.get("source_offer_id") or ""),
             source_idea_id=str(shared.get("source_idea_id") or ""),
         )
-        _render_analysis_panel(st, package, roster_stats)
-        st.success("Analysis complete.")
+        with analysis_slot.container():
+            _render_analysis_panel(st, package, roster_stats, **card_kwargs)
+            st.success("Analysis complete.")
         shared["analysis"] = package
         verdict = str(package.get("verdict") or "")
         analysis_rendered = True
@@ -831,6 +900,10 @@ def _render_build_analyze(
             "button_action": "analyze",
             "source_offer_id": shared.get("source_offer_id"),
         }
+    if roster_issues and not analysis_rendered:
+        with warnings_slot:  # before an analysis: the roster checks on their own, as before
+            for issue in roster_issues:
+                st.warning(issue["message"])
 
     collapse_ideas = analysis_rendered and bool(persisted_analysis or shared.get("analysis"))
     if find_ideas:

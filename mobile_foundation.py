@@ -208,6 +208,21 @@ def mobile_foundation_css() -> str:
     {_MAIN} [data-testid="stElementContainer"]:has(> [data-testid="stIFrame"] > iframe[style*="height: 0px"]) {{
         display: none;
     }}
+    /* 8b. Two more invisible carriers between the phone page picker and the page title
+          (~60px of the gap there): the URL-sync component's container (26px tall around a
+          0px iframe) and style-only markdown blocks. They are taken out of the flex flow,
+          not hidden, so the URL-sync iframe keeps running and the styles keep applying.
+          Two rules: :has() can't nest, and one bad selector would void a shared rule. */
+    {_MAIN} .st-key-_url_page_sync_event {{
+        position: absolute !important;
+        width: 0 !important;
+        height: 0 !important;
+    }}
+    {_MAIN} [data-testid="stElementContainer"]:has(> [data-testid="stMarkdown"] [data-testid="stMarkdownContainer"] > style:only-child) {{
+        position: absolute !important;
+        width: 0 !important;
+        height: 0 !important;
+    }}
 }}
 """
 

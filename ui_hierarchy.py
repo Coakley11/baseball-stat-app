@@ -72,6 +72,16 @@ U1_CSS = """<style>
 .u1-bar-row.lead .u1-bar-val { font-weight: 700; color: #0b2540; }
 .u1-commish { border: 1px solid #e3d6f2; border-left: 4px solid #6b3fa0; border-radius: 10px; background: #f8f4fc;
   padding: 9px 12px; margin: 0.25rem 0 0.5rem 0; color: #3b2160; font-size: 0.92rem; }
+.u1-trade { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; align-items: stretch; margin: 0.3rem 0 0.5rem 0; }
+.u1-trade-side { border: 1px solid #dfe7ef; border-radius: 10px; padding: 10px 12px; background: #fff; min-width: 0; }
+.u1-trade-side.give { border-top: 3px solid #b26a00; } .u1-trade-side.receive { border-top: 3px solid #2e7d4f; }
+.u1-trade-side .u1-kicker { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #5a6f82; }
+.u1-trade-arrow { align-self: center; justify-self: center; font-size: 1.4rem; font-weight: 700; color: #1f5fa8; }
+.u1-trade-player { padding: 5px 0; border-bottom: 1px solid #eef2f6; min-width: 0; }
+.u1-trade-player:last-child { border-bottom: none; }
+.u1-trade-player .u1-name { font-weight: 600; color: #0b2540; overflow-wrap: anywhere; }
+.u1-trade-player .u1-sub { font-size: 0.8rem; color: #5a6f82; }
+@media (max-width: 640px) { .u1-trade { grid-template-columns: minmax(0, 1fr); } .u1-trade-arrow { transform: rotate(90deg); } }
 </style>"""
 
 
@@ -228,6 +238,25 @@ def proxy_banner(st: Any, text: str, detail: str = "") -> None:
     inject_css(st)
     detail_html = f" {esc(detail)}" if detail else ""
     st.markdown(f'<div class="u1-commish">🛡️ <b>{esc(text)}.</b>{detail_html}</div>', unsafe_allow_html=True)
+
+
+def trade_sides(st: Any, give: Sequence[dict[str, Any]], receive: Sequence[dict[str, Any]], *,
+                give_title: str = "You give", receive_title: str = "You receive") -> None:
+    """You give ⇄ You receive: one card per side, each player with position badges and a stat
+    line. Rows: {"player", "position" ("SS/2B"), "stats_line"}. Stacks on phones."""
+    def side(rows: Sequence[dict[str, Any]], title: str, cls: str) -> str:
+        items = "".join(
+            '<div class="u1-trade-player"><div class="u1-name">'
+            + "".join(f'<span class="u1-pos">{esc(p.strip())}</span>'
+                      for p in str(r.get("position") or "").replace(",", "/").split("/") if p.strip() and p.strip() != "—")
+            + f'{esc(r.get("player"))}</div><div class="u1-sub">{esc(r.get("stats_line") or "")}</div></div>'
+            for r in rows
+        ) or '<div class="u1-muted">No players</div>'
+        return f'<div class="u1-trade-side {cls}"><div class="u1-kicker">{esc(title)}</div>{items}</div>'
+
+    st.markdown(f'<div class="u1-trade">{side(give, give_title, "give")}'
+                f'<div class="u1-trade-arrow">⇄</div>{side(receive, receive_title, "receive")}</div>',
+                unsafe_allow_html=True)
 
 
 @contextmanager
