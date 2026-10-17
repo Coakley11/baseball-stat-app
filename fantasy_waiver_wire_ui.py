@@ -80,7 +80,7 @@ def _apply_waiver_position_filter(pool_df: pd.DataFrame, position_filter: str) -
     if pool_df is None or pool_df.empty:
         return pool_df
     work = enrich_lineup_roster_positions(pool_df.copy())
-    return filter_players_by_fantasy_position(work, choice)
+    return filter_players_by_fantasy_position(work, choice, strict=True)
 
 
 def _player_names(df: pd.DataFrame) -> list[str]:

@@ -6,8 +6,8 @@ imports the rest back.
 
 Inputs are roster frames with *current season-to-date* stats (the Standings/Lineup pages load
 them from the MLB feed). Nothing here fetches data, reads the session, or writes anything.
-Slot eligibility for the recommended starters is ``fantasy_slot_eligibility`` (see the note
-there about the two eligibility rules).
+Recommended starters use the fantasy slot rule (``player_eligible_for_slot_strict``), the same
+rule Save Lineup enforces, so a recommended lineup is always one the user could save.
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ import pandas as pd
 
 from fantasy_slot_eligibility import (
     LINEUP_DEFAULT_HITTING_SLOTS,
-    _player_eligible_for_slot,
     _split_primary_positions,
+    player_eligible_for_slot_strict,
 )
 from stat_helpers import fmt_int, fmt_rate_3, normalize_series, safe_numeric_series
 
@@ -300,7 +300,7 @@ def build_position_aware_lineup(scored_df, *, slots=None, pos_col="Primary Posit
             toks = df.at[ix, "_pos_tokens"]
             if not isinstance(toks, list):
                 toks = []
-            if _player_eligible_for_slot(toks, slot):
+            if player_eligible_for_slot_strict(toks, slot):  # same rule as Save Lineup
                 elig_idx.append(ix)
         if not elig_idx:
             if slot == "OF":

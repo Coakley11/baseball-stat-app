@@ -2,15 +2,15 @@
 
 Moved verbatim from streamlit_app.py; the app imports these names back.
 
-Two eligibility rules exist today, and callers must know which one they use:
+Two slot rules exist, and callers must know which one they use:
 
-* ``player_eligible_for_slot`` (this module) — the older token rule used by the
-  Recommended Starters builder and the research/waiver position filters. It still treats
-  1B<->3B and 2B<->SS as interchangeable.
-* ``fantasy_weekly_lineup.player_eligible_for_slot`` / ``fantasy_lineup_fill.can_fill`` with
-  ``fantasy_position_eligibility`` (Phase D3) — games-played eligibility, used by the lineup
-  board, lineup saves, roster checks and trade warnings. That one is authoritative for
-  whether a saved lineup is legal.
+* ``player_eligible_for_slot_strict`` — the fantasy rule (``fantasy_lineup_fill.can_fill``):
+  a player fills only positions he is eligible at (Phase D3 games-played eligibility, read
+  from the ``Eligible Positions`` column). Lineup board, Save Lineup, roster checks, trade
+  warnings, Recommended Starters and the Waiver Wire position filter all use it.
+* ``player_eligible_for_slot`` — the older research rule that also treats 1B<->3B and
+  2B<->SS as interchangeable. Only the research pages' position filters (Valuation, Trend
+  Value, Draft research) still use it; their results are unchanged on purpose.
 """
 
 from __future__ import annotations
@@ -80,13 +80,17 @@ def _fantasy_position_display_tokens(career_pos, season_pos=None):
     return display, tokens
 
 
-def player_matches_fantasy_position_filter(row, filter_choice: str | list | None) -> bool:
-    """True when player is eligible for the selected fantasy slot filter(s)."""
+def player_matches_fantasy_position_filter(row, filter_choice: str | list | None, *, strict: bool = False) -> bool:
+    """True when player is eligible for the selected fantasy slot filter(s).
+
+    ``strict=True`` uses the fantasy slot rule (no 1B<->3B / 2B<->SS shortcut); research pages
+    keep the default.
+    """
     if isinstance(filter_choice, (list, tuple, set)):
         choices = [str(c).strip() for c in filter_choice if str(c).strip()]
         if not choices:
             return True
-        return any(player_matches_fantasy_position_filter(row, c) for c in choices)
+        return any(player_matches_fantasy_position_filter(row, c, strict=strict) for c in choices)
     choice = str(filter_choice or "").strip()
     if not choice or choice in ("All positions", "All"):
         return True
@@ -104,27 +108,35 @@ def player_matches_fantasy_position_filter(row, filter_choice: str | list | None
         tokens = _fantasy_position_display_tokens(getter("careerPrimaryPos"), getter("primaryPos"))[1]
     elif isinstance(tokens, str):
         tokens = _split_primary_positions(tokens)
+    slot_rule = player_eligible_for_slot_strict if strict else _player_eligible_for_slot
     if choice == "DH/UTIL":
-        return "DH" in tokens or _player_eligible_for_slot(tokens, "UTIL")
+        return "DH" in tokens or slot_rule(tokens, "UTIL")
     if choice == "OF":
         return any(t == "OF" for t in tokens)
-    return _player_eligible_for_slot(tokens, choice)
+    return slot_rule(tokens, choice)
 
 
-def filter_players_by_fantasy_position(df: pd.DataFrame, filter_choice: str | list | None) -> pd.DataFrame:
+def filter_players_by_fantasy_position(df: pd.DataFrame, filter_choice: str | list | None, *, strict: bool = False) -> pd.DataFrame:
     if df is None or df.empty:
         return df
     if isinstance(filter_choice, (list, tuple, set)):
         choices = [str(c).strip() for c in filter_choice if str(c).strip()]
         if not choices:
             return df
-        mask = df.apply(lambda r: player_matches_fantasy_position_filter(r, choices), axis=1)
+        mask = df.apply(lambda r: player_matches_fantasy_position_filter(r, choices, strict=strict), axis=1)
         return df.loc[mask].copy()
     choice = str(filter_choice or "").strip()
     if not choice or choice in ("All positions", "All"):
         return df
-    mask = df.apply(lambda r: player_matches_fantasy_position_filter(r, choice), axis=1)
+    mask = df.apply(lambda r: player_matches_fantasy_position_filter(r, choice, strict=strict), axis=1)
     return df.loc[mask].copy()
+
+
+def player_eligible_for_slot_strict(pos_tokens, slot):
+    """Fantasy slot rule: eligible positions only (``fantasy_lineup_fill.can_fill``)."""
+    from fantasy_lineup_fill import can_fill
+
+    return bool(can_fill(list(pos_tokens or []), "UTIL" if slot == "DH/UTIL" else slot))
 
 
 def _player_eligible_for_slot(pos_tokens, slot):
@@ -177,7 +189,8 @@ def enrich_lineup_roster_positions(roster_df: pd.DataFrame) -> pd.DataFrame:
     tokens_list = []
     for _, row in out.iterrows():
         toks: list[str] = []
-        for col in ("Primary Position", "Position", "Eligibility", "Positions"):
+        # "Eligible Positions" = Phase D3 games-played eligibility from the MLB feed.
+        for col in ("Primary Position", "Eligible Positions", "Position", "Eligibility", "Positions"):
             if col in row.index and row.get(col) not in (None, "", np.nan):
                 toks.extend(_split_primary_positions(row.get(col)))
         if isinstance(row.get("_position_tokens"), list):

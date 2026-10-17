@@ -279,7 +279,7 @@ class WaiverPositionFilterTests(unittest.TestCase):
             ui_filtered = _apply_waiver_position_filter(enriched, choice)
             from streamlit_app import filter_players_by_fantasy_position
 
-            direct = filter_players_by_fantasy_position(enriched, choice)
+            direct = filter_players_by_fantasy_position(enriched, choice, strict=True)
             self.assertEqual(
                 sorted(ui_filtered["Player"].tolist()),
                 sorted(direct["Player"].tolist()),
