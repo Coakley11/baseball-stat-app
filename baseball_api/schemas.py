@@ -221,6 +221,12 @@ class Option(_Model):
     label: str
 
 
+class Column(_Model):
+    label: str = Field(description="The page's column header (also the CSV header).")
+    field: str = Field(description="Dotted path into a result row, e.g. 'stats.HR', 'player.name', 'team.season_name'.")
+    metric: str | None = Field(description="Metric key when the column is a stat (see catalog metrics), else null.")
+
+
 class SeasonSpan(_Model):
     first: int
     last: int
@@ -251,6 +257,7 @@ class HistoricalCatalog(_Model):
     metrics: list[str] = Field(description="The page's Sort by options.")
     defaults: HistoricalDefaults
     filters: HistoricalFilters
+    columns: list[Column] = Field(description="The page's table columns, in order (SeasonRow fields).")
 
 
 class LeaderboardDefaults(_Model):
@@ -264,6 +271,7 @@ class LeaderboardDefaults(_Model):
 class LeaderboardCatalog(_Model):
     metrics: list[str] = Field(description="The page's Sort by options.")
     defaults: LeaderboardDefaults
+    columns: list[Column] = Field(description="The page's table columns, in order (LeaderboardRow fields).")
     weight_stats: list[str]
     weight_bounds: list[float] = Field(description="[min, max] per weight.")
     weight_step: float

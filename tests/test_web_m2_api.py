@@ -91,6 +91,23 @@ class CatalogTests(unittest.TestCase):  # R1
                          (ld.start, ld.end, ld.metric, ld.weights, ld.limit))
         self.assertEqual((self.cat.seasons.first, self.cat.seasons.last), self.data.years)
 
+    def test_columns_are_the_page_tables_and_resolve_in_rows(self):
+        def resolve(row, field):
+            for part in field.split("."):
+                row = row[part]
+            return row
+
+        for name, path in (("historical", "/seasons"), ("leaderboards", "/leaderboards")):
+            with self.subTest(page=name):
+                cols = getattr(self.cat, name).columns
+                csv_header = CLIENT.get("/api/v1" + path, params={"format": "csv", "limit": 1}).text.splitlines()[0]
+                self.assertEqual([c.label for c in cols], csv_header.split(","), "same headers as the page / CSV")
+                row = get(path, limit=1).json()["rows"][0]
+                for c in cols:
+                    resolve(row, c.field)  # every field exists in a real row
+                    if c.metric:
+                        self.assertIn(c.metric, {m.key for m in self.cat.metrics})
+
     def test_every_team_value_is_accepted(self):
         for opt in self.cat.historical.filters.teams:
             with self.subTest(team=opt.value):

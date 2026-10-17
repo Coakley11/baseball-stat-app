@@ -204,7 +204,7 @@ pydantic model → JSON. Each response carries `Server-Timing: business;dur=…,
 
 **Data load.** Lahman data loads once per process in a background thread at startup.
 
-**OpenAPI.** `GET /api/v1/openapi.json` is an OpenAPI 3.1 document: the 8 API paths and 39 component
+**OpenAPI.** `GET /api/v1/openapi.json` is an OpenAPI 3.1 document: the 8 API paths and 40 component
 schemas. Every `$ref` resolves (tested). The two ranking paths also declare their `text/csv` response,
 and every 503 declares `Retry-After`. It is suitable for `openapi-typescript` / `openapi-fetch`.
 
@@ -275,6 +275,9 @@ does change (`u1_answers.py`, `rate_stat_qualification.py`, `draft_player_names.
 on `a9a80f7` and on `feature/ami-foundation`.
 
 **Notes for the frontend:**
+- `historical.columns` / `leaderboards.columns` list the page's table columns in order: header (the
+  same as the CSV header), a dotted path into the JSON row, and the metric key for stat columns.
+  This was added after the WEB check of `ab54bc2`.
 - `historical.metrics` is the page's Sort by list. `/seasons` also accepts `yearID` (API only).
 - `positions` follows `position_source`: use `positions_by_source`.
 - Bats labels are Left / Right / Both. The page shows the raw L / R / B.

@@ -57,6 +57,12 @@ _HIST_CSV_RENAME = {"yearID": "Year", "fullName": "Player", "bats": "Bats", "dis
 _CSV_COUNTS = ("Year", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB")
 _CSV_RATES = ("BA", "OBP", "SLG", "OPS")
 _BOARD_CSV_COLUMNS = ["fullName", "bats", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS", "score"]
+# The same tables as columns of the JSON rows (catalog): (header, row field, metric key).
+_HIST_COLUMNS = [("Year", "year", "yearID"), ("Player", "player.name", None), ("Bats", "bats", None),
+                 ("Primary Position", "position", None), ("Team", "team.season_name", None),
+                 *[(k, f"stats.{k}", k) for k in HISTORICAL_SORT_OPTIONS]]
+_BOARD_COLUMNS = [("Player", "player.name", None), ("Bats", "bats", None),
+                  *[(k, f"stats.{k}", k) for k in WEIGHT_STATS], ("Score", "score", "score")]
 
 
 @dataclass(frozen=True)
@@ -315,6 +321,7 @@ def catalog(store: HistoryStore = STORE) -> s.Catalog:
                               s.Option(value="career", label="Career Primary Position")],
             teams=[s.Option(value=t, label=t) for t in (*TEAM_GROUPS, *data.franchise_names)],
             minimum_columns=list(MINIMUM_PARAMS)),
+        columns=[s.Column(label=a, field=b, metric=c) for a, b, c in _HIST_COLUMNS],
     )
     boards = s.LeaderboardCatalog(
         metrics=list(LEADERBOARD_METRICS),
@@ -322,6 +329,7 @@ def catalog(store: HistoryStore = STORE) -> s.Catalog:
                                        weights=dict(DEFAULT_WEIGHTS), limit=DEFAULT_LIMIT),
         weight_stats=list(WEIGHT_STATS), weight_bounds=list(WEIGHT_BOUNDS), weight_step=WEIGHT_STEP,
         limit_bounds=list(LEADERBOARD_LIMIT_BOUNDS), minimum_columns=list(MINIMUM_PARAMS),
+        columns=[s.Column(label=a, field=b, metric=c) for a, b, c in _BOARD_COLUMNS],
     )
     keys = list(dict.fromkeys([*LEADERBOARD_METRICS, *STAT_KEYS, *SEASON_METRICS]))
     return s.Catalog(seasons=s.SeasonSpan(first=lo, last=hi), metrics=[_metric(k) for k in keys],
