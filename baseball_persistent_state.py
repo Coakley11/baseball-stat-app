@@ -1604,6 +1604,8 @@ def prepare_baseball_workspace(st: Any) -> bool:
             or ss.get("_suite_workspace_refresh_needed")
             or ss.get("_suite_auth_just_signed_in")
             or ss.get("_suite_auth_just_logged_in")
+            # An unresolved cloud read failure keeps cloud saves paused; run the sync so it retries.
+            or ss.get("_suite_cloud_read_failed")
         )
         fp = warm_startup_fingerprint(ss)
         prev_fp = str(ss.get("_baseball_warm_startup_fp") or "")

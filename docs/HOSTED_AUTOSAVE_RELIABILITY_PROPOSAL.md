@@ -1,8 +1,13 @@
-# Hosted autosave reliability — audit and proposed fix (not implemented)
+# Hosted autosave reliability — audit, safeguards and remaining work
 
-Status: proposal (Phase D, October 2026). Not built here because it changes the shared
-cloud persistence path used by every suite app and can only be verified against the real
-cloud store, which needs credentials this work did not have.
+Status (October 2026):
+
+* **Implemented and tested against a fake store:** steps 1–3 of the proposed fix below.
+  See "What is implemented" at the end.
+* **Not verified against the real cloud store.** That needs staging Supabase credentials,
+  which were not available. No production data was read or written.
+* **Not implemented:** stale-tab protection (another device saved after this tab loaded) and
+  step 4.
 
 ## How it works today
 
@@ -79,3 +84,65 @@ they follow from the code paths above.
 All of these can run against a fake storage module (the shape `suite_cloud_state`
 already imports through `_import_storage`); a final check against the real store needs
 staging credentials.
+
+## What is implemented (quality/shared-functions)
+
+The state a session can be in, and what each state may do:
+
+| State | How it is recognised | Cloud writes |
+|---|---|---|
+| Cloud disabled (local install) | `CLOUD_READ_DISABLED` | none (disk only, unchanged) |
+| Confirmed current data | read `ok`; the saved copy was applied, or the session synced earlier | allowed |
+| Successful read, no saved data | read `not_found` (no row or empty blob) | allowed: nothing can be overwritten |
+| Failed or unavailable read | read `error` (exception, timeout, permissions, malformed row) | **refused for every reason**, including user-action saves |
+| Recovered, but never loaded the saved data | read answers after an `error` and the session was never reconciled | refused until the saved copy is re-applied as a first sync; outage edits are not trusted |
+
+Implementation:
+
+- **`suite_cloud_state`**
+  - `load_cloud_full_session_status` returns a `CloudRead` with a status.
+    `load_cloud_full_session` keeps its old return values for existing callers.
+  - Any failed read sets `_suite_cloud_read_failed`.
+  - `save_cloud_full_session` refuses while that flag is set, and records
+    `_suite_cloud_write_blocked`.
+  - `mark_cloud_reconciled` clears the flag. Only the workspace sync calls it, so another
+    module's successful read cannot unlock writes for a session that never loaded its data.
+- **`suite_user_persistence.sync_workspace_protocol`**
+  - On a failed read it applies nothing: no stale disk copy.
+  - It retries with backoff (5 s doubling to 60 s).
+  - On recovery it restores the saved copy before anything can be written.
+  - It marks the session reconciled only after a read the store answered.
+- **`baseball_persistent_state`**: an unresolved failure forces the sync to run, so the warm
+  startup skip can't leave saves paused for the rest of the session.
+- **User copy**: `show_persistence_messages` tells the user their saved data isn't loaded and
+  that changes won't be saved until the connection is back (`ui_user_copy.CLOUD_READ_FAILED_WARNING`).
+
+Tests: `tests/test_hosted_autosave_reliability.py` uses a fake storage backend. It covers:
+- read classification and the unchanged legacy tuple;
+- writes refused until the session is reconciled;
+- a stale disk copy is not applied;
+- the destructive empty-disk save is blocked;
+- recovery restores the saved copy, then saves resume;
+- the retry backoff;
+- a transient failure after a good sync;
+- a confirmed-empty new workspace can save;
+- the user warning, and the warm-skip guard.
+
+On the previous code, the stale-disk and empty-disk scenarios fail: the stale copy was
+applied, and the near-empty session was written to the cloud.
+
+## Still to do
+
+1. **Stale tab (optimistic concurrency).** Before writing, compare the cloud `updated_at` with
+   the version this session applied or last wrote, and refuse if the cloud is newer.
+   - Not built, because today the session records its own writes with the *local* clock
+     (`_utc_now_iso()` after `save_cloud_full_session`). Comparing that with server timestamps
+     would produce false conflicts or miss real ones.
+   - It needs `save_current_state` to return the server's `updated_at`. That is a
+     storage-layer change, to be verified on staging.
+2. **Hosted "not found" autosave** (step 4 above). New workspaces still wait for a
+   user-action save (unchanged).
+3. **Staging acceptance.** These need credentials; they can't be done honestly with fakes:
+   - against a staging Supabase project, block network access to the store mid-session and
+     confirm no write happens, the warning shows, and recovery restores the saved copy;
+   - repeat on a fresh container (empty disk).
