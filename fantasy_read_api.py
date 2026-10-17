@@ -261,8 +261,9 @@ def lineup_report(
 
     Sources: ``fantasy_lineup_scoring`` (the Lineup Assistant's own functions). Returns
     ``{"scored", "recommended", "missing_slots", "slot_warnings", "diagnosis", "basis"}``.
-    The recommended starters use the Lineup Assistant's slot rule
-    (``fantasy_slot_eligibility``); whether a lineup can be *saved* is ``check_lineup``.
+    Recommended starters use the same slot rule Save Lineup enforces
+    (``fantasy_slot_eligibility.player_eligible_for_slot_strict``); ``check_lineup`` validates
+    any lineup, including one the user built by hand.
     """
     from fantasy_lineup_scoring import build_lineup_assistant_scores, build_position_aware_lineup, lineup_diagnosis_report
     from fantasy_slot_eligibility import enrich_lineup_roster_positions
