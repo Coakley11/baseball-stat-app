@@ -75,10 +75,8 @@ def _apply_waiver_position_filter(pool_df: pd.DataFrame, position_filter: str) -
     choice = str(position_filter or "").strip()
     if not choice or choice == "All positions":
         return pool_df
-    try:
-        from streamlit_app import enrich_lineup_roster_positions, filter_players_by_fantasy_position
-    except ImportError:
-        return pool_df
+    from fantasy_slot_eligibility import enrich_lineup_roster_positions, filter_players_by_fantasy_position
+
     if pool_df is None or pool_df.empty:
         return pool_df
     work = enrich_lineup_roster_positions(pool_df.copy())

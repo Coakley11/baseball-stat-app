@@ -60,8 +60,9 @@ class TeamRateTests(unittest.TestCase):
 class StandingsWiringTests(unittest.TestCase):
     def setUp(self):
         self.src = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
-        start = self.src.index("def score_fantasy_rosters_from_stats")
-        self.body = self.src[start:self.src.index("def summarize_team_category_needs")]
+        snapshot = (ROOT / "fantasy_standings_snapshot.py").read_text(encoding="utf-8")
+        start = snapshot.index("def score_current_roster_standings")
+        self.body = snapshot[start:snapshot.index("def summarize_team_category_needs")]
 
     def test_standings_use_split_points_and_team_rates(self):
         self.assertIn("roto_points(standings[cat])", self.body)
