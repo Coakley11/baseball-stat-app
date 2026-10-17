@@ -73,6 +73,14 @@ class HistoryData:
     bats_options: tuple[str, ...] = ()
     position_options: Mapping[str, tuple[str, ...]] | None = None  # source column -> options
     franchise_names: tuple[str, ...] = ()
+    player_rows: Mapping[str, np.ndarray] | None = None  # playerID -> its yearly row positions, in order
+
+
+def _player_rows(data: HistoryData, player_id: str) -> pd.DataFrame:
+    if data.player_rows is None:
+        return data.yearly[data.yearly["playerID"] == player_id]
+    idx = data.player_rows.get(player_id)
+    return data.yearly.iloc[idx] if idx is not None else data.yearly.iloc[0:0]
 
 
 def _page_options(batting: pd.DataFrame) -> dict[str, Any]:
@@ -132,6 +140,7 @@ class HistoryStore:
             season_lengths=rsq.season_lengths(yearly),
             labels=labels, label_by_id={pid: label for label, pid in labels.items()}, label_tuple=tuple(labels),
             years=(int(years.min()), int(years.max())), load_seconds=round(time.perf_counter() - t0, 3),
+            player_rows=yearly.groupby("playerID", sort=False).indices,
             **_page_options(batting),
         )
 
@@ -320,7 +329,7 @@ def catalog(store: HistoryStore = STORE) -> s.Catalog:
 
 
 def _summary(data: HistoryData, player_id: str) -> s.PlayerSummary:
-    rows = data.yearly[data.yearly["playerID"] == player_id]
+    rows = _player_rows(data, player_id)
     if rows.empty:
         raise ApiError("player_not_found", f"No player with id '{player_id}'.")
     years = pd.to_numeric(rows["yearID"], errors="coerce").dropna().astype(int)
