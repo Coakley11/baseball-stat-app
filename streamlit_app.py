@@ -2695,7 +2695,7 @@ PAGE_GUIDES = {
     "Career Totals": {
         "purpose": "Roll up career counting and rate stats across a year range.",
         "when": "When you care about full-career production, not one season.",
-        "outputs": "Career table plus charts for the filtered group.",
+        "outputs": "The leader's career in numbers and a top-10 chart first; filters, Hall of Fame Case Mode and the full career table under Explore more.",
     },
     "Leaderboards": {
         "purpose": "Rank players on a single stat with quick filters.",
@@ -2705,17 +2705,17 @@ PAGE_GUIDES = {
     "Comparison Tool": {
         "purpose": "Compare up to three players side by side using stats, trends, and optional significance tests.",
         "when": "When you are choosing between a few names and want the same view for each.",
-        "outputs": "Year-by-year table, career totals, trend charts, and category-style comparisons.",
+        "outputs": "Who leads in HR, RBI, SB, OBP and OPS over the same seasons, with head-to-head bars; tables, trend charts and significance tests under Explore more.",
     },
     "Trend Value": {
         "purpose": "See who is improving or fading over recent seasons.",
         "when": "During draft prep or when judging breakout vs decline risk.",
-        "outputs": "Trend table (change columns), breakout/decline lists, and single-player dashboards.",
+        "outputs": "The fastest riser and biggest drop in your stat with a season-by-season chart; the trend table, breakout/decline lists and player dashboards under Explore more.",
     },
     "Valuation": {
         "purpose": "Ranks hitters by mixing how good they have been lately with whether their stats are rising or falling.",
         "when": "During draft prep or trade talks when you want one short list of names worth a closer look.",
-        "outputs": "A sortable table (Valuation Score, Current Score, Trend Score, stats) plus best/worst callouts at the bottom.",
+        "outputs": "The top hitter with production and trend ranks and the weights, plus a top-10 chart; the full table (Valuation Score, Current Score, Trend Score, stats) under Explore more.",
         "extra": [
             "<strong>Valuation Score (0–100):</strong> Higher is better. 100.00 = top of your filtered list; 0.00 = bottom.",
             "<strong>Current Score:</strong> How strong recent counting and rate stats are in the year window you chose.",
@@ -2725,39 +2725,39 @@ PAGE_GUIDES = {
         ],
     },
     "ML Predictions": {
-        "purpose": "Machine-learning style next-season stat projections.",
+        "purpose": "Machine-learning next-season stat projections for each hitter.",
         "when": "When you want model-based forecasts beyond simple trends.",
-        "outputs": "Ranked projection table; tune advanced blending in the expander.",
+        "outputs": "The top projected hitters for your sort, with the model's confidence label and its held-out accuracy; the full table, tuning and feature importance under Explore more.",
     },
     "Fantasy Sleepers & Busts": {
-        "purpose": "Find undervalued players, risky market picks, and names where your projections differ from ADP.",
+        "purpose": "Find where our model and the draft market (FantasyPros rankings, ADP) disagree.",
         "when": "During draft prep or on draft day when you want buy-low and avoid-overpay lists.",
-        "outputs": "Sleeper and bust tables, market-vs-model chart, and plain-language reasons.",
+        "outputs": "Top sleeper and bust-risk cards (model rank, market rank, Fantasy Edge); the edge map, full tables and filters under Explore more.",
     },
     "Draft Room Simulator": {
-        "purpose": "Log picks, view rosters, and grade drafts.",
-        "when": "During a live or mock draft — this feeds the Draft Assistant.",
-        "outputs": "Pick board, roster views, and post-draft grades.",
+        "purpose": "Set up a league and log every pick yourself, then view rosters and grade the draft.",
+        "when": "For a practice draft, or to mirror a draft running on another site. Draft Assistant reads this board.",
+        "outputs": "Draft board, roster views, and post-draft grades.",
     },
     "Draft Assistant Simulator": {
         "purpose": "Recommend your next pick from needs, scarcity, and projections.",
-        "when": "While drafting, after picks are entered in Draft Room.",
+        "when": "While drafting, after picks are entered in Draft Room Simulator or Live Draft Room.",
         "outputs": "Ranked available players with plain-language reasons.",
     },
     "Draft Lab / Simulation": {
-        "purpose": "Run a four-team mock draft with Draft Assistant-style pick logic and post-draft analysis.",
-        "when": "When you want to practice draft strategy or compare how different approaches build rosters.",
+        "purpose": "The computer runs a four-team mock draft with Draft Assistant-style pick logic, then analyzes it.",
+        "when": "When you want to test a draft strategy or compare how different approaches build rosters.",
         "outputs": "Draft board, team rosters, team rankings, best/questionable picks, position gaps, and exports.",
     },
     "Live Draft Room": {
-        "purpose": "Run a configurable live snake draft in your browser with timers, manual picks, and auto-pick rules.",
-        "when": "Mock drafts or testing draft-room flow before multi-user sync is added.",
-        "outputs": "Live draft board, team rosters, recommendations, exports, and optional handoff to Draft Simulation analysis.",
+        "purpose": "Draft with your league in real time: a shared snake draft with pick timers, manual picks and auto-pick rules.",
+        "when": "On draft day with your league, or a solo practice run with the same room.",
+        "outputs": "Live draft board, team rosters, recommendations, exports, and the saved draft for your league.",
     },
     "Saved Draft Library": {
-        "purpose": "Browse, rename, duplicate, and activate saved draft teams from Live Draft and Simulator.",
-        "when": "After finishing a draft or when switching between real team, mock drafts, and practice rosters.",
-        "outputs": "Active saved draft for Standings Tracker and Lineup Assistant; multiple archives preserved.",
+        "purpose": "Browse, rename, duplicate, share and activate saved drafts from Live Draft Room and Draft Room Simulator.",
+        "when": "After finishing a draft or when switching between your real league, mock drafts and practice rosters.",
+        "outputs": "The active league for League Standings, Lineup Assistant and Waiver Wire; every saved draft is kept.",
     },
     "Fantasy Standings Tracker": {
         "purpose": "Score every fantasy team with current-season stats.",
@@ -19751,12 +19751,11 @@ elif active_page == "Draft Assistant Simulator":
             "Rankings driven by team needs, positional scarcity, market value, and ML-enhanced projections.",
         )
     pdemo.render_draft_demo_button(st, active_page)
-    render_section_header(
-        "🧩 Draft Assistant Simulator",
-        "Decision engine: next-pick rankings, team needs, scarcity, and plain-language explanations—fed by your Draft Room board.",
-        compact=True,
-    )
+    import draft_tools
+
+    render_section_header("🧩 Draft Assistant Simulator", draft_tools.purpose(active_page), compact=True)
     render_page_guide(active_page)
+    draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
     try:
         from fantasy_context_ui import render_research_sync_badge
 
@@ -21062,12 +21061,11 @@ elif active_page == "Draft Assistant Simulator":
 elif active_page == "Draft Room Simulator":
     _maybe_render_account_pref_sync(active_page)
     _page_perf_start(active_page)
-    render_section_header(
-        "🧾 Draft Room Simulator",
-        "Live draft control center: enter picks, track rosters, attach model scores, view team lineups, and grade each roster after the draft.",
-        compact=True,
-    )
+    import draft_tools
+
+    render_section_header("🧾 Draft Room Simulator", draft_tools.purpose(active_page), compact=True)
     render_page_guide(active_page)
+    draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
     apply_pending_page_transfer(active_page)
     _prepare_and_show_draft_shared_settings(
         active_page,
@@ -21328,7 +21326,7 @@ elif active_page == "Draft Room Simulator":
     edited_draft = _session_draft_board_df()
 
     with dr_tab_board:
-        st.subheader("Live draft board")
+        st.subheader("Draft board")
         st.caption(
             "Use **Assign player to pick** below (searchable player list). "
             "Then click **Save Draft Board Now**. Live Draft Room picks sync here automatically."
@@ -21829,12 +21827,11 @@ elif active_page == "Draft Room Simulator":
 elif active_page == DRAFT_LAB_PAGE:
     _page_perf_start(active_page)
 
-    render_section_header(
-        "🧪 Draft Lab / Simulation",
-        "Four-team snake mock draft with Draft Assistant-style decisions, post-draft analysis, and exports.",
-        compact=True,
-    )
+    import draft_tools
+
+    render_section_header("🧪 Draft Lab / Simulation", draft_tools.purpose(active_page), compact=True)
     render_page_guide(active_page)
+    draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
     apply_pending_page_transfer(active_page)
     _prepare_and_show_draft_shared_settings(
         active_page,
@@ -22876,12 +22873,12 @@ elif active_page == "Live Draft Room":
     except ImportError:
         _show_ldr_guide = True
     if _show_ldr_guide:
-        render_section_header(
-            "📡 Live Draft Room",
-            "Run a live snake draft with timers, auto-pick rules, and exports. Your board saves automatically as you draft.",
-            compact=True,
-        )
+        import draft_tools
+
+        render_section_header("📡 Live Draft Room", draft_tools.purpose(active_page), compact=True)
         render_page_guide(active_page)
+        # Intro only (no active draft): the room itself is unchanged.
+        draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
     else:
         # Active draft: keep a compact title only — Quick Guide pushes cards below the fold.
         with _ldr_m_hook("ldr-m-active-title"):
@@ -29696,12 +29693,11 @@ elif active_page == "Saved Draft Library":
 
     _page_perf_start(active_page)
     _maybe_render_account_pref_sync(active_page)
-    render_section_header(
-        "📁 Saved Draft Library",
-        "Browse and manage saved draft teams from Live Draft Room and Draft Room Simulator.",
-        compact=True,
-    )
+    import draft_tools
+
+    render_section_header("📁 Saved Draft Library", draft_tools.purpose(active_page), compact=True)
     render_page_guide(active_page)
+    draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
     apply_pending_page_transfer(active_page)
     render_saved_draft_library_page(
         st,
