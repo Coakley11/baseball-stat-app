@@ -4589,6 +4589,75 @@ def render_saved_draft_library_page(
         )
 
 
+def _render_library_answer(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    archives: list[dict[str, Any]],
+    active: dict[str, Any] | None,
+    active_context: dict[str, Any] | None,
+    page_label_fn=None,
+) -> None:
+    """U4 answer: the active league, how many saved drafts there are and the most recent one,
+    then Open (League Standings / Lineup & Trades), Set Active and Rename on the most recent draft.
+    Every action uses the same path as the cards below; nothing about saving changes."""
+    try:
+        import ui_hierarchy as ui
+        from u4_answers import library_answer
+    except ImportError:
+        return
+    context = active_context or (get_league_context_for_archive(session, active) if active else None)
+    active_team = ""
+    if active:
+        try:
+            from fantasy_workspace_team_identity import resolve_archive_display_team
+
+            active_team = resolve_archive_display_team(session, active, context)
+        except ImportError:
+            active_team = str((context or {}).get("my_team_name") or active.get("team_name") or "").strip()
+    answer = library_answer(
+        archives,
+        active=active,
+        active_team=active_team,
+        active_team_count=league_team_count(context, active) if active and context else 0,
+    )
+    ui.answer_card(st, answer["headline"], answer["body"], kicker="Saved Draft Library", tone=answer["tone"])
+    ui.metric_tiles(st, answer["tiles"])
+    buttons = []
+    if active and context:
+        buttons += [("open_standings", _nav_label(FANTASY_STANDINGS_PAGE, "League Standings", page_label_fn)),
+                    ("open_lineup", _nav_label(FANTASY_LINEUP_PAGE, "Lineup & Trades", page_label_fn))]
+    recent_id = answer["recent_id"]
+    if recent_id and not answer["recent_is_active"]:
+        buttons.append(("set_active", f"⭐ Set Active: {answer['recent_name']}"))
+    if recent_id:
+        buttons.append(("rename", f"Rename {answer['recent_name']}"))
+    if not buttons:
+        return
+    try:
+        from mobile_foundation import mobile_wrap_row
+
+        wrap = mobile_wrap_row(st, "u1-actions-library")
+    except ImportError:
+        wrap = st.container()
+    with wrap:
+        cols = st.columns(len(buttons))
+    for (action, label), col in zip(buttons, cols):
+        if not col.button(label, key=f"u4_library_{action}_btn", use_container_width=True,
+                          type="primary" if action == "set_active" else "secondary"):
+            continue
+        if action in ("open_standings", "open_lineup"):
+            target = FANTASY_STANDINGS_PAGE if action == "open_standings" else FANTASY_LINEUP_PAGE
+            if schedule_fantasy_analysis_navigation(session, target):
+                st.rerun()
+        elif action == "set_active":
+            _activate_archive_entry(st, session, recent_id)
+        elif action == "rename":
+            session[_RENAME_CONFIRM_PREFIX + recent_id] = True
+            st.rerun()
+    ui.section_label(st, "Explore more · invitations, active league tools, sync and every saved draft")
+
+
 def _render_saved_draft_library_page_body(
     st: Any,
     session: dict[str, Any],
@@ -4831,6 +4900,9 @@ def _render_saved_draft_library_page_body(
         active_context_id = str((active_context or {}).get("league_context_id") or "")
         selection = None
 
+    _render_library_answer(
+        st, session, archives=archives, active=active, active_context=active_context, page_label_fn=page_label_fn
+    )
     st.caption(
         "Only **intentionally saved drafts** appear here. "
         "Set one **Active Draft** (a saved draft you select) for Standings, Lineup, and Waiver Wire. "

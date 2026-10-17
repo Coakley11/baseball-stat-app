@@ -1839,6 +1839,119 @@ def _render_u2_trend_answer(rows, seasons, stat, years):
     u1.action_row(st, actions, key="trend", primary=None)
 
 
+def _u4_action_cols(key, n):
+    """A short row of next-step controls that wraps two-up on phones (same as ui.action_row)."""
+    try:
+        from mobile_foundation import mobile_wrap_row
+
+        wrap = mobile_wrap_row(st, f"u1-actions-{key}")
+    except ImportError:
+        wrap = st.container()
+    with wrap:
+        return st.columns(n)
+
+
+def _render_u4_draft_room_answer(board, *, room_df, your_team, team_names, team_count, rounds):
+    """Draft Room Simulator answer (U4): where the board stands, then Draft Player (the board's own
+    pick assignment, aimed at the next open pick), Import Draft, Save Draft, Open Saved Drafts."""
+    import u4_answers as u4a
+    import ui_hierarchy as u1
+    from draft_room_state import (
+        derive_draft_progress,
+        get_canonical_draft_meta,
+        is_draft_room_locally_dirty,
+        open_pick_row_options,
+        pick_label_row_map,
+        record_manual_save_button_click,
+        submit_board_pick_assignment,
+    )
+
+    progress = derive_draft_progress(board, draft_order=team_names, num_teams=team_count,
+                                     total_picks=len(board) if isinstance(board, pd.DataFrame) and len(board) else None,
+                                     owned_team=your_team)
+    answer = u4a.draft_room_answer(progress, your_team=your_team, rounds=rounds,
+                                   source=str(get_canonical_draft_meta(st.session_state).get("source") or ""),
+                                   unsaved=is_draft_room_locally_dirty(st.session_state),
+                                   on_clock_team=str(progress.get("on_clock_team") or ""))
+    u1.answer_card(st, answer["headline"], answer["body"], kicker="Draft board", tone=answer["tone"])
+    u1.metric_tiles(st, answer["tiles"])
+    flash = st.session_state.pop("_u4_dr_flash", None)
+    if flash:
+        st.success(flash)
+    open_picks = open_pick_row_options(board)
+    cols = _u4_action_cols("draft-room", 4)
+    with cols[0].popover("Draft Player", use_container_width=True, disabled=not open_picks):
+        if open_picks:
+            from draft_player_names import build_draft_player_name_index, draft_pool_display_names
+
+            label = open_picks[0][1]
+            drafted = set(board["Player"].astype(str).str.strip()) if "Player" in board.columns else set()
+            names = draft_pool_display_names(room_df)
+            choice = st.selectbox("Player", [n for n in names if n not in drafted], index=None,
+                                  placeholder="Type a name", key="u4_dr_draft_player")
+            if st.button(f"Set player on {label}", key="u4_dr_draft_player_btn", type="primary", disabled=not choice):
+                res = submit_board_pick_assignment(
+                    st.session_state, pick_label=label, player_match=str(choice or ""),
+                    pick_row_by_label=pick_label_row_map(board), name_index=build_draft_player_name_index(room_df),
+                    all_names=names, search_text=str(choice or ""),
+                )
+                if res.get("ok"):
+                    st.session_state["_u4_dr_flash"] = res.get("message") or f"{choice} set on {label}."
+                    st.rerun()
+                st.error(res.get("message") or res.get("error") or "Assignment failed.")
+    cols[1].button("Import Draft", key="u4_dr_import_btn", use_container_width=True,
+                   on_click=lambda: st.session_state.__setitem__("_u4_draft_import_open", True))
+    cols[2].button("Save Draft", key="u4_dr_save_btn", use_container_width=True,
+                   type="primary" if answer["tiles"][-1][1] == "Unsaved" else "secondary",
+                   help="Same as Save Draft Board Now on the Board tab.",
+                   on_click=lambda: record_manual_save_button_click(st.session_state))
+    cols[3].button("Open Saved Drafts", key="u4_dr_library_btn", use_container_width=True,
+                   on_click=_u1_nav_cb("Saved Draft Library"))
+
+
+def _render_u4_draft_assistant_answer(best_fit, best_value, summary, gaps, team):
+    """Draft Assistant answer (U4): the pick it already ranks first (Decision Score order) with
+    its own reason, pick timing and roster needs. Nothing is re-scored here."""
+    import u1_answers as u1a
+    import u4_answers as u4a
+    import ui_hierarchy as u1
+
+    def first(df):
+        return df.iloc[0].to_dict() if isinstance(df, pd.DataFrame) and not df.empty else None
+
+    answer = u4a.draft_assistant_answer(first(best_fit), best_value=first(best_value), summary=summary or {},
+                                        gaps=list(gaps or []), team=str(team or ""))
+    u1.answer_card(st, answer["headline"], answer["body"],
+                   kicker=f"Draft Assistant · {team}" if team else "Draft Assistant", tone=answer["tone"])
+    u1.metric_tiles(st, answer["tiles"])
+    actions = []
+    if answer["compare"]:
+        a, b = answer["compare"]
+        actions.append((f"Compare {u1a.last_name(a)} & {u1a.last_name(b)}", _u2_compare_pair_cb([a, b])))
+    actions += [("Open Draft Board", _u1_nav_cb("Draft Room Simulator")), ("Live Draft Room", _u1_nav_cb("Live Draft Room"))]
+    u1.action_row(st, actions, key="draft-assistant", primary=None)
+
+
+def _render_u4_draft_lab_answer(team_summary, pick_analysis, *, total_picks, from_live=False):
+    """Draft Lab answer (U4): the simulation's own projected best draft, its margin, that team's
+    Best Pick (with the analysis' reason) and its open positions."""
+    import u4_answers as u4a
+    import ui_hierarchy as u1
+
+    answer = u4a.draft_lab_answer(team_summary, pick_analysis, total_picks=total_picks)
+    if answer is None:
+        u1.answer_card(st, "No team ranking in these results", "Run the simulation again to rank the teams.", tone="warn")
+        return
+    kicker = "Your completed live draft" if from_live else "Draft Lab · simulated draft"
+    u1.answer_card(st, answer["headline"], answer["body"], kicker=kicker)
+    u1.metric_tiles(st, answer["tiles"])
+    u1.action_row(st, [
+        ("Team Analysis", lambda: st.session_state.__setitem__("draft_lab_active_tab", "Team Analysis")),
+        ("Best / Questionable Picks", lambda: st.session_state.__setitem__("draft_lab_active_tab", "Best / Questionable Picks")),
+        ("Draft Assistant", _u1_nav_cb("Draft Assistant Simulator")),
+    ], key="draft-lab", primary=None)
+
+
 def _render_u2_valuation_answer(rows, model_rows, chart_rows, w_current, w_trend, years):
     """Valuation answer: the top hitter, production and trend components in the model's own
     terms, the weights, the top-10 chart, next steps."""
@@ -19756,6 +19869,8 @@ elif active_page == "Draft Assistant Simulator":
     render_section_header("🧩 Draft Assistant Simulator", draft_tools.purpose(active_page), compact=True)
     render_page_guide(active_page)
     draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
+    da_answer_slot = st.container()  # U4: filled once the recommendations are ranked
+    _da_answer_done = False
     try:
         from fantasy_context_ui import render_research_sync_badge
 
@@ -20642,6 +20757,18 @@ elif active_page == "Draft Assistant Simulator":
         best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
         best_fit = recs_ranked.head(1).copy() if not recs_ranked.empty else pd.DataFrame()
         featured_ids = collect_featured_player_ids(best_fit, best_value)
+        with da_answer_slot:
+            try:
+                _render_u4_draft_assistant_answer(
+                    best_fit, best_value, globals().get("draft_summary") or {}, globals().get("_gaps") or [],
+                    str(globals().get("assistant_my_team_name") or ""),
+                )
+            except Exception as _da_answer_exc:  # the summary must never take the page down
+                st.caption(f"Pick summary unavailable: {type(_da_answer_exc).__name__}")
+            import ui_hierarchy as _u1
+
+            _u1.section_label(st, "Explore more · settings, team needs, full recommendations, scarcity and roster heatmap")
+        _da_answer_done = True
         recs = recs_ranked.head(int(draft_top_n)).copy()
         recs = ensure_top_raw_value_in_recommendations(
             recs,
@@ -21052,6 +21179,12 @@ elif active_page == "Draft Assistant Simulator":
         maybe_flush_deferred_draft_assistant_autosave(st, st.session_state)
     except ImportError:
         pass
+    if not _da_answer_done:
+        import ui_hierarchy as _u1
+
+        with da_answer_slot:
+            _u1.answer_card(st, "No recommendations yet",
+                            "Rankings need market data and your draft settings. See the messages below.", tone="warn")
     _render_consolidated_page_diagnostics(active_page)
     _page_perf_end(active_page)
     save_page_state(active_page)
@@ -21066,6 +21199,7 @@ elif active_page == "Draft Room Simulator":
     render_section_header("🧾 Draft Room Simulator", draft_tools.purpose(active_page), compact=True)
     render_page_guide(active_page)
     draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
+    room_answer_slot = st.container()  # U4: filled at the end, once the board is known
     apply_pending_page_transfer(active_page)
     _prepare_and_show_draft_shared_settings(
         active_page,
@@ -21098,20 +21232,34 @@ elif active_page == "Draft Room Simulator":
     render_shared_scoring_consistency_check(yearly_df, market_df, key_suffix="draft_room")
 
     try:
-        from draft_import_pipeline import render_draft_room_import_block, render_import_pending_banner
+        from draft_import_pipeline import (
+            ENTRY_DRAFT_ROOM,
+            draft_room_import_widget_key,
+            has_active_draft_import_upload,
+            render_draft_room_import_block,
+            render_import_pending_banner,
+        )
 
         render_import_pending_banner(st, st.session_state)
-        render_draft_room_import_block(
-            st,
-            st.session_state,
-            read_table_fn=read_uploaded_table_cached,
-            pool_fn=_draft_room_pool_for_import_validation,
-            remove_drafted_from_queue_fn=_auto_remove_drafted_from_queue,
-            render_preview_table_fn=lambda df, **kw: render_output_table(
-                clean_ui_columns(df),
-                **kw,
-            ),
+        # U4: the import sits in its own section above the tabs (never inside a tab, which
+        # resets on rerun). It opens while an upload is under review, or from Import Draft.
+        _import_pending = has_active_draft_import_upload(
+            st.session_state, entry_point=ENTRY_DRAFT_ROOM, widget_key=draft_room_import_widget_key(st.session_state)
         )
+        if _import_pending:
+            st.session_state.pop("_u4_draft_import_open", None)
+        with st.expander("Import existing draft", expanded=bool(_import_pending or st.session_state.get("_u4_draft_import_open"))):
+            render_draft_room_import_block(
+                st,
+                st.session_state,
+                read_table_fn=read_uploaded_table_cached,
+                pool_fn=_draft_room_pool_for_import_validation,
+                remove_drafted_from_queue_fn=_auto_remove_drafted_from_queue,
+                render_preview_table_fn=lambda df, **kw: render_output_table(
+                    clean_ui_columns(df),
+                    **kw,
+                ),
+            )
     except Exception as _import_block_exc:
         st.error(f"Draft import section failed to load: {_import_block_exc}")
 
@@ -21808,6 +21956,18 @@ elif active_page == "Draft Room Simulator":
                     f"(compared with other teams in this draft room)."
                 )
 
+    with room_answer_slot:
+        try:
+            _render_u4_draft_room_answer(
+                _session_draft_board_df(), room_df=room_df, your_team=str(your_team or ""),
+                team_names=room_team_names, team_count=room_team_count, rounds=room_rounds,
+            )
+        except Exception as _room_answer_exc:  # the summary must never take the board down
+            st.caption(f"Draft summary unavailable: {type(_room_answer_exc).__name__}")
+        import ui_hierarchy as _u1
+
+        _u1.section_label(st, "Explore more · import, board, queue, rosters, grades and league setup")
+
     if developer_mode_enabled():
         try:
             from page_diagnostics import inline_diagnostics_enabled
@@ -21832,6 +21992,10 @@ elif active_page == DRAFT_LAB_PAGE:
     render_section_header("🧪 Draft Lab / Simulation", draft_tools.purpose(active_page), compact=True)
     render_page_guide(active_page)
     draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
+    lab_answer_slot = st.container()  # U4: the result first, then Run, then the model controls
+    lab_run_slot = st.container()
+    with lab_run_slot:
+        import ui_hierarchy as _u1_lab
     apply_pending_page_transfer(active_page)
     _prepare_and_show_draft_shared_settings(
         active_page,
@@ -21855,6 +22019,7 @@ elif active_page == DRAFT_LAB_PAGE:
             pass
     except ImportError:
         pass
+    _u1_lab.section_label(st, "Explore more · simulation settings, how the model works, full results and exports")
     st.markdown(
         """
         <div class="section-card">
@@ -21878,55 +22043,56 @@ elif active_page == DRAFT_LAB_PAGE:
         prepare_draft_lab_page_widgets(st.session_state)
     except ImportError:
         pass
-    with mobile_wrap_row(st, "draft-lab-top-filters"):
-        lc1, lc2, lc3, lc4 = st.columns(4)
-    with lc1:
-        def _draft_sim_setting_changed():
-            try:
-                from draft_lab_state import ensure_draft_lab_widget_keys
+    with st.expander("Simulation settings", expanded=not bool(st.session_state.get("draft_lab_results"))):
+        with mobile_wrap_row(st, "draft-lab-top-filters"):
+            lc1, lc2, lc3, lc4 = st.columns(4)
+        with lc1:
+            def _draft_sim_setting_changed():
+                try:
+                    from draft_lab_state import ensure_draft_lab_widget_keys
 
-                ensure_draft_lab_widget_keys(st.session_state)
-            except ImportError:
-                pass
-            try:
-                from shared_draft_context import on_draft_settings_changed
+                    ensure_draft_lab_widget_keys(st.session_state)
+                except ImportError:
+                    pass
+                try:
+                    from shared_draft_context import on_draft_settings_changed
 
-                on_draft_settings_changed(
-                    st.session_state,
-                    source_page=DRAFT_LAB_PAGE,
-                    lookback_key="draft_lab_window",
-                    style_key="draft_lab_projection_style",
-                    format_key="draft_lab_scoring_type",
-                )
-            except ImportError:
-                pass
-            save_page_state("Draft Lab / Simulation")
-            force_save_baseball_state(st, reason="draft_sim_settings_changed")
-            _record_settings_onchange("Draft Lab / Simulation", "_draft_sim_setting_changed", "draft_sim_settings_changed")
+                    on_draft_settings_changed(
+                        st.session_state,
+                        source_page=DRAFT_LAB_PAGE,
+                        lookback_key="draft_lab_window",
+                        style_key="draft_lab_projection_style",
+                        format_key="draft_lab_scoring_type",
+                    )
+                except ImportError:
+                    pass
+                save_page_state("Draft Lab / Simulation")
+                force_save_baseball_state(st, reason="draft_sim_settings_changed")
+                _record_settings_onchange("Draft Lab / Simulation", "_draft_sim_setting_changed", "draft_sim_settings_changed")
 
-        validate_state_option("draft_lab_window", _lab_window_options, 3)
-        lab_window = st.selectbox("Projection Window", _lab_window_options, key="draft_lab_window",
-                                  on_change=_draft_sim_setting_changed)
-    with lc2:
-        validate_state_option("draft_lab_scoring_type", _lab_format_options, "5x5 Roto")
-        lab_format = st.selectbox("Fantasy Format", _lab_format_options, key="draft_lab_scoring_type",
-                                  on_change=_draft_sim_setting_changed)
-    with lc3:
-        validate_state_option("draft_lab_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
-        lab_projection_style = st.selectbox("Projection Style", list(PROJECTION_STYLE_OPTIONS),
-                                            key="draft_lab_projection_style",
-                                            on_change=_draft_sim_setting_changed)
-    with lc4:
-        _lab_picks_default = int(st.session_state.get("draft_lab_picks_per_team") or 15)
-        validate_number_state("draft_lab_picks_per_team", _lab_picks_default, min_value=1, max_value=25)
-        lab_picks_per_team = st.number_input(
-            "Picks per Team",
-            min_value=1,
-            max_value=25,
-            step=1,
-            key="draft_lab_picks_per_team",
-            on_change=_draft_sim_setting_changed,
-        )
+            validate_state_option("draft_lab_window", _lab_window_options, 3)
+            lab_window = st.selectbox("Projection Window", _lab_window_options, key="draft_lab_window",
+                                      on_change=_draft_sim_setting_changed)
+        with lc2:
+            validate_state_option("draft_lab_scoring_type", _lab_format_options, "5x5 Roto")
+            lab_format = st.selectbox("Fantasy Format", _lab_format_options, key="draft_lab_scoring_type",
+                                      on_change=_draft_sim_setting_changed)
+        with lc3:
+            validate_state_option("draft_lab_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
+            lab_projection_style = st.selectbox("Projection Style", list(PROJECTION_STYLE_OPTIONS),
+                                                key="draft_lab_projection_style",
+                                                on_change=_draft_sim_setting_changed)
+        with lc4:
+            _lab_picks_default = int(st.session_state.get("draft_lab_picks_per_team") or 15)
+            validate_number_state("draft_lab_picks_per_team", _lab_picks_default, min_value=1, max_value=25)
+            lab_picks_per_team = st.number_input(
+                "Picks per Team",
+                min_value=1,
+                max_value=25,
+                step=1,
+                key="draft_lab_picks_per_team",
+                on_change=_draft_sim_setting_changed,
+            )
 
     with st.expander("How the Draft Model Works", expanded=False):
         st.markdown(
@@ -21955,7 +22121,8 @@ elif active_page == DRAFT_LAB_PAGE:
 
     render_shared_scoring_consistency_check(yearly_df, lab_market_df, key_suffix="draft_lab")
 
-    run_lab = st.button("Run 4-Team Draft Simulation", type="primary", key="run_draft_lab_simulation")
+    with lab_run_slot:
+        run_lab = st.button("Run 4-Team Draft Simulation", type="primary", key="run_draft_lab_simulation")
     if run_lab:
         try:
             from page_perf import perf_end, perf_timer
@@ -22078,7 +22245,10 @@ elif active_page == DRAFT_LAB_PAGE:
                 pass
 
     if is_dataframe_empty(lab_draft):
-        st.info("Click **Run 4-Team Draft Simulation** to generate the draft lab, or analyze a completed live draft from **Live Draft Room**.")
+        with lab_answer_slot:
+            _u1_lab.answer_card(st, "No simulation yet",
+                                "Run 4-Team Draft Simulation to see which draft strategy builds the strongest roster, "
+                                "or analyze a completed draft from Live Draft Room.", kicker="Draft Lab")
     else:
         rank_col = "Projected Team Rank"
         team_col = "Fantasy Team"
@@ -22091,24 +22261,12 @@ elif active_page == DRAFT_LAB_PAGE:
             picks_per_team = lab_handoff.get("picks_per_team")
             if picks_per_team is None:
                 picks_per_team = st.session_state.get("draft_lab_picks_per_team")
-            w1, w2, w3, w4, w5 = st.columns(5)
-            w1.metric("Projected Best Draft", winner[team_col])
-            if "Average Expected Fantasy Value" in sorted_summary.columns:
-                _avg_grade = pd.to_numeric(winner.get("Average Expected Fantasy Value"), errors="coerce")
-                if pd.notna(_avg_grade):
-                    _avg_display = float(_avg_grade) * 100.0 if float(_avg_grade) <= 1.5 else float(_avg_grade)
-                    w2.metric("Average Player Grade", fmt_score_2(_avg_display))
-                else:
-                    w2.metric("Average Player Grade", "—")
-            elif "Total Projected Fantasy Value" in sorted_summary.columns:
-                _team_score = pd.to_numeric(winner.get("Total Projected Fantasy Value"), errors="coerce")
-                if pd.notna(_team_score):
-                    w2.metric("Draft Lab Team Score", fmt_score_2(float(_team_score)))
-                else:
-                    w2.metric("Draft Lab Team Score", "—")
-            w3.metric("Total Picks", f"{len(lab_draft):,}")
-            w4.metric("Teams", str(team_count) if team_count is not None else "—")
-            w5.metric("Picks / Team", str(picks_per_team) if picks_per_team is not None else "—")
+            with lab_answer_slot:
+                try:
+                    _render_u4_draft_lab_answer(sorted_summary, lab_pick_analysis, total_picks=len(lab_draft),
+                                                from_live=lab_source == "Live Draft Room")
+                except Exception as _lab_answer_exc:  # the summary must never take the results down
+                    st.caption(f"Result summary unavailable: {type(_lab_answer_exc).__name__}")
         else:
             st.info("Run the draft simulation to generate team rankings.")
 
