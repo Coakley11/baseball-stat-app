@@ -494,7 +494,7 @@ def _bench(frame: Any, rec: Any) -> list[str]:
 @tool(
     "get_lineup_report",
     capability="fantasy_team",
-    description="The Lineup Assistant's report for a team you manage: recommended starters by slot (Save Lineup's slot "
+    description="The lineup report (Lineup & Trades page) for a team you manage: recommended starters by slot (Save Lineup's slot "
                 "rule), slots the roster can't fill, warnings, and the diagnosis (strongest/weakest areas).",
     parameters={"properties": {"team": {"type": "string"}}},
     reuses=("fantasy_read_api.lineup_report", "fantasy_read_api.loaded_roster_stats"),

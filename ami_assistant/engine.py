@@ -50,7 +50,10 @@ def ask(
     dataset: BaseballDataset | None = None,
     provider: AnswerProvider | None = None,
     remember: bool = True,
+    entitlement: Any = None,
 ) -> AmiResponse:
+    """``entitlement``: the plan snapshot the host already resolved this run (the same one its page
+    gate uses). Tools tied to an enforced plan feature check it; AMI never resolves it itself."""
     t_all = time.perf_counter()
     timings: dict[str, float] = {}
     q = str(question or "").strip()[:MAX_QUESTION_CHARS]
@@ -74,7 +77,7 @@ def ask(
         results: dict[str, list[Any]] = {}
         tool_log: list[dict[str, Any]] = []
         for call in plan.calls:
-            res = REGISTRY.call(call.name, call.args, dataset=dataset, session=session)
+            res = REGISTRY.call(call.name, call.args, dataset=dataset, session=session, entitlement=entitlement)
             results.setdefault(call.name, []).append(res)
             tool_log.append({"tool": call.name, "ok": res.ok, "ms": res.elapsed_ms, "error_code": res.error_code})
         timings["tools_ms"] = _ms(t)

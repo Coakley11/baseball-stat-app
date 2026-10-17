@@ -42,8 +42,8 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(
         "app_guidance", "App guidance", LIVE,
         ("What can I do on this page?", "How do I compare two players?", "Where do I make a trade?",
-         "What does Decision Score mean?", "How do I use Historical Explorer?"),
-        ("explain_app_page", "explain_metric", "find_feature"),
+         "What does Decision Score mean?", "Should I use Draft Lab or Draft Assistant?"),
+        ("explain_app_page", "explain_metric", "find_feature", "explain_draft_tools"),
     ),
     Capability(
         "historical_analytics", "Historical analytics", LIVE,

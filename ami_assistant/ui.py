@@ -47,10 +47,11 @@ def _debug_visible(st: Any) -> bool:
         return False
 
 
-def _ask(st: Any, question: str, active_page: str, yearly_df: Any) -> None:
+def _ask(st: Any, question: str, active_page: str, yearly_df: Any, entitlement: Any = None) -> None:
     from ami_assistant.engine import ask
 
-    resp = ask(question, session_state=st.session_state, active_page=active_page, yearly_df=yearly_df)
+    resp = ask(question, session_state=st.session_state, active_page=active_page, yearly_df=yearly_df,
+               entitlement=entitlement)
     st.session_state[LAST_KEY] = {
         "question": question,
         "answer": resp.answer,
@@ -70,7 +71,7 @@ def _clear(session: Any) -> None:
     session.pop(LAST_KEY, None)
 
 
-def _panel_body(st: Any, active_page: str, yearly_df: Any) -> None:
+def _panel_body(st: Any, active_page: str, yearly_df: Any, entitlement: Any = None) -> None:
     st.markdown("### 💬 Ask AMI")
     st.caption("Instant answers from this app's stats and help pages. AMI is read-only — it never changes your drafts or teams.")
     ctx = build_ami_context(st.session_state, active_page)
@@ -91,7 +92,7 @@ def _panel_body(st: Any, active_page: str, yearly_df: Any) -> None:
             st.warning("Type a question first.")
         else:
             with st.spinner("AMI is looking that up…"):
-                _ask(st, q, active_page, yearly_df)
+                _ask(st, q, active_page, yearly_df, entitlement)
 
     last = st.session_state.get(LAST_KEY)
     if isinstance(last, dict) and last.get("answer"):
@@ -120,21 +121,22 @@ def _panel_body(st: Any, active_page: str, yearly_df: Any) -> None:
 
 
 @_streamlit.fragment
-def _panel(active_page: str, yearly_df: Any) -> None:
+def _panel(active_page: str, yearly_df: Any, entitlement: Any = None) -> None:
     """Runs as a fragment, so asking reruns only this panel. Fragment-only reruns skip the
     caller's try/except, hence the guard here too."""
     try:
-        _panel_body(_streamlit, active_page, yearly_df)
+        _panel_body(_streamlit, active_page, yearly_df, entitlement)
     except Exception:
         log.exception("AMI assistant panel failed on %s", active_page)
         _streamlit.caption("AMI is unavailable right now.")
 
 
-def render_ami_assistant_panel(st: Any, *, active_page: str, yearly_df: Any = None) -> None:
-    """Never breaks the page: any failure shows a short notice instead."""
+def render_ami_assistant_panel(st: Any, *, active_page: str, yearly_df: Any = None, entitlement: Any = None) -> None:
+    """Never breaks the page: any failure shows a short notice instead. ``entitlement``: the
+    page gate's own snapshot for this run (see tools.registry.entitlement_block)."""
     try:
         with st.sidebar:
-            _panel(active_page, yearly_df)
+            _panel(active_page, yearly_df, entitlement)
     except Exception:
         log.exception("AMI assistant panel failed on %s", active_page)
         try:

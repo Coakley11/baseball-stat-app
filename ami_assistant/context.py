@@ -22,6 +22,16 @@ def display_label(page_key: str) -> str:
     """The page name the user sees (U1 labels), emoji stripped."""
     return _EMOJI.sub("", NAV_LABELS.get(page_key, page_key)).strip() or page_key
 
+
+PAGE_REF = re.compile(r"\[\[([^\]]+)\]\]")
+
+
+def render_page_names(text: str) -> str:
+    """Help prose names pages as ``[[<page key>]]``; the user reads the current label, so a page
+    rename never needs a prose edit (``display_label`` is the only place labels come from)."""
+    return PAGE_REF.sub(lambda m: display_label(m.group(1)), str(text or ""))
+
+
 # page → {field: session key(s), first present wins}
 PAGE_KEYS: dict[str, dict[str, tuple[str, ...]]] = {
     "Historical Explorer": {

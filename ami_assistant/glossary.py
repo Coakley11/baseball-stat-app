@@ -18,11 +18,18 @@ from draft_score_display import DISPLAY_PICK_SCORE, DISPLAY_PLAYER_GRADE, DISPLA
 from fantasy_read_api import ELIGIBILITY_RULE, OFFICIAL_BASIS, OFFICIAL_LABEL, SNAPSHOT_BASIS
 from fantasy_standings_snapshot import SNAPSHOT_LABEL
 from page_guides import PAGE_GUIDES
+from rate_stat_qualification import AB_PER_TEAM_GAME, MULTI_SEASON_CAP_AB
+from trend_slopes import RATE_SHRINK_PA
+from u3_answers import ROSTER_ISSUE_LABEL, TRADE_VALUE_LABELS, TRADE_VALUE_THRESHOLD
+from ui_hierarchy import COMMISSIONER_PANEL_LABEL
 
 # The Waiver Wire card caption, quoted verbatim (tests pin it to fantasy_waiver_wire_ui.py).
 CONSIDER_ADD_CAPTION = "“Consider add” puts the player in the move planner below. Nothing changes until you confirm a move."
-from rate_stat_qualification import AB_PER_TEAM_GAME, MULTI_SEASON_CAP_AB
-from trend_slopes import RATE_SHRINK_PA
+# The Commissioner Tools panel's own caption (ui_hierarchy.commissioner_panel), quoted verbatim and
+# test-pinned; the proxy banner wording is fantasy_team_control.TeamControl.banner().
+COMMISSIONER_CAPTION = ("Only the commissioner sees these. They change the league, or a team no manager has claimed yet, "
+                        "and are logged as commissioner actions.")
+COMMISSIONER_TOOLS = re.sub(r"^[^\w]+", "", COMMISSIONER_PANEL_LABEL).strip()
 
 
 @dataclass(frozen=True)
@@ -66,7 +73,7 @@ def _terms() -> list[Term]:
         ),
         Term(
             "fantasy_edge", "Fantasy Edge",
-            SCORE_TOOLTIPS["Fantasy Edge"] + " On Fantasy Sleepers & Busts: Fantasy Edge = Market Rank − Model Rank "
+            SCORE_TOOLTIPS["Fantasy Edge"] + " On [[Fantasy Sleepers & Busts]]: Fantasy Edge = Market Rank − Model Rank "
             "(positive = sleeper, negative = bust risk).",
             ("Fantasy Sleepers & Busts", "Draft Assistant Simulator"),
             ("fantasy edge", "edge"), "draft_score_display.SCORE_TOOLTIPS + Sleepers column glossary",
@@ -156,16 +163,52 @@ def _terms() -> list[Term]:
             "fantasy_waiver_wire_ui caption",
         ),
         Term(
+            "lineup_status", "Lineup status",
+            "The status on Lineup & Trades says where this week's lineup stands: **Not saved** (nothing saved for the "
+            "week yet), **Draft** (not submitted: a lineup is being built but hasn't been saved with Save Lineup) or "
+            "**Saved and locked** (saved with Save Lineup, and the week is locked). A week that locks with nothing "
+            "saved just says **Locked**. AMI can explain these, but it "
+            "can't see your lineup's current status yet; the page shows it at the top.",
+            ("Fantasy Lineup Assistant",),
+            ("lineup status", "not saved", "saved and locked", "not submitted", "draft (not submitted)"),
+            "u3_answers.lineup_answer",
+        ),
+        Term(
+            "trade_verdict", "Trade verdict",
+            f"The Trade Center's verdict card. **{TRADE_VALUE_LABELS['Good for your team']}**: the need-weighted "
+            f"category value difference is above +{TRADE_VALUE_THRESHOLD} for you. "
+            f"**{TRADE_VALUE_LABELS['Bad for your team']}**: below −{TRADE_VALUE_THRESHOLD}. "
+            f"**{TRADE_VALUE_LABELS['Neutral']}**: in between. **{ROSTER_ISSUE_LABEL}** replaces those when the trade "
+            "would leave your roster unable to fill a required lineup slot, or over the roster size (the card still "
+            "says how it rates on value alone). Open roster spots are only noted, since a waiver add fills them.",
+            ("Fantasy Lineup Assistant",),
+            ("trade verdict", "verdict card", "creates roster issue", "roster issue", "favors your team",
+             "favors the other team", "balanced trade"),
+            "u3_answers.trade_verdict",
+        ),
+        Term(
+            "commissioner_tools", COMMISSIONER_TOOLS,
+            f"A separate **{COMMISSIONER_TOOLS}** panel, shown only to the league's commissioner. {COMMISSIONER_CAPTION} "
+            "Your own team's lineup, trades and waivers stay outside it. The commissioner can act only for a team "
+            "nobody has claimed; while doing that, a banner says “Commissioner acting for <team>”. Acting for a team "
+            "doesn't make it yours, and a claimed team is managed only by its owner.",
+            ("Fantasy Lineup Assistant", "Waiver Wire / Add-Drop Center"),
+            ("commissioner tools", "commissioner panel", "commissioner controls", "commish tools",
+             "commissioner acting for"),
+            "ui_hierarchy.commissioner_panel + fantasy_team_control",
+        ),
+        Term(
             "explore_more", "Explore more",
-            "Redesigned pages lead with the answer and one chart; the filters, full tables, advanced settings and "
-            "methodology are still there, under the **Explore more** label further down the page.",
+            "Redesigned pages lead with the answer, then one chart, then the next step. The filters, full tables, "
+            "advanced settings and detailed charts are still there, under the **Explore more** label further down the "
+            "page. What's kept there differs by page; ask “Where are the advanced filters?” on a page to hear its list.",
             ("Historical Explorer", "Leaderboards", "Fantasy Standings Tracker", "Waiver Wire / Add-Drop Center"),
             ("explore more",),
             "docs/U1_UI_HIERARCHY.md",
         ),
         Term(
             "sleeper", "Sleeper / Bust",
-            "On Fantasy Sleepers & Busts, a sleeper is a player the app's model ranks well ahead of the market (ADP); "
+            "On [[Fantasy Sleepers & Busts]], a sleeper is a player the app's model ranks well ahead of the market (ADP); "
             "a bust risk is one the market ranks well ahead of the model. Fantasy Edge = Market Rank − Model Rank.",
             ("Fantasy Sleepers & Busts",), ("sleeper", "sleepers", "bust", "busts", "bust risk"), "Sleepers page guide + column glossary",
         ),

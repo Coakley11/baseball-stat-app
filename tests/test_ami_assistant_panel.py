@@ -40,7 +40,7 @@ class PanelTests(unittest.TestCase):
         at = AppTest.from_function(_panel_app, default_timeout=60)
         at.session_state["compare_players"] = ["Aaron Judge", "Juan Soto"]
         at.run()
-        self.assertIn("Looking at: Comparison Tool · Aaron Judge, Juan Soto", _sidebar_text(at))
+        self.assertIn("Looking at: Compare Players · Aaron Judge, Juan Soto", _sidebar_text(at))  # U2 label
         self.ask(at, "Who had the higher OPS from 2022 to 2025?")
         text = _sidebar_text(at)
         self.assertIn("You asked:", text)

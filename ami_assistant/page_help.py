@@ -1,8 +1,9 @@
 """Authoritative app-help registry: what each page is for and how to use it.
 
 Purpose / when / outputs / tips are the app's own Quick Guide copy (``page_guides.PAGE_GUIDES``).
-Pages redesigned in U1 also carry their one-line page heading (``headline``), which is what the
-user reads first. Controls are the exact labels on that page; tests check every label against
+Redesigned pages (U1–U3) also carry their one-line page heading (``headline``), which is what the
+user reads first; the draft tools use ``draft_tools.DRAFT_TOOLS``, the one source of "what each
+draft tool is for". Controls are the exact labels on that page; tests check every label against
 the page's source (``sources``), so help can't describe a control that doesn't exist.
 
 Navigation follows the real app:
@@ -10,6 +11,9 @@ Navigation follows the real app:
 - page keys stay authoritative;
 - the label the user sees comes from ``nav_groups.NAV_LABELS``;
 - the section is ``nav_groups.PAGE_SECTION`` (desktop sidebar headings, the phone "Section" pills).
+
+Prose names pages as ``[[<page key>]]`` and is shown through ``context.render_page_names``, so a
+page rename changes every sentence at once. A test fails if prose spells a page's old name.
 """
 
 from __future__ import annotations
@@ -17,13 +21,32 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from ami_assistant.context import display_label
+from ami_assistant.context import display_label, render_page_names
+from draft_tools import DRAFT_TOOLS, HOME_DRAFT_CHOICES
+from draft_tools import purpose as draft_tool_purpose
+from home_page import DRAFT_TASK, TASKS
 from nav_groups import HOME_PAGE, PAGE_SECTION
 from page_guides import PAGE_GUIDES
+from u2_answers import COMPARE_METRICS
+from u3_answers import ROSTER_ISSUE_LABEL, TRADE_VALUE_LABELS
+from valuation_scores import VALUATION_MIN_AB
 
 # Where each page's controls live: "streamlit_app.py" means that page's branch of the
 # main page router; other files are the modules the page delegates to.
 MONOLITH = "streamlit_app.py"
+
+# Home's buttons (home_page.render_home): the task cards, the draft card's four choices (U3A),
+# and the "My league" block, which shows different buttons with and without a league. A test
+# renders Home in both states and compares the buttons it actually draws with these.
+HOME_TASK_BUTTONS = tuple(button for _icon, title, _line, button, _page in TASKS if title != DRAFT_TASK)
+HOME_DRAFT_BUTTONS = tuple(label for label, _page in HOME_DRAFT_CHOICES)
+HOME_LEAGUE_BUTTONS = ("League standings", "Set lineup", "Waiver wire", "Start or import a draft", "Open saved drafts")
+DRAFT_TOOL_PAGES = tuple(page for page, _icon, _name, _purpose in DRAFT_TOOLS)
+# The visible statuses on Lineup & Trades (u3_answers.lineup_answer) and the Trade Center
+# verdict card (u3_answers.trade_verdict); tests check them against those functions.
+LINEUP_STATUSES = ("Not saved", "Draft", "Saved and locked")
+TRADE_VERDICTS = (*TRADE_VALUE_LABELS.values(), ROSTER_ISSUE_LABEL)
+_EXPLORE_CLAUSE = re.compile(r"\s*;?\s*([^;]*?)\s+under Explore more\.?$", re.I)
 
 
 @dataclass(frozen=True)
@@ -39,10 +62,14 @@ class PageHelp:
     aliases: tuple[str, ...] = ()
     # Only for pages without a Quick Guide entry: the page's own heading copy (test-pinned).
     purpose_fallback: str = ""
-    # U1 pages: the line under the page title (``ui_hierarchy.page_head``), test-pinned.
+    # Redesigned pages: the line under the page title (``ui_hierarchy.page_head``), test-pinned.
     headline: str = ""
-    # U1 pages: what sits under the "Explore more" label (advanced controls, full tables).
+    # What sits under the page's "Explore more" label, when the guide's own outputs line
+    # doesn't already say (U1 pages). Page-specific: pages differ in what they keep there.
     explore_more: str = ""
+    # How to read the page's answer, where a wrong reading is easy (e.g. "no overall winner").
+    # Each line restates the page's own rule; tests pin the rule to its source.
+    reading: tuple[str, ...] = ()
 
     @property
     def guide(self) -> dict:
@@ -58,7 +85,20 @@ class PageHelp:
 
     @property
     def purpose(self) -> str:
-        return str(self.headline or self.guide.get("purpose") or self.purpose_fallback)
+        text = str(self.headline or draft_tool_purpose(self.key) or self.guide.get("purpose") or self.purpose_fallback)
+        return text[:1].upper() + text[1:]
+
+    @property
+    def explore_more_text(self) -> str:
+        """What's under Explore more on this page, or "" if the page has no such section."""
+        if self.explore_more:
+            return render_page_names(self.explore_more)
+        m = _EXPLORE_CLAUSE.search(self.outputs)
+        if not m:
+            return ""
+        lead = re.sub(r"\s+first$", "", self.outputs[: m.start()].strip().rstrip(";,"))
+        return (f"The page leads with {lead[:1].lower() + lead[1:]}. Under **Explore more**: {m.group(1)}."
+                if lead else f"Under **Explore more**: {m.group(1)}.")
 
     @property
     def when(self) -> str:
@@ -85,13 +125,11 @@ class PageHelp:
 PAGES: tuple[PageHelp, ...] = (
     PageHelp(
         HOME_PAGE,
-        # Task card buttons come from home_page.TASKS; the rest are Home's league actions.
-        controls=("Find a player", "Compare players", "Start a mock draft", "Open my league", "League standings",
-                  "Set lineup", "Waiver wire", "Start or import a draft", "Open saved drafts"),
+        controls=HOME_TASK_BUTTONS + HOME_DRAFT_BUTTONS + HOME_LEAGUE_BUTTONS,
         questions=("What can I do here?", "Where should I go to compare players?", "How do I manage my league?",
-                   "Where do I start a draft?"),
+                   "How do I start a draft?"),
         next_steps=("Pick a task card, or use the sidebar sections: Players, Insights, Draft, My League, Account.",),
-        sources=("home_page.py",),
+        sources=("home_page.py", "draft_tools.py"),
         aliases=("home", "home page", "start page"),
         headline="Look up players, spot who's rising, prepare for your draft and run your fantasy league.",
     ),
@@ -102,7 +140,7 @@ PAGES: tuple[PageHelp, ...] = (
                   "Hall of Fame Case Mode", "Player actions"),
         questions=("Who was the best hitter in 1927?", "Show me Babe Ruth's best seasons", "What does this page show?"),
         terms=("qualified", "ops"),
-        next_steps=("Use **Player actions** to send a player to Comparison Tool or Trend Value.",),
+        next_steps=("Use **Player actions** to send a player to [[Comparison Tool]] or [[Trend Value]].",),
         aliases=("historical", "explorer", "season search"),
         headline="The best single seasons for any years and stat, back to 1871.",
         explore_more=("The page leads with the answer and a top-10 chart. Order, the advanced filters, Hall of Fame "
@@ -115,8 +153,10 @@ PAGES: tuple[PageHelp, ...] = (
         questions=("Who has the most career HR since 2010?", "Who are the best shortstops over the last five years?",
                    "What is the qualified minimum?"),
         terms=("qualified",),
-        next_steps=("Turn on **Hall of Fame Case Mode** to build a Hall of Fame case for a player in the results.",),
+        next_steps=("Turn on **Hall of Fame Case Mode** (under Explore more) to build a Hall of Fame case for a player in "
+                    "the results.",),
         aliases=("career", "career totals"),
+        headline="Who produced the most over a span of seasons, and that career in numbers.",
     ),
     PageHelp(
         "Leaderboards",
@@ -139,10 +179,16 @@ PAGES: tuple[PageHelp, ...] = (
                   "Year-by-Year Comparison", "Career Totals", "Advanced: Statistical significance test",
                   "Player A", "Player B", "Stats to Test", "Significance Level"),
         questions=("Compare Aaron Judge and Juan Soto.", "Who had more power, Judge or Soto?",
-                   "What can I do on this page?"),
+                   "What does Compare Players show me?"),
         terms=("ops",),
-        next_steps=("Open **Advanced: Statistical significance test** to check whether a gap is more than noise.",),
-        aliases=("compare", "comparison"),
+        next_steps=("Open **Advanced: Statistical significance test** (under Explore more) to check whether a gap is "
+                    "more than noise.",),
+        # "Comparison Tool" (the page key, and its label before U2) stays understood.
+        aliases=("compare", "comparison", "compare players", "comparison tool"),
+        headline="Two or three hitters side by side over the same seasons: who leads where.",
+        reading=(f"The answer says who leads in each of {', '.join(COMPARE_METRICS[:-1])} and {COMPARE_METRICS[-1]} "
+                 "over the same seasons, with head-to-head bars.",
+                 "There's no overall winner: which player is better depends on which categories matter to you."),
     ),
     PageHelp(
         "Trend Value",
@@ -151,8 +197,10 @@ PAGES: tuple[PageHelp, ...] = (
                   "Stats to graph for selected player", "Select players to view trend", "Choose Trend Stat to Plot"),
         questions=("Who is improving fastest in OPS?", "How has Mookie Betts's power changed?", "What is Trend Value?"),
         terms=("trend_value",),
-        next_steps=("Check the breakout and decline lists below the table, then confirm on Valuation or Comparison Tool.",),
+        next_steps=("Check the breakout and decline lists (under Explore more), then confirm on [[Valuation]] or "
+                    "[[Comparison Tool]].",),
         aliases=("trend", "trends", "trend value"),
+        headline="Who is rising or falling in a stat over recent seasons.",
     ),
     PageHelp(
         "Valuation",
@@ -160,8 +208,14 @@ PAGES: tuple[PageHelp, ...] = (
                   "Valuation blend weights", "Weight: Current Score", "Weight: Trend Score", "Valuation Insight Summaries"),
         questions=("Who are the best values?", "Is Gunnar Henderson undervalued?", "What does Valuation Score mean?"),
         terms=("valuation_score", "current_score", "trend_score"),
-        next_steps=("Shortlist names here, then confirm on Trend Value or Comparison Tool.",),
+        next_steps=("Shortlist names here, then confirm on [[Trend Value]] or [[Comparison Tool]].",),
         aliases=("valuation", "value"),
+        headline="One score per hitter: recent production blended with trend, then ranked.",
+        reading=("Valuation Score blends two parts, production (Current Score) and trend (Trend Score), using the "
+                 "weights you set under **Valuation blend weights**.",
+                 "A Trend Score near zero means about flat. It is never a decline.",
+                 f"Hitters only: players with fewer than {VALUATION_MIN_AB} at-bats in the window (pitchers' batting "
+                 "lines) aren't valued."),
     ),
     PageHelp(
         "ML Predictions",
@@ -170,6 +224,10 @@ PAGES: tuple[PageHelp, ...] = (
                   "Sort Projections By", "Fantasy Position", "Model Accuracy Check", "Next-Season ML Projections"),
         questions=("What can I do on this page?", "What does ML Predictions show?"),
         aliases=("ml", "machine learning", "predictions", "projections"),
+        headline="Next-season projections for each hitter, from a model trained on past seasons.",
+        reading=("Confidence (High / Medium / Risky) is the model's label from sample size and volatility, not a "
+                 "statistical range. The page also shows the model's held-out accuracy for that stat (MAE, R²); "
+                 "there is no prediction interval, because the model doesn't produce one.",),
     ),
     PageHelp(
         "Fantasy Sleepers & Busts",
@@ -178,7 +236,10 @@ PAGES: tuple[PageHelp, ...] = (
                   "Use Draft Room needs and remove already drafted players", "Position & age filters"),
         questions=("Who are the best sleepers?", "Which market favorites are bust risks?"),
         terms=("sleeper", "fantasy_edge", "player_grade"),
-        aliases=("sleepers", "busts", "sleeper", "bust"),
+        aliases=("sleepers", "busts", "sleeper", "bust", "sleepers & busts", "sleepers and busts"),
+        headline="Where our model and the draft market disagree, in both directions.",
+        reading=("Fantasy Edge = Market Rank − Model Rank. A sleeper is a player our model ranks ahead of the market; "
+                 "a bust risk, behind it. These are ranking gaps, not predictions of what will happen.",),
     ),
     PageHelp(
         "Draft Room Simulator",
@@ -186,7 +247,7 @@ PAGES: tuple[PageHelp, ...] = (
                   "Undo Last Pick", "Save Draft Board Now", "Team to View", "Post-draft roster grades"),
         questions=("How do I log picks for my draft?", "What does Relative Draft Grade mean?"),
         terms=("relative_draft_grade",),
-        next_steps=("Open Draft Assistant Simulator for pick recommendations based on the board you entered.",),
+        next_steps=("Open [[Draft Assistant Simulator]] for pick recommendations based on the board you entered.",),
         aliases=("draft room", "draft board"),
     ),
     PageHelp(
@@ -197,7 +258,8 @@ PAGES: tuple[PageHelp, ...] = (
                   "Top players left by market value", "Inspect player", "Position scarcity & roster category heatmap"),
         questions=("Who should I draft next?", "Why is this player recommended?", "What positions am I weak at?"),
         terms=("decision_score", "player_grade", "roster_fit", "fantasy_edge"),
-        next_steps=("Enter picks in Draft Room Simulator (or draft live in Live Draft Room) to keep recommendations current.",),
+        next_steps=("Enter picks in [[Draft Room Simulator]] (or draft live in [[Live Draft Room]]) to keep recommendations "
+                    "current.",),
         aliases=("draft assistant", "assistant"),
     ),
     PageHelp(
@@ -217,7 +279,7 @@ PAGES: tuple[PageHelp, ...] = (
                   "Save completed draft team"),
         questions=("How do I start a live draft?", "How do I run a live draft with friends?", "Who should I take when I'm on the clock?"),
         terms=("decision_score", "player_grade", "roster_fit"),
-        next_steps=("When the draft ends, use **Save completed draft team** so it appears in Saved Draft Library.",),
+        next_steps=("When the draft ends, use **Save completed draft team** so it appears in [[Saved Draft Library]].",),
         aliases=("live draft", "live"),
     ),
     PageHelp(
@@ -225,7 +287,8 @@ PAGES: tuple[PageHelp, ...] = (
         controls=("Set Active Draft", "Draft name", "Clear Active", "New draft name", "Save rename",
                   "Create Shared League", "Export Draft", "Review Draft Results"),
         questions=("How do I make a saved draft my active team?", "How do I share a league with friends?"),
-        next_steps=("Set an Active Draft so League Standings, Lineup Assistant and Waiver Wire use that team.",),
+        next_steps=("Set an Active Draft so [[Fantasy Standings Tracker]], [[Fantasy Lineup Assistant]] and "
+                    "[[Waiver Wire / Add-Drop Center]] use that team.",),
         sources=("draft_archive_ui.py",),
         aliases=("library", "saved drafts", "saved draft"),
     ),
@@ -255,13 +318,25 @@ PAGES: tuple[PageHelp, ...] = (
                   "Start-Sit recommendations", "Recommended Starters", "Build & Analyze", "Offers & Activity",
                   "Trade partner to search", "Players I Give", "Players I Receive", "Analyze Exact Trade",
                   "Propose Trade", "Confirm and send proposal", "Find Trade Ideas", "Manage team"),
-        questions=("Which positions are empty?", "Do I have an eligible shortstop?",
+        questions=("Which positions are empty?", "What does Draft mean on my lineup?",
                    "What does Use Suggested Lineup do?"),
-        terms=("use_suggested_lineup", "eligibility"),
-        next_steps=("Use **View Waiver Options For Open Positions** to jump to Waiver Wire for an empty slot.",),
+        terms=("lineup_status", "use_suggested_lineup", "trade_verdict", "commissioner_tools", "eligibility"),
+        next_steps=("Use **View Waiver Options For Open Positions** to jump to [[Waiver Wire / Add-Drop Center]] for an "
+                    "empty slot.",),
         sources=(MONOLITH, "fantasy_trade_ideas.py", "fantasy_weekly_lineup_ui.py", "fantasy_lineup_management_ui.py",
                  "fantasy_trade_center_ui.py"),
-        aliases=("lineup", "lineup assistant", "start sit", "start-sit", "trade center", "trades", "set lineup"),
+        # Older names ("Lineup Assistant", "Trade Center") stay understood.
+        aliases=("lineup", "lineup assistant", "start sit", "start-sit", "trade center", "trades", "set lineup",
+                 "lineup & trades", "lineup and trades"),
+        # The heading is "<team>: set this week's starters, or build and check a trade."
+        headline="set this week's starters, or build and check a trade.",
+        reading=("The answer at the top says whether this week's lineup is complete, what is missing, and its "
+                 f"status: {', '.join(LINEUP_STATUSES[:-1])} or {LINEUP_STATUSES[-1]}.",
+                 "**Use Suggested Lineup** fills the board with the recommended starters. It does not save or lock; "
+                 "press **Save Lineup** after reviewing.",
+                 "Trades are built, checked and proposed in **Trade Center** on this page. Its verdict card reads "
+                 f"{', '.join(TRADE_VERDICTS[:-1])} or {TRADE_VERDICTS[-1]}.",
+                 "Commissioners also see a separate **Commissioner Tools** panel."),
     ),
     PageHelp(
         "Waiver Wire / Add-Drop Center",
@@ -269,7 +344,7 @@ PAGES: tuple[PageHelp, ...] = (
                   "Filter available players by position", "Add player (waiver pool)", "Drop player (your roster)",
                   "Add to Pending Moves", "Confirm Pending Waiver Moves", "Plan Add"),
         questions=("Which position needs the most help?", "What does Consider add do?", "Where can I gain a point?"),
-        terms=("consider_add",),
+        terms=("consider_add", "commissioner_tools"),
         sources=(MONOLITH, "fantasy_waiver_wire_ui.py"),
         aliases=("waiver", "waivers", "waiver wire", "add drop", "add/drop", "free agents", "check waivers"),
         headline="Who to pick up for your team, and why.",
@@ -304,8 +379,8 @@ class HowTo:
 HOWTOS: tuple[HowTo, ...] = (
     HowTo(
         "compare_players", "Compare players", "Comparison Tool",
-        ("Pick up to three names in **Select up to 3 players**.",
-         "Read **Year-by-Year Comparison** and **Career Totals** for the side-by-side numbers.",
+        ("Pick up to three names in **Select up to 3 players**; the answer at the top says who leads where.",
+         "Under Explore more, **Year-by-Year Comparison** and **Career Totals** have the side-by-side numbers.",
          "Open **Chart options** to change **Choose stat to plot** or limit the **Season Year Range**.",
          "Optional: **Advanced: Statistical significance test** checks whether a gap is more than noise."),
         ("compare", "comparison", "side by side", "versus"),
@@ -316,7 +391,8 @@ HOWTOS: tuple[HowTo, ...] = (
         "make_trade", "Make a trade", "Fantasy Lineup Assistant",
         ("Choose the **Trade Center** section at the top of the page.",
          "In **Build & Analyze**, pick a **Trade partner to search**, then **Players I Give** and **Players I Receive**.",
-         "Click **Analyze Exact Trade** to see the category impact (or **Find Trade Ideas** for suggestions).",
+         "Click **Analyze Exact Trade**: the verdict card says " + ", ".join(TRADE_VERDICTS[:-1]) + " or "
+         + TRADE_VERDICTS[-1] + " (or use **Find Trade Ideas** for suggestions).",
          "Click **Propose Trade**, then **Confirm and send proposal**. Replies show under **Offers & Activity**."),
         ("trade", "trades", "propose", "offer"),
         ("Trade Center", "Build & Analyze", "Trade partner to search", "Players I Give", "Players I Receive",
@@ -335,8 +411,10 @@ HOWTOS: tuple[HowTo, ...] = (
     ),
     HowTo(
         "set_lineup", "Set your weekly lineup", "Fantasy Lineup Assistant",
-        ("Choose the **Lineup Management** section.", "Pick the **Week**, arrange starters and bench, then **Save Lineup**.",
-         "**Start-Sit recommendations** shows who the app would start."),
+        ("Choose the **Lineup Management** section; the answer at the top says whether the lineup is complete and "
+         f"its status ({', '.join(LINEUP_STATUSES)}).",
+         "Pick the **Week**, arrange starters and bench, then **Save Lineup**.",
+         "**Start-Sit recommendations** (under Explore more) shows who the app would start."),
         ("lineup", "start", "sit", "starting", "bench", "start/sit"),
         ("Lineup Management", "Week", "Save Lineup", "Start-Sit recommendations"),
         note="AMI can't change your lineup for you.",
@@ -380,8 +458,8 @@ HOWTOS: tuple[HowTo, ...] = (
     ),
     HowTo(
         "draft_help", "Get draft pick recommendations", "Draft Assistant Simulator",
-        ("Enter picks in Draft Room Simulator (or draft in Live Draft Room).",
-         "On Draft Assistant Simulator, read **Next pick recommendations**; adjust "
+        ("Enter picks in [[Draft Room Simulator]] (or draft in [[Live Draft Room]]).",
+         "On [[Draft Assistant Simulator]], read **Next pick recommendations**; adjust "
          "**Position & category priorities (auto-filled; override if needed)** if needed.",
          "Use **Inspect player** for the score breakdown."),
         ("draft recommendation", "draft recommendations", "who to draft", "draft help", "draft assistant"),
@@ -391,7 +469,7 @@ HOWTOS: tuple[HowTo, ...] = (
         "live_draft", "Run a live draft", "Live Draft Room",
         ("Fill in **League & Draft Settings** and **Roster Settings**.",
          "Click **Start New Live Draft**; friends join with the **Room code**.",
-         "When it ends, **Save completed draft team** to keep it in Saved Draft Library."),
+         "When it ends, **Save completed draft team** to keep it in [[Saved Draft Library]]."),
         ("live draft", "join a draft", "join my draft", "friends join", "room code", "draft with friends",
          "live draft room"),
         ("League & Draft Settings", "Roster Settings", "Start New Live Draft", "Room code", "Save completed draft team"),
@@ -431,18 +509,32 @@ HOWTOS: tuple[HowTo, ...] = (
     ),
     HowTo(
         "manage_league", "Manage your league", "Fantasy Standings Tracker",
-        ("Start at **League Standings** (Home's **Open my league** card goes there): your place and what to do next.",
+        ("Start at **[[Fantasy Standings Tracker]]** (Home's **Open my league** card goes there): your place and "
+         "what to do next.",
          "Use **Set lineup**, **Check waivers** and **Explore trades** under the answer for the next step.",
-         "Leagues are picked, renamed and shared in **Saved Draft Library** (also under My League)."),
+         "Leagues are picked, renamed and shared in **[[Saved Draft Library]]** (also under My League)."),
         ("manage my league", "manage league", "my league", "run my league", "fantasy league"),
         ("Set lineup", "Check waivers", "Explore trades"),
     ),
     HowTo(
-        "start_draft", "Start a draft", "Draft Assistant Simulator",
-        ("For a mock draft with pick-by-pick advice, use Home's **Start a mock draft** card (Draft Assistant Simulator).",
-         "For a real draft with friends, go to **Live Draft Room** (under Draft) and start a new live draft.",
-         "To log a draft you already ran, use **Draft Room Simulator** (Home's **Start or import a draft**)."),
-        ("start a draft", "start draft", "mock draft", "begin a draft", "new draft", "do a draft"),
+        # Home's draft card (draft_tools.HOME_DRAFT_CHOICES), each with the tool's own purpose line.
+        "start_draft", "Start a draft", HOME_PAGE,
+        (f"On **Home**, the **{DRAFT_TASK}** card has {len(HOME_DRAFT_CHOICES)} choices:",
+         *(f"**{label}** opens [[{page}]]: {draft_tool_purpose(page)}" for label, page in HOME_DRAFT_CHOICES),
+         f"For pick-by-pick advice while you draft, open [[Draft Assistant Simulator]] (under "
+         f"{PAGE_SECTION.get('Draft Assistant Simulator', '')}): " + draft_tool_purpose("Draft Assistant Simulator")),
+        ("start a draft", "start draft", "mock draft", "begin a draft", "new draft", "do a draft", "draft choices"),
+        HOME_DRAFT_BUTTONS,
+    ),
+    HowTo(
+        "open_saved_draft", "Open a saved draft", "Saved Draft Library",
+        (f"On **Home**, choose **Open Saved Drafts** on the **{DRAFT_TASK}** card (or open [[Saved Draft Library]] "
+         f"under {PAGE_SECTION.get('Saved Draft Library', '')}).",
+         draft_tool_purpose("Saved Draft Library"),
+         "**Set Active Draft** makes one the league that your league pages use."),
+        ("old draft", "open a draft", "open a saved draft", "open saved draft", "past draft", "previous draft",
+         "find my draft", "saved drafts"),
+        ("Set Active Draft",),
     ),
     HowTo(
         "use_suggested_lineup", "Use Suggested Lineup", "Fantasy Lineup Assistant",
@@ -464,7 +556,7 @@ HOWTOS: tuple[HowTo, ...] = (
     ),
     HowTo(
         "upgrade", "Upgrade or manage a subscription", "Pricing & Upgrade",
-        ("Open Pricing & Upgrade to compare Free and Pro.", "Use **Upgrade to Pro** or **Manage Subscription**."),
+        ("Open [[Pricing & Upgrade]] to compare Free and Pro.", "Use **Upgrade to Pro** or **Manage Subscription**."),
         ("upgrade", "subscription", "pricing", "pro plan", "cancel"),
         ("Upgrade to Pro", "Manage Subscription"),
     ),
@@ -478,15 +570,38 @@ def _norm(text: str) -> str:
 
 
 def find_page(text: str) -> PageHelp | None:
-    """Page named in ``text`` (exact page name first, then the longest alias)."""
+    """Page named in ``text``: its key or current label first (a rename is understood at once),
+    then the longest alias (old names live there)."""
     low = _norm(text)
     best: tuple[int, PageHelp] | None = None
     for page in PAGES:
-        for name in (page.key, *page.aliases):
+        exact = {page.key, page.label}
+        for name in (*exact, *page.aliases):
             n = _norm(name).strip()
-            if n and f" {n} " in low and (best is None or len(n) > best[0]):
-                best = (len(n) + (100 if name == page.key else 0), page)
+            score = len(n) + (100 if name in exact else 0)
+            if n and f" {n} " in low and (best is None or score > best[0]):
+                best = (score, page)
     return best[1] if best else None
+
+
+def find_draft_tools(text: str) -> list[str]:
+    """The draft tools named in ``text`` (page keys, in DRAFT_TOOLS order). Longest names win and
+    don't overlap, so "Live Draft Room" isn't also read as "Draft Room"."""
+    low = _norm(text)
+    names = []
+    for page, _icon, name, _purpose in DRAFT_TOOLS:
+        ph = PAGE_HELP[page]
+        for n in {page, ph.label, name, *(a for a in ph.aliases if " " in a)}:
+            names.append((_norm(n).strip(), page))
+    taken: list[tuple[int, int]] = []
+    found: set[str] = set()
+    for n, page in sorted(names, key=lambda x: -len(x[0])):
+        for m in re.finditer(rf"(?<= ){re.escape(n)}(?= )", low):
+            span = (m.start(), m.end())
+            if not any(a < span[1] and span[0] < b for a, b in taken):
+                taken.append(span)
+                found.add(page)
+    return [page for page in DRAFT_TOOL_PAGES if page in found]
 
 
 def find_howto(text: str) -> HowTo | None:

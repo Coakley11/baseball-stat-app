@@ -161,7 +161,9 @@ read fresh on each question.
 
 ## 8. Interfaces still missing (needed from the regular branch)
 
-AMI does not parse persistence internals to fill these gaps.
+AMI does not parse persistence internals to fill these gaps. The U2/U3 slice adds
+`week_lineup_status` and `roster_issues` to this list; the current list is in
+`docs/AMI_U2_U3_RECONCILIATION.md` §7.
 
 1. **Waiver reader.** `fantasy_read_api.waiver_recommendations_view(session, team, position=None)`
    returning the Waiver Wire's own ranked adds and drops

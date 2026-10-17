@@ -24,7 +24,7 @@ from ami_assistant.conversation import ConversationState
 from ami_assistant.data import BaseballDataset
 from ami_assistant.fantasy_router import F_WAIVER, FANTASY_INTENTS, fantasy_plan
 from ami_assistant.glossary import match_term
-from ami_assistant.page_help import PAGE_HELP, find_howto, find_page
+from ami_assistant.page_help import PAGE_HELP, find_draft_tools, find_howto, find_page
 from ami_assistant.plans import Plan, ToolCall
 from ami_assistant.players import (
     AMBIGUOUS,
@@ -46,6 +46,7 @@ CAPABILITIES = "capabilities"
 HELP_HOWTO = "help_howto"
 HELP_PAGE = "help_page"
 HELP_METRIC = "help_metric"
+HELP_DRAFT_TOOLS = "help_draft_tools"
 DRAFT_NEXT = "draft_next"
 DRAFT_EXPLAIN = "draft_explain"
 DRAFT_NEEDS = "draft_needs"
@@ -121,6 +122,17 @@ _HOWTO = re.compile(
     r"|show me how|steps to|walk me through|is there a way to)\b"
 )
 _DEFINITION = re.compile(r"^(?:what(?:'s| is| are| does| do)|whats|define|explain|meaning of|what do you mean by)\b")
+# "Where did the full table go?" — redesigned pages keep advanced controls under Explore more.
+_EXPLORE = re.compile(
+    r"\b(?:explore more|advanced (?:filters?|controls?|options|settings|charts?|stats)|full (?:table|ranking|rankings|list|"
+    r"standings)|detailed (?:table|filters?|stats|breakdown|charts?)|more (?:filters|options|details?|controls|settings)|"
+    r"(?:filters?|tables?|charts?|controls|settings|scatter ?plots?|weights) (?:go|went|gone|moved))\b")
+_EXPLORE_ASK = re.compile(r"\b(?:where|find|happened|under|went|gone|moved|see|show)\b")
+_DRAFT_TOOLS_ASK = re.compile(r"\bdraft (?:tools?|pages?|options|choices)\b|\bwhich draft (?:tool|page)\b")
+# "What does Draft mean on my lineup?" — the Lineup page's status, not drafting players.
+_LINEUP_STATUS = re.compile(r"\b(?:not saved|saved and locked|not submitted|lineup status)\b"
+                            r"|\bdraft\b.*\blineup\b|\blineup\b.*\bdraft\b")
+_MEANING = re.compile(r"\bmean(?:s|ing)?\b|^(?:what(?:'s| is| are| does)|whats|explain)\b")
 _PROJECTION = re.compile(r"\b(?:project(?:s|ed|ion|ions)?|forecast\w*|predict(?:s|ed|ion|ions)?|next season|next year)\b")
 _CAPABILITIES = re.compile(r"\b(?:what can you (?:do|answer|help)|what do you know|who are you|what are you|what should i ask)\b|^help$")
 _PAGE_TASKS = re.compile(r"\bwhat (?:can|should|do) i (?:do|see|find|use) (?:on|in)\b")
@@ -337,6 +349,10 @@ class Router:
         if named is not None:
             return Plan(HELP_PAGE, PRODUCT_HELP, [ToolCall("explain_app_page", {"page": named.key})], page=named.key)
 
+        help_plan = self._ui_help_plan(q, low, ctx)
+        if help_plan is not None:
+            return help_plan
+
         # League questions before the live-MLB check: "how would my current roster rank right now?"
         # is about the user's league, not today's MLB.
         fplan = fantasy_plan(q, ctx, conv)
@@ -376,7 +392,8 @@ class Router:
             page = find_page(q)
             # "What does Valuation mean?" names a page; "What does Valuation Score mean?" a metric.
             words = " " + re.sub(r"[^a-z0-9]+", " ", low) + " "
-            page_named = page is not None and f" {page.key.lower()} " in words and len(page.key) >= term_len
+            page_named = page is not None and len(page.key) >= term_len and any(
+                f" {re.sub(r'[^a-z0-9]+', ' ', name.lower()).strip()} " in words for name in (page.key, page.label))
             if term is not None and not page_named:
                 return Plan(HELP_METRIC, PRODUCT_HELP, [ToolCall("explain_metric", {"term": term.key})])
             if page is not None:
@@ -396,6 +413,25 @@ class Router:
                                 stats, focus, position)
 
     # ---- help / actions ------------------------------------------------------------
+    @staticmethod
+    def _ui_help_plan(q: str, low: str, ctx: AmiPageContext) -> Plan | None:
+        """Questions about the redesigned UI itself: the draft tools, Explore more, lineup status."""
+        tools = find_draft_tools(q)
+        if _DRAFT_TOOLS_ASK.search(low) or len(tools) >= 2:
+            return Plan(HELP_DRAFT_TOOLS, PRODUCT_HELP, [ToolCall("explain_draft_tools", {"pages": tools if len(tools) >= 2 else []})])
+        if _EXPLORE.search(low) and _EXPLORE_ASK.search(low):
+            page = find_page(q)
+            used = []
+            if page is None and ctx.page in PAGE_HELP:
+                page, used = PAGE_HELP[ctx.page], ["page"]
+            if page is None:
+                return Plan(HELP_METRIC, PRODUCT_HELP, [ToolCall("explain_metric", {"term": "explore_more"})])
+            return Plan(HELP_PAGE, PRODUCT_HELP, [ToolCall("explain_app_page", {"page": page.key})], page=page.key,
+                        focus="explore_more", used_context=used)
+        if _LINEUP_STATUS.search(low) and _MEANING.search(low.strip()):
+            return Plan(HELP_METRIC, PRODUCT_HELP, [ToolCall("explain_metric", {"term": "lineup_status"})])
+        return None
+
     @staticmethod
     def _action_plan(q: str, action: str) -> Plan:
         howto = find_howto(q)

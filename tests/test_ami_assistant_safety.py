@@ -7,6 +7,8 @@ import copy
 import unittest
 from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
+from unittest import mock
 
 from ami_assistant.capabilities import FUTURE_ACTION_KEYS
 from ami_assistant.context import PAGE_KEYS, build_ami_context
@@ -16,6 +18,7 @@ from ami_assistant.provider import ComposeRequest, build_model_payload
 from ami_assistant.router import Router
 from ami_assistant.safety import find_secrets, looks_secret, scrub
 from ami_assistant.tools import REGISTRY
+from ami_assistant.tools import registry as codes
 from ami_assistant.tools.registry import ToolRegistry, ToolResult, ToolSpec
 from tests.ami_assistant_fixtures import realistic_draft_session, synthetic_dataset
 
@@ -203,6 +206,82 @@ class ConversationStorageTests(unittest.TestCase):
         src = (ROOT / "baseball_persistent_state.py").read_text(encoding="utf-8")
         self.assertNotIn("_ami_assistant", src)
         self.assertNotIn("ami_assistant", (ROOT / "page_state.py").read_text(encoding="utf-8"))
+
+class EntitlementGateTests(unittest.TestCase):
+    """AMI applies the UI's own plan gate to tools tied to a plan feature, and only when the app enforces it."""
+
+    DRAFT_TOOLS = {"get_draft_recommendations", "explain_draft_recommendation", "get_team_needs"}
+    ARGS = {"explain_draft_recommendation": {"player": "Bobby Witt"}}
+
+    def _enforce(self, *features):
+        import baseball_monetization as bm
+
+        return mock.patch.object(bm, "ENFORCED_PAGE_FEATURES", MappingProxyType({f"page {i}": f for i, f in enumerate(features)}))
+
+    def test_tagged_tools_are_advanced_draft_intelligence(self) -> None:
+        from baseball_monetization import FeatureId
+
+        tagged = {s.name: s.feature for s in REGISTRY.specs() if s.feature}
+        self.assertEqual(tagged, {name: FeatureId.ADVANCED_DRAFT_INTELLIGENCE.value for name in self.DRAFT_TOOLS})
+
+    def test_nothing_changes_while_nothing_is_enforced(self) -> None:
+        from ami_assistant.tools.registry import enforced_features
+
+        self.assertEqual(enforced_features(), frozenset())  # the app enforces no feature today
+        for name in self.DRAFT_TOOLS:
+            self.assertEqual(REGISTRY.call(name, self.ARGS.get(name, {}), session={}, entitlement=None).error_code,
+                             codes.MISSING_DRAFT_CONTEXT)
+
+    def test_enforced_feature_uses_the_same_gate_as_the_ui(self) -> None:
+        from baseball_monetization import EntitlementSnapshot, FeatureId, Plan, SubscriptionStatus, can_use_feature
+
+        free = EntitlementSnapshot(plan=Plan.FREE, ready=True, status=SubscriptionStatus.AUTHENTICATED_FREE)
+        pro = EntitlementSnapshot(plan=Plan.PRO, ready=True, status=SubscriptionStatus.ACTIVE)
+        loading = EntitlementSnapshot(ready=False, status=SubscriptionStatus.UNKNOWN)
+        with self._enforce(FeatureId.ADVANCED_DRAFT_INTELLIGENCE):
+            for name in self.DRAFT_TOOLS:
+                args = self.ARGS.get(name, {})
+                self.assertEqual(REGISTRY.call(name, args, session={}, entitlement=free).error_code, codes.NOT_ENTITLED)
+                self.assertEqual(REGISTRY.call(name, args, session={}, entitlement=loading).error_code, codes.ENTITLEMENT_LOADING)
+                self.assertEqual(REGISTRY.call(name, args, session={}, entitlement=None).error_code, codes.ENTITLEMENT_LOADING)
+                # Pro passes the gate (and then needs a draft, as before).
+                self.assertEqual(REGISTRY.call(name, args, session={}, entitlement=pro).error_code, codes.MISSING_DRAFT_CONTEXT)
+            self.assertFalse(can_use_feature(free, FeatureId.ADVANCED_DRAFT_INTELLIGENCE))  # same answer as the UI's check
+            # Untagged tools are never gated.
+            self.assertTrue(REGISTRY.call("explain_metric", {"term": "ops"}, entitlement=free).ok)
+            answer = ask("Who should I draft next?", session_state={}, active_page="Draft Assistant Simulator",
+                         dataset=synthetic_dataset(), entitlement=free).answer
+            self.assertIn("part of Pro", answer)
+        with self._enforce(FeatureId.ML_PREDICTIONS):  # another feature enforced: draft tools stay open
+            self.assertEqual(REGISTRY.call("get_team_needs", {}, session={}, entitlement=free).error_code,
+                             codes.MISSING_DRAFT_CONTEXT)
+
+    def test_ami_never_resolves_entitlements_itself(self) -> None:
+        # Resolving may call the billing provider; AMI only uses the snapshot the host already has.
+        for path in PKG.rglob("*.py"):
+            src = path.read_text(encoding="utf-8")
+            self.assertNotIn("resolve_trusted_entitlement", src, path.name)
+            self.assertNotIn("current_entitlement", src, path.name)
+
+
+class HelpQuestionsAreReadOnlyTests(unittest.TestCase):
+    def test_u2_u3_help_questions_leave_the_session_unchanged(self) -> None:
+        import pickle
+
+        session = secret_session()
+        session["compare_players"] = ["Aaron Judge", "Juan Soto"]
+        before = pickle.dumps({k: session[k] for k in sorted(session)})
+        ds = synthetic_dataset()
+        for page, q in (("Home", "What can I do on Home?"), ("Home", "How do I start a draft?"),
+                        ("Home", "What's the difference between Draft Assistant and Draft Lab?"),
+                        ("Home", "Where is the Comparison Tool?"), ("Comparison Tool", "What does Compare Players show me?"),
+                        ("Valuation", "Where are the advanced filters?"),
+                        ("Fantasy Lineup Assistant", "What are Commissioner Tools?"),
+                        ("Fantasy Lineup Assistant", "What does Draft mean on my lineup?"),
+                        ("Fantasy Lineup Assistant", "What does Creates roster issue mean?"),
+                        ("Fantasy Lineup Assistant", "Use suggested lineup for me")):
+            ask(q, session_state=session, active_page=page, dataset=ds, remember=False)
+        self.assertEqual(pickle.dumps({k: session[k] for k in sorted(session)}), before)
 
 
 if __name__ == "__main__":

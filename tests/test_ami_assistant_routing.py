@@ -284,6 +284,58 @@ class FollowUpTests(unittest.TestCase):
         ask("Tell me about Babe Ruth", session_state=session, dataset=ds)
         self.assertEqual(session["_ami_assistant_conversation"]["player_ids"], ["ruthba01"])
 
+class U2U3HelpRoutingTests(unittest.TestCase):
+    """Questions about the redesigned UI reach the help tool that answers them (never a guess)."""
+
+    def test_old_and_new_page_names(self) -> None:
+        old = route("Where is the Comparison Tool?")
+        self.assertEqual((old.intent, old.calls[0].args), (r.HELP_HOWTO, {"task": "compare_players"}))
+        self.assertIn("**Compare Players**", ask("Where is the Comparison Tool?", session_state={}, dataset=synthetic_dataset()).answer)
+        new = route("What does Compare Players show me?")
+        self.assertEqual((new.intent, new.calls[0].args), (r.HELP_PAGE, {"page": "Comparison Tool"}))
+        self.assertEqual(route("What is Lineup & Trades?").calls[0].args, {"page": "Fantasy Lineup Assistant"})
+        self.assertEqual(route("What does Sleepers & Busts show?").calls[0].args, {"page": "Fantasy Sleepers & Busts"})
+
+    def test_home_and_draft_tools(self) -> None:
+        self.assertEqual(route("How do I start a draft?").calls[0].args, {"task": "start_draft"})
+        self.assertEqual(route("Where do I open an old draft?").calls[0].args, {"task": "open_saved_draft"})
+        everything = route("What's the difference between the draft tools?")
+        self.assertEqual((everything.intent, everything.calls[0].args), (r.HELP_DRAFT_TOOLS, {"pages": []}))
+        pair = route("Should I use Draft Lab or Draft Assistant?")
+        self.assertEqual(pair.calls[0].args, {"pages": ["Draft Assistant Simulator", "Draft Lab / Simulation"]})
+        # "Live Draft Room" is one tool, not also "Draft Room" (Draft Room Simulator).
+        live = route("What's the difference between Live Draft Room and Draft Lab?")
+        self.assertEqual(live.calls[0].args, {"pages": ["Live Draft Room", "Draft Lab / Simulation"]})
+        # Draft intelligence questions are unchanged.
+        self.assertEqual(route("Who should I draft next?", page="Draft Assistant Simulator").intent, r.DRAFT_NEXT)
+
+    def test_explore_more(self) -> None:
+        here = route("Where are the advanced filters?", page="Valuation")
+        self.assertEqual((here.intent, here.focus, here.calls[0].args), (r.HELP_PAGE, "explore_more", {"page": "Valuation"}))
+        named = route("Where did the full table go on Career Totals?", page="Home")
+        self.assertEqual(named.calls[0].args, {"page": "Career Totals"})
+        nowhere = route("Where are the advanced filters?")
+        self.assertEqual(nowhere.calls[0].args, {"term": "explore_more"})
+        # Page-specific answers, including a page that has no Explore more.
+        valuation = ask("Where are the advanced filters?", session_state={}, dataset=synthetic_dataset(), active_page="Valuation").answer
+        self.assertIn("Under **Explore more**: the full table", valuation)
+        draft_room = ask("Where are the advanced filters?", session_state={}, dataset=synthetic_dataset(), active_page="Draft Room Simulator").answer
+        self.assertIn("doesn't have an Explore more section", draft_room)
+
+    def test_lineup_trade_and_commissioner_wording(self) -> None:
+        for question, term in (("What does Draft mean on my lineup?", "lineup_status"),
+                               ("What does Saved and locked mean?", "lineup_status"),
+                               ("What does Creates roster issue mean?", "trade_verdict"),
+                               ("What does Favors the other team mean?", "trade_verdict"),
+                               ("What are Commissioner Tools?", "commissioner_tools")):
+            plan = route(question, page="Fantasy Lineup Assistant")
+            self.assertEqual((plan.intent, plan.calls[0].args), (r.HELP_METRIC, {"term": term}), question)
+        answer = ask("What are Commissioner Tools?", session_state={}, dataset=synthetic_dataset(), active_page="Fantasy Lineup Assistant").answer
+        self.assertIn("doesn't make it yours", answer)
+        self.assertIn("You'll see it on: Lineup & Trades, Waiver Wire", answer)
+        # Drafting players is still drafting.
+        self.assertEqual(route("Draft Bobby Witt for me").intent, r.ACTION)
+
 
 if __name__ == "__main__":
     unittest.main()

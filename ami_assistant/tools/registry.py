@@ -4,6 +4,12 @@ A ``ToolSpec`` with ``mutates=True`` cannot be registered — future write actio
 *declared* in ``capabilities.FUTURE_ACTIONS`` but never callable from AMI. When they are
 wired they must call the same canonical transaction functions as the UI, after explicit
 user confirmation (see docs/AMI_ASSISTANT_FOUNDATION.md).
+
+Plans: a tool may name the ``baseball_monetization.FeatureId`` it belongs to (``feature``).
+When the app enforces that feature, AMI applies the same check the UI does
+(``can_use_feature`` on the entitlement snapshot the host already resolved this run). AMI never
+resolves entitlements itself (that may call the billing provider) and fails closed when the
+snapshot is missing or still loading. While nothing is enforced, nothing changes.
 """
 
 from __future__ import annotations
@@ -23,6 +29,8 @@ NOT_WIRED = "not_wired"
 NOT_IN_POOL = "not_in_pool"
 BAD_ARGUMENT = "bad_argument"
 INTERNAL_ERROR = "internal_error"
+NOT_ENTITLED = "not_entitled"
+ENTITLEMENT_LOADING = "entitlement_loading"
 
 
 @dataclass
@@ -61,6 +69,7 @@ class ToolSpec:
     needs_session: bool = False
     mutates: bool = False
     wired: bool = True
+    feature: str = ""  # baseball_monetization.FeatureId value, when the tool belongs to a plan feature
 
     def schema(self) -> dict[str, Any]:
         """Provider-neutral JSON-schema description (works for Claude tools or OpenAI functions)."""
@@ -95,10 +104,14 @@ class ToolRegistry:
     def schemas(self, *, wired_only: bool = True) -> list[dict[str, Any]]:
         return [s.schema() for s in self.specs() if s.wired or not wired_only]
 
-    def call(self, name: str, args: dict[str, Any], *, dataset: Any = None, session: Any = None) -> ToolResult:
+    def call(self, name: str, args: dict[str, Any], *, dataset: Any = None, session: Any = None,
+             entitlement: Any = None) -> ToolResult:
         spec = self._tools.get(name)
         if spec is None:
             return fail(name, BAD_ARGUMENT, f"No AMI tool named {name!r}.")
+        blocked = entitlement_block(spec.feature, entitlement)
+        if blocked is not None:
+            return fail(name, blocked[0], blocked[1], feature=spec.feature)
         kwargs = dict(args or {})
         if spec.needs_dataset:
             kwargs["dataset"] = dataset
@@ -115,6 +128,31 @@ class ToolRegistry:
         return result
 
 
+def enforced_features() -> frozenset[str]:
+    """Features the app enforces right now: the ones its page gate checks
+    (``ENFORCED_PAGE_FEATURES``), plus a feature-level set if the app defines one."""
+    try:
+        import baseball_monetization as bm
+    except ImportError:
+        return frozenset()
+    feats = list(bm.ENFORCED_PAGE_FEATURES.values()) + list(getattr(bm, "ENFORCED_FEATURES", ()) or ())
+    return frozenset(str(getattr(f, "value", f)) for f in feats)
+
+
+def entitlement_block(feature: str, entitlement: Any) -> tuple[str, str] | None:
+    """(error code, message) when the UI's own gate would refuse ``feature``; None otherwise."""
+    if not feature or feature not in enforced_features():
+        return None
+    from baseball_monetization import FeatureId, can_use_feature, feature_definition
+
+    name = feature_definition(FeatureId(feature)).name
+    if entitlement is None or not getattr(entitlement, "ready", False):
+        return ENTITLEMENT_LOADING, f"AMI can't confirm your plan for {name} yet. Try again in a moment."
+    if can_use_feature(entitlement, FeatureId(feature)):
+        return None
+    return NOT_ENTITLED, f"{name} is part of Pro. See Pricing & Upgrade to compare plans."
+
+
 REGISTRY = ToolRegistry()
 
 
@@ -128,6 +166,7 @@ def tool(
     needs_dataset: bool = False,
     needs_session: bool = False,
     wired: bool = True,
+    feature: str = "",
 ) -> Callable[[Callable[..., ToolResult]], Callable[..., ToolResult]]:
     def deco(func: Callable[..., ToolResult]) -> Callable[..., ToolResult]:
         REGISTRY.register(
@@ -141,6 +180,7 @@ def tool(
                 needs_dataset=needs_dataset,
                 needs_session=needs_session,
                 wired=wired,
+                feature=feature,
             )
         )
         return func

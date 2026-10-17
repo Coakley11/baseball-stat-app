@@ -43,7 +43,8 @@ FANTASY_INTENTS = frozenset({F_LEAGUE, F_STANDINGS, F_SNAPSHOT, F_GAINS, F_STREN
                              F_PLAYER_WEEK, F_LINEUP, F_EMPTY, F_ELIGIBLE, F_FIND_ELIGIBLE, F_TRADE, F_WAIVER})
 # Help terms that "what is / what does … mean" questions should explain rather than look up.
 FANTASY_HELP_TERMS = frozenset({"official_standings", "current_roster_snapshot", "use_suggested_lineup",
-                                "consider_add", "eligibility", "explore_more"})
+                                "consider_add", "eligibility", "explore_more", "lineup_status", "trade_verdict",
+                                "commissioner_tools"})
 
 _POS = (r"(?:shortstop|ss|catcher|c|first base(?:man)?|1b|second base(?:man)?|2b|third base(?:man)?|3b|"
         r"outfield(?:er)?|of|util(?:ity)?|dh|designated hitter)")

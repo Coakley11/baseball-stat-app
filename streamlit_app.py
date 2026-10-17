@@ -14788,7 +14788,7 @@ def _force_save_before_ami_return(active_page: str) -> None:
 try:
     from ami_assistant.ui import render_ami_assistant_panel
 
-    render_ami_assistant_panel(st, active_page=active_page, yearly_df=yearly_df)
+    render_ami_assistant_panel(st, active_page=active_page, yearly_df=yearly_df, entitlement=_monetization_snapshot)
 except ImportError:
     pass
 

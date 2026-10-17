@@ -14,11 +14,12 @@ from typing import Any
 from ami_assistant import fantasy_router as fr
 from ami_assistant import router as r
 from ami_assistant.capabilities import CAPABILITIES, DEFERRED, DISABLED, FUTURE_ACTIONS, SNAPSHOT
-from ami_assistant.context import display_label
+from ami_assistant.context import display_label, render_page_names
 from ami_assistant.data import DATA_SOURCE_LABEL
 from ami_assistant.glossary import TERMS
 from ami_assistant.tools.registry import ToolResult
 from fantasy_read_api import ELIGIBILITY_RULE
+from u3_answers import ROSTER_ISSUE_LABEL, TRADE_VALUE_LABELS
 
 RATE = {"BA", "OBP", "SLG", "OPS"}
 STAT_NAMES = {
@@ -164,15 +165,18 @@ class Composer:
 
     def _help_page(self, plan, results) -> str:
         d = _first(results, "explain_app_page").data
+        if plan.focus == "explore_more":
+            return self._explore_more(d)
         lines = [f"**{d['page']}** — {d['purpose']}"]
         if d.get("when"):
             lines.append(f"**When to use it:** {d['when']}")
         if d.get("outputs"):
             lines.append(f"**You'll see:** {d['outputs']}")
         if d.get("tasks"):
-            lines.append("**Start here:**\n" + "\n".join(f"- **{t['title']}** — {t['line']} (button: “{t['button']}”)"
-                                                         for t in d["tasks"]))
-        if d.get("explore_more"):
+            lines.append("**Start here:**\n" + "\n".join(self._home_task(t) for t in d["tasks"]))
+        if d.get("reading"):
+            lines.append("\n".join(f"- {r}" for r in d["reading"]))
+        if d.get("explore_more") and "explore more" not in (d.get("outputs") or "").lower():  # else already said
             lines.append(d["explore_more"])
         if d.get("controls") and not d.get("tasks"):
             lines.append("**Main controls:** " + ", ".join(f"“{c}”" for c in d["controls"][:7] if "{" not in c))
@@ -187,6 +191,34 @@ class Composer:
         for step in d.get("next_steps", [])[:1]:
             lines.append(f"**Next:** {step}")
         lines.append(d["navigation"])
+        return "\n\n".join(lines)
+
+    @staticmethod
+    def _home_task(t: dict[str, Any]) -> str:
+        if t.get("choices"):
+            return f"- **{t['title']}** — {t['line']} Choose:\n" + "\n".join(
+                f"  - **{c['button']}** ({c['page']}): {c['purpose']}" for c in t["choices"])
+        return f"- **{t['title']}** — {t['line']} (button: “{t['button']}”)"
+
+    @staticmethod
+    def _explore_more(d: dict[str, Any]) -> str:
+        """Where the detailed controls went: this page's own Explore more contents, never a generic list."""
+        if d.get("explore_more"):
+            return f"On **{d['page']}**: {d['explore_more']}\n\n{d['navigation']}"
+        controls = ", ".join(f"“{c}”" for c in d.get("controls", [])[:7] if "{" not in c)
+        return (f"**{d['page']}** doesn't have an Explore more section; its filters and tables are on the page itself"
+                + (f" (main controls: {controls})." if controls else ".") + f"\n\n{d['navigation']}")
+
+    def _help_draft_tools(self, plan, results) -> str:
+        d = _first(results, "explain_draft_tools").data
+        head = ("**The draft tools**, and what each one is for:" if d.get("all")
+                else "**" + " vs ".join(t["page"] for t in d["tools"]) + "**:")
+        lines = [head, "\n".join(
+            f"- **{t['page']}** — {t['purpose']}" + (f" (Home: “{t['home_choice']}”)" if t.get("home_choice") else "")
+            for t in d["tools"])]
+        sections = {t["section"] for t in d["tools"] if t.get("section")}
+        where = f"They're under **{sections.pop()}** in the sidebar" if len(sections) == 1 else "They're in the sidebar"
+        lines.append(f"{where}; Home's **{d['home_card']}** card opens the ones with a Home choice.")
         return "\n\n".join(lines)
 
     def _help_metric(self, plan, results) -> str:
@@ -391,7 +423,7 @@ class Composer:
         text += f"\n\n_{d0['method']} {' '.join(d0['page_notes'])}_"
         if re.search(r"\b(?:under|over)valued\b", self.question.lower()):
             text += ("\n\n_Valuation ranks production and trend; it doesn't compare with draft-market price. "
-                     "For model-vs-market gaps (sleepers and bust risks), see Fantasy Sleepers & Busts._")
+                     + render_page_names("For model-vs-market gaps (sleepers and bust risks), see [[Fantasy Sleepers & Busts]]._"))
         return text
 
     def _valuation_board(self, plan, results) -> str:
@@ -552,7 +584,7 @@ class Composer:
 
     def _sleepers(self, plan, results) -> str:
         d = _first(results, "get_sleepers_busts").data
-        lines = ["**Fantasy Sleepers & Busts** (as last shown on that page)"]
+        lines = [f"**{display_label('Fantasy Sleepers & Busts')}** (as last shown on that page)"]
         for label, key in (("Sleepers", "sleepers"), ("Bust risks", "busts")):
             rows = d.get(key) or []
             if rows:
@@ -753,7 +785,7 @@ class Composer:
 
     def _fantasy_lineup(self, plan, results) -> str:
         d = _first(results, "get_lineup_report").data
-        lines = [f"**Recommended starters for {d['team']}** (the Lineup Assistant's picks, Save Lineup's slot rule):"]
+        lines = [f"**Recommended starters for {d['team']}** (the {display_label('Fantasy Lineup Assistant')} page's picks, Save Lineup's slot rule):"]
         lines.append("\n".join(f"- {r['slot']}: {r['player']}" + (f" ({r['call']})" if r.get("call") else "")
                                for r in d.get("recommended") or []))
         if d.get("bench"):
@@ -824,13 +856,20 @@ class Composer:
         elif not slot:
             lines.append("No roster or lineup problems for either team.")
         if d.get("verdict_text"):
-            lines.append(f"Value: {d['verdict_text']}")
+            # The Trade Center card's wording for the engine's own verdict (u3_answers' mapping, not a new judgment).
+            label = TRADE_VALUE_LABELS.get(str(d.get("verdict") or ""), "")
+            lines.append(f"Value{f' — **{label}**' if label else ''}: {d['verdict_text']}")
+            if d.get("legality_warnings"):
+                lines.append(f"_On Trade Center the card reads “{ROSTER_ISSUE_LABEL}” instead when a warning is about "
+                             "your own roster (a required slot it can't fill, or too many players). AMI can't tell "
+                             "which kind each warning is yet._")
         if not d.get("proposal_ok") and d.get("proposal_message"):
             lines.append(f"It couldn't be proposed as is: {d['proposal_message']}")
         access_line = self._access_line(d.get("access"))
         if access_line:
             lines.append(access_line)
-        lines.append(f"_{d['basis']} AMI only evaluates; propose trades in Trade Center._")
+        lines.append(f"_{d['basis']} AMI only evaluates; propose trades in Trade Center on "
+                     f"{display_label('Fantasy Lineup Assistant')}._")
         return "\n\n".join(lines)
 
     def _fantasy_waiver(self, plan, results) -> str:
