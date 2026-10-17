@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,7 +34,8 @@ def auth_required() -> bool:
 def current_user_id(session: dict[str, Any] | None) -> str:
     """Signed-in account id; on a no-auth local install, the local account id."""
     uid = ""
-    if isinstance(session, dict):
+    # Any mapping: in the running app this is Streamlit's SessionStateProxy, which is not a dict.
+    if isinstance(session, Mapping):
         uid = str(session.get("_suite_auth_user_id") or session.get("_suite_cloud_user_id") or "").strip()
     if uid:
         return uid
