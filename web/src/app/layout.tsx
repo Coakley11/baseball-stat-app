@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from "next";
 
 import { AppShell } from "@/components/shell/AppShell";
+import { DataSourceBadge } from "@/components/ui/DataSourceBadge";
+import { BaseballClientProvider } from "@/lib/api";
 
 import "./globals.css";
 
@@ -23,7 +25,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en">
       <body>
-        <AppShell>{children}</AppShell>
+        <BaseballClientProvider>
+          <AppShell sidebarFooter={<DataSourceBadge />} phoneNotice={<DataSourceBadge variant="strip" />}>
+            {children}
+          </AppShell>
+        </BaseballClientProvider>
       </body>
     </html>
   );

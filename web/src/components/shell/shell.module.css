@@ -167,15 +167,24 @@
   position: sticky;
   top: 0;
   z-index: 20;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: saturate(1.4) blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+
+.mobileBar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
   height: var(--header-height);
   padding: 0 var(--gutter);
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
-  backdrop-filter: saturate(1.4) blur(8px);
-  border-bottom: 1px solid var(--border);
+}
+
+.phoneNotice {
+  padding: 3px var(--gutter);
+  background: var(--dev-soft);
+  border-top: 1px solid var(--border);
 }
 
 .headerActions {

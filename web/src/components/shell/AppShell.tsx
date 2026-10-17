@@ -17,8 +17,10 @@ interface AppShellProps {
    * built in WEB-M1); today it carries the data-source notice.
    */
   sidebarFooter?: ReactNode;
-  /** Phone header, left of the Menu button. Reserved for Ask AMI / account; today the data-source badge. */
+  /** Phone header, left of the Menu button. Reserved for Ask AMI / account controls. */
   headerExtras?: ReactNode;
+  /** Slim full-width strip under the phone header (today: the sample-data notice). */
+  phoneNotice?: ReactNode;
 }
 
 /**
@@ -26,7 +28,7 @@ interface AppShellProps {
  * Phones/tablets: compact sticky header + a full-height grouped menu (native modal <dialog>:
  * focus stays inside, Esc closes, focus returns to the Menu button).
  */
-export function AppShell({ children, sidebarFooter, headerExtras }: AppShellProps) {
+export function AppShell({ children, sidebarFooter, headerExtras, phoneNotice }: AppShellProps) {
   const pathname = usePathname();
   const active = activeNavItem(pathname);
   const menuRef = useRef<HTMLDialogElement>(null);
@@ -54,20 +56,23 @@ export function AppShell({ children, sidebarFooter, headerExtras }: AppShellProp
         </aside>
 
         <header className={styles.mobileHeader}>
-          <Brand compact />
-          <div className={styles.headerActions}>
-            {headerExtras}
-            <button
-              type="button"
-              className={styles.menuButton}
-              onClick={openMenu}
-              aria-haspopup="dialog"
-              aria-controls="site-menu"
-            >
-              <MenuIcon />
-              Menu
-            </button>
+          <div className={styles.mobileBar}>
+            <Brand compact />
+            <div className={styles.headerActions}>
+              {headerExtras}
+              <button
+                type="button"
+                className={styles.menuButton}
+                onClick={openMenu}
+                aria-haspopup="dialog"
+                aria-controls="site-menu"
+              >
+                <MenuIcon />
+                Menu
+              </button>
+            </div>
           </div>
+          {phoneNotice && <div className={styles.phoneNotice}>{phoneNotice}</div>}
         </header>
 
         <dialog

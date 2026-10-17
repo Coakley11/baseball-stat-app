@@ -506,6 +506,12 @@
 
 /* -------------------------------------------------------------- dev note */
 
+.sourceStrip {
+  font-size: var(--text-xs);
+  color: var(--dev);
+  line-height: 1.4;
+}
+
 .sourceNote {
   display: flex;
   flex-direction: column;
