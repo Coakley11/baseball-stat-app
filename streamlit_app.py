@@ -957,7 +957,7 @@ def render_global_app_chrome(active_page: str) -> None:
         render_mobile_quick_nav(
             st,
             active_page=active_page,
-            page_options=PAGE_OPTIONS,
+            page_options=PAGE_OPTIONS,  # grouped by mobile_nav_m2 via nav_groups
             page_option_label=page_option_label,
             main_sidebar_page_key=MAIN_SIDEBAR_PAGE_KEY,
             on_sidebar_page_change=_on_sidebar_page_change,
@@ -980,8 +980,13 @@ def render_global_app_chrome(active_page: str) -> None:
         # Active draft: do not spend the first viewport on the brand hero.
         with _ldr_m_hook("ldr-m-brand"):
             st.caption("⚾ Baseball Explorer · Live Draft")
+    elif active_page != "Home" and active_page not in DRAFT_FOCUS_PAGES:
+        # U1: no brand hero or tutorial prompt above page content. Pages open on their own
+        # title; the sidebar logo (and the header icon on phones) still carries the brand.
+        # Home shows the compact brand line and offers the tutorial at its foot.
+        pass
     else:
-        compact = active_page in DRAFT_FOCUS_PAGES
+        compact = active_page in DRAFT_FOCUS_PAGES or active_page == "Home"
         if compact:
             st.markdown("""
 <div class="title-box" style="padding:14px 18px;margin-bottom:12px;">
@@ -997,8 +1002,7 @@ def render_global_app_chrome(active_page: str) -> None:
     </div>
 </div>
 """, unsafe_allow_html=True)
-    if not suppress_tutorial:
-        app_tutorial.render_tutorial_header_bar()
+    # U1: the "New here? Start Tutorial" prompt is rendered at the foot of Home (home_page).
 
 from stat_helpers import fmt_int, fmt_rate_3, normalize_series, safe_numeric_series  # noqa: E402,F401  (shared with the fantasy modules)
 
@@ -12148,6 +12152,9 @@ PAGE_OPTIONS = [
     "Fantasy Lineup Assistant",
     "Waiver Wire / Add-Drop Center",
     "Pricing & Upgrade",
+    # U1: appended (not first) so PAGE_OPTIONS[0] keeps its fallback role; the sidebar lists
+    # pages in nav_groups.NAV_ORDER, where Home comes first.
+    "Home",
 ]
 _PAGE_OPTION_SET = frozenset(PAGE_OPTIONS)
 
@@ -12176,7 +12183,14 @@ PAGE_OPTION_LABELS = {
     "Pricing & Upgrade": "💳 Pricing & Upgrade",
     "Trade Analyzer / Roster Move Assistant": "🔁 Trade Analyzer / Roster Move Assistant",
 }
-_PAGE_LABEL_TO_KEY = {label: key for key, label in PAGE_OPTION_LABELS.items()}
+_PAGE_LABEL_TO_KEY = {label: key for key, label in PAGE_OPTION_LABELS.items()}  # pre-U1 labels stay readable
+try:
+    from nav_groups import NAV_LABELS as _U1_NAV_LABELS
+
+    PAGE_OPTION_LABELS.update(_U1_NAV_LABELS)
+except ImportError:
+    PAGE_OPTION_LABELS["Home"] = "🏠 Home"
+_PAGE_LABEL_TO_KEY.update({label: key for key, label in PAGE_OPTION_LABELS.items()})
 
 
 def page_option_label(page_key: str) -> str:
@@ -14405,14 +14419,23 @@ try:
 except Exception:
     pass
 
+# A genuinely new visit (no deep link, nothing restored, no page chosen yet) opens Home.
+# Deep links, restored sessions and explicit navigation have set active_page by now.
 validate_state_option(
     MAIN_SIDEBAR_PAGE_KEY,
     PAGE_OPTIONS,
-    st.session_state.get("active_page", "Historical Explorer"),
+    st.session_state.get("active_page", "Home"),
 )
+try:
+    from nav_groups import ordered_pages as _nav_ordered_pages, sidebar_section_css as _nav_section_css
+
+    _SIDEBAR_PAGE_ORDER = _nav_ordered_pages(PAGE_OPTIONS)
+    st.sidebar.markdown(_nav_section_css(MAIN_SIDEBAR_PAGE_KEY, _SIDEBAR_PAGE_ORDER), unsafe_allow_html=True)
+except ImportError:
+    _SIDEBAR_PAGE_ORDER = list(PAGE_OPTIONS)
 _selected_page = st.sidebar.radio(
     "Choose Page",
-    PAGE_OPTIONS,
+    _SIDEBAR_PAGE_ORDER,
     key=MAIN_SIDEBAR_PAGE_KEY,
     format_func=page_option_label,
     on_change=_on_sidebar_page_change,
@@ -15499,6 +15522,13 @@ elif active_page == "Pricing & Upgrade":
             developer_mode=developer_mode_enabled(),
         )
     render_pricing_page(st, st.session_state, _monetization_snapshot)
+
+
+elif active_page == "Home":
+    from home_page import render_home
+
+    render_home(st, st.session_state, navigate=navigate_to_page,
+                render_tutorial_bar=app_tutorial.render_tutorial_header_bar)
 
 
 elif active_page == "Historical Explorer":

@@ -1668,14 +1668,16 @@ def show_persistence_messages(st: Any) -> None:
             st.warning(CLOUD_READ_FAILED_WARNING)
     except ImportError:
         pass
+    # Informational session notices are toasts, not banners pinned above every page (U1).
+    # Warnings and errors above stay as on-page alerts.
     if st.session_state.pop(_SESSION_CLOUD_BANNER_KEY, None):
         from ui_user_copy import SESSION_RESTORED_BANNER
 
-        st.success(SESSION_RESTORED_BANNER)
+        st.toast(SESSION_RESTORED_BANNER, icon="✅")
     else:
         banner = st.session_state.pop(_SESSION_BANNER_KEY, None)
         if banner:
-            st.success(str(banner))
+            st.toast(str(banner), icon="✅")
     if st.session_state.pop(_SESSION_SAVED_FLASH_KEY, False):
         from ui_user_copy import SETTINGS_SAVED_TOAST
 
