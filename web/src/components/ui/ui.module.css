@@ -5,8 +5,15 @@
 .pageHeader {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  margin-bottom: var(--space-5);
+  gap: 2px;
+  margin-bottom: var(--space-4);
+}
+
+@media (min-width: 640px) {
+  .pageHeader {
+    gap: var(--space-1);
+    margin-bottom: var(--space-5);
+  }
 }
 
 .eyebrow {
@@ -24,9 +31,15 @@
 }
 
 .pagePurpose {
-  font-size: var(--text-l);
+  font-size: var(--text-m);
   color: var(--ink-2);
   max-width: 60ch;
+}
+
+@media (min-width: 640px) {
+  .pagePurpose {
+    font-size: var(--text-l);
+  }
 }
 
 /* --------------------------------------------------------- section header */

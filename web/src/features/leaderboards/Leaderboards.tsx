@@ -20,7 +20,7 @@ import { useBaseballQuery, type Catalog, type LeaderboardResult, type QueryState
 import { formatCount, formatStat, formatYearRange } from "@/lib/format";
 
 import { historicalHref } from "../historical/params";
-import { metricOf, type ReadableParams } from "../shared/params";
+import { metricOf, questionSummary, type ReadableParams } from "../shared/params";
 import { ParamIssueView, QueryErrorView } from "../shared/QueryProblem";
 import { MetricSelect, QuestionBar, YearRangeFields } from "../shared/QuestionControls";
 import shared from "../shared/questions.module.css";
@@ -53,7 +53,11 @@ function LeaderboardsWithCatalog({ catalog, params }: { catalog: Catalog; params
 
   return (
     <div className={shared.page}>
-      <QuestionBar label="Your question">
+      <QuestionBar
+        label="Your question"
+        summary={questionSummary(state.rawRange, state.issue?.kind === "metric" ? undefined : metricOf(catalog, query.metric))}
+        forceOpen={state.issue !== null}
+      >
         <YearRangeFields
           key={`${state.rawRange.start}-${state.rawRange.end}`}
           value={state.rawRange}

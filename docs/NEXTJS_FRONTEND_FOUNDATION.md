@@ -89,6 +89,12 @@ ActionRow: 1–2 next steps (real routes only)
 ExploreMore (<details>): advanced controls, full table, notes
 ```
 
+**Phones (WEB-M2):** below 640 px the QuestionBar collapses to one summary line
+("2010–2025 · Home runs · All players") with a Change / Done button (`aria-expanded`). Change
+reveals the same controls in place. The bar stays open when the user has to act (an invalid stat
+or seasons in the URL, or a player still to choose). The answer card starts at about 290 px on
+360–430 px phones, down from 430–590 px. Wider screens always show every control, as in WEB-M1.
+
 **Home** answers "What can I do in Baseball Explorer?" with four task cards
 (`home_page.TASKS`). Only Explore Players has buttons (Historical Explorer, Leaderboards).
 Compare / Draft / My League say "Coming later · still in the current app" and have no button.

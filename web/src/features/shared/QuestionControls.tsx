@@ -7,15 +7,56 @@ import type { MetricDefinition, YearRange } from "@/lib/api";
 import { metricOptionLabel } from "./params";
 import styles from "./questions.module.css";
 
-/** The question row at the top of an answer-first page. Wraps on phones; never scrolls sideways. */
-export function QuestionBar({ label, children }: { label: string; children: ReactNode }) {
+/**
+ * The question at the top of an answer-first page.
+ *
+ * Desktop and tablet (≥ 640px): every control is shown, as before.
+ * Phones: one summary line ("2010–2025 · Home runs · All players") and a Change button, so the
+ * answer starts near the top. Change reveals the same controls in place. `forceOpen` keeps them
+ * shown when the user has to act (an invalid question, or a player still to choose).
+ */
+export function QuestionBar({
+  label,
+  summary,
+  forceOpen = false,
+  children,
+}: {
+  label: string;
+  /** The current question in words, shown collapsed on phones. */
+  summary: string;
+  forceOpen?: boolean;
+  children: ReactNode;
+}) {
+  const id = useId();
+  const [open, setOpen] = useState(false);
+  const expanded = open || forceOpen;
+
   return (
     <form
       className={styles.questionBar}
       aria-label={label}
       onSubmit={(event: FormEvent) => event.preventDefault()}
     >
-      {children}
+      <div className={styles.summaryRow}>
+        <p className={styles.summaryText}>
+          <span className="sr-only">Showing: </span>
+          {summary}
+        </p>
+        {!forceOpen && (
+          <button
+            type="button"
+            className={styles.summaryToggle}
+            aria-expanded={expanded}
+            aria-controls={`${id}-fields`}
+            onClick={() => setOpen((v) => !v)}
+          >
+            {expanded ? "Done" : "Change"}
+          </button>
+        )}
+      </div>
+      <div id={`${id}-fields`} className={styles.questionFields} data-open={expanded || undefined}>
+        {children}
+      </div>
     </form>
   );
 }

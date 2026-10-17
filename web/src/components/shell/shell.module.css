@@ -39,7 +39,13 @@
 
 .main {
   min-width: 0;
-  padding: var(--space-5) var(--gutter) var(--space-7);
+  padding: var(--space-4) var(--gutter) var(--space-7);
+}
+
+@media (min-width: 640px) {
+  .main {
+    padding-top: var(--space-5);
+  }
 }
 
 .main:focus {

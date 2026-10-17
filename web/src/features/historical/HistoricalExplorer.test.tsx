@@ -69,6 +69,19 @@ describe("Historical Explorer", () => {
     open("scope=player");
     expect(await screen.findByRole("heading", { name: "Choose a player" })).toBeInTheDocument();
     expect(screen.getByLabelText("Find a player")).toBeInTheDocument();
+    // The phone question bar stays open while a choice is required.
+    expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+  });
+
+  it("summarises the question for the collapsed phone bar", async () => {
+    open("");
+    expect(await screen.findByText("2010–2025 · Home runs · All players")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change" })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("names the chosen player in the summary", async () => {
+    open("player=judgeaa01&metric=OPS");
+    expect(await screen.findByText("2010–2025 · OPS · Aaron Judge")).toBeInTheDocument();
   });
 
   it("finds and selects a player", async () => {

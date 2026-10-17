@@ -9,20 +9,80 @@
 }
 
 .questionBar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: var(--space-3);
-  padding: var(--space-3);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-l);
 }
 
+.questionFields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+/* Phones: collapsed to the summary line until Change is pressed. */
+.questionFields:not([data-open]) {
+  display: none;
+}
+
+.questionFields[data-open] {
+  padding: var(--space-3) var(--space-1) var(--space-1) 0;
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+.summaryRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 44px;
+}
+
+.summaryText {
+  font-weight: 650;
+  font-size: var(--text-s);
+  color: var(--ink);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.summaryToggle {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--accent);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.summaryToggle:hover {
+  background: var(--accent-soft);
+}
+
+/* Wider screens: every control is always shown and the summary line is not needed. */
 @media (min-width: 640px) {
   .questionBar {
-    gap: var(--space-3) var(--space-4);
     padding: var(--space-4);
+  }
+
+  .summaryRow {
+    display: none;
+  }
+
+  .questionFields,
+  .questionFields:not([data-open]),
+  .questionFields[data-open] {
+    display: flex;
+    gap: var(--space-3) var(--space-4);
+    padding: 0;
+    margin: 0;
+    border: 0;
   }
 }
 

@@ -73,6 +73,14 @@ describe("Leaderboards", () => {
     open("metric=WAR");
     expect(await screen.findByRole("heading", { name: "Pick a stat to rank" })).toBeInTheDocument();
     expect(screen.getByLabelText("Rank by")).toHaveValue("");
+    expect(screen.getByText("2020–2025 · Choose a stat")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+  });
+
+  it("summarises the question for the collapsed phone bar", async () => {
+    open("metric=OPS");
+    expect(await screen.findByText("2020–2025 · OPS")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change" })).toHaveAttribute("aria-expanded", "false");
   });
 
   it("explains when no hitter qualifies", async () => {

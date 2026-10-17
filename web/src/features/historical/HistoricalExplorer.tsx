@@ -18,7 +18,7 @@ import {
 import { useBaseballQuery, type Catalog, type HistoricalExplorerResult, type PlayerSeason, type QueryState } from "@/lib/api";
 import { formatStat, formatYearRange } from "@/lib/format";
 
-import { metricOf, type ReadableParams } from "../shared/params";
+import { metricOf, questionSummary, type ReadableParams } from "../shared/params";
 import { ParamIssueView, QueryErrorView } from "../shared/QueryProblem";
 import { MetricSelect, QuestionBar, YearRangeFields } from "../shared/QuestionControls";
 import shared from "../shared/questions.module.css";
@@ -51,10 +51,17 @@ function ExplorerWithCatalog({ catalog, params }: { catalog: Catalog; params: Re
   const key = state.issue || needsPlayer ? null : JSON.stringify(query);
   const result = useBaseballQuery(key, (client, options) => client.getHistoricalExplorer(query, options));
   const metrics = catalog.historical.metrics.flatMap((k) => metricOf(catalog, k) ?? []);
+  const playerName = result.status === "success" ? result.data.player?.name : undefined;
+  const summary = questionSummary(
+    state.rawRange,
+    state.issue?.kind === "metric" ? undefined : metricOf(catalog, query.metric),
+    state.scope === "all" ? "All players" : (playerName ?? "One player"),
+    query.order === "asc" ? "Lowest first" : null,
+  );
 
   return (
     <div className={shared.page}>
-      <QuestionBar label="Your question">
+      <QuestionBar label="Your question" summary={summary} forceOpen={state.issue !== null || needsPlayer}>
         <YearRangeFields
           key={`${state.rawRange.start}-${state.rawRange.end}`}
           value={state.rawRange}

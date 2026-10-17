@@ -39,8 +39,22 @@ export function metricOf(catalog: Catalog, key: string): MetricDefinition | unde
   return catalog.metrics.find((m) => m.key === key);
 }
 
+/** "Home runs", "OPS", "Batting average". */
+export function metricTitle(metric: MetricDefinition): string {
+  return metric.name.charAt(0).toUpperCase() + metric.name.slice(1);
+}
+
 /** "Home runs (HR)", "OPS", "Batting average (AVG)". */
 export function metricOptionLabel(metric: MetricDefinition): string {
-  const name = metric.name.charAt(0).toUpperCase() + metric.name.slice(1);
+  const name = metricTitle(metric);
   return name.toLowerCase() === metric.label.toLowerCase() ? metric.label : `${name} (${metric.label})`;
+}
+
+/**
+ * The current question in words for the collapsed phone summary, built only from what the URL
+ * and the catalog say: "2010–2025 · Home runs · All players".
+ */
+export function questionSummary(rawRange: { start: string; end: string }, metric: MetricDefinition | undefined, ...rest: (string | null | undefined)[]): string {
+  const range = rawRange.start === rawRange.end ? rawRange.start : `${rawRange.start}–${rawRange.end}`;
+  return [range, metric ? metricTitle(metric) : "Choose a stat", ...rest].filter(Boolean).join(" · ");
 }
