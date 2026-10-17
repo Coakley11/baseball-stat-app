@@ -273,12 +273,18 @@ def _render_open_slots_and_validation(
             continue
         if "need eligible" in lower and "waiver wire" in lower:
             continue
-        if "empty" in lower or "not eligible" in lower or "twice" in lower:
+        # U4: open spots, ineligible placements and duplicates are summarized once in the lineup
+        # answer above the board; don't repeat them here as a stack of warnings.
+        if "stays empty" in lower or "not eligible" in lower or "twice" in lower:
+            continue
+        if "empty" in lower:
             st.warning(message)
         else:
             st.info(message)
 
-    open_rows = build_open_slot_prompts(slot_labels, assignments, team_roster)
+    # Keep only the spots with a position-specific Waiver Wire button; "start someone from your
+    # roster" rows repeat the answer's "From the bench" line.
+    open_rows = [row for row in build_open_slot_prompts(slot_labels, assignments, team_roster) if row.get("button_label")]
     if open_rows:
         _inject_open_slots_styles(st)
         # Phones: keep "Missing X" and its waiver button on one line (desktop unchanged).

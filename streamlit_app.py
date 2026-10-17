@@ -1647,7 +1647,7 @@ def _render_u1_season_answer(rows, sort_stat, year_range, *, ascending, team_col
     u1.action_row(st, [
         (f"Compare {last}", _u1_player_action_cb("Send to Comparison Tool", player)),
         (f"{last}'s trend", _u1_player_action_cb("Send to Trend Page", player)),
-        ("Career totals", _u1_nav_cb("Career Totals")),
+        ("Career Totals", _u1_nav_cb("Career Totals")),
         ("Leaderboards", _u1_nav_cb("Leaderboards")),
     ], key="hist", primary=None)
 
@@ -1672,7 +1672,7 @@ def _render_u1_leaderboard_answer(rows, sort_stat, year_range, *, weights, quali
     u1.action_row(st, [
         (f"Compare {last}", _u1_player_action_cb("Send to Comparison Tool", player)),
         (f"{last}'s trend", _u1_player_action_cb("Send to Trend Page", player)),
-        ("Season view", _u1_nav_cb("Historical Explorer")),
+        ("Historical Explorer", _u1_nav_cb("Historical Explorer")),
     ], key="leaders", primary=None)
 
 
@@ -1712,7 +1712,7 @@ def _render_u2_comparison_answer(compare, career, player_ids, axis_mode, year_ra
         u1.metric_tiles(st, summary["tiles"])
         players = [summary["player"]]
     actions = [(f"{u1a.last_name(p)}'s trend", _u1_player_action_cb("Send to Trend Page", p)) for p in players[:3]]
-    actions.append(("Career totals", _u1_nav_cb("Career Totals")))
+    actions.append(("Career Totals", _u1_nav_cb("Career Totals")))
     u1.action_row(st, actions, key="compare", primary=None)
 
 
@@ -1750,7 +1750,7 @@ def _render_u2_career_answer(rows, filtered_seasons, sort_stat, year_range, *, b
     u1.action_row(st, [
         (f"Compare {last}", _u1_player_action_cb("Send to Comparison Tool", player)),
         (f"{last}'s trend", _u1_player_action_cb("Send to Trend Page", player)),
-        ("Season view", _u1_nav_cb("Historical Explorer")),
+        ("Historical Explorer", _u1_nav_cb("Historical Explorer")),
         ("Leaderboards", _u1_nav_cb("Leaderboards")),
     ], key="career", primary=None)
 
@@ -1959,12 +1959,16 @@ def _render_u2_valuation_answer(rows, model_rows, chart_rows, w_current, w_trend
     import u2_answers as u2a
     import ui_hierarchy as u1
 
-    answer = u2a.valuation_answer(rows, model_rows, w_current=w_current, w_trend=w_trend, years=years)
+    # U4: a player the user chose (or sent here) leads; otherwise the top-ranked hitter.
+    focus = str(st.session_state.get("valuation_selected_player") or "").strip()
+    answer = u2a.valuation_answer(rows, model_rows, w_current=w_current, w_trend=w_trend, years=years, focus=focus)
     if answer is None:
         u1.answer_card(st, "No hitters match these filters",
                        "Lower Minimum Games or widen Fantasy Position.", tone="warn")
         return
-    u1.answer_card(st, answer["headline"], answer["body"], kicker="Valuation · production + trend")
+    chosen = answer["focus_found"] and not answer["headline"].startswith("Top valuation")
+    u1.answer_card(st, answer["headline"], answer["body"],
+                   kicker="Your player · production + trend" if chosen else "Valuation · production + trend")
     u1.metric_tiles(st, answer["tiles"])
     top_bar_chart(chart_rows, "fullName", "Valuation_Score", "Top 10 Valuation Score", always_show=True)
     player = answer["player"]
@@ -1977,6 +1981,8 @@ def _render_u2_valuation_answer(rows, model_rows, chart_rows, w_current, w_trend
         (f"{last}'s trend", _u1_player_action_cb("Send to Trend Page", player)),
         ("Sleepers & Busts", _u1_nav_cb("Fantasy Sleepers & Busts")),
     ]
+    if chosen:
+        actions.append(("Show top player", lambda: st.session_state.pop("valuation_selected_player", None)))
     u1.action_row(st, actions, key="value", primary=None)
 
 
@@ -21740,7 +21746,7 @@ elif active_page == "Draft Room Simulator":
                 "Removed drafted player(s) from Draft Queue: " + ", ".join(str(x) for x in removed_after_edit[:3])
             )
             st.rerun()
-        st.caption("Same board is used by **Fantasy Standings Tracker** when you score this league.")
+        st.caption("Same board is used by **League Standings** when you score this league.")
 
         _dr_pool_xfer = room_df.copy()
         if not _dr_pool_xfer.empty and "fullName" in _dr_pool_xfer.columns:
@@ -30599,7 +30605,7 @@ elif active_page == "Fantasy Lineup Assistant":
             st.warning(
                 "**Roster stats not loaded yet this session.**\n\n"
                 "To use the Lineup Assistant:\n"
-                "1. Go to **Fantasy Standings Tracker** and load stats (MLB API or CSV upload).\n"
+                "1. Go to **League Standings** and load stats (MLB API or CSV upload).\n"
                 "2. Return here — team rosters and scores will appear automatically.\n\n"
                 + _draft_hint
             )

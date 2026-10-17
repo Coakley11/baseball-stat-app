@@ -219,6 +219,6 @@ def _render_league_block(st: Any, session: Any, go: Callable[[str], Callable[[],
         body = "No completed weeks yet, so there are no official standings."
     ui.answer_card(st, headline, body, kicker="My league")
     ui.chips(st, [(summary.week_text, ""), (summary.next_action, "warn" if summary.next_action.startswith(("Set", "Finalize")) else "")])
-    ui.action_row(st, [("League standings", go("Fantasy Standings Tracker")),
-                       ("Set lineup", go("Fantasy Lineup Assistant")),
-                       ("Waiver wire", go("Waiver Wire / Add-Drop Center"))], key="home_league")
+    ui.action_row(st, [("League Standings", go("Fantasy Standings Tracker")),
+                       ("Set Lineup", go("Fantasy Lineup Assistant")),
+                       ("Waiver Wire", go("Waiver Wire / Add-Drop Center"))], key="home_league")

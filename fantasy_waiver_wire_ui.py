@@ -791,7 +791,7 @@ def render_waiver_wire_page(
     stats_pool = current_stats_pool.copy() if current_stats_pool is not None else pd.DataFrame()
     if stats_pool.empty:
         st.warning(
-            "**Current 2026 stats not loaded yet.** Open **Fantasy Standings Tracker**, "
+            "**Current 2026 stats not loaded yet.** Open **League Standings**, "
             "load MLB API or CSV current-season stats, then return here."
         )
         return

@@ -89,9 +89,9 @@ def render_league_answer(st: Any, session: Any, context: dict[str, Any] | None,
     ui.chips(st, [(summary.week_text, ""),
                   (summary.next_action, "warn" if summary.next_action.startswith(("Set", "Finalize")) else "")])
     ui.action_row(st, [
-        ("Set lineup", go(LINEUP_PAGE, lineup_assistant_tab="Lineup Management",
+        ("Set Lineup", go(LINEUP_PAGE, lineup_assistant_tab="Lineup Management",
                           lineup_assistant_tab_widget="Lineup Management")),
-        ("Check waivers", go("Waiver Wire / Add-Drop Center")),
-        ("Explore trades", go(LINEUP_PAGE, _lineup_focus_trade_center=True)),
+        ("Check Waivers", go("Waiver Wire / Add-Drop Center")),
+        ("Explore Trades", go(LINEUP_PAGE, _lineup_focus_trade_center=True)),
     ], key="league_next", primary=0)
     return True

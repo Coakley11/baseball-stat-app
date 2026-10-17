@@ -4352,7 +4352,7 @@ def _render_active_draft_section(
     tool1, tool2, tool3, clear_col = st.columns([1, 1, 1, 1])
     with tool1:
         if st.button(
-            _nav_label(FANTASY_STANDINGS_PAGE, "Fantasy Standings Tracker", page_label_fn),
+            _nav_label(FANTASY_STANDINGS_PAGE, "League Standings", page_label_fn),
             key="library_active_standings",
             use_container_width=True,
         ):
@@ -4360,7 +4360,7 @@ def _render_active_draft_section(
                 st.rerun()
     with tool2:
         if st.button(
-            _nav_label(FANTASY_LINEUP_PAGE, "Fantasy Lineup Assistant", page_label_fn),
+            _nav_label(FANTASY_LINEUP_PAGE, "Lineup & Trades", page_label_fn),
             key="library_active_lineup",
             use_container_width=True,
         ):
@@ -4368,7 +4368,7 @@ def _render_active_draft_section(
                 st.rerun()
     with tool3:
         if st.button(
-            _nav_label(FANTASY_WAIVER_PAGE, "Waiver Wire / Add-Drop Center", page_label_fn),
+            _nav_label(FANTASY_WAIVER_PAGE, "Waiver Wire", page_label_fn),
             key="library_active_waiver",
             use_container_width=True,
         ):

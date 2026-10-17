@@ -39,16 +39,18 @@ class LineupAnswerTests(unittest.TestCase):
     def test_open_spots_the_roster_can_fill(self):
         a = _lineup(assignments={**FULL, "SS_1": "", "OF_2": ""},
                     validation={**OK, "ok": False, "missing_slots": ["SS", "OF"]})
-        self.assertEqual(a["headline"], "2 starting spots open: Shortstop and OF 2")
+        self.assertEqual(a["headline"], "Your lineup has 2 open positions: Shortstop and OF 2")  # U4 wording
         self.assertEqual(a["primary"], "suggest")
-        self.assertIn(("Shortstop open", "warn"), a["chips"])
+        self.assertEqual(a["from_bench"], ["Shortstop", "OF 2"])
+        self.assertIn(("Shortstop: from bench", ""), a["chips"])
         self.assertEqual(a["status"], "Not saved yet")
 
     def test_open_spot_nobody_on_the_roster_can_play_points_to_waivers(self):
         a = _lineup(assignments={**FULL, "C_1": ""}, validation={**OK, "missing_slots": ["C"], "unfillable_slots": ["C"]})
-        self.assertEqual(a["headline"], "3 of 4 starters set; this roster has no one for Catcher")
+        self.assertEqual(a["headline"], "Your lineup has 1 open position: Catcher")  # U4 wording
         self.assertEqual(a["primary"], "waivers")
-        self.assertIn("Check waivers", a["body"])
+        self.assertEqual(a["need_help"], ["Catcher"])
+        self.assertIn("Needs a waiver or trade: Catcher", a["body"])
 
     def test_ineligible_starter_blocks_save(self):
         a = _lineup(validation={**OK, "ok": False, "ineligible_slots": [{"slot": "SS", "player": "Cat"}]})

@@ -1,4 +1,6 @@
-"""U4A: draft pages lead with an answer built from their own computed state."""
+"""U4: draft pages lead with an answer built from their own computed state, Valuation centers the
+player you chose, the Lineup answer sorts open spots by what fixes them, Trade Center shows give ⇄
+receive everywhere, and visible copy uses the current page names."""
 
 import re
 import unittest
@@ -6,11 +8,14 @@ from pathlib import Path
 
 import pandas as pd
 
+import u2_answers as u2a
 import u4_answers as u4a
+from u3_answers import lineup_answer
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
 LIB = (ROOT / "draft_archive_ui.py").read_text(encoding="utf-8")
+TRADE = (ROOT / "fantasy_trade_center_ui.py").read_text(encoding="utf-8")
 
 
 def _fn(src: str, name: str) -> str:
@@ -107,6 +112,71 @@ class LibraryAnswerTests(unittest.TestCase):
         self.assertEqual(u4a.library_answer([])["headline"], "No saved drafts yet")
 
 
+class ValuationFocusTests(unittest.TestCase):
+    def _pool(self):
+        from valuation_scores import add_valuation_scores
+
+        df = pd.DataFrame({"fullName": [f"P{i}" for i in range(5)]})
+        for c in ["R", "H", "2B", "3B", "HR", "RBI", "SB"]:
+            df[c] = [50, 40, 30, 20, 10]
+        for c in ["BA", "OBP", "SLG", "OPS"]:
+            df[c] = [0.3, 0.29, 0.28, 0.27, 0.26]
+        for c in ["R_trend", "H_trend", "2B_trend", "3B_trend", "HR_trend", "RBI_trend", "SB_trend", "BB_trend",
+                  "BA_trend", "OBP_trend", "SLG_trend", "OPS_trend"]:
+            df[c] = [0.0, 1.0, -1.0, 0.5, -0.5]
+        return add_valuation_scores(df, 2, 1)
+
+    def test_selected_player_leads_with_model_contributions(self):
+        df = self._pool()
+        ranked = df.sort_values("Valuation_Score", ascending=False)["fullName"].tolist()
+        pick = ranked[2]
+        a = u2a.valuation_answer(df, df, w_current=2, w_trend=1, years=[2024, 2025], focus=pick)
+        self.assertTrue(a["focus_found"])
+        self.assertEqual(a["player"], pick)
+        self.assertTrue(a["headline"].startswith(f"{pick}: Valuation "))
+        self.assertIn("3rd of 5", a["headline"])
+        row = df[df["fullName"] == pick].iloc[0]
+        prod, trend = a["contributions"]
+        self.assertAlmostEqual(prod, 2 * row["Perf_Pct"] / 3 * 100)
+        self.assertAlmostEqual(trend, 1 * row["Trend_Pct"] / 3 * 100)
+        self.assertAlmostEqual((prod + trend) / 100, row["Valuation_Raw"])  # exactly the model's blend
+        self.assertNotIn("decline", a["body"].lower())
+
+    def test_default_or_missing_selection_leads_with_top(self):
+        df = self._pool()
+        top = df.sort_values("Valuation_Score", ascending=False).iloc[0]["fullName"]
+        a = u2a.valuation_answer(df, df, w_current=2, w_trend=1, years=[2025], focus=top)
+        self.assertTrue(a["headline"].startswith("Top valuation"))
+        b = u2a.valuation_answer(df, df, w_current=2, w_trend=1, years=[2025], focus="Nobody")
+        self.assertEqual(b["player"], top)
+        self.assertIn("Nobody isn't in the current list", b["body"])
+
+    def test_page_passes_the_selection_and_offers_a_way_back(self):
+        fn = _fn(APP, "_render_u2_valuation_answer")
+        self.assertIn('focus = str(st.session_state.get("valuation_selected_player") or "").strip()', fn)
+        self.assertIn('("Show top player", lambda: st.session_state.pop("valuation_selected_player", None))', fn)
+
+
+class LineupConsolidationTests(unittest.TestCase):
+    SLOTS = [("C_1", "Catcher"), ("SS_1", "Shortstop"), ("OF_1", "OF 1"), ("OF_2", "OF 2")]
+
+    def test_open_spots_sorted_by_what_fixes_them(self):
+        a = lineup_answer(team="Team 1", week_text="Week 2", slots=self.SLOTS,
+                          assignments={"C_1": "", "SS_1": "", "OF_1": "A", "OF_2": ""},
+                          validation={"unfillable_slots": ["SS"], "ineligible_slots": [], "duplicate_players": []},
+                          bench_count=2, locked=False)
+        self.assertEqual(a["headline"], "Your lineup has 3 open positions: Catcher, Shortstop and OF 2")
+        self.assertEqual(a["from_bench"], ["Catcher", "OF 2"])
+        self.assertEqual(a["need_help"], ["Shortstop"])
+        self.assertIn("Needs a waiver or trade: Shortstop", a["body"])
+
+    def test_board_no_longer_repeats_the_answer_as_warnings(self):
+        src = (ROOT / "fantasy_weekly_lineup_ui.py").read_text(encoding="utf-8")
+        fn = _fn(src, "_render_open_slots_and_validation")
+        self.assertIn('if "stays empty" in lower or "not eligible" in lower or "twice" in lower:\n            continue', fn)
+        self.assertIn('if row.get("button_label")', fn)
+
+
 class DraftPageWiringTests(unittest.TestCase):
     def _branch(self, expr):
         start = APP.index(f"elif active_page == {expr}:")
@@ -157,6 +227,41 @@ class DraftPageWiringTests(unittest.TestCase):
         self.assertIn("_activate_archive_entry(st, session, recent_id)", fn)
         self.assertIn("session[_RENAME_CONFIRM_PREFIX + recent_id] = True", fn)
         self.assertIn("schedule_fantasy_analysis_navigation(session, target)", fn)
+
+
+class TradePresentationTests(unittest.TestCase):
+    def test_idea_cards_show_give_receive_and_only_engine_reasons(self):
+        fn = _fn(TRADE, "_render_idea_card")
+        self.assertIn("ui.trade_sides(", fn)
+        for field in ('"Value Explanation"', '"Category Gains"', '"Category Losses"', '"Main Risk"'):
+            self.assertIn(field, fn)
+        self.assertIn("_queue_idea_builder_update", fn)
+
+    def test_builder_headers_match_the_card(self):
+        self.assertIn("YOU GIVE · {html_lib.escape(my_team)}", TRADE)
+        self.assertIn("<h4>YOU RECEIVE</h4>", TRADE)
+        self.assertNotIn('class="tc-hero"', _fn(TRADE, "_render_trade_center_hero"))
+
+
+class LabelConsistencyTests(unittest.TestCase):
+    OLD = ("Fantasy Standings Tracker", "Fantasy Lineup Assistant", "Waiver Wire / Add-Drop Center",
+           "Comparison Tool", "Fantasy Sleepers & Busts")
+
+    def test_visible_instructions_use_current_page_names(self):
+        for f in ("streamlit_app.py", "app_tutorial.py", "fantasy_waiver_wire_ui.py", "draft_archive_ui.py"):
+            src = (ROOT / f).read_text(encoding="utf-8")
+            for old in self.OLD:
+                with self.subTest(file=f, label=old):
+                    self.assertNotIn(f"**{old}**", src)
+        for old in self.OLD:
+            self.assertNotIn(f'_nav_label(FANTASY_STANDINGS_PAGE, "{old}"', LIB)
+
+    def test_old_labels_still_resolve_to_page_keys(self):
+        for key, old in (("Comparison Tool", "📈 Comparison Tool"), ("Fantasy Sleepers & Busts", "💎 Fantasy Sleepers & Busts"),
+                         ("Fantasy Lineup Assistant", "🧠 Fantasy Lineup Assistant"),
+                         ("Fantasy Standings Tracker", "📊 Fantasy Standings Tracker"),
+                         ("Waiver Wire / Add-Drop Center", "🔄 Waiver Wire / Add-Drop Center")):
+            self.assertIn(f'"{key}": "{old}"', APP, "the pre-U1 label table keeps mapping old labels to keys")
 
 
 if __name__ == "__main__":
