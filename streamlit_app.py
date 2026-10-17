@@ -1676,6 +1676,85 @@ def _render_u1_leaderboard_answer(rows, sort_stat, year_range, *, weights, quali
     ], key="leaders", primary=None)
 
 
+def _render_u2_comparison_answer(compare, career, player_ids, axis_mode, year_range, age_range):
+    """Compare Players answer: who leads which metric over the same range, one head-to-head
+    visual, next steps. Built from the page's own Career Totals table (rates from totals)."""
+    import u1_answers as u1a
+    import u2_answers as u2a
+    import ui_hierarchy as u1
+
+    if compare.empty or career.empty:
+        u1.answer_card(st, "No seasons in this range", "Widen the season range above.", tone="warn")
+        return
+    if axis_mode == "Player Age":
+        span = f"ages {age_range[0]}–{age_range[1]}"
+    else:
+        span = str(year_range[0]) if year_range[0] == year_range[1] else f"{year_range[0]}–{year_range[1]}"
+    order = []
+    for pid in player_ids:
+        names = compare.loc[compare["playerID"] == pid, "fullName"].dropna()
+        if not names.empty and names.iloc[0] not in order:
+            order.append(names.iloc[0])
+    career = career.set_index("fullName").reindex([n for n in order if n in set(career["fullName"])]).reset_index()
+    seasons = compare.groupby("fullName")["yearID"].nunique().to_dict()
+    if len(career) >= 2:
+        answer = u2a.comparison_answer(career, seasons=seasons, span_text=span)
+        if answer is None:
+            u1.answer_card(st, "Not enough numbers to compare", "Widen the season range above.", tone="warn")
+            return
+        u1.answer_card(st, answer["headline"], answer["body"], kicker=f"Head to head · {span}")
+        u1.stat_bars(st, answer["bars"])
+        players = answer["players"]
+    else:
+        summary = u2a.single_player_summary(career.iloc[0], seasons=int(seasons.get(career.iloc[0]["fullName"], 0)), span_text=span)
+        u1.answer_card(st, summary["headline"], "Add a second player above to compare them side by side.",
+                       kicker=summary["context"])
+        u1.metric_tiles(st, summary["tiles"])
+        players = [summary["player"]]
+    actions = [(f"{u1a.last_name(p)}'s trend", _u1_player_action_cb("Send to Trend Page", p)) for p in players[:3]]
+    actions.append(("Career totals", _u1_nav_cb("Career Totals")))
+    u1.action_row(st, actions, key="compare", primary=None)
+
+
+def _render_u2_career_answer(rows, filtered_seasons, sort_stat, year_range, *, by_team=False):
+    """Career Totals answer: the leader's career in numbers, the qualification rule, the top-10
+    chart, next steps."""
+    import u1_answers as u1a
+    import u2_answers as u2a
+    import ui_hierarchy as u1
+
+    qual = u1a.qualification_text(st.session_state, "career", sort_stat, year_range)
+    leader_seasons = None
+    ranked = rows.assign(_v=pd.to_numeric(rows[sort_stat], errors="coerce")).dropna(subset=["_v"]) if sort_stat in rows.columns else rows.iloc[0:0]
+    if not ranked.empty and "playerID" in ranked.columns:
+        top = ranked.sort_values("_v", ascending=False, kind="stable").iloc[0]
+        leader_seasons = filtered_seasons[filtered_seasons["playerID"] == top["playerID"]]
+        if by_team and "teamName" in top.index and "teamName" in leader_seasons.columns:
+            leader_seasons = leader_seasons[leader_seasons["teamName"] == top["teamName"]]
+    answer = u2a.career_answer(rows, sort_stat, year_range, seasons=leader_seasons, qualification=qual)
+    if answer is None:
+        u1.answer_card(st, "No careers match these filters",
+                       "Widen the year range or relax the filters and minimums under Explore more.", tone="warn")
+        return
+    u1.answer_card(st, answer["headline"], answer["body"], kicker=answer["context"])
+    u1.metric_tiles(st, answer["tiles"])
+    if qual:
+        u1.chips(st, [(qual, "")])
+    chart_rows, label_col = rows, None
+    if by_team and "displayTeam" in rows.columns:
+        chart_rows = rows.assign(_career_label=[f"{u1a.short_name(n)} ({t})" for n, t in zip(rows["fullName"].astype(str), rows["displayTeam"].astype(str))])
+        label_col = "_career_label"
+    top_bar_chart(chart_rows, "fullName", sort_stat, f"Top 10 Career Totals by {sort_stat}", always_show=True, label_col=label_col)
+    player = answer["player"]
+    last = u1a.last_name(player)
+    u1.action_row(st, [
+        (f"Compare {last}", _u1_player_action_cb("Send to Comparison Tool", player)),
+        (f"{last}'s trend", _u1_player_action_cb("Send to Trend Page", player)),
+        ("Season view", _u1_nav_cb("Historical Explorer")),
+        ("Leaderboards", _u1_nav_cb("Leaderboards")),
+    ], key="career", primary=None)
+
+
 def plot_player_stat_trends(ax, df, player_ids, stat_col, mode="Actual Values", smooth_window=3):
     """Plot one stat for multiple players using actual values or a moving-average smooth."""
     for pid in player_ids:
@@ -16080,12 +16159,39 @@ elif active_page == "Career Totals":
     )
     build_hof_cohort_display_text = _resolve_build_hof_cohort_display_text()
 
-    render_section_header(
-        "📚 Career Totals",
-        "Aggregate career production with an independent display toggle: one primary-team career row or separate totals by each team.",
-    )
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "📚 Career Totals", "Who produced the most over a span of seasons, and that career in numbers.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
+
+    career_sort_options = ["HR", "RBI", "SB", "R", "H", "2B", "3B", "BB", "BA", "OBP", "SLG", "OPS", "AB"]
+    with mobile_wrap_row(st, "career-top-filters"):
+        cc1, cc2 = st.columns([2.5, 1.5])
+    with cc1:
+        prepare_career_year_range(
+            st.session_state,
+            year_min,
+            year_max,
+            (max(year_min, 2010), year_max),
+        )
+        range_career = st.slider(
+            "Select Year Range",
+            min_value=year_min,
+            max_value=year_max,
+            key="career_year_range_filter",
+            on_change=career_filter_changed,
+        )
+    with cc2:
+        validate_state_option("career_sort_stat_filter", career_sort_options, "HR")
+        sort_stat_career = st.selectbox(
+            "Sort by",
+            career_sort_options,
+            key="career_sort_stat_filter",
+            on_change=career_filter_changed,
+        )
+    career_answer_slot = st.container()
+    u1.section_label(st, "Explore more · Hall of Fame case, filters, minimums and the full table")
 
     career_player_options = hof_case_target_player_options(batting_df)
     init_state_once(CAREER_HOF_CASE_MODE_KEY, False)
@@ -16126,31 +16232,6 @@ elif active_page == "Career Totals":
         )
     else:
         career_hof_filter = HOF_FILTER_ALL
-    career_sort_options = ["HR", "RBI", "SB", "R", "H", "2B", "3B", "BB", "BA", "OBP", "SLG", "OPS", "AB"]
-    with mobile_wrap_row(st, "career-top-filters"):
-        cc1, cc2 = st.columns([2.5, 1.5])
-    with cc1:
-        prepare_career_year_range(
-            st.session_state,
-            year_min,
-            year_max,
-            (max(year_min, 2010), year_max),
-        )
-        range_career = st.slider(
-            "Select Year Range",
-            min_value=year_min,
-            max_value=year_max,
-            key="career_year_range_filter",
-            on_change=career_filter_changed,
-        )
-    with cc2:
-        validate_state_option("career_sort_stat_filter", career_sort_options, "HR")
-        sort_stat_career = st.selectbox(
-            "Sort by",
-            career_sort_options,
-            key="career_sort_stat_filter",
-            on_change=career_filter_changed,
-        )
 
     with st.expander("Advanced filters", expanded=False):
         with mobile_wrap_row(st, "career-advanced-filters"):
@@ -16308,7 +16389,8 @@ elif active_page == "Career Totals":
         if hof_target_player:
             hof_target_is_hof = target_player_is_hall_of_famer(hof_target_player, career_totals)
 
-    top_bar_chart(career_totals, "fullName", sort_stat_career, f"Top 10 Career Totals by {sort_stat_career}")
+    with career_answer_slot:
+        _render_u2_career_answer(career_totals, filtered_career, sort_stat_career, range_career, by_team=show_career_by_team)
 
     c5, c6, c7 = st.columns(3)
     c5.metric("Rows", len(career_totals))
@@ -16979,7 +17061,9 @@ elif active_page == "Comparison Tool":
         prepare_canonical_scoring_context(st.session_state, active_page=active_page)
     except ImportError:
         pass
-    render_section_header("📈 Comparison Tool", "Compare up to three players across years with tables and trend charts.")
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "📈 Compare Players", "Two or three hitters side by side over the same seasons: who leads where.")
     render_page_guide(active_page)
     try:
         from fantasy_context_ui import render_research_sync_badge
@@ -17066,6 +17150,71 @@ elif active_page == "Comparison Tool":
         on_change=compare_top_changed,
     )
     selected_ids_compare = [clean_label_map_compare[label] for label in selected_labels_compare]
+
+    def _render_compare_range_control(span, axis_mode):
+        """Season-year or age range slider (same keys, labels and sanitising as before U2)."""
+        year_range, age_range = span, (16, 50)
+        if axis_mode == "Season Year":
+            from year_range_state import sanitize_year_range
+
+            _slider_min = int(span[0])
+            _slider_max = int(span[1])
+            _default_cmp_year_range = (_slider_min, _slider_max)
+            _raw_cmp_year_range = st.session_state.get("compare_year_range")
+            _sanitized_cmp_year_range = sanitize_year_range(
+                _raw_cmp_year_range,
+                _slider_min,
+                _slider_max,
+                _default_cmp_year_range,
+            )
+            st.session_state["_dev_compare_year_range_raw"] = _raw_cmp_year_range
+            st.session_state["_dev_compare_year_range_sanitized"] = _sanitized_cmp_year_range
+            if _slider_min >= _slider_max:
+                year_range = (_slider_min, _slider_max)
+                st.session_state["compare_year_range"] = year_range
+                st.caption(
+                    f"Season year range fixed to {_slider_min} "
+                    "(selected player data has a single season year)."
+                )
+            else:
+                st.session_state["compare_year_range"] = _sanitized_cmp_year_range
+                year_range = st.slider(
+                    "Season Year Range",
+                    min_value=_slider_min,
+                    max_value=_slider_max,
+                    key="compare_year_range",
+                    on_change=compare_settings_changed,
+                    help="Filters the comparison chart, year-by-year table, trend intelligence, and significance tests.",
+                )
+        else:
+            validate_slider_range("compare_age_range", 16, 50, (16, 50))
+            age_range = st.slider(
+                "Player Age Range",
+                min_value=16,
+                max_value=50,
+                key="compare_age_range",
+                on_change=compare_settings_changed,
+                help="Filters the comparison chart, year-by-year table, trend intelligence, and significance tests by season age.",
+            )
+        return year_range, age_range
+
+    compare_year_range = (year_min, year_max)
+    if selected_ids_compare:
+        _cmp_years = pd.to_numeric(
+            yearly_df.loc[yearly_df["playerID"].isin(selected_ids_compare), "yearID"],
+            errors="coerce",
+        ).dropna()
+        if not _cmp_years.empty:
+            compare_year_range = (int(_cmp_years.min()), int(_cmp_years.max()))
+    _compare_axis_options = ["Season Year", "Player Age"]
+    validate_state_option("compare_x_axis_mode", _compare_axis_options, "Season Year")
+    compare_x_axis_mode = st.session_state.get("compare_x_axis_mode", "Season Year")
+    compare_age_range = (16, 50)
+    if selected_ids_compare:
+        # U2: the range is part of the question, so it sits above the answer (Chart options keeps the rest).
+        compare_year_range, compare_age_range = _render_compare_range_control(compare_year_range, compare_x_axis_mode)
+    compare_answer_slot = st.container()
+    u1.section_label(st, "Explore more · profiles, chart options, season tables, trend statistics and significance tests")
     try:
         from global_fantasy_settings_state import get_active_fantasy_team
         from fantasy_context_source import fantasy_context_using_caption
@@ -17151,14 +17300,6 @@ elif active_page == "Comparison Tool":
                     projection_lookup_name_col="fullName",
                 )
 
-    compare_year_range = (year_min, year_max)
-    if selected_ids_compare:
-        _cmp_years = pd.to_numeric(
-            yearly_df.loc[yearly_df["playerID"].isin(selected_ids_compare), "yearID"],
-            errors="coerce",
-        ).dropna()
-        if not _cmp_years.empty:
-            compare_year_range = (int(_cmp_years.min()), int(_cmp_years.max()))
     with st.expander("Chart options", expanded=False):
         _compare_stat_options = ["R", "HR", "RBI", "SB", "H", "2B", "3B", "AB", "BA", "OBP", "SLG", "OPS", "BB"]
         validate_state_option("compare_stat", _compare_stat_options, "R")
@@ -17168,8 +17309,6 @@ elif active_page == "Comparison Tool":
             key="compare_stat",
             on_change=compare_settings_changed,
         )
-        _compare_axis_options = ["Season Year", "Player Age"]
-        validate_state_option("compare_x_axis_mode", _compare_axis_options, "Season Year")
         compare_x_axis_mode = st.radio(
             "Comparison X-Axis",
             _compare_axis_options,
@@ -17177,49 +17316,8 @@ elif active_page == "Comparison Tool":
             key="compare_x_axis_mode",
             on_change=compare_settings_changed,
         )
-        compare_age_range = (16, 50)
-        if compare_x_axis_mode == "Season Year":
-            from year_range_state import sanitize_year_range
-
-            _slider_min = int(compare_year_range[0])
-            _slider_max = int(compare_year_range[1])
-            _default_cmp_year_range = (_slider_min, _slider_max)
-            _raw_cmp_year_range = st.session_state.get("compare_year_range")
-            _sanitized_cmp_year_range = sanitize_year_range(
-                _raw_cmp_year_range,
-                _slider_min,
-                _slider_max,
-                _default_cmp_year_range,
-            )
-            st.session_state["_dev_compare_year_range_raw"] = _raw_cmp_year_range
-            st.session_state["_dev_compare_year_range_sanitized"] = _sanitized_cmp_year_range
-            if _slider_min >= _slider_max:
-                compare_year_range = (_slider_min, _slider_max)
-                st.session_state["compare_year_range"] = compare_year_range
-                st.caption(
-                    f"Season year range fixed to {_slider_min} "
-                    "(selected player data has a single season year)."
-                )
-            else:
-                st.session_state["compare_year_range"] = _sanitized_cmp_year_range
-                compare_year_range = st.slider(
-                    "Season Year Range",
-                    min_value=_slider_min,
-                    max_value=_slider_max,
-                    key="compare_year_range",
-                    on_change=compare_settings_changed,
-                    help="Filters the comparison chart, year-by-year table, trend intelligence, and significance tests.",
-                )
-        else:
-            validate_slider_range("compare_age_range", 16, 50, (16, 50))
-            compare_age_range = st.slider(
-                "Player Age Range",
-                min_value=16,
-                max_value=50,
-                key="compare_age_range",
-                on_change=compare_settings_changed,
-                help="Filters the comparison chart, year-by-year table, trend intelligence, and significance tests by season age.",
-            )
+        if not selected_ids_compare:
+            compare_year_range, compare_age_range = _render_compare_range_control(compare_year_range, compare_x_axis_mode)
         _compare_mode_options = ["Actual Values", "Smoothed Moving Average"]
         validate_state_option("compare_trend_mode", _compare_mode_options, "Actual Values")
         compare_trend_mode = st.radio(
@@ -17242,8 +17340,6 @@ elif active_page == "Comparison Tool":
         compare_settings_changed()
 
     if selected_ids_compare:
-        if len(selected_ids_compare) == 1:
-            st.caption("Add a second player above to compare them side by side.")
         compare = yearly_df[yearly_df["playerID"].isin(selected_ids_compare)].copy()
         compare["Age"] = compare.apply(
             lambda r: baseball_age_for_season(
@@ -17280,6 +17376,8 @@ elif active_page == "Comparison Tool":
         career_compare = compare.groupby(["fullName"], as_index=False)[["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"]].sum()
         career_compare = add_rate_stats(career_compare)
         career_compare = safe_round_rate_stats(career_compare)
+        with compare_answer_slot:
+            _render_u2_comparison_answer(compare, career_compare, selected_ids_compare, compare_x_axis_mode, compare_year_range, compare_age_range)
         career_compare_display = career_compare[["fullName", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BA", "OBP", "SLG", "OPS"]].sort_values("HR", ascending=False).rename(columns={"fullName": "Player"})
         career_compare_table = format_display_table(clean_ui_columns(career_compare_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
         render_output_table(career_compare_table, key="comparison_career", file_name="comparison_career_totals.csv", pin_columns=("Player",))
@@ -17416,7 +17514,10 @@ elif active_page == "Comparison Tool":
 
 
     else:
-        st.info("Choose up to three players in **Select up to 3 players** to compare their seasons, career totals and trends.")
+        with compare_answer_slot:
+            u1.answer_card(st, "Pick two players to compare",
+                           "Choose two or three players in the box above to see who leads in HR, RBI, SB, OBP and OPS over the same seasons.",
+                           kicker="Compare Players")
 
     st.divider()
     if not pp.skip_heavy_work(st):

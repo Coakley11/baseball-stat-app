@@ -56,6 +56,16 @@ U1_CSS = """<style>
 .u1-progress { height: 7px; background: #eef2f6; border-radius: 4px; overflow: hidden; margin: 4px 0 2px 0; }
 .u1-progress > span { display: block; height: 7px; background: #1f5fa8; border-radius: 4px; }
 .u1-muted { font-size: 0.82rem; color: #5a6f82; }
+.u1-bars { margin: 0.2rem 0 0.6rem 0; }
+.u1-bar-group { padding: 6px 0 4px 0; border-bottom: 1px solid #eef2f6; }
+.u1-bar-group .u1-bar-label { font-size: 0.74rem; font-weight: 700; letter-spacing: 0.05em; color: #5a6f82; text-transform: uppercase; }
+.u1-bar-row { display: grid; grid-template-columns: minmax(64px, 28%) minmax(0, 1fr) auto; align-items: center; gap: 8px; margin: 2px 0; }
+.u1-bar-row .u1-bar-name { font-size: 0.86rem; color: #33475b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.u1-bar-track { height: 10px; background: #eef2f6; border-radius: 5px; overflow: hidden; }
+.u1-bar-track > span { display: block; height: 10px; border-radius: 5px; opacity: 0.55; }
+.u1-bar-row.lead .u1-bar-track > span { opacity: 1; }
+.u1-bar-row .u1-bar-val { font-size: 0.86rem; color: #33475b; min-width: 3.2em; text-align: right; }
+.u1-bar-row.lead .u1-bar-val { font-weight: 700; color: #0b2540; }
 </style>"""
 
 
@@ -150,6 +160,30 @@ def action_row(st: Any, actions: Sequence[tuple[str, Callable[[], None]]], *, ke
     for i, ((label, callback), col) in enumerate(zip(actions, cols)):
         col.button(label, key=f"u1_action_{key}_{i}", on_click=callback, use_container_width=True,
                    type="primary" if primary is not None and i == primary else "secondary")
+
+
+PLAYER_COLORS = ("#1f77b4", "#ff7f0e", "#2ca02c")  # matplotlib's default cycle, so the trend chart matches
+
+
+def stat_bars(st: Any, groups: Sequence[dict[str, Any]]) -> None:
+    """Head-to-head bars: one group per metric, one bar per player, the leader in full colour.
+
+    ``groups``: [{"label": "HR", "rows": [{"name", "value", "fraction" (0–1), "lead" (bool)}]}].
+    Player colours follow row order, so the first player is always blue."""
+    parts = []
+    for group in groups:
+        rows = []
+        for i, row in enumerate(group.get("rows") or []):
+            width = max(0.0, min(1.0, float(row.get("fraction") or 0.0))) * 100
+            lead = " lead" if row.get("lead") else ""
+            rows.append(
+                f'<div class="u1-bar-row{lead}"><span class="u1-bar-name">{esc(row.get("name"))}</span>'
+                f'<span class="u1-bar-track"><span style="width:{width:.1f}%;background:{PLAYER_COLORS[i % len(PLAYER_COLORS)]}"></span></span>'
+                f'<span class="u1-bar-val">{esc(row.get("value"))}</span></div>'
+            )
+        parts.append(f'<div class="u1-bar-group"><div class="u1-bar-label">{esc(group.get("label"))}</div>{"".join(rows)}</div>')
+    if parts:
+        st.markdown(f'<div class="u1-bars">{"".join(parts)}</div>', unsafe_allow_html=True)
 
 
 @contextmanager
