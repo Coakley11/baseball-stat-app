@@ -10,6 +10,7 @@
   At 1:1 each component has equal influence; ties share the average percentile (a player
   without a trend sits mid-pack on Trend). Valuation_Score min–max scales that to 0–1;
   all-equal, empty or zero total weight → 0.
+* The pool is hitters only (valuation_hitter_pool): window AB ≥ VALUATION_MIN_AB.
 """
 
 from __future__ import annotations
@@ -23,6 +24,19 @@ TREND_WEIGHTS = {
 }
 PERF_COUNT_WEIGHTS = {"R": 0.10, "H": 0.05, "2B": 0.05, "3B": 0.05, "HR": 0.25, "RBI": 0.20, "SB": 0.10}
 PERF_RATE_WEIGHTS = {"BA": 0.05, "OBP": 0.10, "SLG": 0.10, "OPS": 0.10}
+VALUATION_MIN_AB = 10
+
+
+def valuation_hitter_pool(agg: pd.DataFrame, min_ab: int = VALUATION_MIN_AB) -> pd.DataFrame:
+    """Drop rows with fewer than ``min_ab`` window at-bats — pitchers' batting lines.
+
+    Percentiles are taken over this pool. Relievers (0 AB, no trend) were about half of it and all
+    tie at a zero trend, which pushed every hitter with a slightly negative trend down the Trend
+    percentile. Two-way players with real at-bats stay.
+    """
+    if agg is None or "AB" not in agg.columns:
+        return agg
+    return agg[pd.to_numeric(agg["AB"], errors="coerce").fillna(0) >= min_ab].copy()
 
 
 def add_valuation_scores(df: pd.DataFrame, w_current: float, w_trend: float) -> pd.DataFrame:

@@ -51,7 +51,7 @@ import app_tutorial  # noqa: F401
 SA = BASE / "streamlit_app.py"
 _src = SA.read_text(encoding="utf-8").splitlines()
 _ui = next(i for i, line in enumerate(_src) if "st.set_page_config" in line)
-_def = next(i for i, line in enumerate(_src) if line.startswith("def fmt_int"))
+_def = next(i for i, line in enumerate(_src) if line.startswith(("def fmt_int", "from stat_helpers import fmt_int")))
 _render = next(i for i, line in enumerate(_src) if line.startswith("_APP_RENDER_START"))
 exec(compile("\n".join(_src[:_ui] + _src[_def:_render]), str(SA), "exec"), globals())
 

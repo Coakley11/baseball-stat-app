@@ -55,6 +55,7 @@ from fantasy_weekly_hitter_scoring_ui import (
 )
 from fantasy_weekly_lineup import (
     assignments_to_slot_player_map,
+    eligible_players_for_slot,
     get_saved_weekly_lineup,
     is_lineup_locked,
     list_week_options,
@@ -135,10 +136,24 @@ def _waiver_slot_label_for_open_prompt(slot_label: SlotKeyLabel) -> str:
     return slot_display_name(slot_label.base_slot)
 
 
+def _unused_roster_options(team_roster: pd.DataFrame | None, code: str, assigned: set[str]) -> list[str]:
+    """Rostered players eligible for ``code`` who are not already in this week's lineup."""
+    if team_roster is None or getattr(team_roster, "empty", True):
+        return []
+    return [name for name in eligible_players_for_slot(team_roster, code) if name not in assigned]
+
+
 def build_open_slot_prompts(
     slot_labels: list[SlotKeyLabel],
     assignments: dict[str, str],
+    team_roster: pd.DataFrame | None = None,
 ) -> list[dict[str, str]]:
+    """One prompt per open position (outfield combined).
+
+    With ``team_roster``, an open spot that an unused rostered player can fill asks the
+    user to start someone from the roster; the waiver button is only offered when the
+    roster has nobody eligible (or not enough outfielders).
+    """
     open_slots = [label for label in slot_labels if not str(assignments.get(label.key) or "").strip()]
     if not open_slots:
         return []
@@ -149,18 +164,25 @@ def build_open_slot_prompts(
         missing_position_message = None  # type: ignore[assignment]
         open_waiver_button_label = None  # type: ignore[assignment]
 
+    assigned = {str(v or "").strip() for v in assignments.values() if str(v or "").strip()}
+    check_roster = team_roster is not None and not getattr(team_roster, "empty", True)
+
+    def _missing(code: str, fallback: str) -> tuple[str, str]:
+        if missing_position_message is not None:
+            return missing_position_message(code), open_waiver_button_label(code)
+        return fallback, "Open Waiver Wire"
+
     rows: list[dict[str, str]] = []
     of_labels = [label for label in open_slots if label.base_slot == "OF"]
     other_labels = [label for label in open_slots if label.base_slot != "OF"]
 
     for label in other_labels:
         code = str(label.base_slot or "").strip().upper()
-        if missing_position_message is not None:
-            text = missing_position_message(code)
-            button = open_waiver_button_label(code)
+        options = _unused_roster_options(team_roster, code, assigned) if check_roster else []
+        if options:
+            text, button = f"{slot_display_name(code)} open — start someone from your roster", ""
         else:
-            text = f"{label.label} is empty"
-            button = "Open Waiver Wire"
+            text, button = _missing(code, f"{label.label} is empty")
         rows.append(
             {
                 "text": text,
@@ -170,28 +192,22 @@ def build_open_slot_prompts(
             }
         )
 
-    if len(of_labels) == 1:
-        if missing_position_message is not None:
-            text = missing_position_message("OF")
+    if of_labels:
+        n_open = len(of_labels)
+        n_options = len(_unused_roster_options(team_roster, "OF", assigned)) if check_roster else 0
+        short = max(0, n_open - n_options)
+        if short == 0:
+            spots = "Outfield spot" if n_open == 1 else f"{n_open} outfield spots"
+            text, button = f"{spots} open — start someone from your roster", ""
+        elif n_open == 1:
+            text, button = _missing("OF", f"{of_labels[0].label} is empty")
+        elif missing_position_message is not None:
+            text = f"Missing {short} outfielder" + ("" if short == 1 else "s")
+            if n_options:
+                text += f" — your roster covers {n_options} of the {n_open} open spots"
             button = open_waiver_button_label("OF")
         else:
-            text = f"{of_labels[0].label} is empty"
-            button = "Open Waiver Wire"
-        rows.append(
-            {
-                "text": text,
-                "waiver_label": "Outfield",
-                "button_label": button,
-                "position_code": "OF",
-            }
-        )
-    elif len(of_labels) > 1:
-        if missing_position_message is not None:
-            text = f"Missing {len(of_labels)} outfielders"
-            button = open_waiver_button_label("OF")
-        else:
-            text = f"{len(of_labels)} Outfield spots are empty"
-            button = "Open Waiver Wire"
+            text, button = f"{n_open} Outfield spots are empty", "Open Waiver Wire"
         rows.append(
             {
                 "text": text,
@@ -252,7 +268,7 @@ def _render_open_slots_and_validation(
         else:
             st.info(message)
 
-    open_rows = build_open_slot_prompts(slot_labels, assignments)
+    open_rows = build_open_slot_prompts(slot_labels, assignments, team_roster)
     if open_rows:
         _inject_open_slots_styles(st)
         # Phones: keep "Missing X" and its waiver button on one line (desktop unchanged).
@@ -262,7 +278,7 @@ def _render_open_slots_and_validation(
                 with text_col:
                     st.markdown(f"**{row['text']}**")
                 with btn_col:
-                    if on_open_waiver_wire is not None:
+                    if on_open_waiver_wire is not None and row.get("button_label"):
                         st.button(
                             str(row.get("button_label") or "Open Waiver Wire"),
                             key=f"{prefix}_waiver_{row['waiver_label']}_{idx}_{int(selected_week)}",
@@ -271,6 +287,53 @@ def _render_open_slots_and_validation(
                         )
 
     return validation
+
+
+def _render_manage_team_picker(st: Any, session: dict[str, Any], context: dict[str, Any], *, own_team: str):
+    """Commissioner picks a team to manage; returns its TeamControl when acting as proxy."""
+    try:
+        from fantasy_team_control import manageable_teams
+    except ImportError:
+        return None
+    proxy = [c for c in manageable_teams(session, context) if c.is_proxy and c.team != own_team]
+    if not proxy:
+        return None
+    options = ([own_team] if own_team else []) + [c.team for c in proxy]
+    key = "lineup_manage_team"
+    if session.get(key) not in options:
+        session[key] = options[0]
+    choice = st.selectbox(
+        "Manage team",
+        options,
+        key=key,
+        format_func=lambda t: f"{t} (your team)" if t == own_team else f"{t} — unclaimed, commissioner",
+        help="As commissioner you can set lineups for teams no manager has claimed yet.",
+    )
+    return next((c for c in proxy if c.team == choice), None)
+
+
+_SAVE_ERROR_KEY = "_weekly_lineup_save_error"
+
+
+def _on_save_lineup_click(scope: Any, proxy_control: Any, **save_kwargs: Any) -> None:
+    import streamlit as st
+
+    session = st.session_state
+    write_ok, write_err = _lineup_write_check(scope, proxy_control)
+    if not write_ok:
+        session[_SAVE_ERROR_KEY] = write_err
+        return
+    result = save_weekly_lineup(session, **save_kwargs)
+    if result.get("ok"):
+        session["weekly_lineup_save_flash"] = True
+    else:
+        session[_SAVE_ERROR_KEY] = "; ".join(result.get("errors") or []) or "Couldn't save changes. Try again."
+
+
+def _lineup_write_check(scope: Any, proxy_control: Any) -> tuple[bool, str]:
+    if proxy_control is not None and proxy_control.is_proxy:
+        return True, ""
+    return assert_lineup_write_identity(scope)
 
 
 def render_weekly_lineup_section(
@@ -296,6 +359,18 @@ def render_weekly_lineup_section(
         active_team = str(context.get("my_team_name") or page_team or "").strip()
     if page_team and active_team and page_team != active_team:
         st.warning(LINEUP_IDENTITY_SYNC_ERROR)
+
+    proxy_control = None
+    proxy_choice = _render_manage_team_picker(st, session, context, own_team=active_team)
+    if proxy_choice is not None:
+        proxy_control = proxy_choice
+        active_team = proxy_control.team
+        page_team = proxy_control.team
+        team_roster = None  # load this team's roster below
+        st.info(
+            f"**Commissioner acting for {active_team}.** This team is unclaimed; "
+            "lineups you set are logged as commissioner actions."
+        )
 
     if not active_team:
         st.info("Claim your team in this league before managing weekly lineups.")
@@ -342,8 +417,25 @@ def render_weekly_lineup_section(
         return
     slot_labels = build_slot_key_labels(slots)
     slot_keys = slot_key_labels_as_tuples(slot_labels)
-    week_options = list_week_options()
+    from fantasy_season_ledger import current_period_number
+    from fantasy_season_ledger_ui import (
+        period_editability,
+        period_option_label,
+        period_week_options,
+        render_season_calendar_setup,
+    )
+
+    is_commissioner = bool(is_lineup_format_commissioner(session, context))
+    render_season_calendar_setup(st, session, context, is_commissioner=is_commissioner)
+    ledger_weeks = period_week_options(context)
+    week_options = ledger_weeks or list_week_options()
     prefix = "weekly_lineup"
+    if proxy_control is not None:
+        import re as _re
+
+        prefix = "weekly_lineup_proxy_" + _re.sub(r"[^A-Za-z0-9]+", "_", active_team)
+    if ledger_weeks and session.get(f"{prefix}_selected_week") not in ledger_weeks:
+        session[f"{prefix}_selected_week"] = current_period_number(context) or ledger_weeks[0]
 
     drop_flash = session.pop("weekly_lineup_drop_flash", None)
     if drop_flash:
@@ -362,32 +454,41 @@ def render_weekly_lineup_section(
         selected_week = st.selectbox(
             "Week",
             week_options,
-            format_func=week_label,
+            format_func=(lambda w: period_option_label(context, w)) if ledger_weeks else week_label,
             key=f"{prefix}_selected_week",
         )
 
-    scope = resolve_lineup_scope(session, context, week=int(selected_week), page_lineup_team=page_team)
+    # Proxy edits use team-specific keys; the account's own lineup scope stays untouched.
+    scope = None if proxy_control is not None else resolve_lineup_scope(
+        session, context, week=int(selected_week), page_lineup_team=page_team
+    )
     scope_changed = bool(scope and apply_lineup_scope_change(session, scope))
 
     saved = get_saved_weekly_lineup(context, int(selected_week), team=active_team, session=session)
     saved_assignments = dict((saved or {}).get("assignments") or {})
 
-    edit_state, edit_message = week_editability_message(context, int(selected_week))
     lineup_locked = is_lineup_locked(context, int(selected_week), team=active_team, session=session)
-    if edit_state in ("future", "past"):
-        lineup_locked = True
+    if ledger_weeks:
+        lineup_locked, edit_message = period_editability(
+            context, int(selected_week), lineup_locked=lineup_locked, is_commissioner=is_commissioner
+        )
+    else:
+        edit_state, edit_message = week_editability_message(context, int(selected_week))
+        if edit_state in ("future", "past"):
+            lineup_locked = True
     if edit_message:
         st.info(edit_message)
 
     scoring_profile = resolve_hitter_scoring_profile(context, session=session)
-    context = maybe_mark_legacy_lineup_scoring(
-        session,
-        context,
-        week=int(selected_week),
-        team=active_team,
-        saved_lineup=saved,
-    )
-    render_week_transition_notice(st, context=context, week=int(selected_week))
+    if not ledger_weeks:  # legacy weekly scoring (leagues without a season calendar)
+        context = maybe_mark_legacy_lineup_scoring(
+            session,
+            context,
+            week=int(selected_week),
+            team=active_team,
+            saved_lineup=saved,
+        )
+        render_week_transition_notice(st, context=context, week=int(selected_week))
 
     canon_key = scope.assignments_key if scope else canonical_week_key(prefix, int(selected_week))
     if should_start_week_empty(context, int(selected_week)) and not lineup_locked and not saved_assignments:
@@ -439,36 +540,49 @@ def render_weekly_lineup_section(
         except ImportError:
             pass
 
-        scoring_record = render_scoring_refresh_controls(
-            st,
-            session,
-            context=context,
-            week=int(selected_week),
-            team=active_team,
-            roster_df=team_roster,
-            prefix=prefix,
-        )
-        if scoring_record is None:
-            scoring_record = get_weekly_scoring_record(context, week=int(selected_week), team=active_team)
-        scoring_record = ensure_weekly_scoring_populated(
-            session,
-            context,
-            week=int(selected_week),
-            team=active_team,
-            roster_df=team_roster,
-            profile=scoring_profile,
-        ) or scoring_record
-        render_locked_weekly_dashboard(
-            st,
-            context=context,
-            week=int(selected_week),
-            team=active_team,
-            scoring_record=scoring_record,
-            profile=scoring_profile,
-            roster_df=team_roster,
-            saved_lineup=saved,
-            session=session,
-        )
+        if ledger_weeks:
+            from fantasy_season_ledger import PERIOD_FINALIZED, get_period, period_date_label, period_status
+            from fantasy_season_results_ui import render_team_period_result
+
+            _period = get_period(context, int(selected_week))
+            if period_status(_period) == PERIOD_FINALIZED:
+                render_team_period_result(st, context, int(selected_week), active_team)
+            else:
+                st.caption(
+                    f"Results for this week are calculated when the commissioner finalizes it, from stats for "
+                    f"{period_date_label(_period)} only — later roster moves never change them."
+                )
+        else:
+            scoring_record = render_scoring_refresh_controls(
+                st,
+                session,
+                context=context,
+                week=int(selected_week),
+                team=active_team,
+                roster_df=team_roster,
+                prefix=prefix,
+            )
+            if scoring_record is None:
+                scoring_record = get_weekly_scoring_record(context, week=int(selected_week), team=active_team)
+            scoring_record = ensure_weekly_scoring_populated(
+                session,
+                context,
+                week=int(selected_week),
+                team=active_team,
+                roster_df=team_roster,
+                profile=scoring_profile,
+            ) or scoring_record
+            render_locked_weekly_dashboard(
+                st,
+                context=context,
+                week=int(selected_week),
+                team=active_team,
+                scoring_record=scoring_record,
+                profile=scoring_profile,
+                roster_df=team_roster,
+                saved_lineup=saved,
+                session=session,
+            )
 
     board_payload = build_interactive_board_payload(
         slot_labels,
@@ -514,7 +628,7 @@ def render_weekly_lineup_section(
             )
 
     if drop_event and not lineup_locked:
-        write_ok, write_err = assert_lineup_write_identity(scope)
+        write_ok, write_err = _lineup_write_check(scope, proxy_control)
         if not write_ok:
             st.error(write_err)
         else:
@@ -586,6 +700,11 @@ def render_weekly_lineup_section(
         selected_week=int(selected_week),
     )
 
+    if lineup_locked and ledger_weeks:
+        from fantasy_season_results_ui import render_period_finalize_panel
+
+        render_period_finalize_panel(st, session, context, int(selected_week), is_commissioner=is_commissioner)
+        return
     if lineup_locked:
         roster_by_team = {active_team: team_roster}
         try:
@@ -615,28 +734,34 @@ def render_weekly_lineup_section(
         save_col, _reset_col = st.columns(2)
     with save_col:
         save_disabled = not validation.get("ok")
-        if st.button("Save Lineup", key=save_key, type="primary", disabled=bool(save_disabled)):
-            write_ok, write_err = assert_lineup_write_identity(scope)
-            if not write_ok:
-                st.error(write_err)
-            else:
-                save_result = save_weekly_lineup(
-                    session,
-                    week=int(selected_week),
-                    slots=slots,
-                    assignments=assignments,
-                    my_team=active_team,
-                    roster_df=team_roster,
-                )
-                if save_result.get("ok"):
-                    session["weekly_lineup_save_flash"] = True
-                    st.rerun()
-                else:
-                    st.error("Couldn't save changes. Try again.")
-        elif save_disabled:
+        save_error = session.pop(_SAVE_ERROR_KEY, None)
+        if save_error:
+            st.error(save_error)
+        # on_click runs before the next script run starts, so a Save pressed while a
+        # board drop is still re-rendering is never lost.
+        st.button(
+            "Save Lineup",
+            key=save_key,
+            type="primary",
+            disabled=bool(save_disabled),
+            on_click=_on_save_lineup_click,
+            args=(scope, proxy_control),
+            kwargs={
+                "week": int(selected_week),
+                "slots": list(slots),
+                "assignments": dict(assignments),
+                "my_team": active_team,
+                "roster_df": team_roster,
+            },
+        )
+        if save_disabled:
             st.caption("Complete your lineup before saving.")
     with _reset_col:
         if st.button("Reset", key=reset_key):
             session[canon_key] = _normalize_assignments(saved_assignments, slot_keys)
             session[board_nonce_key] = board_nonce + 1
             st.rerun()
+    if ledger_weeks:
+        from fantasy_season_results_ui import render_period_finalize_panel
+
+        render_period_finalize_panel(st, session, context, int(selected_week), is_commissioner=is_commissioner)

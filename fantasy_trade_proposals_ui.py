@@ -283,6 +283,19 @@ def _process_incoming_accept_forms(
             st.caption(
                 f"**Accept incoming trade** from **{proposer}**: you give {receives}, you receive {gives}"
             )
+            try:
+                from fantasy_trade_center_ui import render_trade_roster_warnings
+
+                render_trade_roster_warnings(
+                    st,
+                    session,
+                    proposer_team=proposer,
+                    recipient_team=my_team_name,
+                    proposer_gives=[str(p.get("player_name") or "") for p in (proposal.get("proposer_gives") or [])],
+                    proposer_receives=[str(p.get("player_name") or "") for p in (proposal.get("proposer_receives") or [])],
+                )
+            except ImportError:
+                pass
             submitted = st.form_submit_button("Accept Trade", type="primary")
         if not submitted:
             continue

@@ -268,7 +268,7 @@ class AppWiringTests(unittest.TestCase):
     def test_render_global_app_chrome_calls_quick_nav_first(self) -> None:
         src = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
         start = src.index("def render_global_app_chrome(active_page: str)")
-        end = src.index("def fmt_int(x):")
+        end = src.index("from stat_helpers import fmt_int")
         block = src[start:end]
         self.assertIn("render_mobile_quick_nav", block)
         # Must run before the hero markup so it lands at the very top on phones.

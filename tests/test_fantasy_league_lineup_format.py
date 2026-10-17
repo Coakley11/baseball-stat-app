@@ -279,7 +279,7 @@ class WaiverPositionFilterTests(unittest.TestCase):
             ui_filtered = _apply_waiver_position_filter(enriched, choice)
             from streamlit_app import filter_players_by_fantasy_position
 
-            direct = filter_players_by_fantasy_position(enriched, choice)
+            direct = filter_players_by_fantasy_position(enriched, choice, strict=True)
             self.assertEqual(
                 sorted(ui_filtered["Player"].tolist()),
                 sorted(direct["Player"].tolist()),
@@ -455,3 +455,27 @@ class LineupPersistenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CommissionerSetupDefaultsTests(unittest.TestCase):
+    """Imported/simulator leagues: setup must not fabricate a lineup of one repeated position."""
+
+    def test_each_pick_is_one_slot(self):
+        from fantasy_league_lineup_format import expand_position_picks
+
+        self.assertEqual(expand_position_picks(["C", "OF", "OF", "OF"]), ["C", "OF", "OF", "OF"])
+        # The UI used to pass the OF count too, which re-expanded the first OF.
+        self.assertEqual(expand_position_picks(["C", "OF", "OF", "OF"], of_count=3), ["C", "OF", "OF", "OF"])
+        # A single OF pick may still stand for several outfield slots.
+        self.assertEqual(expand_position_picks(["C", "OF"], of_count=3), ["C", "OF", "OF", "OF"])
+
+    def test_setup_prefills_a_standard_lineup_not_all_catchers(self):
+        from pathlib import Path
+
+        from fantasy_league_lineup_format import STANDARD_LINEUP_TEMPLATE
+
+        self.assertEqual(STANDARD_LINEUP_TEMPLATE, ("C", "1B", "2B", "3B", "SS", "OF", "OF", "OF", "UTIL"))
+        src = (Path(__file__).resolve().parents[1] / "fantasy_league_lineup_format_ui.py").read_text(encoding="utf-8")
+        self.assertIn("index=options.index(suggested_label)", src)
+        self.assertIn("min(len(STANDARD_LINEUP_TEMPLATE), int(suggested))", src)
+        self.assertIn("expand_position_picks(picks)", src)

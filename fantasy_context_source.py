@@ -948,11 +948,18 @@ def _workflow_descriptor_cache_fingerprint(session: dict[str, Any]) -> str:
 
     active_draft = str(session.get("active_draft_archive_id") or "").strip()
     active_ctx = str(session.get("active_league_context_id") or "").strip()
+    active_rosters = ""
     try:
-        from fantasy_league_context import ensure_fantasy_league_context_state
+        from fantasy_league_context import ensure_fantasy_league_context_state, league_rosters_cache_sig
 
         store = ensure_fantasy_league_context_state(session)
         active_ctx = str(store.get("active_league_context_id") or active_ctx).strip()
+        # Waiver moves and trades change who is on which team without changing any id above;
+        # without this the cached descriptor kept serving the pre-move rosters.
+        active_context = (store.get("contexts") or {}).get(active_ctx)
+        active_rosters = league_rosters_cache_sig(active_context)
+        if isinstance(active_context, dict):  # a rename changes the heading, not the rosters
+            active_rosters += ":" + str(active_context.get("league_name") or active_context.get("display_name") or "")
     except ImportError:
         pass
 
@@ -973,6 +980,7 @@ def _workflow_descriptor_cache_fingerprint(session: dict[str, Any]) -> str:
             f"live_teams={live_teams}",
             f"active_draft={active_draft}",
             f"active_ctx={active_ctx}",
+            f"active_rosters={active_rosters}",
             f"auth={auth}",
             f"ws={workspace}",
         ]

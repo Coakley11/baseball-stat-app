@@ -395,6 +395,35 @@ def _queue_idea_builder_update(
     session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
 
 
+def render_trade_roster_warnings(
+    st: Any,
+    session: dict[str, Any],
+    *,
+    proposer_team: str,
+    recipient_team: str,
+    proposer_gives: list[str],
+    proposer_receives: list[str],
+) -> list[str]:
+    """Show what the trade does to each roster's required lineup and roster size."""
+    try:
+        from fantasy_league_context import get_active_league_context
+        from fantasy_trade_legality import trade_roster_warnings
+
+        warnings = trade_roster_warnings(
+            get_active_league_context(session),
+            proposer_team=proposer_team,
+            recipient_team=recipient_team,
+            proposer_gives=proposer_gives,
+            proposer_receives=proposer_receives,
+            stats_pool=session.get("_fantasy_current_hitter_stats"),
+        )
+    except Exception:
+        return []
+    for message in warnings:
+        st.warning(message)
+    return warnings
+
+
 def _render_idea_card(
     st: Any,
     idea: dict[str, Any],
@@ -739,6 +768,16 @@ def _render_build_analyze(
         verdict = str(persisted_analysis.get("verdict") or "")
         analysis_rendered = True
 
+    if give_players and receive_players and other_team and other_team != ANY_TRADE_PARTNER:
+        render_trade_roster_warnings(
+            st,
+            session,
+            proposer_team=my_team,
+            recipient_team=other_team,
+            proposer_gives=list(give_players),
+            proposer_receives=list(receive_players),
+        )
+
     try:
         from fantasy_mobile_layout import phone_wrap_row
     except ImportError:  # pragma: no cover
@@ -1077,8 +1116,71 @@ def render_trade_center_tab(
             summarize_team_category_needs_fn=summarize_team_category_needs_fn,
             developer_mode_enabled_fn=developer_mode_enabled_fn,
         )
+        render_commissioner_trade_panel(st, session)
     elif internal_tab == "Offers & Activity":
         _render_offers_activity_section(st, session, ws=ws, scope_key=scope_key, league_id=canonical_league_id)
+
+
+def render_commissioner_trade_panel(st: Any, session: dict[str, Any]) -> None:
+    """Commissioner completes a trade that involves an unclaimed team (explicit proxy)."""
+    try:
+        from fantasy_league_context import get_active_league_context
+        from fantasy_team_control import manageable_teams
+        from fantasy_trade_proposals import execute_commissioner_trade
+    except ImportError:
+        return
+    context = get_active_league_context(session) or {}
+    controls = manageable_teams(session, context)
+    if not any(c.is_proxy for c in controls):
+        return
+    flash = session.pop("tc_commissioner_trade_flash", None)
+    if flash:
+        st.success(str(flash))
+    with st.expander("Commissioner: trade involving an unclaimed team", expanded=False):
+        st.caption(
+            "Unclaimed teams have no manager yet, so as commissioner you act for them. "
+            "Teams with a manager are never changed here — send them a normal proposal."
+        )
+        rosters = context.get("league_rosters") or {}
+        names = [c.team for c in controls]
+        team_a = st.selectbox("Team sending players", names, key="tc_comm_team_a")
+        others = [c.team for c in controls if c.team != team_a]
+        if not others:
+            st.caption("No other team you can act for.")
+            return
+        team_b = st.selectbox("Team receiving them", others, key="tc_comm_team_b")
+        proxy_teams = [c.team for c in controls if c.is_proxy and c.team in (team_a, team_b)]
+
+        def players(team: str) -> list[str]:
+            return [str(p.get("player_name") or "") for p in ((rosters.get(team) or {}).get("players") or []) if isinstance(p, dict)]
+
+        a_gives = st.multiselect(f"{team_a} gives", players(team_a), key="tc_comm_a_gives", max_selections=3)
+        b_gives = st.multiselect(f"{team_b} gives", players(team_b), key="tc_comm_b_gives", max_selections=3)
+        if a_gives and b_gives:
+            render_trade_roster_warnings(
+                st, session, proposer_team=team_a, recipient_team=team_b, proposer_gives=a_gives, proposer_receives=b_gives
+            )
+        if not proxy_teams:
+            st.info("Both teams have managers. Use a normal trade proposal.")
+            return
+        confirmed = st.checkbox(
+            f"I am acting as commissioner for {' and '.join(proxy_teams)}",
+            key="tc_comm_confirm",
+        )
+        if st.button("Execute commissioner trade", key="tc_comm_execute", type="primary", disabled=not (a_gives and b_gives)):
+            done, err = execute_commissioner_trade(
+                session, team_a=team_a, team_b=team_b, team_a_gives=a_gives, team_b_gives=b_gives, confirmed=bool(confirmed)
+            )
+            if err:
+                st.error(err)
+            else:
+                session["tc_commissioner_trade_flash"] = (
+                    f"Trade complete: {team_a} sent {', '.join(a_gives)}; {team_b} sent {', '.join(b_gives)}. "
+                    f"Logged as commissioner acting for {' and '.join(proxy_teams)}."
+                )
+                for key in ("tc_comm_a_gives", "tc_comm_b_gives", "tc_comm_confirm"):
+                    session.pop(key, None)
+                st.rerun()
 
 
 def _render_offers_activity_section(
