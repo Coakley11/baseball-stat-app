@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Generated from openapi/baseball-api.json by `npm run api:types`.
+    "src/lib/api/generated/**",
   ]),
 ]);
 

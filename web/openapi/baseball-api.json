@@ -1,0 +1,2095 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Baseball Explorer API",
+    "version": "v1",
+    "description": "Read-only historical analytics. Python is authoritative for every number; see docs/NEXTJS_API_CONTRACTS.md."
+  },
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "summary": "Service health and version",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthInfo"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/players/search": {
+      "get": {
+        "summary": "Find players by name (the app's player-picker matching)",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "description": "At least 2 characters.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "1–200, default 10.",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlayerSearchResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/players/resolve": {
+      "get": {
+        "summary": "One player by exact name; 409 ambiguous_player lists candidates",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "description": "Exact name or disambiguated label.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlayerSummary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/players/{player_id}/seasons": {
+      "get": {
+        "summary": "A player's seasons (Historical Explorer rows)",
+        "parameters": [
+          {
+            "name": "player_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Lahman playerID."
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "description": "First season (inclusive).",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "description": "Last season (inclusive).",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "split",
+            "in": "query",
+            "required": false,
+            "description": "team: split seasons stay separate; combined: one row per season.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "team",
+                "combined"
+              ],
+              "default": "team"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlayerSeasonsResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/seasons": {
+      "get": {
+        "summary": "Historical Explorer: best single seasons",
+        "parameters": [
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "description": "First season (inclusive).",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "description": "Last season (inclusive).",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "metric",
+            "in": "query",
+            "required": false,
+            "description": "Sort stat.",
+            "schema": {
+              "type": "string",
+              "default": "HR"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "description": "",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "desc",
+                "asc"
+              ],
+              "default": "desc"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "1–200, default 25.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "bats",
+            "in": "query",
+            "required": false,
+            "description": "Comma list: L,R,B.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "positions",
+            "in": "query",
+            "required": false,
+            "description": "Comma list, e.g. SS,2B.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "position_source",
+            "in": "query",
+            "required": false,
+            "description": "",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "season",
+                "career"
+              ],
+              "default": "season"
+            }
+          },
+          {
+            "name": "teams",
+            "in": "query",
+            "required": false,
+            "description": "Comma list of franchise names, 'American League', 'National League'.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "combine",
+            "in": "query",
+            "required": false,
+            "description": "Combine split-team seasons into one row.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "min_ab",
+            "in": "query",
+            "required": false,
+            "description": "Minimum AB. Setting it switches qualification to manual.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "qualified",
+            "in": "query",
+            "required": false,
+            "description": "Apply the qualified AB to rate-stat rankings (the app's default).",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          {
+            "name": "min_{STAT}",
+            "in": "query",
+            "required": false,
+            "description": "Stat minimums, e.g. min_HR=20, min_OPS=0.8 (R AB H 2B 3B HR RBI SB BB BA OBP SLG OPS).",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeasonLeadersResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/leaderboards": {
+      "get": {
+        "summary": "Leaderboards: totals over a span, ranked",
+        "parameters": [
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "description": "First season (inclusive).",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "description": "Last season (inclusive).",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "metric",
+            "in": "query",
+            "required": false,
+            "description": "Sort stat or 'score'.",
+            "schema": {
+              "type": "string",
+              "default": "score"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "1–200, default 25.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "weights",
+            "in": "query",
+            "required": false,
+            "description": "Score weights, e.g. HR:1,RBI:1,SB:1 (the default).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_ab",
+            "in": "query",
+            "required": false,
+            "description": "Minimum AB. Setting it switches qualification to manual.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "qualified",
+            "in": "query",
+            "required": false,
+            "description": "Apply the qualified AB to rate-stat rankings (the app's default).",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          {
+            "name": "min_{STAT}",
+            "in": "query",
+            "required": false,
+            "description": "Stat minimums, e.g. min_HR=20, min_OPS=0.8 (R AB H 2B 3B HR RBI SB BB BA OBP SLG OPS).",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaderboardResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CareerSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "player": {
+            "$ref": "#/components/schemas/PlayerSummary"
+          },
+          "seasons": {
+            "title": "Seasons",
+            "type": "integer"
+          },
+          "games": {
+            "title": "Games",
+            "type": "integer"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/StatLine"
+          },
+          "best_season": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Counting-stat best season, as the page names it.",
+            "title": "Best Season"
+          }
+        },
+        "required": [
+          "player",
+          "seasons",
+          "games",
+          "stats"
+        ],
+        "title": "CareerSummary",
+        "type": "object"
+      },
+      "ComparisonMetric": {
+        "additionalProperties": false,
+        "properties": {
+          "metric": {
+            "$ref": "#/components/schemas/MetricInfo"
+          },
+          "values": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "description": "player_id -> value over the shared range.",
+            "title": "Values",
+            "type": "object"
+          },
+          "leaders": {
+            "description": "player_id(s) leading at displayed precision (ties allowed).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Leaders",
+            "type": "array"
+          }
+        },
+        "required": [
+          "metric",
+          "values",
+          "leaders"
+        ],
+        "title": "ComparisonMetric",
+        "type": "object"
+      },
+      "ComparisonResult": {
+        "additionalProperties": false,
+        "properties": {
+          "players": {
+            "items": {
+              "$ref": "#/components/schemas/PlayerRef"
+            },
+            "title": "Players",
+            "type": "array"
+          },
+          "start": {
+            "title": "Start",
+            "type": "integer"
+          },
+          "end": {
+            "title": "End",
+            "type": "integer"
+          },
+          "metrics": {
+            "items": {
+              "$ref": "#/components/schemas/ComparisonMetric"
+            },
+            "title": "Metrics",
+            "type": "array"
+          },
+          "headline": {
+            "description": "Who leads where. Never an overall winner without a user-chosen weighting.",
+            "title": "Headline",
+            "type": "string"
+          }
+        },
+        "required": [
+          "players",
+          "start",
+          "end",
+          "metrics",
+          "headline"
+        ],
+        "title": "ComparisonResult",
+        "type": "object"
+      },
+      "ErrorBody": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "enum": [
+              "player_not_found",
+              "ambiguous_player",
+              "invalid_metric",
+              "invalid_date_range",
+              "invalid_parameter",
+              "no_active_league",
+              "unauthorized_team",
+              "missing_finalized_weeks",
+              "data_unavailable",
+              "not_found",
+              "internal_error"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "description": "Plain-language, safe to show. Never a traceback or Streamlit text.",
+            "title": "Message",
+            "type": "string"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Structured extras, e.g. candidates.",
+            "title": "Details"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorBody",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorBody"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
+      "HealthInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "ok",
+              "degraded"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "api_version": {
+            "default": "v1",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "build": {
+            "description": "Short git commit of the running code, or 'unknown'.",
+            "title": "Build",
+            "type": "string"
+          },
+          "data_loaded": {
+            "title": "Data Loaded",
+            "type": "boolean"
+          },
+          "seasons": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "[first, last] season in the loaded data.",
+            "title": "Seasons"
+          }
+        },
+        "required": [
+          "status",
+          "build",
+          "data_loaded"
+        ],
+        "title": "HealthInfo",
+        "type": "object"
+      },
+      "LeaderboardResult": {
+        "additionalProperties": false,
+        "description": "Leaderboards: totals over a span of seasons, ranked by one stat or the weighted score.",
+        "properties": {
+          "start": {
+            "title": "Start",
+            "type": "integer"
+          },
+          "end": {
+            "title": "End",
+            "type": "integer"
+          },
+          "metric": {
+            "$ref": "#/components/schemas/MetricInfo"
+          },
+          "weights": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "Weights behind 'score' (rate stats count ×100).",
+            "title": "Weights",
+            "type": "object"
+          },
+          "qualification": {
+            "$ref": "#/components/schemas/Qualification"
+          },
+          "total_rows": {
+            "title": "Total Rows",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/LeaderboardRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "metric",
+          "weights",
+          "qualification",
+          "total_rows",
+          "rows"
+        ],
+        "title": "LeaderboardResult",
+        "type": "object"
+      },
+      "LeaderboardRow": {
+        "additionalProperties": false,
+        "properties": {
+          "rank": {
+            "title": "Rank",
+            "type": "integer"
+          },
+          "player": {
+            "$ref": "#/components/schemas/PlayerRef"
+          },
+          "bats": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Bats"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/StatLine"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "rank",
+          "player",
+          "stats",
+          "score"
+        ],
+        "title": "LeaderboardRow",
+        "type": "object"
+      },
+      "LeagueSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "league_id": {
+            "description": "league_context_id",
+            "title": "League Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "my_team": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "My Team"
+          },
+          "teams": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Teams",
+            "type": "array"
+          },
+          "scoring_format": {
+            "title": "Scoring Format",
+            "type": "string"
+          },
+          "lineup_slots": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Lineup Slots",
+            "type": "array"
+          },
+          "has_season_calendar": {
+            "title": "Has Season Calendar",
+            "type": "boolean"
+          },
+          "finalized_periods": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Finalized Periods",
+            "type": "array"
+          }
+        },
+        "required": [
+          "league_id",
+          "name",
+          "my_team",
+          "teams",
+          "scoring_format",
+          "lineup_slots",
+          "has_season_calendar",
+          "finalized_periods"
+        ],
+        "title": "LeagueSummary",
+        "type": "object"
+      },
+      "LineupReport": {
+        "additionalProperties": false,
+        "properties": {
+          "league_id": {
+            "title": "League Id",
+            "type": "string"
+          },
+          "team": {
+            "title": "Team",
+            "type": "string"
+          },
+          "period": {
+            "title": "Period",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "not_saved",
+              "draft",
+              "locked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "slots": {
+            "items": {
+              "$ref": "#/components/schemas/LineupSlot"
+            },
+            "title": "Slots",
+            "type": "array"
+          },
+          "open_from_bench": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Open From Bench",
+            "type": "array"
+          },
+          "open_needs_waiver": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Open Needs Waiver",
+            "type": "array"
+          },
+          "ineligible": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Ineligible",
+            "type": "array"
+          }
+        },
+        "required": [
+          "league_id",
+          "team",
+          "period",
+          "status",
+          "slots",
+          "open_from_bench",
+          "open_needs_waiver",
+          "ineligible"
+        ],
+        "title": "LineupReport",
+        "type": "object"
+      },
+      "LineupSlot": {
+        "additionalProperties": false,
+        "properties": {
+          "slot_key": {
+            "title": "Slot Key",
+            "type": "string"
+          },
+          "slot": {
+            "title": "Slot",
+            "type": "string"
+          },
+          "player": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player"
+          },
+          "eligible": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eligible"
+          }
+        },
+        "required": [
+          "slot_key",
+          "slot",
+          "player",
+          "eligible"
+        ],
+        "title": "LineupSlot",
+        "type": "object"
+      },
+      "MetricInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "count",
+              "rate",
+              "score",
+              "year"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "higher_is_better": {
+            "default": true,
+            "title": "Higher Is Better",
+            "type": "boolean"
+          },
+          "decimals": {
+            "description": "Display precision the app uses (rates 3, counts 0, score 1).",
+            "title": "Decimals",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "kind",
+          "decimals"
+        ],
+        "title": "MetricInfo",
+        "type": "object"
+      },
+      "PlayerRef": {
+        "additionalProperties": false,
+        "properties": {
+          "player_id": {
+            "description": "Canonical Lahman playerID. Stable across name changes.",
+            "title": "Player Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "label": {
+            "description": "Unique display label; adds the career span when names collide.",
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "player_id",
+          "name",
+          "label"
+        ],
+        "title": "PlayerRef",
+        "type": "object"
+      },
+      "PlayerSearchResult": {
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/PlayerSummary"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "query",
+          "results",
+          "truncated"
+        ],
+        "title": "PlayerSearchResult",
+        "type": "object"
+      },
+      "PlayerSeason": {
+        "additionalProperties": false,
+        "properties": {
+          "year": {
+            "title": "Year",
+            "type": "integer"
+          },
+          "team": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TeamRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/StatLine"
+          }
+        },
+        "required": [
+          "year",
+          "team",
+          "position",
+          "stats"
+        ],
+        "title": "PlayerSeason",
+        "type": "object"
+      },
+      "PlayerSeasonsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "player": {
+            "$ref": "#/components/schemas/PlayerSummary"
+          },
+          "start": {
+            "title": "Start",
+            "type": "integer"
+          },
+          "end": {
+            "title": "End",
+            "type": "integer"
+          },
+          "split_mode": {
+            "description": "team: one row per season and team (split seasons stay separate); combined: one row per season.",
+            "enum": [
+              "team",
+              "combined"
+            ],
+            "title": "Split Mode",
+            "type": "string"
+          },
+          "seasons": {
+            "items": {
+              "$ref": "#/components/schemas/PlayerSeason"
+            },
+            "title": "Seasons",
+            "type": "array"
+          }
+        },
+        "required": [
+          "player",
+          "start",
+          "end",
+          "split_mode",
+          "seasons"
+        ],
+        "title": "PlayerSeasonsResult",
+        "type": "object"
+      },
+      "PlayerSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "player": {
+            "$ref": "#/components/schemas/PlayerRef"
+          },
+          "first_season": {
+            "title": "First Season",
+            "type": "integer"
+          },
+          "last_season": {
+            "title": "Last Season",
+            "type": "integer"
+          },
+          "career_primary_position": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Career Primary Position"
+          },
+          "bats": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Bats"
+          },
+          "throws": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Throws"
+          },
+          "last_team": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TeamRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "hall_of_fame": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Hall Of Fame"
+          }
+        },
+        "required": [
+          "player",
+          "first_season",
+          "last_season"
+        ],
+        "title": "PlayerSummary",
+        "type": "object"
+      },
+      "Qualification": {
+        "additionalProperties": false,
+        "properties": {
+          "applies": {
+            "description": "True when a rate stat is ranked and a minimum AB is in force.",
+            "title": "Applies",
+            "type": "boolean"
+          },
+          "min_ab": {
+            "title": "Min Ab",
+            "type": "integer"
+          },
+          "qualified_ab": {
+            "description": "The qualifying AB for the range under the app's rule.",
+            "title": "Qualified Ab",
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "auto",
+              "manual"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "text": {
+            "description": "The same caption the app shows next to the ranking.",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "applies",
+          "min_ab",
+          "qualified_ab",
+          "mode",
+          "text"
+        ],
+        "title": "Qualification",
+        "type": "object"
+      },
+      "SeasonLeadersResult": {
+        "additionalProperties": false,
+        "description": "Historical Explorer: best single seasons for a range and stat.",
+        "properties": {
+          "start": {
+            "title": "Start",
+            "type": "integer"
+          },
+          "end": {
+            "title": "End",
+            "type": "integer"
+          },
+          "metric": {
+            "$ref": "#/components/schemas/MetricInfo"
+          },
+          "order": {
+            "enum": [
+              "desc",
+              "asc"
+            ],
+            "title": "Order",
+            "type": "string"
+          },
+          "split_mode": {
+            "enum": [
+              "team",
+              "combined"
+            ],
+            "title": "Split Mode",
+            "type": "string"
+          },
+          "qualification": {
+            "$ref": "#/components/schemas/Qualification"
+          },
+          "total_rows": {
+            "description": "Seasons that pass the filters (before the limit).",
+            "title": "Total Rows",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/SeasonRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "headline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The page's own answer headline for these rows.",
+            "title": "Headline"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "metric",
+          "order",
+          "split_mode",
+          "qualification",
+          "total_rows",
+          "rows"
+        ],
+        "title": "SeasonLeadersResult",
+        "type": "object"
+      },
+      "SeasonRow": {
+        "additionalProperties": false,
+        "properties": {
+          "rank": {
+            "title": "Rank",
+            "type": "integer"
+          },
+          "player": {
+            "$ref": "#/components/schemas/PlayerRef"
+          },
+          "year": {
+            "title": "Year",
+            "type": "integer"
+          },
+          "team": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TeamRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          },
+          "bats": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Bats"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/StatLine"
+          }
+        },
+        "required": [
+          "rank",
+          "player",
+          "year",
+          "team",
+          "position",
+          "stats"
+        ],
+        "title": "SeasonRow",
+        "type": "object"
+      },
+      "StandingsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "league_id": {
+            "title": "League Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "official",
+              "snapshot"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "basis": {
+            "title": "Basis",
+            "type": "string"
+          },
+          "periods_counted": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Periods Counted",
+            "type": "array"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/StandingsRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "league_id",
+          "kind",
+          "label",
+          "basis",
+          "periods_counted",
+          "rows"
+        ],
+        "title": "StandingsResult",
+        "type": "object"
+      },
+      "StandingsRow": {
+        "additionalProperties": false,
+        "properties": {
+          "rank": {
+            "title": "Rank",
+            "type": "integer"
+          },
+          "team": {
+            "title": "Team",
+            "type": "string"
+          },
+          "points": {
+            "title": "Points",
+            "type": "number"
+          },
+          "categories": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Categories",
+            "type": "object"
+          }
+        },
+        "required": [
+          "rank",
+          "team",
+          "points",
+          "categories"
+        ],
+        "title": "StandingsRow",
+        "type": "object"
+      },
+      "StatLine": {
+        "additionalProperties": false,
+        "properties": {
+          "G": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "G"
+          },
+          "AB": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ab"
+          },
+          "R": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "R"
+          },
+          "H": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "H"
+          },
+          "2B": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "2B"
+          },
+          "3B": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "3B"
+          },
+          "HR": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Hr"
+          },
+          "RBI": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rbi"
+          },
+          "SB": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sb"
+          },
+          "BB": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Bb"
+          },
+          "BA": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ba"
+          },
+          "OBP": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Obp"
+          },
+          "SLG": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Slg"
+          },
+          "OPS": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ops"
+          }
+        },
+        "title": "StatLine",
+        "type": "object"
+      },
+      "TeamRef": {
+        "additionalProperties": false,
+        "properties": {
+          "team_id": {
+            "description": "Franchise teamID the app normalizes to, e.g. NYY.",
+            "title": "Team Id",
+            "type": "string"
+          },
+          "name": {
+            "description": "Franchise display name.",
+            "title": "Name",
+            "type": "string"
+          },
+          "season_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Historical name for that season, e.g. Indians.",
+            "title": "Season Name"
+          },
+          "league": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "AL / NL / Unknown for that season.",
+            "title": "League"
+          }
+        },
+        "required": [
+          "team_id",
+          "name"
+        ],
+        "title": "TeamRef",
+        "type": "object"
+      },
+      "TradeEvaluation": {
+        "additionalProperties": false,
+        "properties": {
+          "league_id": {
+            "title": "League Id",
+            "type": "string"
+          },
+          "team": {
+            "title": "Team",
+            "type": "string"
+          },
+          "partner": {
+            "title": "Partner",
+            "type": "string"
+          },
+          "give": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Give",
+            "type": "array"
+          },
+          "receive": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Receive",
+            "type": "array"
+          },
+          "verdict": {
+            "enum": [
+              "Favors your team",
+              "Balanced",
+              "Favors the other team",
+              "Creates roster issue"
+            ],
+            "title": "Verdict",
+            "type": "string"
+          },
+          "value_difference": {
+            "description": "Need-weighted category score difference (evaluate_trade).",
+            "title": "Value Difference",
+            "type": "number"
+          },
+          "category_changes": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Category Changes",
+            "type": "object"
+          },
+          "roster_issues": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Roster Issues",
+            "type": "array"
+          }
+        },
+        "required": [
+          "league_id",
+          "team",
+          "partner",
+          "give",
+          "receive",
+          "verdict",
+          "value_difference",
+          "category_changes",
+          "roster_issues"
+        ],
+        "title": "TradeEvaluation",
+        "type": "object"
+      },
+      "TrendPoint": {
+        "additionalProperties": false,
+        "properties": {
+          "year": {
+            "title": "Year",
+            "type": "integer"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "at_bats": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "At Bats"
+          }
+        },
+        "required": [
+          "year",
+          "value"
+        ],
+        "title": "TrendPoint",
+        "type": "object"
+      },
+      "TrendResult": {
+        "additionalProperties": false,
+        "properties": {
+          "player": {
+            "$ref": "#/components/schemas/PlayerRef"
+          },
+          "metric": {
+            "$ref": "#/components/schemas/MetricInfo"
+          },
+          "slope_per_season": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slope Per Season"
+          },
+          "direction": {
+            "enum": [
+              "up",
+              "down",
+              "flat"
+            ],
+            "title": "Direction",
+            "type": "string"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/TrendPoint"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "weighting": {
+            "description": "How seasons are weighted (rate stats by playing time).",
+            "title": "Weighting",
+            "type": "string"
+          }
+        },
+        "required": [
+          "player",
+          "metric",
+          "slope_per_season",
+          "direction",
+          "points",
+          "weighting"
+        ],
+        "title": "TrendResult",
+        "type": "object"
+      },
+      "ValuationResult": {
+        "additionalProperties": false,
+        "properties": {
+          "start": {
+            "title": "Start",
+            "type": "integer"
+          },
+          "end": {
+            "title": "End",
+            "type": "integer"
+          },
+          "weights": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Weights",
+            "type": "object"
+          },
+          "pool_size": {
+            "title": "Pool Size",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ValuationRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "weights",
+          "pool_size",
+          "rows"
+        ],
+        "title": "ValuationResult",
+        "type": "object"
+      },
+      "ValuationRow": {
+        "additionalProperties": false,
+        "properties": {
+          "rank": {
+            "title": "Rank",
+            "type": "integer"
+          },
+          "player": {
+            "$ref": "#/components/schemas/PlayerRef"
+          },
+          "valuation_score": {
+            "description": "0-100 within the ranked list.",
+            "title": "Valuation Score",
+            "type": "number"
+          },
+          "production_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Production Rank"
+          },
+          "trend_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trend Rank"
+          },
+          "production_points": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "w_current·Perf_Pct/(w_current+w_trend)·100",
+            "title": "Production Points"
+          },
+          "trend_points": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "w_trend·Trend_Pct/(w_current+w_trend)·100",
+            "title": "Trend Points"
+          }
+        },
+        "required": [
+          "rank",
+          "player",
+          "valuation_score",
+          "production_rank",
+          "trend_rank",
+          "production_points",
+          "trend_points"
+        ],
+        "title": "ValuationRow",
+        "type": "object"
+      }
+    }
+  }
+}
