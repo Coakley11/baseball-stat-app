@@ -135,13 +135,7 @@ def qualification_caption(state: dict[str, Any], info: dict[str, Any], sort_stat
         return ""
     value = int(state.get("value") or 0)
     if state.get("mode") == MODE_AUTO and value > 0:
-        if info.get("span"):
-            basis = (
-                "a career-length minimum for spans this long" if info.get("capped")
-                else f"about 2.7 AB per team game over {info.get('seasons')} season(s)"
-            )
-        else:
-            basis = "about 2.7 AB per team game of a full season"
+        basis = _caption_basis(info)
         line = (
             f"**Qualified hitters only:** ranking by {sort_stat} requires at least **{value:,} AB** "
             f"({basis}, close to MLB's batting-title rule). Change it under *Stat minimum filters*."
@@ -153,3 +147,32 @@ def qualification_caption(state: dict[str, Any], info: dict[str, Any], sort_stat
     if value > 0:
         return f"**Minimum {value:,} AB** (set manually) for this {sort_stat} ranking."
     return f"**No AB minimum** — players with very few at-bats can top this {sort_stat} ranking."
+
+
+def _caption_basis(info: dict[str, Any]) -> str:
+    if info.get("span"):
+        return (
+            "a career-length minimum for spans this long" if info.get("capped")
+            else f"about 2.7 AB per team game over {info.get('seasons')} season(s)"
+        )
+    return "about 2.7 AB per team game of a full season"
+
+
+def qualification_explanation(state: dict[str, Any], info: dict[str, Any], stat_label: Any) -> str:
+    """``qualification_caption`` as plain text for other surfaces: no Markdown, no control
+    names. ``stat_label`` is how the stat is named there (e.g. "batting average")."""
+    if not state.get("rate"):
+        return ""
+    value = int(state.get("value") or 0)
+    if state.get("mode") == MODE_AUTO and value > 0:
+        line = (
+            f"Qualified hitters only: ranking by {stat_label} requires at least {value:,} AB "
+            f"({_caption_basis(info)}, close to MLB's batting-title rule)."
+        )
+        if info.get("short_seasons"):
+            yrs = ", ".join(str(y) for y in info["short_seasons"][:4])
+            line += f" Shortened seasons in range ({yrs}) need a lower minimum to appear."
+        return line
+    if value > 0:
+        return f"Minimum {value:,} AB (set manually) for this {stat_label} ranking."
+    return f"No AB minimum: players with very few at-bats can top this {stat_label} ranking."

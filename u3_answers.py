@@ -43,9 +43,21 @@ def lineup_answer(
     ``record_status``: the saved record's status ("draft" while you build, "locked" after
     Save Lineup). ``edit_message``: the page's own editability line for the week."""
     total = len(slots)
-    open_labels = [label for key, label in slots if not str(assignments.get(key) or "").strip()]
+    open_slots = [(key, label) for key, label in slots if not str(assignments.get(key) or "").strip()]
+    open_labels = [label for _key, label in open_slots]
     filled = total - len(open_labels)
     unfillable = list(validation.get("unfillable_slots") or [])
+    # U4: sort open spots by what fixes them. ``unfillable_slots`` lists base positions (one entry
+    # per spot) no unused rostered player can play; everything else can come off the bench.
+    need_help, from_bench = [], []
+    left = list(unfillable)
+    for key, label in open_slots:
+        base = str(key).split("_", 1)[0]
+        if base in left:
+            left.remove(base)
+            need_help.append(label)
+        else:
+            from_bench.append(label)
     ineligible = [f"{i.get('player')} at {i.get('slot')}" for i in (validation.get("ineligible_slots") or []) if isinstance(i, Mapping)]
     duplicates = list(validation.get("duplicate_players") or [])
 
@@ -64,11 +76,9 @@ def lineup_answer(
         n = len(ineligible) + len(duplicates)
         headline = f"Fix {_plural(n, 'starter')} before saving"
         tone = "warn"
-    elif open_labels and len(open_labels) > len(unfillable):
-        headline = f"{_plural(len(open_labels), 'starting spot')} open: {_join(open_labels)}"
-        tone = "warn"
     elif open_labels:
-        headline = f"{filled} of {total} starters set; this roster has no one for {_join(open_labels)}"
+        whose = f"{team}'s lineup" if proxy else "Your lineup"
+        headline = f"{whose} has {_plural(len(open_labels), 'open position')}: {_join(open_labels)}"
         tone = "warn"
     elif locked:
         headline = f"Lineup {'saved and locked' if record_status == 'locked' else 'locked'}: {filled} of {total} starters"
@@ -80,20 +90,24 @@ def lineup_answer(
     parts = []
     if edit_message:
         parts.append(edit_message.rstrip(".") + ".")
+    if from_bench:
+        parts.append(f"From the bench: {_join(from_bench)} (drag a player in, or use the suggested lineup).")
+    if need_help:
+        parts.append(f"Needs a waiver or trade: {_join(need_help)}; no one on the roster can play there, so "
+                     f"{'it scores' if len(need_help) == 1 else 'they score'} nothing this week.")
+    if ineligible or duplicates:
+        parts.append("Not eligible where placed: " + _join(ineligible + [f"{p} (assigned twice)" for p in duplicates]) + ".")
     if not locked:
         if ineligible or duplicates:
             parts.append("Save Lineup stays off until every starter is eligible for their spot.")
-        elif open_labels and len(open_labels) > len(unfillable):
-            parts.append("Drag a bench player into each open spot, or use the suggested lineup.")
-        elif open_labels:
-            parts.append("Those spots score nothing this week. Check waivers for an eligible player.")
         if record_status == "draft":
             parts.append("Your changes are kept as a draft; press Save Lineup to submit and lock them.")
         else:
             parts.append("Nothing is submitted until you press Save Lineup.")
     body = " ".join(parts)
 
-    chips = [(f"{label} open", "warn") for label in open_labels]
+    chips = [(f"{label}: from bench", "") for label in from_bench]
+    chips += [(f"{label}: waiver or trade", "warn") for label in need_help]
     chips += [(f"{p} not eligible", "warn") for p in ineligible]
     chips += [(f"{p} assigned twice", "warn") for p in duplicates]
     tiles = [
@@ -113,7 +127,7 @@ def lineup_answer(
     else:
         primary = "save"
     return {"headline": headline, "body": body, "tone": tone, "kicker": kicker, "tiles": tiles,
-            "chips": chips, "status": status, "primary": primary,
+            "chips": chips, "status": status, "primary": primary, "from_bench": from_bench, "need_help": need_help,
             "complete": not open_labels and not ineligible and not duplicates}
 
 

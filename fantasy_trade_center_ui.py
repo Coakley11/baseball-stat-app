@@ -28,6 +28,8 @@ from fantasy_trade_builder_state import (
     resolve_effective_partner,
     save_logical_state_from_widgets,
     scope_fingerprint_changed,
+    trade_scope_fingerprint,
+    trade_scope_state_key,
 )
 from fantasy_trade_player_index import (
     format_player_option_label,
@@ -62,7 +64,7 @@ def _persist_trade_plan(session: dict[str, Any], st: Any, *, reason: str) -> Non
 
 
 def _trade_scope_state_key(scope_fingerprint: str) -> str:
-    return f"trade_center_state|{scope_fingerprint}"
+    return trade_scope_state_key(scope_fingerprint)
 
 
 def _resolve_trade_scope(session: dict[str, Any], *, page_lineup_team: str) -> dict[str, str]:
@@ -96,7 +98,7 @@ def _resolve_trade_scope(session: dict[str, Any], *, page_lineup_team: str) -> d
                 my_team = str(page_lineup_team or "").strip()
 
         league_context_id = str((context or {}).get("league_context_id") or "").strip()
-        fingerprint = f"trade|{my_team}|{canonical_league_id or league_context_id}"
+        fingerprint = trade_scope_fingerprint(my_team, canonical_league_id or league_context_id)
         return {
             "my_team": my_team,
             "league_context_id": league_context_id,
@@ -233,25 +235,15 @@ def _inject_trade_center_styles(st: Any) -> None:
 
 
 def _render_trade_center_hero(st: Any, *, league_name: str, my_team: str, pending_offers: int) -> None:
-    pending = f" · {pending_offers} pending offer{'s' if pending_offers != 1 else ''}" if pending_offers else ""
-    st.markdown(
-        f"""
-<div class="tc-hero">
-  <svg class="tc-hero-icon" viewBox="0 0 64 64" aria-hidden="true">
-    <circle cx="20" cy="32" r="14" fill="rgba(255,255,255,0.15)" stroke="#fff" stroke-width="2"/>
-    <circle cx="44" cy="32" r="14" fill="rgba(255,255,255,0.15)" stroke="#fff" stroke-width="2"/>
-    <path d="M26 28 L38 36 M38 28 L26 36" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
-    <path d="M10 18 L18 26 M54 18 L46 26" stroke="rgba(255,255,255,0.5)" stroke-width="2" stroke-linecap="round"/>
-  </svg>
-  <div>
-    <h2>Trade Center</h2>
-    <p>Build, analyze, propose, and manage trades</p>
-    <div class="tc-meta">League: {html_lib.escape(league_name or '—')} · Your team: {html_lib.escape(my_team or '—')}{html_lib.escape(pending)}</div>
-  </div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
+    """U4: a compact heading (the page title already says Lineup & Trades), not a banner."""
+    import ui_hierarchy as ui
+
+    ui.inject_css(st)
+    ui.section_label(st, "Trade Center · build a trade, see who it favors, send an offer")
+    items = [(f"League: {league_name or '—'}", ""), (f"Your team: {my_team or '—'}", "")]
+    if pending_offers:
+        items.append((f"{pending_offers} pending offer{'s' if pending_offers != 1 else ''}", "warn"))
+    ui.chips(st, items)
 
 
 def _load_shared_trade_state(session: dict[str, Any], scope_key: str) -> dict[str, Any]:
@@ -496,29 +488,38 @@ def _render_idea_card(
     receive_names = _split_player_names(str(idea.get("Receive") or ""))
     other = str(idea.get("Other Team") or "")
     recommendation, fit, value_match, tone = _format_idea_badges(idea)
-    badge_style = _badge_style(tone)
-    helps = str(idea.get("Category Gains") or idea.get("Why It Helps") or "—")
-    hurts = str(idea.get("Category Losses") or idea.get("Hurts") or "—")
-    risk = str(idea.get("Main Risk") or "—")
+    value_note = str(idea.get("Value Explanation") or "").strip()
+    gains = str(idea.get("Category Gains") or "").strip()
+    losses = str(idea.get("Category Losses") or idea.get("Hurts") or "").strip()
+    risk = str(idea.get("Main Risk") or "").strip()
+
+    import ui_hierarchy as ui
+
+    def rows(names: list[str]) -> list[dict[str, str]]:
+        return [{"player": n, "position": format_position_label(roster_stats, n),
+                 "stats_line": format_player_stat_line(roster_stats, n)} for n in names]
 
     with st.container(border=True):
-        st.markdown(f"**TRADE WITH {other.upper()}**")
-        st.markdown(
-            f'<span class="tc-badge" style="{badge_style}">{html_lib.escape(recommendation)} value</span>'
-            f' <span class="tc-badge" style="{_badge_style("amber")}">Team Fit {html_lib.escape(fit)}</span>'
-            f' <span class="tc-badge">Value Match {html_lib.escape(value_match)}</span>',
-            unsafe_allow_html=True,
-        )
-        left, right = st.columns(2)
-        with left:
-            _render_player_lines(st, roster_stats, give_names, heading="YOU GIVE")
-        with right:
-            _render_player_lines(st, roster_stats, receive_names, heading="YOU RECEIVE")
+        # U4: what you give and get first, then the idea generator's own reasons, in plain words.
+        st.markdown(f"**Trade with {html_lib.escape(other)}**")
+        ui.chips(st, [(f"{recommendation} value", "good" if tone == "green" else ("warn" if tone == "red" else "")),
+                      (f"Team fit {fit}", ""), (f"Value match {value_match}", "")])
+        ui.trade_sides(st, rows(give_names), rows(receive_names))
+        # "Why it's suggested" uses only the idea generator's own fields: its value note (fairness)
+        # and the categories it helps. Its "Why It Helps" text mixes in weaknesses, shown below.
+        reasons = [f"{value_note} (value match {value_match})"] if value_note else []
+        if gains and gains != "—":
+            reasons.append(f"helps {gains}")
+        lines = [f"**Why it's suggested:** {'; '.join(reasons)}"] if reasons else []
+        if gains and gains != "—":
+            lines.append(f"**You gain:** {gains}")
+        if losses and losses != "—":
+            lines.append(f"**You give up:** {losses}")
+        if risk and risk != "—":
+            lines.append(f"**Risk:** {risk}")
+        if lines:
+            st.markdown("  \n".join(lines))
         st.caption(stats_updated_caption(session))
-        st.markdown(f"Helps: {helps}")
-        if hurts and hurts != "—":
-            st.markdown(f"Hurts: {hurts}")
-        st.markdown(f"Risk: {risk}")
         c1, c2, c3 = st.columns(3)
         if c1.button("Use This Idea", key=f"tc_use_{idx}"):
             _queue_idea_builder_update(
@@ -723,7 +724,7 @@ def _render_build_analyze(
     st.markdown('<div class="tc-builder">', unsafe_allow_html=True)
     left, mid, right = st.columns([5, 1, 5])
     with left:
-        st.markdown(f'<div class="tc-side"><h4>MY TEAM — {html_lib.escape(my_team)}</h4></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="tc-side"><h4>YOU GIVE · {html_lib.escape(my_team)}</h4></div>', unsafe_allow_html=True)
         give_players = st.multiselect(
             "Players I Give",
             my_players,
@@ -735,7 +736,7 @@ def _render_build_analyze(
     with mid:
         st.markdown('<div class="tc-exchange">⇄</div>', unsafe_allow_html=True)
     with right:
-        st.markdown('<div class="tc-side"><h4>PLAYERS I RECEIVE</h4></div>', unsafe_allow_html=True)
+        st.markdown('<div class="tc-side"><h4>YOU RECEIVE</h4></div>', unsafe_allow_html=True)
         receive_players = st.multiselect(
             "Players I Receive",
             receive_options,

@@ -87,12 +87,34 @@ class TeamControl:
         return {"user_id": self.user_id, "acting_as": self.mode, "team": self.team}
 
 
+def league_team_names(context: dict[str, Any] | None) -> set[str]:
+    """The league's teams: its roster keys. A league with no rosters yet falls back to its
+    own team and the teams named in its ownership records."""
+    if not isinstance(context, dict):
+        return set()
+    rosters = context.get("league_rosters")
+    names = {str(t).strip() for t in (rosters if isinstance(rosters, dict) else {}) if str(t).strip()}
+    if names:
+        return names
+    names = {str(context.get("my_team_name") or "").strip()}
+    try:
+        from fantasy_league_team_ownership import get_team_ownership
+
+        names |= {str(t).strip() for t in get_team_ownership(context)}
+    except ImportError:
+        pass
+    return {n for n in names if n}
+
+
 def resolve_team_control(session: dict[str, Any] | None, context: dict[str, Any] | None, team: str) -> TeamControl:
     team = str(team or "").strip()
     if not isinstance(context, dict) or not team:
         return TeamControl(team, MODE_NONE, "", False, reason="No league or team.")
     uid = current_user_id(session)
     is_comm = _is_commissioner(session, context, uid)
+    if team not in league_team_names(context):
+        # Never manageable: an unknown name used to fall through to the unclaimed-team rule.
+        return TeamControl(team, MODE_NONE, uid, is_comm, reason=f"{team} is not a team in this league.")
     try:
         from fantasy_league_team_ownership import (
             account_user_ids_match,

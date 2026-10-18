@@ -293,26 +293,34 @@ def _ordinal(n: int) -> str:
 
 
 def valuation_answer(rows: pd.DataFrame, model_rows: pd.DataFrame, *, w_current: float, w_trend: float,
-                     years: Sequence[int]) -> dict[str, Any] | None:
-    """Valuation: the top player and why, in the model's own terms.
+                     years: Sequence[int], focus: str = "") -> dict[str, Any] | None:
+    """Valuation: one hitter's score and why, in the model's own terms.
+
+    The answer centers ``focus`` (a player the user chose or sent here) when that player is in
+    the ranked list; otherwise the top-ranked hitter (U4).
 
     ``rows``: what the table ranks (after any Research-mode position-need boost).
     ``model_rows``: the valued pool straight from ``add_valuation_scores`` (Perf_Score,
-    Trend_Score, Perf_Pct, Trend_Pct). Valuation = weighted average of the production and
-    trend percentiles, rescaled 0–100. A trend score of zero (including "no trend") is neutral,
-    never called a decline."""
+    Trend_Score, Perf_Pct, Trend_Pct). Valuation_Raw = (w_current·Perf_Pct + w_trend·Trend_Pct)
+    / (w_current + w_trend), then rescaled 0–100 across the list; the two terms are reported as
+    the production and trend contributions. A trend score of zero (including "no trend") is
+    neutral, never called a decline."""
     need = {"fullName", "Valuation_Score"}
     if rows is None or rows.empty or not need <= set(rows.columns) or model_rows is None or model_rows.empty:
         return None
     ranked = rows.assign(_v=pd.to_numeric(rows["Valuation_Score"], errors="coerce")).dropna(subset=["_v"])
     if ranked.empty:
         return None
-    ranked = ranked.sort_values("_v", ascending=False, kind="stable")
-    top = ranked.iloc[0]
-    name = str(top["fullName"]).strip()
+    ranked = ranked.sort_values("_v", ascending=False, kind="stable").reset_index(drop=True)
+    names = ranked["fullName"].astype(str).str.strip()
+    focus = str(focus or "").strip()
+    focus_found = bool(focus) and bool((names == focus).any())
+    pos = int(names[names == focus].index[0]) if focus_found else 0
+    subject = ranked.iloc[pos]
+    name = str(subject["fullName"]).strip()
     span = f"{years[0]}–{years[-1]}" if len(years) > 1 else str(years[0])
     match = model_rows[model_rows["fullName"].astype(str).str.strip() == name]
-    m = match.iloc[0] if not match.empty else top
+    m = match.iloc[0] if not match.empty else subject
     pool = len(model_rows)
     perf = _num(m.get("Perf_Score"))
     trend = _num(m.get("Trend_Score"))
@@ -322,7 +330,7 @@ def valuation_answer(rows: pd.DataFrame, model_rows: pd.DataFrame, *, w_current:
         trend_word = "about flat"
     else:
         trend_word = "trending up" if trend > 0 else "trending down"
-    score = f"{float(top['_v']) * 100:.0f}"
+    score = f"{float(subject['_v']) * 100:.0f}"
     wc, wt = float(w_current), float(w_trend)
     weights = f"{wc:g} : {wt:g}"
     parts = []
@@ -330,30 +338,48 @@ def valuation_answer(rows: pd.DataFrame, model_rows: pd.DataFrame, *, w_current:
         parts.append(f"Production ranks {_ordinal(perf_rank)} of {pool:,}")
     if trend_rank:
         parts.append(f"trend ranks {_ordinal(trend_rank)} ({trend_word})")
-    body = (", ".join(parts) + ". ") if parts else ""
+    body = ""
+    if focus and not focus_found:
+        body += f"{focus} isn't in the current list (check Minimum Games and Fantasy Position), so this is the top hitter. "
+    body += (", ".join(parts) + ". ") if parts else ""
     pp, tp = _num(m.get("Perf_Pct")), _num(m.get("Trend_Pct"))
-    if pp is not None and tp is not None and wc > 0 and wt > 0:
-        if pp - tp >= 0.2:
-            body += "The score comes mainly from production. "
-        elif tp - pp >= 0.2:
-            body += "The score comes mainly from the trend. "
-        else:
-            body += "Production and trend both rank high. "
+    contrib = None
+    if pp is not None and tp is not None and wc + wt > 0:
+        prod_pts, trend_pts = wc * pp / (wc + wt) * 100, wt * tp / (wc + wt) * 100
+        contrib = (prod_pts, trend_pts)
+        body += (f"Blend: production {prod_pts:.0f} + trend {trend_pts:.0f} = {prod_pts + trend_pts:.0f} "
+                 f"percentile points, before the 0–100 rescale across the list. ")
+        if wc > 0 and wt > 0:
+            if pp - tp >= 0.2:
+                body += "The score comes mainly from production. "
+            elif tp - pp >= 0.2:
+                body += "The score comes mainly from the trend. "
+            elif pp >= 0.7 and tp >= 0.7:
+                body += "Production and trend both rank high. "
+            else:
+                body += "Production and trend count about equally here. "
     body += (f"Valuation Score is a {weights} blend (production : trend) of each hitter's percentile among the "
              f"{pool:,} hitters valued for {span}, rescaled 0–100 (top = 100).")
     boosted = False
     if "Valuation_Score" in m.index and _num(m.get("Valuation_Score")) is not None:
-        boosted = abs(float(m["Valuation_Score"]) - float(top["_v"])) > 1e-9
+        boosted = abs(float(m["Valuation_Score"]) - float(subject["_v"])) > 1e-9
     if boosted:
         body += " This list also includes your league's position-need boost (Research mode)."
-    tiles = [("Valuation", score, f"1st of {len(ranked):,}")]
+    tiles = [("Valuation", score, f"{_ordinal(pos + 1)} of {len(ranked):,}")]
     if perf_rank:
-        tiles.append(("Production", _ordinal(perf_rank), f"Current Score {perf:,.1f}"))
+        sub = f"Current Score {perf:,.1f}" + (f" · +{contrib[0]:.0f} pts" if contrib else "")
+        tiles.append(("Production", _ordinal(perf_rank), sub))
     if trend_rank:
-        tiles.append(("Trend", _ordinal(trend_rank), f"Trend Score {trend:+,.1f}" if trend_word != "about flat" else "about flat"))
+        sub = f"Trend Score {trend:+,.1f}" if trend_word != "about flat" else "about flat"
+        tiles.append(("Trend", _ordinal(trend_rank), sub + (f" · +{contrib[1]:.0f} pts" if contrib else "")))
     tiles.append(("Weights", weights, "production : trend"))
-    return {"headline": f"Top valuation, {span}: {name}", "body": body, "tiles": tiles, "player": name,
-            "next": [str(n) for n in ranked["fullName"].head(2).tolist()], "trend_word": trend_word}
+    headline = (f"{name}: Valuation {score}, {_ordinal(pos + 1)} of {len(ranked):,} ({span})" if focus_found and pos > 0
+                else f"Top valuation, {span}: {name}")
+    nxt = [str(n) for n in ranked["fullName"].head(2).tolist()]
+    if focus_found and pos > 0:
+        nxt = [name, str(ranked.iloc[0]["fullName"])]
+    return {"headline": headline, "body": body.strip(), "tiles": tiles, "player": name, "next": nxt,
+            "trend_word": trend_word, "focus_found": focus_found, "contributions": contrib}
 
 
 def _proj_bits(row: Mapping[str, Any]) -> str:
