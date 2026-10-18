@@ -20,10 +20,18 @@ the modules listed below. It never writes the session, fetches data or changes a
    - Never call `fetch_*`, `eligibility_for_season` or the shared-league sync.
 3. **Team access.** Before showing team-private data or advice from a team's point of view,
    check `team_access(session, team).can_manage`. That covers the owner, or the commissioner
-   acting for an unclaimed team (`.is_proxy`). `evaluate_trade_for_team` enforces this itself.
+   acting for an unclaimed team (`.is_proxy`). Every team-perspective reader below enforces it
+   itself. A name that isn't one of the league's teams is never manageable (`mode="none"`,
+   "X is not a team in this league"); the league's teams are its roster keys
+   (`fantasy_team_control.league_team_names`).
 4. **No writes.** Lineup saves, waivers, trades and finalization stay in their UI flows.
    Each has a canonical function and authorization checks; see
    `docs/FANTASY_LEAGUE_DATA_MODEL.md`.
+5. **Plan features.** `baseball_monetization.CAPABILITY_FEATURES` names the shared capabilities
+   that belong to a plan feature (`FeatureId`). `entitlement_for_capability(snapshot, capability)`
+   applies the page gate's rule (`can_use_feature`) only while the feature is enforced
+   (`enforced_features()` = `ENFORCED_PAGE_FEATURES` ∪ `ENFORCED_FEATURES`; both empty today). The
+   fantasy readers below are not plan features.
 
 ## `fantasy_read_api` contracts
 
@@ -38,6 +46,13 @@ the modules listed below. It never writes the session, fetches data or changes a
 | `lineup_report(team_roster_stats, slots=, scoring_format=, custom_weights=, rate_col=, league_roster_df=)` | one team's roster frame | dict: `scored`, `recommended`, `missing_slots`, `slot_warnings`, `diagnosis`, `basis` | `fantasy_lineup_scoring` | caller scopes frames |
 | `explain_slot_eligibility(player_row, slot)` | roster row (needs `Eligible Positions` for multi-position players) | dict: `eligible`, `eligible_positions`, `rule`, `reason` | `fantasy_weekly_lineup.player_eligible_for_slot` (the rule Save Lineup enforces) | none |
 | `check_lineup(slots, assignments, roster_df)` | slots, slot→player, roster frame | `validate_weekly_lineup` result: `ok`, `missing_slots`, `ineligible_slots`, `duplicate_players`, `unfillable_slots`, `messages` | `fantasy_weekly_lineup.validate_weekly_lineup` | none (week lock rules are separate: `save_period_lineup`) |
+| `player_owner(session, player)` | session, name (any case/accents) | `PlayerOwnership`: `status` your_team / other_team / free_agent / no_league, `owner_team`, `my_team`, `player` (rostered name), `rostered` (the waiver add check), `in_loaded_pool` | `fantasy_league_context.build_ownership_map` (trade proposals' owner lookup) + `fantasy_waiver_wire.is_player_rostered` (Confirm Waiver Move's check), on the peeked rosters with accepted trades reconciled | league-wide (rosters are public in the league) |
+| `week_lineup_status(session, team="", week=None, roster_stats=None)` | team (default yours), week (default: the week the Lineup page opens on) | `LineupStatus`: `status` ("Not saved yet" / "Draft (not submitted)" / "Saved and locked" / "Locked"), `record_status`, `locked`, `edit_message`, `period_status`, `slots`, `assignments`, `open_positions`, `from_bench`, `needs_waiver_or_trade`, `not_eligible`, `assigned_twice`, `complete`, the page's `headline` / `body` / `tone`, `roster_loaded`, `acting_as` | `fantasy_weekly_lineup.lineup_week_state` + `lineup_status_answer` (= `u3_answers.lineup_answer` + `validate_weekly_lineup`), which the Lineup page itself calls | **enforced:** `can_manage` |
+| `waiver_recommendations_view(session, team="", position="All positions", limit=3)` | team, Waiver Wire position filter, 1–15 cards | `WaiverRecommendations`: the page's `headline` (needs) and `body`, `weak_categories`, `category_ranks`, `team_count`, `open_roster_spots`, ranked `adds` (player, positions, eligible_positions, mlb_team, why, stat_line, comparison with your weakest player at a shared position, fills_open_spot, stats), ranked `drops` (player, positions, why, stats) | `fantasy_waiver_wire.waiver_team_frames` / `compute_waiver_recommendations` / `waiver_open_slots` / `waiver_card_fields` / `apply_waiver_position_filter`, which the Waiver Wire page calls; `u1_answers.needs_headline` | **enforced:** `can_manage`; never fetches (no loaded stats → `allowed=False` with the reason) |
+| `loaded_player_pool(session, position=, query=, unrostered_only=True, limit=25)` | filter, name search, ≤ 100 rows | `PlayerPool`: `total`, `rows` (player, mlb_team, positions, stats), `loaded_at` | `fantasy_waiver_wire.loaded_waiver_stats_pool` + `build_waiver_pool` (rostered players, hitter-only-league pitchers and unused positions left out) | own session; never fetches |
+| `evaluate_trade_for_team(...)` **(extended)** | + optional `standings` | adds the Trade Center card: `verdict_label` (e.g. "Creates roster issue"), `value_label`, `verdict_headline`, `verdict_body`, `verdict_tone`, `roster_issues` (team, kind slot/over/under, slot, message), `required_position_issues`, `roster_size_issues`, `open_roster_spots`, `other_team_notes`, `category_changes`, `helps`, `hurts`, `positions_lost` / `positions_gained`, `analysis` (the package) | `fantasy_trade_analysis.build_trade_analysis_package` + `fantasy_trade_legality.trade_roster_issues` + `u3_answers.trade_verdict`, with Trade Center's inputs (loaded standings and hitter pool) | **enforced** (unchanged) |
+| `pending_trade_draft(session, team="")` | team (default yours) | `PendingTrade`: `give`, `receive`, effective `partner`, `source` (builder / saved_state / none), `pending_update`, `is_complete`, `last_analysis` | `fantasy_trade_builder_state.trade_scope_fingerprint` / `trade_scope_state_key` / `read_builder_selection` (the keys Trade Center writes) + `resolve_effective_partner` | **enforced:** `can_manage`. Your own team's builder; commissioner proxy trades live in Commissioner Tools |
+| `week_view(session, number=None, team="")` | week (default: current), team | `WeekView`: `label`, `dates`, `status` / `status_label`, `finalized`, `current_week`, `last_finalized_week`, `weeks`, `categories`, `category_table` (finalized), and for a team: `team_lineup` (starters with slot, eligibility and owner at snapshot; bench; empty slots; set_after_lock), `team_result` (finalized: totals, rates, starters with `matched_by`) | `fantasy_season_ledger` (`list_periods`, `get_period`, `period_status`, `period_date_label`, `current_period_number`, `get_period_lineup`) + `fantasy_season_results` (`period_result`, `period_category_table`, `scoring_categories`) | another team's lineup only once the week has started (`lineup_visibility="private"` before); no user ids or audit entries are returned |
 
 ## Lower-level modules
 
@@ -80,7 +95,12 @@ or `streamlit` (`tests/test_shared_fantasy_functions.py` checks this).
      and NaNs, every slot layout, both rate modes, every position filter;
    - **5,492 comparisons, 0 differences**, using exact frame equality;
    - a negative control (a 1.5 → 1.6 weight change, an AB+1 rate change) was detected.
-3. `tests/test_fantasy_league_peek.py` and `tests/test_fantasy_read_api.py` show:
+3. `tests/test_ami_shared_readers.py` checks each reader against the calculation its page runs
+   (Waiver Wire's answer card captured from the real page, Trade Center's own workspace, roster
+   checks and package, the Lineup page's helpers, the ledger), team access (owner, commissioner
+   proxy, claimed, invite-reserved, unknown team), missing state, and side effects (byte-identical
+   dict and proxy-like sessions, no sync or fetch, no file writes under an audit hook).
+4. `tests/test_fantasy_league_peek.py` and `tests/test_fantasy_read_api.py` show:
    - results equal the page resolvers';
    - the session is byte-identical afterwards, including for a non-dict, proxy-like session;
    - no shared-store sync or stats fetch happens;
