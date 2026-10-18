@@ -164,6 +164,12 @@ def _render_consolidated_body(
         render_account_subscription(st, session_state)
     except ImportError:
         pass
+    except Exception as exc:
+        # Billing is auxiliary account chrome. Its failure must never hide identity,
+        # Command Center, or saved-session recovery controls.
+        session_state["_baseball_subscription_widget_error_type"] = type(exc).__name__
+        st.divider()
+        st.caption("Subscription details are temporarily unavailable.")
 
     st.divider()
     st.markdown("**Command Center**")

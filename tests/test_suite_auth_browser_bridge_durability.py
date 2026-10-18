@@ -40,7 +40,29 @@ class BridgeDurabilityTests(unittest.TestCase):
                 "failure_reason": "token_record_missing",
             },
         ), mock.patch("live_draft_auth_prestart_stage1_diag.emit_prestart_hydration_checkpoint"):
-            save_browser_auth_tokens(st, _tokens(), auth_user_id="uuid-1")
+            result = save_browser_auth_tokens(st, _tokens(), auth_user_id="uuid-1")
+        self.assertFalse(result["persistence_succeeded"])
+        self.assertFalse(result["bridge_record_complete"])
+        self.assertEqual(result["failure_reason"], "token_record_missing")
+
+    def test_readback_cannot_mask_uncommitted_write(self) -> None:
+        st = mock.Mock()
+        st.query_params = {"suite_sid": "sid-save"}
+        st.session_state = {"_suite_auth_user_id": "uuid-1"}
+        with mock.patch(
+            "suite_storage_supabase.save_browser_auth_session",
+            return_value={"write_committed": False, "write_mode": ""},
+        ), mock.patch(
+            "suite_auth_browser_bridge_diag.readback_after_browser_auth_save",
+            return_value={
+                "readback_record_complete": True,
+                "readback_row_found": True,
+                "failure_reason": "ok",
+            },
+        ), mock.patch("live_draft_auth_prestart_stage1_diag.emit_prestart_hydration_checkpoint"):
+            result = save_browser_auth_tokens(st, _tokens(), auth_user_id="uuid-1")
+        self.assertFalse(result["persistence_succeeded"])
+        self.assertEqual(result["failure_reason"], "write_not_committed")
 
     def test_diagnostics_contain_no_raw_tokens(self) -> None:
         rb = readback_after_browser_auth_save("x", save_reported_success=True)

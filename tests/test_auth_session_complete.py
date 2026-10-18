@@ -105,6 +105,18 @@ class AuthSessionCompleteTests(unittest.TestCase):
         user = MagicMock()
         user.id = "uuid-daniel"
         user.email = "daniel.cohen11@yahoo.com"
+
+        def persist_ok(ss: dict, *, st=None) -> str:
+            ss["_suite_browser_auth_persistence_result"] = {
+                "persistence_attempted": True,
+                "persistence_succeeded": True,
+                "write_committed": True,
+                "bridge_record_complete": True,
+                "failure_reason": "ok",
+                "handoff_phase": "INTERMEDIATE",
+            }
+            return "uuid-daniel"
+
         with patch("suite_auth.is_auth_enabled", return_value=True), patch(
             "suite_auth._auth_api"
         ) as auth_api, patch(
@@ -113,7 +125,7 @@ class AuthSessionCompleteTests(unittest.TestCase):
             "suite_auth._tokens_from_auth_response",
             return_value={"access_token": "a", "refresh_token": "r"},
         ), patch(
-            "suite_auth._sync_auth_account_identity", return_value="uuid-daniel"
+            "suite_auth._sync_auth_account_identity", side_effect=persist_ok
         ), patch(
             "suite_workspace_registry.ensure_owned_workspace_for_session"
         ), patch(

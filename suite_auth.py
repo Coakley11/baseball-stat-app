@@ -184,8 +184,15 @@ def build_auth_session_diagnostics(session_state: dict[str, Any], *, st: Any | N
         "last_login_ok": bool(session_state.get(AUTH_LAST_LOGIN_OK_KEY)),
         "last_login_error": str(session_state.get(AUTH_LAST_LOGIN_ERROR_KEY) or "").strip(),
         "last_restore_error": str(session_state.get(AUTH_LAST_RESTORE_ERROR_KEY) or "").strip(),
+        "browser_persistence": {},
         "browser_storage": {},
     }
+    try:
+        from suite_auth_browser import BROWSER_PERSIST_RESULT_KEY
+
+        out["browser_persistence"] = dict(session_state.get(BROWSER_PERSIST_RESULT_KEY) or {})
+    except ImportError:
+        pass
     if st is not None:
         try:
             from suite_auth_browser import browser_auth_storage_status
@@ -820,13 +827,15 @@ def _sync_auth_account_identity(session_state: dict[str, Any], *, st: Any | None
         browser_uid = suite_user_id or str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
         if browser_uid:
             try:
-                from suite_auth_browser import save_browser_auth_tokens
+                from suite_auth_browser import BROWSER_PERSIST_RESULT_KEY, save_browser_auth_tokens
 
-                save_browser_auth_tokens(
+                session_state.pop(BROWSER_PERSIST_RESULT_KEY, None)
+                result = save_browser_auth_tokens(
                     st,
                     dict(session_state.get(AUTH_TOKENS_KEY) or {}),
                     auth_user_id=browser_uid,
                 )
+                session_state[BROWSER_PERSIST_RESULT_KEY] = dict(result)
             except ImportError:
                 pass
     return suite_user_id
@@ -839,7 +848,7 @@ def _persist_auth_session(
     tokens: dict[str, Any],
     email_fallback: str = "",
     st: Any | None = None,
-) -> None:
+) -> dict[str, Any] | None:
     old_uid = str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
     old_ext = str(session_state.get(AUTH_EXTERNAL_ID_KEY) or "").strip()
     old_cloud = str(session_state.get("_suite_cloud_user_id") or "").strip()
@@ -854,6 +863,23 @@ def _persist_auth_session(
         suite_user_id = _sync_auth_account_identity(session_state, st=st)
     except Exception:
         pass
+    browser_persistence: dict[str, Any] | None = None
+    if st is not None:
+        try:
+            from suite_auth_browser import BROWSER_PERSIST_RESULT_KEY
+
+            browser_persistence = dict(session_state.get(BROWSER_PERSIST_RESULT_KEY) or {})
+        except ImportError:
+            browser_persistence = None
+        if not browser_persistence or not browser_persistence.get("persistence_succeeded"):
+            return browser_persistence or {
+                "persistence_attempted": False,
+                "persistence_succeeded": False,
+                "write_committed": False,
+                "bridge_record_complete": False,
+                "failure_reason": "persistence_not_attempted",
+                "handoff_phase": "",
+            }
     new_ext = str(session_state.get(AUTH_EXTERNAL_ID_KEY) or "").strip()
     new_cloud = str(suite_user_id or session_state.get("_suite_cloud_user_id") or "").strip()
     scope_changed = bool(
@@ -915,6 +941,7 @@ def _persist_auth_session(
             sanitize_workflow_library_for_account(session_state, st=st, persist_cleanup=True)
         except ImportError:
             pass
+    return browser_persistence
 
 
 def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None) -> bool:
@@ -2425,6 +2452,19 @@ def login_with_email(
             st = st_mod
         except Exception:
             pass
+    pre_login_state = dict(session_state)
+    prior_suite_sid_present = False
+    prior_suite_sid: Any = None
+    if st is not None:
+        try:
+            from suite_auth_browser import SESSION_QUERY_PARAM
+
+            prior_suite_sid_present = SESSION_QUERY_PARAM in st.query_params
+            if prior_suite_sid_present:
+                prior_suite_sid = st.query_params.get(SESSION_QUERY_PARAM)
+        except Exception:
+            prior_suite_sid_present = False
+            prior_suite_sid = None
     try:
         auth = _auth_api(session_state)
     except Exception:
@@ -2443,7 +2483,51 @@ def login_with_email(
             session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
             session_state[AUTH_LAST_LOGIN_OK_KEY] = False
             return False, msg
-        _persist_auth_session(session_state, user=user, tokens=tokens, email_fallback=email_clean, st=st)
+        persistence = _persist_auth_session(
+            session_state,
+            user=user,
+            tokens=tokens,
+            email_fallback=email_clean,
+            st=st,
+        )
+        if st is not None and not bool((persistence or {}).get("persistence_succeeded")):
+            # A verified password is not enough for a refresh-safe Streamlit login.
+            # Roll back only the in-memory login attempt before any workspace cleanup,
+            # and retain a sanitized failure result for operator diagnostics.
+            safe_persistence = dict(persistence or {})
+            reason = re.sub(
+                r"[^A-Za-z0-9:_-]",
+                "",
+                str(safe_persistence.get("failure_reason") or "persistence_failed"),
+            )[:120]
+            session_state.clear()
+            session_state.update(pre_login_state)
+            # Do not retain the auth client or suite-user cache mutated by the failed
+            # attempt. A retry must resolve identity from the restored session only.
+            session_state.pop(AUTH_CLIENT_KEY, None)
+            try:
+                from suite_user import reset_account_cache
+
+                reset_account_cache()
+            except ImportError:
+                pass
+            try:
+                from suite_auth_browser import BROWSER_PERSIST_RESULT_KEY, SESSION_QUERY_PARAM
+
+                session_state[BROWSER_PERSIST_RESULT_KEY] = safe_persistence
+                if prior_suite_sid_present:
+                    st.query_params[SESSION_QUERY_PARAM] = prior_suite_sid
+                elif SESSION_QUERY_PARAM in st.query_params:
+                    del st.query_params[SESSION_QUERY_PARAM]
+            except Exception:
+                pass
+            msg = (
+                "Sign-in was verified, but its secure refresh session could not be saved. "
+                f"No workspace data was changed. Try again or contact support ({reason})."
+            )
+            session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
+            session_state[AUTH_LAST_LOGIN_OK_KEY] = False
+            return False, msg
         enforce_workspace_ownership(session_state)
         if not auth_session_complete(session_state):
             msg = "Login incomplete — missing user id or session tokens. Try again."
