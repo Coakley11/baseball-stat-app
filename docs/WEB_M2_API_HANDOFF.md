@@ -117,3 +117,26 @@ hidden on real data until Python supports it.
 The frontend will not re-rank, re-filter, compute totals, rates, scores or qualification, write
 answer sentences, or reinterpret a field. For any gap, it shows only what the API returns and
 says plainly when something isn't available.
+
+## Status (updated after the 5ca7a26 integration)
+
+R1–R8 and both optional items are served at `5ca7a26` and adopted by the web app; the table-column
+metadata the web asked for is in the catalog. Still open: games or seasons per leaderboard player
+(decided: not added).
+
+## Next contracts the web will need (nothing built on the web until these exist)
+
+For each page the web needs the same shape the served pages have: the question as query
+parameters, the answer (`headline`, `body`, `context`, tile choice) from the matching `u*_answers`
+function, plain-text qualification where a rule applies, ranked rows with `columns` metadata,
+paging, and CSV where the Streamlit page has an export.
+
+1. **Career Totals:** `GET /players/{id}/career` or a ranked career list (the page ranks careers),
+   from `u2_answers.career_answer`. Needs the career aggregation moved out of `streamlit_app.py`.
+2. **Compare Players:** `GET` or read-only `POST /players/compare` (`player_ids[]`, range) returning
+   per-metric values and who leads, from `u2_answers.comparison_answer`. Needs the comparison frame
+   and the significance test extracted.
+3. **Trend Value:** `GET /players/{id}/trends` and a ranked trend list, from `trend_slopes`. Needs
+   `compute_player_trend_table` and `aggregate_recent_player_totals` moved out of the page.
+4. **Valuation:** `GET /valuation` with the page's weights, from `valuation_scores`. Needs the
+   hitter-only pool assembly extracted.

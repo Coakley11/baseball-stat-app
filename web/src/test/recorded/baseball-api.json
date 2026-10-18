@@ -4221,6 +4221,49 @@
     }
    }
   },
+  "seasons?start=2010&end=2025&metric=HR&order=desc&limit=25&offset=249950": {
+   "status": 200,
+   "body": {
+    "start": 2010,
+    "end": 2025,
+    "metric": {
+     "key": "HR",
+     "label": "HR",
+     "name": "home runs",
+     "kind": "count",
+     "higher_is_better": true,
+     "decimals": 0
+    },
+    "order": "desc",
+    "split_mode": "team",
+    "qualification": {
+     "applies": false,
+     "min_ab": 0,
+     "qualified_ab": 437,
+     "mode": "auto",
+     "text": "",
+     "summary": "",
+     "explanation": null
+    },
+    "total_rows": 24261,
+    "ranked_rows": 24261,
+    "offset": 249950,
+    "player_id": null,
+    "rows": [],
+    "headline": "Aaron Judge, 2022: 62 home runs",
+    "answer": {
+     "headline": "Aaron Judge, 2022: 62 home runs",
+     "body": "Aaron Judge's 62 home runs in 2022 are the most among the 24,261 seasons shown (2010–2025). Next: Cal Raleigh (2025), 60.",
+     "context": "2022 · New York Yankees · OF",
+     "tile_metrics": [
+      "HR",
+      "RBI",
+      "BA",
+      "OPS"
+     ]
+    }
+   }
+  },
   "seasons?start=2010&end=2025&metric=HR&order=desc&bats=L&positions=SS&position_source=season&limit=25": {
    "status": 200,
    "body": {

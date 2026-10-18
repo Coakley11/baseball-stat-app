@@ -20,7 +20,7 @@ Docs:
   (reading 'edgesOut')`); `npm install -g npm@11` fixes it. `npm ci` from the lockfile is
   unaffected.
 - For real data, a running Baseball API (Python). The pinned version is in
-  `openapi/baseball-api.meta.json` (currently `a9a80f7` on `ui/u4-migration-readiness`).
+  `openapi/baseball-api.meta.json` (currently `5ca7a26` on `api/web-m2-contracts`).
   From a checkout or export of that commit:
 
   ```

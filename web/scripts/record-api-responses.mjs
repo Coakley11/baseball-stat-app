@@ -28,6 +28,7 @@ const REQUESTS = [
   q("seasons", { ...HE, metric: "OPS", limit: 25 }),
   q("seasons", { ...HE, start: 2020, limit: 25 }),
   q("seasons", { ...HE, limit: 25, offset: 25 }),
+  q("seasons", { ...HE, limit: 25, offset: 249950 }),
   q("seasons", { ...HE, bats: "L", positions: "SS", position_source: "season", limit: 25 }),
   q("seasons", { ...HE, metric: "OPS", player_id: "judgeaa01", limit: 25, include_below_minimum: true }),
   q("seasons", { ...HE, player_id: "guerrvl02", limit: 25, include_below_minimum: true }),

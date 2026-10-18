@@ -112,6 +112,15 @@ describe("Historical Explorer on the real API (recorded, 5ca7a26)", () => {
     expect(screen.getByRole("heading", { level: 2, name: recorded<Schemas["SeasonLeadersResult"]>(HE_HR).answer!.headline })).toBeInTheDocument(); // the answer is still page one's
   });
 
+  it("a page past the end says so and offers the first page, instead of an empty table", async () => {
+    const user = userEvent.setup();
+    open("page=9999");
+    expect(await screen.findByRole("heading", { name: "That page is past the last season" })).toBeInTheDocument();
+    expect(screen.queryByRole("table")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Back to the first page" }));
+    expect(nav.push).toHaveBeenLastCalledWith("/players/historical", { scroll: false });
+  });
+
   it("applies filters through the API and says the answer is filtered", async () => {
     const user = userEvent.setup();
     const raw = recorded<Schemas["SeasonLeadersResult"]>(HE_FILTERED);

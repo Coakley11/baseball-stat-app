@@ -101,30 +101,45 @@ Compare / Draft / My League say "Coming later · still in the current app" and h
 "Try a question" links only to implemented pages. Ask AMI has a reserved, non-interactive spot.
 The Streamlit Home's league summary needs auth and league data, so it is not in WEB-M1.
 
-**Historical Explorer** (`?from&to&metric&order&player&scope=player`):
+**Historical Explorer** (`?from&to&metric&order&player&scope=player&bats&psrc&pos&team&combine&page`):
 
 - Controls: Seasons (from/to, committed on blur or Enter), Rank by, and Whose seasons
   (All players / One player with player search).
-- Answer: the API headline and detail, a context kicker ("2024 · NYY · CF") and 3–4 key-metric
-  tiles. Tiles sit two per row on phones and never shrink below about 140 px.
-- Qualification chip for rate stats ("Qualified seasons · at least 437 AB in the season").
+- Answer (all of it the API's): headline, detail sentence, context kicker ("2024 · New York
+  Yankees · OF") and the metric tiles it selects (`tile_metrics`). Tiles sit two per row on
+  phones and never shrink below about 140 px.
+- Qualification chip: the API's short line ("Qualified seasons · at least 437 AB in the season").
+  Its plain explanation sits under Explore more.
 - Default visual: top-10 seasons as ranking bars (all players), or one player's season line,
   with below-minimum seasons drawn hollow.
 - Next steps: "All of {player}'s seasons" or "Best seasons by every player", plus "Leaders over
   {range}".
-- Explore more: Order (moved here as in U1), every returned season in a scrollable table with
-  the ranked column marked (`aria-sort`, arrow, tint), and a note listing the Streamlit filters
-  still to come.
+- Explore more: filters (batting hand, position by season or career, franchise or league, one
+  row per player-season, order), the seasons table, Previous / Next over the API's pages, and
+  "Download CSV". The table's columns are the API's catalog columns (see below).
 
-**Leaderboards** (`?from&to&metric`):
+**Leaderboards** (`?from&to&metric&top&w`):
 
-- Answer kicker "Ranked by {stat} · {range}", the API headline and detail, the qualification
-  chip ("Qualified hitters · at least 2,349 AB over 2020–2025") and "N qualified hitters ranked".
-- Top 3 as player cards with printed rank badges (the medal colour is decoration only).
+- The API's answer: kicker ("Ranked by home runs"), headline and detail; the qualification chip
+  and "N qualified hitters ranked".
+- Top 3 as player cards with printed rank badges (the medal colour is decoration only) and the
+  player's at-bats. The API sends no games or seasons total.
 - Top-10 ranking bars.
 - Next steps: "{Leader}'s best seasons", "Best single seasons, {range}".
-- Explore more: the full ranking table, the score definition (API text), and a note on weights,
-  minimums, Top-N and export still to come.
+- Explore more: Top N, score weights (Apply), the ranking table in the API's columns, "Download
+  CSV" for the Top N shown, and the plain explanation of the minimum.
+
+**Tables are driven by the catalog.** `GET /catalog` lists each page's columns as `{label, field,
+metric}`: the header, the dotted path to the value in a row (`stats.HR`, `team.season_name`), and
+the stat it belongs to. `ResultTableView` draws exactly those columns in that order; the CSV header
+is the same list. TypeScript has no column order of its own; it only formats (rates as `.311`,
+counts with separators, years without, missing as a dash).
+
+**CSV is the API's file.** "Download CSV" is a link to the API's `format=csv` response through the
+proxy. The proxy forwards `content-type` and `content-disposition`, so the browser saves the file
+under the API's name (`historical_explorer.csv`, `leaderboards.csv`). Nothing is rebuilt in the
+browser. Historical Explorer exports every ranked row for the question; Leaderboards exports its
+Top N.
 
 ## 5. States
 
@@ -251,66 +266,67 @@ dark values. The palette continues the Streamlit U1 colours (navy ink, `#1f5fa8`
 
 ## 11. What is real vs sample
 
-Since WEB-M2 the pages run on the real Python API by default.
+The pages run on the real Python API by default (pinned `5ca7a26`). Sample fixtures exist for
+local UI work only and never ship.
 
-| From the real API (pinned `a9a80f7`) | Interim, until the API serves it | Not shown on real data yet |
+| From the real API | Formatted in TypeScript (display only) | Not on the web yet |
 |---|---|---|
-| Every number, name, rank, total and team | Stat lists, defaults, labels and formats (checked against the live API; R1) | Answer detail, context and metric tiles (R2) |
-| Historical Explorer headline | Stat names fall back to API labels ("HR"; R5) | Leaderboards answer sentence (R3); a data-free title is shown |
-| Qualification numbers (`min_ab`, mode) | | Qualification wording (R4); the number is shown |
-| Year bounds (`/health`), player search | | One-player rankings (R8): hidden |
-| Errors (422 / 404 / 503 envelopes) | | Full tables and export beyond 25 rows (R6) |
+| Every number, name, rank, total and team | Rates `.311`, counts `1,234`, years `2022`, missing `—` | Hall of Fame Case Mode, relationship finder and scatterplot, several franchises at once, stat minimums you set yourself |
+| The answer (headline, detail, context, tiles) | Tile values (looked up from the top row's stats) | Games or seasons per leaderboard player (the API doesn't compute it) |
+| Qualification chip and explanation | Table columns drawn from the API's column list | Career Totals, Compare Players, Trend Value, Valuation (the API has no endpoints for them yet) |
+| Catalog: stat lists, defaults, names, columns, filter options, weight and Top N bounds | | |
+| Paging, filtering, one-player ranking, CSV file and its name | | |
 
-## 12. Backend contracts needed
+## 12. Backend contracts
 
-Proposed to the API workstream. These are shapes the pages need, not a demand for exact names.
+Served and used (API `5ca7a26`, `baseball_api` v1): `GET /catalog`, `/health`, `/players/search`,
+`/players/{id}`, `/players/{id}/seasons` (not used by the pages), `/seasons` and `/leaderboards`
+(each with `offset` / `limit`, filters, `format=csv`; `/seasons` also `player_id` and
+`include_below_minimum`). The OpenAPI document is the only contract: wire types are generated into
+`src/lib/api/generated/`, and only the HTTP adapter reads them.
 
-1. **`GET catalog`**: year bounds, metric definitions (`key`, `label`, plain `name`, `format`:
-   rate / count / score), and per-page metric lists and defaults.
-2. **`GET players?search=`** and **`GET players/{id}`**: `PlayerSummary` (id = Lahman `playerID`).
-3. **`GET historical-explorer?from&to&metric&order&player`**, returning `HistoricalExplorerResult`:
-   - the normalised query
-   - `answer` {headline, detail, context}, built by `u1_answers.season_answer` and written for
-     any surface (no "under Explore more" wording)
-   - `qualification` {kind, summary, minAtBats, scope}
-   - `topSeasonId`, `keyMetrics`, `columns`
-   - ranked `seasons` (first page) + `totalCount`
-   - per-season `qualified`
-   - `chart` {kind: ranking | timeline, title, seasonIds}
-4. **`GET leaderboards?from&to&metric`** (custom weights later), returning `LeaderboardResult`:
-   - `answer` (`u1_answers.leaderboard_answer`)
-   - `qualification`, ranked `entries` {rank, player, seasons, stats}, `totalRanked`, `columns`
-   - `score` {summary, weights}
-5. **Errors**: a JSON body with a machine-readable code that maps to `unavailable`,
-   `invalid_request` or `unsupported`, plus a user-facing message.
-6. **Pagination** (offset/limit or cursor) for full tables, and later filter parameters (bats,
-   position mode, franchise/league, split seasons, stat minimums, HoF case mode) and CSV export.
-7. **CORS or a same-origin proxy**: to decide when the HTTP adapter is written.
+Contracts still needed for the next pages (the schema describes these models but no endpoints
+exist): Career Totals, Compare Players, Trend Value and Valuation; later, authenticated league
+reads. Each needs the same shape as the served pages: the question as parameters, the answer
+sentence and tile choice from the matching `u*_answers` function, qualification text, ranked rows
+with table-column metadata, paging, and CSV where the Streamlit page has one.
 
-## 13. Migration sequence (proposed)
+## 13. Migration sequence
 
-1. **WEB-M1 (this):** foundation, Home, Historical Explorer, Leaderboards on sample data.
-2. **WEB-M2:** connect the HTTP adapter to the read-only Python API for the M1 pages; generate
-   types from OpenAPI; add the Explore more filters, pagination and export; add redirects
-   from Streamlit `?active_page=` keys; add Career Totals.
-3. Compare Players and the Insights pages (Trend Value, Valuation, ML, Sleepers & Busts):
-   read-only, chart-heavier.
-4. Auth (Supabase session in the shell), account area and Pricing, then read-only My League
-   views (Standings, Waiver Wire reads).
-5. League mutations: lineup saves, waivers, trades, scoring-period finalisation (needs write APIs
-   with the existing ownership and lock checks).
-6. Draft Room / Assistant / Lab simulators; Ask AMI integration (owned by the AMI workstream).
+1. **Done (WEB-M1, WEB-M2):** foundation, Home, Historical Explorer and Leaderboards on the real
+   Python API with catalog-driven tables, answers, filters, paging, one-player ranking and CSV.
+2. **Next read-only pages** (each waits on API endpoints that don't exist yet): Career Totals,
+   Compare Players, then Trend Value and Valuation. The API schema already describes
+   `CareerSummary`, `ComparisonResult`, `TrendResult` and `ValuationResult`, and the Python
+   functions are pure but still sit inside `streamlit_app.py` (see
+   `docs/NEXTJS_API_CONTRACTS.md` on the API branch for the extraction plan).
+3. Sleepers & Busts and ML Predictions (the ML model lifecycle needs a design first).
+4. Auth (Supabase session in the shell), the account area and Pricing, then read-only My League
+   views.
+5. League mutations: lineup saves, waivers, trades, scoring-period finalisation.
+6. Draft simulators; Ask AMI integration (owned by the AMI workstream).
 7. Live Draft last: real-time state, timers and multiplayer.
 
-## 14. Verification (WEB-M1 checkpoint)
+## 14. Verification (WEB-M2 checkpoint, API 5ca7a26)
 
-- `npm run typecheck`, `npm run lint`, `npm test` (60 tests in 9 files) and `npm run build`
-  all pass. All four routes prerender as static shells; answers load client-side.
-- Browser acceptance (Chromium via Playwright, production build) at 1280 / 430 / 390 / 360:
-  - no horizontal overflow
-  - no visible text under 11 px, no tap target under 24 px
-  - keyboard skip link and sidebar navigation work
-  - phone menu: open, Esc, focus return, navigate-and-close
-  - stat change and Back, the player picker and timeline, and the cross-page links work
-  - all forced states render
-  - axe: 0 violations, light and dark
+Run on a production build, through the proxy, against the real API over the Lahman data:
+
+- `npm run check`: types drift check, typecheck, lint, 136 unit and page tests in 17 files, and
+  the production build all pass. `npm run test:live`: 11 tests pass.
+- **Parity with the existing Streamlit app** (its pages run headlessly with `AppTest` from the
+  same commit): Historical Explorer (home runs, OPS) and Leaderboards (score, OPS) for the
+  default ranges. The web app's headline, context, tiles, qualification chip and the first 25
+  rows of each table equal the Streamlit pages: **1,700 cells compared, 0 mismatches**. The one
+  textual difference is deliberate: Streamlit's score sentence ends with "Change the weights
+  under Explore more.", which the API omits for other surfaces.
+- **CSV:** the browser downloads the API's exact bytes (all 24,261 historical rows,
+  1,957,269 bytes; a filtered export; the Leaderboards Top 25) under the API's filenames
+  (`historical_explorer.csv`, `leaderboards.csv`). Each file's header equals the catalog's
+  column labels. The proxy delivers it byte-for-byte.
+- **Browser (Chromium) at 1280 / 430 / 390 / 360:** 21 flows pass and 28 page/width layouts have
+  no horizontal overflow, no text under 11 px and no small tap targets. They cover navigation,
+  direct URLs and refresh, Back/Forward across stat change and paging, filters, Top N, weights,
+  the one-player view, all states (loading, empty, outage with Retry, a failing table page, a
+  page past the end, a cold start with 503 + Retry-After, bad URL input), and the table
+  scrolling inside its frame with the player column held. axe-core: 0 violations, light and
+  dark, with Explore more open.

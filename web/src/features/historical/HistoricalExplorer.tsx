@@ -356,7 +356,13 @@ function SeasonsTable({
   return (
     <div>
       <h3 className={shared.subheading}>Seasons</h3>
-      {shown ? (
+      {shown && shown.table.rows.length === 0 ? (
+        <EmptyState
+          title="That page is past the last season"
+          message={`There are ${formatCount(shown.totalCount)} seasons in this result, so there is nothing at row ${formatCount(shown.offset + 1)}.`}
+          action={<Button variant="primary" onClick={() => onPage(1)}>Back to the first page</Button>}
+        />
+      ) : shown ? (
         <>
           <ResultTableView
             table={shown.table}
