@@ -44,7 +44,7 @@ or account state, and it does not replace the existing Command Center hand-off.
 | App guidance | **Live** | "What can I do on this page?", "How do I compare two players?", "Where do I make a trade?", "What does Decision Score mean?" | `explain_app_page`, `explain_metric`, `find_feature` |
 | Historical analytics | **Live** | compare, career, seasons, leaderboards, trends, valuation, rate-stat qualification | `search_players`, `get_player_profile`, `get_player_seasons`, `compare_players`, `get_leaderboard`, `get_player_trends`, `get_trend_leaders`, `get_player_valuation` |
 | Draft intelligence | **Live, read-only from page snapshot** | "Who should I draft next?", "Why is X recommended?", "What positions am I weak at?", "Best available shortstops?", "Need or best available?" | `get_active_draft_context`, `get_draft_recommendations`, `explain_draft_recommendation`, `get_team_needs`, `get_sleepers_busts` |
-| Fantasy league (read-only) | **Live (Phase D shared interfaces)** — see `docs/AMI_PHASE_D_RECONCILIATION.md` | "Where am I in the standings?", "Where could I gain a roto point?", "What happened last week?", "Can Springer play shortstop?", "Would trading Judge for Tucker leave me without a catcher?" | `get_active_league`, `get_official_standings`, `get_current_roster_standings`, `get_week`, `get_week_lineup`, `explain_player_week`, `get_lineup_report`, `check_slot_eligibility`, `find_eligible_players`, `evaluate_trade`; `get_waiver_recommendations` still returns `not_wired` |
+| Fantasy league (read-only) | **Live (Phase D shared interfaces)** — see `docs/AMI_PHASE_D_RECONCILIATION.md` | "Where am I in the standings?", "Where could I gain a roto point?", "What happened last week?", "Can Springer play shortstop?", "Would trading Judge for Tucker leave me without a catcher?" | `get_active_league`, `get_official_standings`, `get_current_roster_standings`, `get_week`, `get_week_lineup`, `explain_player_week`, `get_lineup_report`, `check_slot_eligibility`, `find_eligible_players`, `evaluate_trade`, `get_lineup_status`, `get_waiver_recommendations`, `get_player_owner`, `find_available_players` (all over the shared readers; see `docs/AMI_READERS_U4_INTEGRATION.md`) |
 | Future actions | **Declared, disabled** | draft, queue, add, drop, trade, change lineup | none callable (`FUTURE_ACTIONS`) |
 
 **Grounding categories.** Every answer carries one label:
@@ -63,7 +63,7 @@ Each tool is a `ToolSpec`: name, capability, description, JSON-schema parameters
 
 | Tool | Reuses (no formulas re-implemented) |
 |---|---|
-| `get_leaderboard` | Leaderboards: `leaderboard_aggregation.filter_yearly_for_leaderboards` + `aggregate_leaderboard_career_totals` + `lahman_data.add_rate_stats`. With a position, Career Totals' groupby. `rate_stat_qualification.qualified_ab` for the rate-stat AB minimum. Rates rounded to 3 places before sorting, as the pages do. |
+| `get_leaderboard` | Leaderboards: `leaderboard_aggregation.filter_yearly_for_leaderboards` + `aggregate_leaderboard_career_totals` + `baseball_history.add_rate_stats`. With a position, Career Totals' groupby. `rate_stat_qualification.qualified_ab` for the rate-stat AB minimum. Rates rounded to 3 places before sorting, as the pages do. |
 | `compare_players`, `get_player_seasons`, `get_player_profile` | Career Totals aggregation + `add_rate_stats`. Best seasons use `qualified_ab(span=False)` (Historical Explorer's single-season rule). |
 | `get_player_trends`, `get_trend_leaders` | `trend_slopes.trend_slopes` over the whole trailing window (needed for the PA-weighted, league-shrunk rate slopes), the page's `G ≥ min_games` pool, and `projection_breakdown.classify_trend_direction`. |
 | `get_player_valuation` | The Valuation page pipeline step for step, ending in `valuation_scores.add_valuation_scores`. |
@@ -72,7 +72,7 @@ Each tool is a `ToolSpec`: name, capability, description, JSON-schema parameters
 
 **Small refactors in the monolith (verbatim moves only):**
 
-- `load_data`'s body and its team/rate helpers moved to `lahman_data.py`. `load_data` stays the cached entry point and delegates. A one-off check executed the original `load_data` from `0e588e0` and confirmed all three frames (`batting`, `yearly`, `people`) are identical.
+- `load_data`'s body and its team/rate helpers live in `baseball_history.py`, the canonical history layer shared with the web API. `load_data` stays the cached entry point and delegates (`_history.load_history_frames`). AMI's earlier `lahman_data.py` copy was retired in the readers/U4 integration; its frames were byte-identical.
 - `PAGE_GUIDES` moved to `page_guides.py`, so AMI quotes exactly what the Quick Guide cards show.
 
 **Not applied by AMI** (user-specific page options, stated in each answer):

@@ -205,6 +205,11 @@ class LineupParityTests(shared._LeagueCase):
         self.assertEqual(proxy["access"]["text"], "You're viewing Team C as commissioner; the team is currently unclaimed.")
         self.assertEqual(call(self.session, "get_lineup_status", team="Team B").error_code, ft.NOT_YOUR_TEAM)
         self.assertEqual(call(self.session, "get_lineup_status", team="Team Z").error_code, ft.UNKNOWN_TEAM)
+        # An invite-reserved team isn't unclaimed: the commissioner can't act for it.
+        self._reserve("Team C")
+        for tool in ("get_lineup_status", "get_waiver_recommendations", "get_lineup_report"):
+            self.assertEqual(call(self.session, tool, team="Team C").error_code, ft.NOT_YOUR_TEAM, tool)
+        self.assertFalse(api.team_access(self.session, "Team Z").can_manage)  # nonexistent: never manageable
 
 
 class WaiverParityTests(shared._LeagueCase):

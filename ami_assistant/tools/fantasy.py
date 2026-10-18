@@ -498,7 +498,7 @@ def get_lineup_status(*, session: Mapping[str, Any], team: str | None = None, we
         return fail("get_lineup_status", BAD_ARGUMENT, clean_text(lineup.reason, 200), access=access)
     texts = lambda xs: [clean_text(x, 80) for x in xs]  # noqa: E731
     return ToolResult(tool="get_lineup_status", ok=True, data={
-        "team": name, "access": access, "week": int(lineup.week), "week_text": clean_text(lineup.week_text, 60),
+        "team": name, "access": access, "week": int(lineup.week), "week_text": clean_text(lineup.week_text, 160),
         "status": clean_text(lineup.status, 40), "record_status": lineup.record_status, "locked": bool(lineup.locked),
         "edit_message": clean_text(lineup.edit_message, 200), "complete": bool(lineup.complete),
         "slots": [clean_text(label, 10) for _key, label in lineup.slots],
@@ -608,7 +608,7 @@ def find_eligible_players(*, session: Mapping[str, Any], slot: str, team: str | 
     status = api.week_lineup_status(session, name)
     saved = status.allowed and status.record_status in ("draft", "locked") and bool(status.assignments)
     starters = {normalize_player_name_for_merge(p) for p in status.assignments.values() if p} if saved else set()
-    week = {"number": int(status.week), "label": clean_text(status.week_text, 60), "status": clean_text(status.status, 40)} if saved else None
+    week = {"number": int(status.week), "label": clean_text(status.week_text, 160), "status": clean_text(status.status, 40)} if saved else None
     eligible = []
     for _, row in frame.iterrows():
         res = api.explain_slot_eligibility(row, slot)

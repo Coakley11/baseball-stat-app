@@ -111,7 +111,10 @@ U2/U3 edited the old inline dict.
   enforces it, the regular branch should add it to a feature-level enforced set that the UI also
   applies. AMI already reads that set.
 
-## 7. Shared readers still required (regular branch)
+## 7. Shared readers (now consumed)
+
+All seven exist since `quality/ami-shared-readers @ 633538f` and AMI uses them; see
+`docs/AMI_READERS_U4_INTEGRATION.md`. The list below is what this slice asked for.
 
 AMI does not import internal fantasy modules to fill these gaps.
 

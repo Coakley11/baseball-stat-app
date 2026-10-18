@@ -789,6 +789,8 @@ class Composer:
         if now and reason in ("counted", "no_stats", "bench"):
             text += (f" {p} is {now}, but {w['label']} is frozen with the lineup {d['team']} saved for it, so later "
                      "drops and trades don't change it.")
+        elif reason == "not_in_lineup" and d.get("owner_status") == "free_agent":
+            text += f" {p} isn't on any roster in this league now."  # unrostered; no more than the reader knows
         elif now and reason == "not_in_lineup":
             text += f" {p} is {now}."
         elif reason == "not_in_lineup" and not d.get("on_a_roster"):
@@ -817,7 +819,7 @@ class Composer:
         lines = [f"**{d['team']} · {d['week_text']}: {d['status']}**", d["headline"]]
         if d.get("body"):
             lines.append(d["body"])
-        if d.get("edit_message"):
+        if d.get("edit_message") and d["edit_message"] not in (d.get("body") or ""):
             lines.append(f"_{d['edit_message']}_")
         access_line = self._access_line(d.get("access"))
         if access_line:
