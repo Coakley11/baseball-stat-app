@@ -37,7 +37,10 @@ response normalization, error mapping, the cold-start wait and (later) authentic
 | Stat names (R5) | `MetricInfo.name` | Controls, titles and captions |
 | Paging (R6) | `offset`, `total_rows`, `ranked_rows` | Previous / Next over 25-row pages |
 | CSV (R6) | `format=csv` + `Content-Disposition` | A download link through the proxy; no file is built in the browser |
-| One player (R8) | `player_id`, `include_below_minimum`, `meets_minimum`, `rank: null` | The one-player view is on. Below-minimum seasons are drawn hollow and noted in the table. It uses the page's year range (the API's career default isn't used) |
+| One player (R8) | `player_id`, `include_below_minimum`, `meets_minimum`, `rank: null` | The one-player view is on. Below-minimum seasons are drawn hollow and noted in the table |
+| One player's years | `start` / `end` omitted → the player's career, each bound independently | When the user picks One player and hasn't chosen years, no years are sent; the API's career comes back and fills the boxes. A bound the user chose is sent and kept. All players keep the 2010–2025 default |
+| Minimums you set | `min_ab`, `min_{STAT}` (catalog `minimum_columns`), `min_ab=0` = none | Explore more on both pages: at-bats (empty = the API's automatic qualified minimum) and each listed stat, applied with a button. They travel with paging and the CSV. The API's `summary` / `explanation` say what applies |
+| Several franchises | `teams` list (a union) | A checkbox list of the catalog's franchises and leagues in Explore more; any of those selected |
 | Table columns | `catalog.*.columns [{label, field, metric}]` | `ResultTableView` renders exactly these, in this order, with `field` paths looked up in each row |
 | Filters | `bats`, `positions`, `position_source`, `teams`, `combine` | Explore more on Historical Explorer; the options are the catalog's |
 | Top N, weights | `limit`, `weights` | Explore more on Leaderboards |
@@ -52,8 +55,8 @@ response normalization, error mapping, the cold-start wait and (later) authentic
 | 3 | `SeasonLeadersResult.headline` is kept for v1 compatibility | Not used; the frontend reads `answer.headline` |
 | 4 | `/seasons` also accepts the `yearID` metric; the Streamlit page doesn't offer it | Not offered (it isn't in `historical.metrics`) |
 | 5 | `/health.build` reports the tree's deploy marker, not the running commit | The pinned commit is recorded in `openapi/baseball-api.meta.json` |
-| 6 | Franchise / league filter accepts several values; the web control takes one | A gap against Streamlit's multiselect. The URL already holds a list |
-| 7 | Stat minimums you set yourself (`min_ab`, `min_HR`, …) | Not on the web yet; the API supports them |
+| 6 | A manual at-bat minimum on a counting-stat ranking (for example home runs with `min_ab=500`) filters correctly, but the API returns no `summary` for it (`applies` is false, `summary` is empty) | The web shows no qualification chip there (it writes none itself). Optional request to the API workstream: a short summary for it (see the handoff doc) |
+| 7 | One player: the web sends no years unless chosen, so a player's career bounds are the API's, not ours | Nothing computed in the frontend |
 | 8 | `min_{STAT}` is one literal query parameter in OpenAPI | Documented placeholder; not used by the frontend |
 | 9 | `/players/resolve` and `/players/{id}/seasons` | Not used by the pages. The proxy allows `/players/{id}/seasons` but not `resolve` (a test guards this) |
 

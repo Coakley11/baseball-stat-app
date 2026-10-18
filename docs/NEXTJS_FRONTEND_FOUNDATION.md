@@ -114,9 +114,13 @@ The Streamlit Home's league summary needs auth and league data, so it is not in 
   with below-minimum seasons drawn hollow.
 - Next steps: "All of {player}'s seasons" or "Best seasons by every player", plus "Leaders over
   {range}".
-- Explore more: filters (batting hand, position by season or career, franchise or league, one
-  row per player-season, order), the seasons table, Previous / Next over the API's pages, and
-  "Download CSV". The table's columns are the API's catalog columns (see below).
+- Explore more: filters (batting hand, position by season or career, any number of franchises or
+  leagues, one row per player-season, order), minimums you set (at-bats and other stats), the
+  seasons table, Previous / Next over the API's pages, and "Download CSV". The table's columns
+  are the API's catalog columns (see below).
+- One player's years: when the user picks One player and hasn't chosen years, the page sends none
+  and the API uses the player's whole career, which then fills the year boxes. A year the user
+  does choose is kept (the other stays the career). All players keep the default range.
 
 **Leaderboards** (`?from&to&metric&top&w`):
 
@@ -126,8 +130,9 @@ The Streamlit Home's league summary needs auth and league data, so it is not in 
   player's at-bats. The API sends no games or seasons total.
 - Top-10 ranking bars.
 - Next steps: "{Leader}'s best seasons", "Best single seasons, {range}".
-- Explore more: Top N, score weights (Apply), the ranking table in the API's columns, "Download
-  CSV" for the Top N shown, and the plain explanation of the minimum.
+- Explore more: Top N, score weights (Apply), minimums you set (Apply), the ranking table in
+  the API's columns, "Download CSV" for the Top N shown, and the plain explanation of the
+  minimum.
 
 **Tables are driven by the catalog.** `GET /catalog` lists each page's columns as `{label, field,
 metric}`: the header, the dotted path to the value in a row (`stats.HR`, `team.season_name`), and
@@ -271,7 +276,7 @@ local UI work only and never ship.
 
 | From the real API | Formatted in TypeScript (display only) | Not on the web yet |
 |---|---|---|
-| Every number, name, rank, total and team | Rates `.311`, counts `1,234`, years `2022`, missing `—` | Hall of Fame Case Mode, relationship finder and scatterplot, several franchises at once, stat minimums you set yourself |
+| Every number, name, rank, total and team | Rates `.311`, counts `1,234`, years `2022`, missing `—` | Hall of Fame Case Mode, relationship finder and scatterplot |
 | The answer (headline, detail, context, tiles) | Tile values (looked up from the top row's stats) | Games or seasons per leaderboard player (the API doesn't compute it) |
 | Qualification chip and explanation | Table columns drawn from the API's column list | Career Totals, Compare Players, Trend Value, Valuation (the API has no endpoints for them yet) |
 | Catalog: stat lists, defaults, names, columns, filter options, weight and Top N bounds | | |
@@ -311,8 +316,8 @@ with table-column metadata, paging, and CSV where the Streamlit page has one.
 
 Run on a production build, through the proxy, against the real API over the Lahman data:
 
-- `npm run check`: types drift check, typecheck, lint, 136 unit and page tests in 17 files, and
-  the production build all pass. `npm run test:live`: 11 tests pass.
+- `npm run check`: types drift check, typecheck, lint, 167 unit and page tests in 18 files, and
+  the production build all pass. `npm run test:live`: 18 tests pass.
 - **Parity with the existing Streamlit app** (its pages run headlessly with `AppTest` from the
   same commit): Historical Explorer (home runs, OPS) and Leaderboards (score, OPS) for the
   default ranges. The web app's headline, context, tiles, qualification chip and the first 25
@@ -323,10 +328,25 @@ Run on a production build, through the proxy, against the real API over the Lahm
   1,957,269 bytes; a filtered export; the Leaderboards Top 25) under the API's filenames
   (`historical_explorer.csv`, `leaderboards.csv`). Each file's header equals the catalog's
   column labels. The proxy delivers it byte-for-byte.
-- **Browser (Chromium) at 1280 / 430 / 390 / 360:** 21 flows pass and 28 page/width layouts have
+- **Browser (Chromium) at 1280 / 430 / 390 / 360:** 27 flows pass and 28 page/width layouts have
   no horizontal overflow, no text under 11 px and no small tap targets. They cover navigation,
   direct URLs and refresh, Back/Forward across stat change and paging, filters, Top N, weights,
   the one-player view, all states (loading, empty, outage with Retry, a failing table page, a
   page past the end, a cold start with 503 + Retry-After, bad URL input), and the table
   scrolling inside its frame with the player column held. axe-core: 0 violations, light and
   dark, with Explore more open.
+
+### Parity follow-up (career default, minimums, several franchises)
+
+Verified against the same API (`5ca7a26`), with the Streamlit parity comparison re-run unchanged
+(1,700 cells, 0 mismatches):
+
+- **One player's career:** no years are sent unless chosen; the API's career (Miguel Cabrera
+  2003–2023, 21 seasons, 15 ranked and 6 below the minimum) fills the boxes and equals a direct
+  API request. A chosen start year is sent and kept (the end stays the career). All players keep
+  2010–2025.
+- **Minimums:** at-bats and stat minimums go to the API as `min_ab` and `min_{STAT}`. Totals,
+  the qualification line and the Leaderboards ranking equal the API's for the same question, and
+  the CSV honours them (411 rows, the API's own count, byte-for-byte).
+- **Several franchises:** Boston plus New York returns the API's union, equal to the sum of each
+  (828 + 829 = 1,657).

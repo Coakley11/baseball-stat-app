@@ -140,3 +140,16 @@ paging, and CSV where the Streamlit page has an export.
    `compute_player_trend_table` and `aggregate_recent_player_totals` moved out of the page.
 4. **Valuation:** `GET /valuation` with the page's weights, from `valuation_scores`. Needs the
    hitter-only pool assembly extracted.
+
+## Optional follow-up from the parity pass (not blocking)
+
+**A summary line for a manual at-bat minimum on a counting-stat ranking.** For example
+`/seasons?metric=HR&min_ab=500` filters correctly (`mode: "manual"`, `min_ab: 500`), but
+`qualification.summary` is empty and `applies` is false, so a screen has nothing from Python to say
+that a minimum is in force. Rate-stat rankings already get "Minimum you set · at least 300 AB in the
+season". A matching short line for counting stats would let the web show it without writing its own
+wording. The web shows nothing for it today.
+
+Confirmed supported with no Python change: one player's career default (`player_id` without
+`start` / `end`, each bound independently), `min_ab` / `min_{STAT}` on both ranking endpoints and the
+CSV, and a `teams` list (a union).
