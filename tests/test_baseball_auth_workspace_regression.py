@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import mock
 
@@ -18,6 +19,7 @@ from suite_auth import (
     AUTH_USER_ID_KEY,
     auth_session_complete,
     login_with_email,
+    logout,
     restore_auth_session,
 )
 from suite_auth_browser import BROWSER_PERSIST_RESULT_KEY, browser_auth_storage_status
@@ -285,3 +287,194 @@ def test_stripe_checkout_requires_complete_authentication() -> None:
         assert authenticated_subject(complete) == ("auth-user-1", True, "access-test")
         assert create_checkout_url(complete) == "https://checkout.stripe.com/c/pay/test"
         assert post.call_args.kwargs["headers"] == {"Authorization": "Bearer access-test"}
+
+
+def test_completed_handoff_logout_then_login_survives_ordinary_reruns() -> None:
+    from suite_auth_bridge_handoff import HANDOFF_FREEZE_KEY, HANDOFF_FINAL_GENERATION_KEY
+    from suite_auth_bridge_restore import RESTORE_FINAL_3B_KEY
+    from suite_auth_browser import save_browser_auth_tokens
+
+    saved = [{"draft_id": "draft-1", "name": "Keep Me"}]
+    session = {
+        AUTH_SESSION_KEY: True,
+        AUTH_USER_ID_KEY: "auth-user-1",
+        AUTH_USER_EMAIL_KEY: "coach@example.com",
+        AUTH_TOKENS_KEY: dict(TOKENS),
+        HANDOFF_FREEZE_KEY: True,
+        HANDOFF_FINAL_GENERATION_KEY: 4,
+        RESTORE_FINAL_3B_KEY: True,
+        "draft_archive_teams": deepcopy(saved),
+    }
+    st = mock.MagicMock(query_params={"suite_sid": "sid-login-cycle"})
+    st.session_state = session
+
+    with mock.patch("suite_auth._auth_api") as auth_api, mock.patch(
+        "suite_auth_browser.clear_browser_auth_tokens"
+    ), mock.patch("draft_room_participant_state.on_auth_logout_save_workflow"), mock.patch(
+        "suite_user.reset_account_cache"
+    ):
+        auth_api.return_value.sign_out.return_value = None
+        logout(session, st=st)
+
+    assert HANDOFF_FREEZE_KEY not in session
+    assert HANDOFF_FINAL_GENERATION_KEY not in session
+    assert RESTORE_FINAL_3B_KEY not in session
+    assert session["draft_archive_teams"] == saved
+    for _ in range(2):
+        reset_sidebar_run_guards(session)
+        assert claim_sidebar_render(session, GUARD_ACCOUNT)
+        assert not claim_sidebar_render(session, GUARD_ACCOUNT)
+
+    def persist_new_login(ss: dict, *, st=None) -> str:
+        result = save_browser_auth_tokens(st, dict(ss[AUTH_TOKENS_KEY]), auth_user_id="auth-user-1")
+        ss[BROWSER_PERSIST_RESULT_KEY] = result
+        return "suite-user-1"
+
+    verified_readback = {
+        "readback_record_complete": True,
+        "readback_row_found": True,
+        "owner_match": True,
+        "token_identity_match": True,
+        "generation_match": True,
+        "record_unambiguous": True,
+        "failure_reason": "ok",
+    }
+    with mock.patch("suite_auth.is_auth_enabled", return_value=True), mock.patch(
+        "suite_auth._auth_api"
+    ) as auth_api, mock.patch("suite_auth._user_from_auth_response", return_value=_user()), mock.patch(
+        "suite_auth._tokens_from_auth_response", return_value=dict(TOKENS)
+    ), mock.patch("suite_auth._sync_auth_account_identity", side_effect=persist_new_login), mock.patch(
+        "suite_storage_supabase.save_browser_auth_session",
+        return_value={"write_committed": True, "token_generation": 5},
+    ), mock.patch(
+        "suite_auth_browser_bridge_diag.readback_after_browser_auth_save",
+        return_value=verified_readback,
+    ), mock.patch("suite_workspace_registry.ensure_owned_workspace_for_session"), mock.patch(
+        "suite_auth.enforce_workspace_ownership"
+    ), mock.patch("suite_user_persistence.preserve_page_through_auth"), mock.patch(
+        "draft_archive_visibility.sanitize_workflow_library_for_account"
+    ), mock.patch("draft_room_participant_state.on_auth_user_switch"):
+        auth_api.return_value.sign_in_with_password.return_value = object()
+        ok, message = login_with_email(session, email="coach@example.com", password="secret", st=st)
+
+    assert ok and message == "Signed in."
+    assert auth_session_complete(session)
+    assert session[BROWSER_PERSIST_RESULT_KEY]["persistence_succeeded"]
+    assert session["draft_archive_teams"] == saved
+    for _ in range(2):
+        reset_sidebar_run_guards(session)
+        assert claim_sidebar_render(session, GUARD_ACCOUNT)
+
+
+def test_auth_lifecycle_preserves_actual_saved_workspace_file() -> None:
+    """Use isolated on-disk persistence while exercising every auth transition."""
+    import suite_user_persistence
+    import suite_workspace
+
+    workspace_id = "auth_integrity_test"
+    saved_state = {
+        "draft_archive_teams": [{"draft_id": "draft-1", "name": "Keep Me", "picks": [1, 2]}],
+        "saved_sessions": {"session-1": {"label": "October keeper"}},
+    }
+
+    with TemporaryDirectory() as tmp:
+        data_dir = Path(tmp)
+        with mock.patch.object(suite_user_persistence, "DATA_DIR", data_dir), mock.patch.object(
+            suite_user_persistence, "_LEGACY_COMBINED_FILE", data_dir / "app_state.json"
+        ), mock.patch.object(suite_workspace, "DATA_DIR", data_dir):
+            assert suite_user_persistence.save_user_state(
+                "baseball", deepcopy(saved_state), workspace_id=workspace_id
+            )
+            state_path = suite_user_persistence.state_file_path("baseball", workspace_id)
+            original_bytes = state_path.read_bytes()
+
+            def assert_saved_unchanged() -> None:
+                restored, warning, _saved_at = suite_user_persistence._load_raw(
+                    "baseball", workspace_id
+                )
+                assert warning is None
+                assert restored == saved_state
+                assert state_path.read_bytes() == original_bytes
+
+            session = deepcopy(saved_state)
+            st = mock.MagicMock(query_params={"suite_sid": "isolated-auth-sid"})
+            st.session_state = session
+
+            def persist_ok(ss: dict, *, st=None) -> str:
+                ss[BROWSER_PERSIST_RESULT_KEY] = _persistence(ok=True)
+                return "suite-user-1"
+
+            common = (
+                mock.patch("suite_auth.is_auth_enabled", return_value=True),
+                mock.patch("suite_auth._user_from_auth_response", return_value=_user()),
+                mock.patch("suite_auth._tokens_from_auth_response", return_value=dict(TOKENS)),
+                mock.patch("suite_auth.enforce_workspace_ownership"),
+                mock.patch("suite_user_persistence.preserve_page_through_auth"),
+                mock.patch("suite_workspace_registry.ensure_owned_workspace_for_session"),
+                mock.patch("draft_archive_visibility.sanitize_workflow_library_for_account"),
+                mock.patch("draft_room_participant_state.on_auth_user_switch"),
+            )
+            with common[0], common[1], common[2], common[3], common[4], common[5], common[6], common[7], mock.patch(
+                "suite_auth._auth_api"
+            ) as auth_api, mock.patch("suite_auth._sync_auth_account_identity", side_effect=persist_ok):
+                auth_api.return_value.sign_in_with_password.return_value = object()
+                assert login_with_email(session, email="coach@example.com", password="secret", st=st)[0]
+            assert_saved_unchanged()
+
+            reset_sidebar_run_guards(session)
+            assert claim_sidebar_render(session, GUARD_ACCOUNT)
+            assert_saved_unchanged()
+
+            refresh_session = deepcopy(saved_state)
+            refresh_st = mock.MagicMock(query_params={"suite_sid": "isolated-auth-sid"})
+            refresh_st.session_state = refresh_session
+            auth_response = SimpleNamespace(user=_user())
+            with mock.patch("suite_auth.is_auth_enabled", return_value=True), mock.patch(
+                "suite_auth_browser.load_browser_auth_tokens", return_value=dict(TOKENS)
+            ), mock.patch("suite_auth_bridge_restore.execute_bridge_set_session_restore", new=None), mock.patch(
+                "suite_auth._auth_api"
+            ) as auth_api, mock.patch("suite_auth._user_from_auth_response", return_value=_user()), mock.patch(
+                "suite_auth._tokens_from_auth_response", return_value=dict(TOKENS)
+            ), mock.patch("suite_auth._sync_auth_account_identity", side_effect=persist_ok), mock.patch(
+                "suite_auth.enforce_workspace_ownership"
+            ), mock.patch("draft_archive_visibility.sanitize_workflow_library_for_account"):
+                auth_api.return_value.set_session.return_value = auth_response
+                assert restore_auth_session(refresh_session, st=refresh_st)
+            assert_saved_unchanged()
+
+            failed_session = deepcopy(saved_state)
+            failed_st = mock.MagicMock(query_params={})
+            failed_st.session_state = failed_session
+
+            def persist_failed(ss: dict, *, st=None) -> str:
+                ss[BROWSER_PERSIST_RESULT_KEY] = _persistence(ok=False, reason="owner_mismatch")
+                return "suite-user-1"
+
+            with mock.patch("suite_auth.is_auth_enabled", return_value=True), mock.patch(
+                "suite_auth._auth_api"
+            ) as auth_api, mock.patch("suite_auth._user_from_auth_response", return_value=_user()), mock.patch(
+                "suite_auth._tokens_from_auth_response", return_value=dict(TOKENS)
+            ), mock.patch("suite_auth._sync_auth_account_identity", side_effect=persist_failed), mock.patch(
+                "suite_auth.enforce_workspace_ownership"
+            ), mock.patch("draft_archive_visibility.sanitize_workflow_library_for_account"):
+                auth_api.return_value.sign_in_with_password.return_value = object()
+                assert not login_with_email(
+                    failed_session, email="coach@example.com", password="secret", st=failed_st
+                )[0]
+            assert_saved_unchanged()
+
+            with mock.patch("suite_auth._auth_api") as auth_api, mock.patch(
+                "suite_auth_browser.clear_browser_auth_tokens"
+            ), mock.patch("draft_room_participant_state.on_auth_logout_save_workflow"), mock.patch(
+                "suite_user.reset_account_cache"
+            ):
+                auth_api.return_value.sign_out.return_value = None
+                logout(session, st=st)
+            assert_saved_unchanged()
+
+            with common[0], common[1], common[2], common[3], common[4], common[5], common[6], common[7], mock.patch(
+                "suite_auth._auth_api"
+            ) as auth_api, mock.patch("suite_auth._sync_auth_account_identity", side_effect=persist_ok):
+                auth_api.return_value.sign_in_with_password.return_value = object()
+                assert login_with_email(session, email="coach@example.com", password="secret", st=st)[0]
+            assert_saved_unchanged()

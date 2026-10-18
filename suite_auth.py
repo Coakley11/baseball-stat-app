@@ -1038,7 +1038,11 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
                 maybe_finalize_bridge_token_handoff(
                     session_state,
                     st=st,
-                    auth_user_id=str(session_state.get(AUTH_USER_ID_KEY) or ""),
+                    auth_user_id=str(
+                        session_state.get("_suite_cloud_user_id")
+                        or session_state.get(AUTH_USER_ID_KEY)
+                        or ""
+                    ),
                 )
             except ImportError:
                 pass
@@ -1205,7 +1209,11 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
             save_browser_auth_tokens(
                 st,
                 dict(session_state.get(AUTH_TOKENS_KEY) or {}),
-                auth_user_id=str(session_state.get(AUTH_USER_ID_KEY) or ""),
+                auth_user_id=str(
+                    session_state.get("_suite_cloud_user_id")
+                    or session_state.get(AUTH_USER_ID_KEY)
+                    or ""
+                ),
             )
         except ImportError:
             pass
@@ -1215,7 +1223,11 @@ def restore_auth_session(session_state: dict[str, Any], *, st: Any | None = None
             maybe_finalize_bridge_token_handoff(
                 session_state,
                 st=st,
-                auth_user_id=str(session_state.get(AUTH_USER_ID_KEY) or ""),
+                auth_user_id=str(
+                    session_state.get("_suite_cloud_user_id")
+                    or session_state.get(AUTH_USER_ID_KEY)
+                    or ""
+                ),
             )
         except ImportError:
             pass
@@ -1282,6 +1294,14 @@ def logout(session_state: dict[str, Any], *, st: Any | None = None) -> None:
     except Exception:
         pass
     _clear_auth_session(session_state, st=st, invalidate_bridge=True)
+    try:
+        from suite_auth_bridge_handoff import reset_handoff_after_explicit_logout
+        from suite_auth_bridge_restore import reset_bridge_restore_after_explicit_logout
+
+        reset_handoff_after_explicit_logout(session_state)
+        reset_bridge_restore_after_explicit_logout(session_state)
+    except ImportError:
+        pass
     session_state.pop(WORKSPACE_USER_SELECTED_KEY, None)
     try:
         from suite_user import reset_account_cache

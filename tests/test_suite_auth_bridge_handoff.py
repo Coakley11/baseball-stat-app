@@ -39,6 +39,7 @@ from suite_auth_bridge_handoff import (  # noqa: E402
     evaluate_final_handoff_eligibility,
     is_handoff_frozen,
     pair_fingerprints,
+    perform_final_bridge_handoff,
     reject_mixed_token_pair,
     replay_token_rotation_handoff,
     token_fingerprint,
@@ -57,6 +58,43 @@ def _row(checkpoint: str, **extra: object) -> dict:
 
 
 class TokenHandoffContractTests(unittest.TestCase):
+    def test_final_handoff_uses_authenticated_suite_owner_mapping(self) -> None:
+        tokens = {"access_token": "access-A", "refresh_token": "refresh-A"}
+        fingerprints = pair_fingerprints(tokens)
+        session = {
+            "_suite_auth_user_id": "auth-user-uuid",
+            "_suite_cloud_user_id": "suite-user-uuid",
+            "_suite_auth_tokens": dict(tokens),
+        }
+        st = mock.Mock(query_params={"suite_sid": "sid-1"}, session_state=session)
+        record = {
+            "user_id": "suite-user-uuid",
+            "access_token": tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+            "access_fp": fingerprints["access_fp"],
+            "refresh_fp": fingerprints["refresh_fp"],
+            "token_generation": 2,
+        }
+        with mock.patch(
+            "suite_auth_bridge_handoff.sync_tokens_from_auth_client_without_refresh",
+            return_value=tokens,
+        ), mock.patch(
+            "suite_auth_browser.sync_suite_sid_from_query", return_value="sid-1"
+        ), mock.patch(
+            "suite_auth_browser.save_browser_auth_tokens",
+            return_value={"persistence_succeeded": True, "failure_reason": "ok"},
+        ) as save, mock.patch(
+            "suite_storage_supabase.load_browser_auth_session_record", return_value=record
+        ), mock.patch("suite_auth_bridge_handoff._emit"):
+            result = perform_final_bridge_handoff(
+                st,
+                session,
+                auth_user_id="auth-user-uuid",
+                expected_suite_sid="sid-1",
+            )
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(save.call_args.kwargs["auth_user_id"], "suite-user-uuid")
+
     def test_fingerprints_are_non_secret(self) -> None:
         fp = token_fingerprint("refresh-secret-value")
         self.assertEqual(len(fp), 16)

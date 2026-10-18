@@ -144,6 +144,9 @@ def _browser_persistence_result(extra: dict[str, Any]) -> dict[str, Any]:
         "persistence_succeeded": bool(extra.get("persistence_succeeded")),
         "write_committed": bool(extra.get("write_committed")),
         "bridge_record_complete": bool(extra.get("bridge_record_complete")),
+        "owner_verified": bool(extra.get("owner_verified")),
+        "token_identity_verified": bool(extra.get("token_identity_verified")),
+        "generation_verified": bool(extra.get("generation_verified")),
         "failure_reason": str(extra.get("failure_reason") or "")[:120],
         "handoff_phase": str(extra.get("handoff_phase") or "")[:32],
     }
@@ -237,13 +240,29 @@ def save_browser_auth_tokens(
         readback = readback_after_browser_auth_save(
             sid,
             expected_user_id=uid,
+            expected_access_fp=token_fingerprint(access),
+            expected_refresh_fp=token_fingerprint(refresh),
+            expected_generation=int(base_extra.get("token_generation") or 0),
             save_reported_success=bool(base_extra.get("write_committed")),
         )
     except Exception as exc:
         base_extra["failure_reason"] = f"readback_error:{type(exc).__name__}"
         _emit_save_browser_auth_checkpoint(st, extra=base_extra)
         return _finish_browser_persistence(st, base_extra)
-    complete = bool(readback.get("readback_record_complete"))
+    owner_verified = readback.get("owner_match") is True
+    token_identity_verified = readback.get("token_identity_match") is True
+    generation_verified = readback.get("generation_match") is True
+    unambiguous = readback.get("record_unambiguous") is True
+    base_extra["owner_verified"] = owner_verified
+    base_extra["token_identity_verified"] = token_identity_verified
+    base_extra["generation_verified"] = generation_verified
+    complete = bool(
+        readback.get("readback_record_complete")
+        and owner_verified
+        and token_identity_verified
+        and generation_verified
+        and unambiguous
+    )
     base_extra["bridge_record_complete"] = complete
     base_extra["persistence_succeeded"] = bool(
         base_extra.get("write_committed")
@@ -252,6 +271,18 @@ def save_browser_auth_tokens(
     )
     if not base_extra.get("write_committed"):
         base_extra["failure_reason"] = "write_not_committed"
+    elif not readback.get("readback_row_found"):
+        base_extra["failure_reason"] = str(readback.get("failure_reason") or "token_record_missing")
+    elif not unambiguous:
+        base_extra["failure_reason"] = "token_record_ambiguous"
+    elif not owner_verified:
+        base_extra["failure_reason"] = "owner_mismatch"
+    elif not token_identity_verified:
+        base_extra["failure_reason"] = "token_identity_mismatch"
+    elif not generation_verified:
+        base_extra["failure_reason"] = "token_generation_mismatch"
+    elif not complete:
+        base_extra["failure_reason"] = str(readback.get("failure_reason") or "readback_incomplete")
     else:
         base_extra["failure_reason"] = str(
             readback.get("failure_reason") or ("ok" if complete else "readback_failed")

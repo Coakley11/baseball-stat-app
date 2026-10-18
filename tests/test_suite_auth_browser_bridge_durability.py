@@ -9,6 +9,7 @@ from unittest import mock
 from suite_auth import AUTH_SESSION_KEY, restore_auth_session
 from suite_auth_browser import clear_browser_auth_tokens, load_browser_auth_tokens, save_browser_auth_tokens
 from suite_auth_browser_bridge_diag import emit_bridge_mutation, probe_browser_auth_storage, readback_after_browser_auth_save
+from suite_auth_bridge_token_meta import enrich_bridge_payload, token_fingerprint
 
 
 def _tokens() -> dict:
@@ -16,6 +17,107 @@ def _tokens() -> dict:
 
 
 class BridgeDurabilityTests(unittest.TestCase):
+    def test_readback_requires_expected_owner_and_written_token_identity(self) -> None:
+        tokens = _tokens()
+        payload = enrich_bridge_payload(tokens, token_generation=4)
+        row = {
+            "id": "row-1",
+            "user_id": "different-owner",
+            "app": "_auth_browser",
+            "item_type": "browser_session",
+            "item_key": "sid-1",
+            "valid": True,
+            "updated_at": "2026-10-18T00:00:00Z",
+            "payload": payload,
+        }
+        with mock.patch("suite_storage_supabase._request", side_effect=[[row], []]):
+            rb = readback_after_browser_auth_save(
+                "sid-1",
+                expected_user_id="expected-owner",
+                expected_access_fp=token_fingerprint(tokens["access_token"]),
+                expected_refresh_fp=token_fingerprint(tokens["refresh_token"]),
+                expected_generation=4,
+            )
+        self.assertFalse(rb["readback_record_complete"])
+        self.assertFalse(rb["owner_match"])
+        self.assertTrue(rb["token_identity_match"])
+        self.assertEqual(rb["failure_reason"], "owner_mismatch")
+
+    def test_readback_rejects_stale_token_pair_and_generation(self) -> None:
+        stale = enrich_bridge_payload(
+            {"access_token": "stale-access", "refresh_token": "stale-refresh"},
+            token_generation=3,
+        )
+        row = {
+            "id": "row-1",
+            "user_id": "u1",
+            "app": "_auth_browser",
+            "item_type": "browser_session",
+            "item_key": "sid-1",
+            "valid": True,
+            "updated_at": "2026-10-18T00:00:00Z",
+            "payload": stale,
+        }
+        with mock.patch("suite_storage_supabase._request", side_effect=[[row], []]):
+            rb = readback_after_browser_auth_save(
+                "sid-1",
+                expected_user_id="u1",
+                expected_access_fp=token_fingerprint(_tokens()["access_token"]),
+                expected_refresh_fp=token_fingerprint(_tokens()["refresh_token"]),
+                expected_generation=4,
+            )
+        self.assertFalse(rb["readback_record_complete"])
+        self.assertFalse(rb["token_identity_match"])
+        self.assertFalse(rb["generation_match"])
+        self.assertEqual(rb["failure_reason"], "token_identity_mismatch")
+
+    def test_readback_and_restore_reject_ambiguous_rows(self) -> None:
+        from suite_storage_supabase import load_browser_auth_session
+
+        payload = enrich_bridge_payload(_tokens(), token_generation=1)
+        rows = [
+            {
+                "id": f"row-{idx}",
+                "user_id": f"u{idx}",
+                "app": "_auth_browser",
+                "item_type": "browser_session",
+                "item_key": "shared-sid",
+                "valid": True,
+                "updated_at": "2026-10-18T00:00:00Z",
+                "payload": payload,
+            }
+            for idx in (1, 2)
+        ]
+        with mock.patch("suite_storage_supabase._request", side_effect=[rows, []]):
+            probe = probe_browser_auth_storage("shared-sid", expected_user_id="u1")
+        self.assertFalse(probe["production_record_complete"])
+        self.assertFalse(probe["record_unambiguous"])
+        self.assertEqual(probe["rejection_reason"], "token_record_ambiguous")
+        with mock.patch("suite_storage_supabase._request", return_value=rows):
+            self.assertIsNone(load_browser_auth_session("shared-sid"))
+
+    def test_save_rejects_owner_mismatch_even_if_tokens_are_complete(self) -> None:
+        st = mock.Mock(query_params={"suite_sid": "sid-save"}, session_state={})
+        with mock.patch(
+            "suite_storage_supabase.save_browser_auth_session",
+            return_value={"write_committed": True, "token_generation": 1},
+        ), mock.patch(
+            "suite_auth_browser_bridge_diag.readback_after_browser_auth_save",
+            return_value={
+                "readback_record_complete": False,
+                "readback_row_found": True,
+                "owner_match": False,
+                "token_identity_match": True,
+                "generation_match": True,
+                "record_unambiguous": True,
+                "failure_reason": "owner_mismatch",
+            },
+        ), mock.patch("live_draft_auth_prestart_stage1_diag.emit_prestart_hydration_checkpoint"):
+            result = save_browser_auth_tokens(st, _tokens(), auth_user_id="u1")
+        self.assertFalse(result["persistence_succeeded"])
+        self.assertFalse(result["owner_verified"])
+        self.assertEqual(result["failure_reason"], "owner_mismatch")
+
     def test_readback_failure_marks_incomplete(self) -> None:
         with mock.patch(
             "suite_auth_browser_bridge_diag.probe_browser_auth_storage",
@@ -31,12 +133,16 @@ class BridgeDurabilityTests(unittest.TestCase):
         st.session_state = {"_suite_auth_user_id": "uuid-1"}
         with mock.patch(
             "suite_storage_supabase.save_browser_auth_session",
-            return_value={"write_committed": True, "write_mode": "upsert"},
+            return_value={"write_committed": True, "write_mode": "upsert", "token_generation": 1},
         ), mock.patch(
             "suite_auth_browser_bridge_diag.readback_after_browser_auth_save",
             return_value={
                 "readback_record_complete": False,
                 "readback_row_found": False,
+                "owner_match": True,
+                "token_identity_match": True,
+                "generation_match": True,
+                "record_unambiguous": True,
                 "failure_reason": "token_record_missing",
             },
         ), mock.patch("live_draft_auth_prestart_stage1_diag.emit_prestart_hydration_checkpoint"):
@@ -57,6 +163,10 @@ class BridgeDurabilityTests(unittest.TestCase):
             return_value={
                 "readback_record_complete": True,
                 "readback_row_found": True,
+                "owner_match": True,
+                "token_identity_match": True,
+                "generation_match": True,
+                "record_unambiguous": True,
                 "failure_reason": "ok",
             },
         ), mock.patch("live_draft_auth_prestart_stage1_diag.emit_prestart_hydration_checkpoint"):

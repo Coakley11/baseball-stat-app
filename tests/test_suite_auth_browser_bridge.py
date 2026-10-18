@@ -63,11 +63,18 @@ class SuiteAuthBrowserBridgeTests(unittest.TestCase):
         st = mock.Mock()
         st.query_params = {"suite_sid": "sid-save"}
         st.session_state = {AUTH_USER_ID_KEY: "uuid-1"}
-        with mock.patch("suite_storage_supabase.save_browser_auth_session", return_value={"write_committed": True}), mock.patch(
+        with mock.patch(
+            "suite_storage_supabase.save_browser_auth_session",
+            return_value={"write_committed": True, "token_generation": 1},
+        ), mock.patch(
             "suite_auth_browser_bridge_diag.readback_after_browser_auth_save",
             return_value={
                 "readback_record_complete": True,
                 "readback_row_found": True,
+                "owner_match": True,
+                "token_identity_match": True,
+                "generation_match": True,
+                "record_unambiguous": True,
                 "failure_reason": "ok",
                 "matching_row_id": "row-1",
             },
@@ -91,9 +98,20 @@ class SuiteAuthBrowserBridgeTests(unittest.TestCase):
         st = mock.Mock()
         st.query_params = {"suite_sid": "sid-save"}
         st.session_state = {SESSION_STATE_SID_KEY: "sid-save", AUTH_USER_ID_KEY: "uuid-1"}
-        with mock.patch("suite_storage_supabase.save_browser_auth_session", return_value={"write_committed": True}) as save, mock.patch(
+        with mock.patch(
+            "suite_storage_supabase.save_browser_auth_session",
+            return_value={"write_committed": True, "token_generation": 1},
+        ) as save, mock.patch(
             "suite_auth_browser_bridge_diag.readback_after_browser_auth_save",
-            return_value={"readback_record_complete": True, "readback_row_found": True, "failure_reason": "ok"},
+            return_value={
+                "readback_record_complete": True,
+                "readback_row_found": True,
+                "owner_match": True,
+                "token_identity_match": True,
+                "generation_match": True,
+                "record_unambiguous": True,
+                "failure_reason": "ok",
+            },
         ), mock.patch("live_draft_auth_prestart_stage1_diag.emit_prestart_hydration_checkpoint"):
             save_browser_auth_tokens(st, _tokens(), auth_user_id="")
             save.assert_called_once()

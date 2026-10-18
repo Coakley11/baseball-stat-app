@@ -13416,7 +13416,7 @@ def render_developer_mode_sidebar_toggle():
             mark_dev_mode_checkbox_materialized,
         )
 
-        if dev_mode_checkbox_materialized():
+        if dev_mode_checkbox_materialized(st.session_state):
             return
         if not claim_sidebar_render(st.session_state, GUARD_DEV_TOGGLE):
             return
@@ -13458,7 +13458,7 @@ def render_developer_mode_sidebar_toggle():
     try:
         from suite_sidebar_run import mark_dev_mode_checkbox_materialized
 
-        mark_dev_mode_checkbox_materialized()
+        mark_dev_mode_checkbox_materialized(st.session_state)
     except ImportError:
         pass
     try:
