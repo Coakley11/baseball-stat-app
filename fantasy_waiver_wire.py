@@ -140,6 +140,11 @@ def _is_player_rostered(context: dict[str, Any], player_name: str) -> bool:
     return target_key in ownership
 
 
+def is_player_rostered(context: dict[str, Any], player_name: str) -> bool:
+    """The check Confirm Waiver Move applies before an add ("X is already rostered")."""
+    return _is_player_rostered(context, player_name)
+
+
 def _find_roster_player_index(players: list[dict[str, Any]], player_name: str) -> int | None:
     """Match roster entry by display name or normalized player key."""
     target = str(player_name or "").strip()
@@ -2590,3 +2595,100 @@ def get_league_activity(context: dict[str, Any] | None) -> list[dict[str, Any]]:
     workflow = context.get("workflow") or {}
     raw = workflow.get(WORKFLOW_KEY_LEAGUE_ACTIVITY) or []
     return [dict(x) for x in raw if isinstance(x, dict)]
+
+
+# --- Waiver Wire page computation (shared with fantasy_read_api) ------------------------------
+
+WAIVER_POSITION_FILTER_OPTIONS: tuple[str, ...] = ("All positions", "C", "1B", "2B", "3B", "SS", "OF", "DH/UTIL")
+
+
+def loaded_waiver_stats_pool(session: Any, context: dict[str, Any] | None = None) -> pd.DataFrame:
+    """The current-season pool the Waiver Wire page reads: the hitter stats already loaded in
+    this session (plus pitchers when the league scores pitching). Never fetches."""
+    hitters = session.get("_fantasy_current_hitter_stats", pd.DataFrame()) if session is not None else None
+    if not isinstance(hitters, pd.DataFrame):
+        hitters = pd.DataFrame()
+    ctx = context if context is not None else get_active_league_context(session)
+    fmt = str((ctx or {}).get("fantasy_format") or "5x5 Roto")
+    if fantasy_format_includes_pitching(fmt, ctx):
+        pitchers = session.get("_fantasy_current_pitcher_stats", pd.DataFrame())
+        if not isinstance(pitchers, pd.DataFrame):
+            pitchers = pd.DataFrame()
+        return merge_current_season_stats(hitters, pitchers)
+    return hitters
+
+
+def apply_waiver_position_filter(pool_df: pd.DataFrame, position_filter: str) -> pd.DataFrame:
+    """The page's position filter (strict fantasy eligibility, the Save Lineup rule)."""
+    choice = str(position_filter or "").strip()
+    if not choice or choice == "All positions":
+        return pool_df
+    from fantasy_slot_eligibility import enrich_lineup_roster_positions, filter_players_by_fantasy_position
+
+    if pool_df is None or pool_df.empty:
+        return pool_df
+    work = enrich_lineup_roster_positions(pool_df.copy())
+    return filter_players_by_fantasy_position(work, choice, strict=True)
+
+
+def waiver_team_frames(context: dict[str, Any], league_df: pd.DataFrame, my_team: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(league roster stats limited to this league's teams, ``my_team``'s rows): the page's rule."""
+    from fantasy_league_context import filter_roster_stats_to_league_teams
+
+    league_df = filter_roster_stats_to_league_teams(league_df, context)
+    if not league_df.empty and my_team and "Team" in league_df.columns:
+        my_roster = league_df[league_df["Team"].astype(str) == my_team].copy()
+    else:
+        my_roster = my_team_roster_dataframe(context)
+        if not my_roster.empty and not league_df.empty:
+            name_col = "Player" if "Player" in league_df.columns else None
+            if name_col:
+                names = set(my_roster.get("Player", my_roster.get("fullName", pd.Series())).astype(str))
+                my_roster = league_df[league_df[name_col].astype(str).isin(names)].copy()
+    return league_df, my_roster
+
+
+def compute_waiver_recommendations(
+    context: dict[str, Any],
+    *,
+    my_roster: pd.DataFrame,
+    league_df: pd.DataFrame,
+    stats_pool: pd.DataFrame,
+    categories: tuple[str, ...] | list[str],
+    limit: int = 15,
+) -> dict[str, Any]:
+    """Team needs, the unrostered pool, ranked adds and drops: what the Waiver Wire page shows.
+    Adds are personalized (needs + open positions), falling back to the current-stats ranking."""
+    needs = analyze_current_team_needs(my_roster, league_df, categories=categories)
+    waiver_pool = build_waiver_pool(stats_pool, context)
+    adds = recommend_adds_personalized(waiver_pool, needs, context=context, my_roster=my_roster, limit=limit)
+    if adds is None or adds.empty:
+        adds = recommend_adds_current(waiver_pool, needs, limit=limit)
+    drops = recommend_drops_current(my_roster, limit=limit, categories=categories)
+    return {"needs": needs, "waiver_pool": waiver_pool, "adds": adds, "drops": drops}
+
+
+def waiver_open_slots(context: dict[str, Any], my_roster: pd.DataFrame) -> list[str]:
+    """Open required roster positions for the team (the page's "Open roster spot" chip)."""
+    from fantasy_league_context import context_has_roster_slots, resolve_context_open_position_needs
+
+    try:
+        return list(resolve_context_open_position_needs(context, my_roster)) if context_has_roster_slots(context) else []
+    except Exception:
+        return []
+
+
+def waiver_card_fields(row: pd.Series, my_roster: pd.DataFrame) -> dict[str, str]:
+    """One recommendation card's text on the Waiver Wire answer: name, positions, MLB team,
+    stat line, why it helps, and the comparison with the weakest rostered player at a shared
+    position."""
+    import u1_answers as u1a
+
+    return {
+        "player": str(row.get("Player") or row.get("fullName") or ""),
+        "positions": str(row.get("Eligible Positions") or row.get("Primary Position") or "").strip(),
+        "mlb_team": str(row.get("MLB Team") or row.get("Team") or "").strip(),
+        "why": str(row.get("Why Add") or "").strip(),
+        "stat_line": format_current_stat_line(row),
+        "comparison": u1a.starter_comparison(row, my_roster),
+    }

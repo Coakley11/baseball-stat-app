@@ -846,3 +846,66 @@ def save_weekly_lineup(
     except Exception:
         pass
     return result
+
+
+def lineup_week_state(
+    context: dict[str, Any] | None,
+    week: int,
+    *,
+    team: str,
+    session: dict[str, Any] | None = None,
+    is_commissioner: bool = False,
+) -> dict[str, Any]:
+    """The Lineup page's record state for one team and week: the saved record (locked, else
+    draft), whether the lineup is locked, and the page's editability line. Read-only.
+
+    Leagues with a season calendar use the ledger's rule (``period_editability``); legacy
+    leagues lock past and future weeks (``week_editability_message``)."""
+    from fantasy_season_ledger_ui import period_editability, period_week_options
+
+    saved = get_saved_weekly_lineup(context, int(week), team=team, session=session)
+    locked = is_lineup_locked(context, int(week), team=team, session=session)
+    ledger_weeks = period_week_options(context)
+    if ledger_weeks:
+        locked, edit_message = period_editability(context, int(week), lineup_locked=locked, is_commissioner=is_commissioner)
+    else:
+        from fantasy_weekly_hitter_scoring import week_editability_message
+
+        edit_state, edit_message = week_editability_message(context, int(week))
+        if edit_state in ("future", "past"):
+            locked = True
+    return {"saved": saved, "locked": bool(locked), "edit_message": str(edit_message or ""),
+            "ledger_weeks": ledger_weeks}
+
+
+def lineup_status_answer(
+    *,
+    team: str,
+    week_text: str,
+    slots: list[str],
+    assignments: dict[str, str],
+    team_roster: pd.DataFrame,
+    locked: bool,
+    record_status: str,
+    edit_message: str,
+    proxy: bool = False,
+) -> dict[str, Any]:
+    """``u3_answers.lineup_answer`` for these assignments, with the validation Save Lineup
+    enforces and the bench count, exactly as the Lineup page builds it."""
+    from fantasy_lineup_ui import build_slot_key_labels, slot_key_labels_as_tuples
+    from u3_answers import lineup_answer
+
+    slot_labels = build_slot_key_labels(list(slots))
+    slot_map_now = {label.key: str(assignments.get(label.key) or "").strip() for label in slot_labels}
+    return lineup_answer(
+        team=team,
+        week_text=week_text,
+        slots=slot_key_labels_as_tuples(slot_labels),
+        assignments=assignments,
+        validation=validate_weekly_lineup(list(slots), assignments, team_roster),
+        bench_count=len(not_starting_players(team_roster, slot_map_now)),
+        locked=bool(locked),
+        record_status=str(record_status or ""),
+        edit_message=str(edit_message or ""),
+        proxy=bool(proxy),
+    )

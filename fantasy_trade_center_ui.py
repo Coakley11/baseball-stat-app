@@ -28,6 +28,8 @@ from fantasy_trade_builder_state import (
     resolve_effective_partner,
     save_logical_state_from_widgets,
     scope_fingerprint_changed,
+    trade_scope_fingerprint,
+    trade_scope_state_key,
 )
 from fantasy_trade_player_index import (
     format_player_option_label,
@@ -62,7 +64,7 @@ def _persist_trade_plan(session: dict[str, Any], st: Any, *, reason: str) -> Non
 
 
 def _trade_scope_state_key(scope_fingerprint: str) -> str:
-    return f"trade_center_state|{scope_fingerprint}"
+    return trade_scope_state_key(scope_fingerprint)
 
 
 def _resolve_trade_scope(session: dict[str, Any], *, page_lineup_team: str) -> dict[str, str]:
@@ -96,7 +98,7 @@ def _resolve_trade_scope(session: dict[str, Any], *, page_lineup_team: str) -> d
                 my_team = str(page_lineup_team or "").strip()
 
         league_context_id = str((context or {}).get("league_context_id") or "").strip()
-        fingerprint = f"trade|{my_team}|{canonical_league_id or league_context_id}"
+        fingerprint = trade_scope_fingerprint(my_team, canonical_league_id or league_context_id)
         return {
             "my_team": my_team,
             "league_context_id": league_context_id,

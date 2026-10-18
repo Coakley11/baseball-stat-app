@@ -43,7 +43,6 @@ from fantasy_weekly_hitter_scoring import (
     maybe_mark_legacy_lineup_scoring,
     resolve_hitter_scoring_profile,
     should_start_week_empty,
-    week_editability_message,
 )
 from fantasy_weekly_hitter_scoring_ui import (
     render_finalize_week_section,
@@ -56,9 +55,9 @@ from fantasy_weekly_lineup import (
     assignments_to_slot_player_map,
     eligible_players_for_slot,
     get_saved_weekly_lineup,
-    is_lineup_locked,
+    lineup_status_answer,
+    lineup_week_state,
     list_week_options,
-    not_starting_players,
     persist_weekly_lineup_draft,
     resolve_weekly_lineup_slots,
     save_weekly_lineup,
@@ -454,7 +453,6 @@ def render_weekly_lineup_section(
     slot_keys = slot_key_labels_as_tuples(slot_labels)
     from fantasy_season_ledger import current_period_number
     from fantasy_season_ledger_ui import (
-        period_editability,
         period_option_label,
         period_week_options,
         render_season_calendar_setup,
@@ -499,18 +497,12 @@ def render_weekly_lineup_section(
     )
     scope_changed = bool(scope and apply_lineup_scope_change(session, scope))
 
-    saved = get_saved_weekly_lineup(context, int(selected_week), team=active_team, session=session)
+    # Saved record, lock and editability line: the same reader AMI uses (fantasy_read_api).
+    week_state = lineup_week_state(context, int(selected_week), team=active_team, session=session,
+                                   is_commissioner=is_commissioner)
+    saved = week_state["saved"]
     saved_assignments = dict((saved or {}).get("assignments") or {})
-
-    lineup_locked = is_lineup_locked(context, int(selected_week), team=active_team, session=session)
-    if ledger_weeks:
-        lineup_locked, edit_message = period_editability(
-            context, int(selected_week), lineup_locked=lineup_locked, is_commissioner=is_commissioner
-        )
-    else:
-        edit_state, edit_message = week_editability_message(context, int(selected_week))
-        if edit_state in ("future", "past"):
-            lineup_locked = True
+    lineup_locked, edit_message = week_state["locked"], week_state["edit_message"]
     # edit_message is stated in the answer below.
 
     scoring_profile = resolve_hitter_scoring_profile(context, session=session)
@@ -576,17 +568,13 @@ def render_weekly_lineup_section(
 
     # U3 answer: is this week's lineup complete, what is missing, is it saved. Built from the
     # same validation Save Lineup enforces and the saved record's own status.
-    from u3_answers import lineup_answer
-
     week_text = period_option_label(context, int(selected_week)) if ledger_weeks else week_label(int(selected_week))
-    slot_map_now = {label.key: str(assignments.get(label.key) or "").strip() for label in slot_labels}
-    answer = lineup_answer(
+    answer = lineup_status_answer(
         team=active_team,
         week_text=week_text,
-        slots=slot_keys,
+        slots=list(slots),
         assignments=assignments,
-        validation=validate_weekly_lineup(slots, assignments, team_roster),
-        bench_count=len(not_starting_players(team_roster, slot_map_now)),
+        team_roster=team_roster,
         locked=bool(lineup_locked),
         record_status=str((saved or {}).get("status") or ""),
         edit_message=str(edit_message or ""),

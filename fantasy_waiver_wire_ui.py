@@ -10,22 +10,25 @@ import pandas as pd
 from fantasy_league_context import (
     build_roster_stats_from_league_context,
     context_has_roster_slots,
-    filter_roster_stats_to_league_teams,
     get_active_league_context,
     has_full_league_rosters,
     league_context_coverage_badge,
     league_context_type_badge,
-    resolve_context_open_position_needs,
 )
 from fantasy_waiver_wire import (
     WAIVER_PLANNER_ADD_KEY,
     WAIVER_PLANNER_DROP_KEY,
+    WAIVER_POSITION_FILTER_OPTIONS,
     MAX_WAIVER_MOVE_PAIRS,
     add_pending_move_pair,
-    analyze_current_team_needs,
     apply_waiver_move_pairs,
+    apply_waiver_position_filter,
+    compute_waiver_recommendations,
+    loaded_waiver_stats_pool,
+    waiver_card_fields,
+    waiver_open_slots,
+    waiver_team_frames,
     build_category_standings_table,
-    build_waiver_pool,
     build_weakness_narrative,
     compute_add_drop_category_impact,
     compute_waiver_transaction_impact,
@@ -36,9 +39,6 @@ from fantasy_waiver_wire import (
     get_pending_move_pairs,
     my_team_roster_dataframe,
     pop_waiver_tx_flash,
-    recommend_adds_current,
-    recommend_adds_personalized,
-    recommend_drops_current,
     remove_pending_move_pair,
     set_waiver_tx_flash,
     sync_waiver_roster_views,
@@ -47,16 +47,6 @@ from fantasy_waiver_wire import (
 )
 
 WAIVER_POSITION_FILTER_KEY = "waiver_position_filter"
-WAIVER_POSITION_FILTER_OPTIONS: tuple[str, ...] = (
-    "All positions",
-    "C",
-    "1B",
-    "2B",
-    "3B",
-    "SS",
-    "OF",
-    "DH/UTIL",
-)
 
 
 def _import_streamlit_main_attr(attr_name: str):
@@ -71,16 +61,7 @@ def _import_streamlit_main_attr(attr_name: str):
     return _app_exports[attr_name]
 
 
-def _apply_waiver_position_filter(pool_df: pd.DataFrame, position_filter: str) -> pd.DataFrame:
-    choice = str(position_filter or "").strip()
-    if not choice or choice == "All positions":
-        return pool_df
-    from fantasy_slot_eligibility import enrich_lineup_roster_positions, filter_players_by_fantasy_position
-
-    if pool_df is None or pool_df.empty:
-        return pool_df
-    work = enrich_lineup_roster_positions(pool_df.copy())
-    return filter_players_by_fantasy_position(work, choice, strict=True)
+_apply_waiver_position_filter = apply_waiver_position_filter  # shared with fantasy_read_api
 
 
 def _player_names(df: pd.DataFrame) -> list[str]:
@@ -232,12 +213,9 @@ def _render_u1_waiver_answer(
         st.info("No recommended adds for this filter. Try All positions under Explore more.")
         return
     for i, (_, row) in enumerate(adds.head(3).iterrows()):
-        name = str(row.get("Player") or row.get("fullName") or "")
-        positions = str(row.get("Eligible Positions") or row.get("Primary Position") or "").strip()
-        team = str(row.get("MLB Team") or row.get("Team") or "").strip()
-        why = str(row.get("Why Add") or "").strip()
-        line = format_current_stat_line(row)
-        comparison = u1a.starter_comparison(row, my_roster)
+        card = waiver_card_fields(row, my_roster)  # the same fields fantasy_read_api returns
+        name, positions, team, why = card["player"], card["positions"], card["mlb_team"], card["why"]
+        line, comparison = card["stat_line"], card["comparison"]
         # Not _card_key(): that prefix opts into the phone photo-card grid (48 px first column).
         card_key = "u1-waiver-top-" + str(i) + "-" + "".join(ch if ch.isalnum() else "-" for ch in name)[:40]
         with st.container(border=True, key=card_key):
@@ -340,23 +318,7 @@ def _resolve_normalize_name_fn():
 
 
 def _resolve_waiver_stats_pool(session: dict[str, Any]) -> pd.DataFrame:
-    hitters = session.get("_fantasy_current_hitter_stats", pd.DataFrame())
-    if not isinstance(hitters, pd.DataFrame):
-        hitters = pd.DataFrame()
-    try:
-        from fantasy_league_context import get_active_league_context
-        from fantasy_waiver_wire import fantasy_format_includes_pitching, merge_current_season_stats
-
-        ctx = get_active_league_context(session)
-        fmt = str((ctx or {}).get("fantasy_format") or "5x5 Roto")
-        if fantasy_format_includes_pitching(fmt, ctx):
-            pitchers = session.get("_fantasy_current_pitcher_stats", pd.DataFrame())
-            if not isinstance(pitchers, pd.DataFrame):
-                pitchers = pd.DataFrame()
-            return merge_current_season_stats(hitters, pitchers)
-    except ImportError:
-        pass
-    return hitters
+    return loaded_waiver_stats_pool(session)
 
 
 def _planner_add_pick(session: dict[str, Any]) -> str:
@@ -827,16 +789,7 @@ def render_waiver_wire_page(
     proxy_team = _render_waiver_manage_team(st, session, context, own_team=my_team)
     if proxy_team:
         my_team = proxy_team
-    league_df = filter_roster_stats_to_league_teams(league_df, context)
-    if not league_df.empty and my_team and "Team" in league_df.columns:
-        my_roster = league_df[league_df["Team"].astype(str) == my_team].copy()
-    else:
-        my_roster = my_team_roster_dataframe(context)
-        if not my_roster.empty and not league_df.empty:
-            name_col = "Player" if "Player" in league_df.columns else None
-            if name_col:
-                names = set(my_roster.get("Player", my_roster.get("fullName", pd.Series())).astype(str))
-                my_roster = league_df[league_df[name_col].astype(str).isin(names)].copy()
+    league_df, my_roster = waiver_team_frames(context, league_df, my_team)
 
     waiver_cats = waiver_categories_for_context(context)
     ctx_id = str(context.get("context_id") or context.get("draft_id") or context.get("display_name") or "")
@@ -877,18 +830,10 @@ def render_waiver_wire_page(
         drops_cached = cached_payload.get("drops")
         drops = drops_cached.copy() if isinstance(drops_cached, pd.DataFrame) else pd.DataFrame()
     else:
-        needs = analyze_current_team_needs(my_roster, league_df, categories=waiver_cats)
-        waiver_pool = build_waiver_pool(stats_pool, context)
-        adds = recommend_adds_personalized(
-            waiver_pool,
-            needs,
-            context=context,
-            my_roster=my_roster,
-            limit=15,
-        )
-        if adds is None or adds.empty:
-            adds = recommend_adds_current(waiver_pool, needs, limit=15)
-        drops = recommend_drops_current(my_roster, limit=15, categories=waiver_cats)
+        computed = compute_waiver_recommendations(context, my_roster=my_roster, league_df=league_df,
+                                                  stats_pool=stats_pool, categories=waiver_cats)
+        needs, waiver_pool, adds, drops = (computed["needs"], computed["waiver_pool"], computed["adds"],
+                                           computed["drops"])
         if cache_key is not None:
             try:
                 from fantasy_perf_cache import store_waiver_analysis
@@ -907,10 +852,9 @@ def render_waiver_wire_page(
                 pass
     try:
         _has_slots = context_has_roster_slots(context)
-        open_slots = resolve_context_open_position_needs(context, my_roster) if _has_slots else []
     except Exception:
         _has_slots = False
-        open_slots = []
+    open_slots = waiver_open_slots(context, my_roster)
 
     import ui_hierarchy as u1
 
