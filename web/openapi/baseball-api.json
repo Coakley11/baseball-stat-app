@@ -34,6 +34,118 @@
         }
       }
     },
+    "/api/v1/catalog": {
+      "get": {
+        "summary": "Control options, labels and defaults for the Historical Explorer and Leaderboards",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Catalog"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait. Sent while the data is still loading (error.details.retry_after); absent when the data is missing.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/players/{player_id}": {
+      "get": {
+        "summary": "One player's summary",
+        "parameters": [
+          {
+            "name": "player_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Lahman playerID."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlayerSummary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait. Sent while the data is still loading (error.details.retry_after); absent when the data is missing.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/players/search": {
       "get": {
         "summary": "Find players by name (the app's player-picker matching)",
@@ -94,6 +206,14 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait. Sent while the data is still loading (error.details.retry_after); absent when the data is missing.",
+                "schema": {
+                  "type": "integer"
                 }
               }
             }
@@ -162,6 +282,14 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait. Sent while the data is still loading (error.details.retry_after); absent when the data is missing.",
+                "schema": {
+                  "type": "integer"
                 }
               }
             }
@@ -264,6 +392,14 @@
                   "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait. Sent while the data is still loading (error.details.retry_after); absent when the data is missing.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
             }
           }
         }
@@ -271,7 +407,7 @@
     },
     "/api/v1/seasons": {
       "get": {
-        "summary": "Historical Explorer: best single seasons",
+        "summary": "Historical Explorer: best single seasons (or one player's, ranked)",
         "parameters": [
           {
             "name": "start",
@@ -295,7 +431,7 @@
             "name": "metric",
             "in": "query",
             "required": false,
-            "description": "Sort stat.",
+            "description": "Sort stat (catalog historical.metrics, or yearID).",
             "schema": {
               "type": "string",
               "default": "HR"
@@ -319,9 +455,33 @@
             "name": "limit",
             "in": "query",
             "required": false,
-            "description": "1–200, default 25.",
+            "description": "JSON: 1-200, default 25. CSV: optional, every row when omitted.",
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "0-based position of the first row (paging). Ranks stay absolute.",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "description": "csv: the page's CSV export (same columns and rounding) for the same query.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "json",
+                "csv"
+              ],
+              "default": "json"
             }
           },
           {
@@ -360,7 +520,7 @@
             "name": "teams",
             "in": "query",
             "required": false,
-            "description": "Comma list of franchise names, 'American League', 'National League'.",
+            "description": "Comma list of catalog historical.filters.teams values.",
             "schema": {
               "type": "string"
             }
@@ -398,9 +558,28 @@
             "name": "min_{STAT}",
             "in": "query",
             "required": false,
-            "description": "Stat minimums, e.g. min_HR=20, min_OPS=0.8 (R AB H 2B 3B HR RBI SB BB BA OBP SLG OPS).",
+            "description": "Stat minimums, e.g. min_HR=20, min_OPS=0.8 (R H 2B 3B HR RBI SB BB BA OBP SLG OPS; catalog minimum_columns). The AB minimum is min_ab.",
             "schema": {
               "type": "number"
+            }
+          },
+          {
+            "name": "player_id",
+            "in": "query",
+            "required": false,
+            "description": "Only this player's seasons: the same query, rows limited to the player. Without start/end the range is the player's career.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_below_minimum",
+            "in": "query",
+            "required": false,
+            "description": "With player_id: also return the player's seasons below the minimums (meets_minimum false, rank null), after the ranked ones. Never in CSV.",
+            "schema": {
+              "type": "boolean",
+              "default": false
             }
           }
         ],
@@ -411,6 +590,12 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SeasonLeadersResult"
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "description": "historical_explorer.csv: Year, Player, Bats, Primary Position, Team, R ... OPS"
                 }
               }
             }
@@ -441,6 +626,14 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait. Sent while the data is still loading (error.details.retry_after); absent when the data is missing.",
+                "schema": {
+                  "type": "integer"
                 }
               }
             }
@@ -484,9 +677,33 @@
             "name": "limit",
             "in": "query",
             "required": false,
-            "description": "1–200, default 25.",
+            "description": "JSON: 1-200, default 25. CSV: optional, every row when omitted.",
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "0-based position of the first row (paging). Ranks stay absolute.",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "description": "csv: the page's CSV export (same columns and rounding) for the same query.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "json",
+                "csv"
+              ],
+              "default": "json"
             }
           },
           {
@@ -521,7 +738,7 @@
             "name": "min_{STAT}",
             "in": "query",
             "required": false,
-            "description": "Stat minimums, e.g. min_HR=20, min_OPS=0.8 (R AB H 2B 3B HR RBI SB BB BA OBP SLG OPS).",
+            "description": "Stat minimums, e.g. min_HR=20, min_OPS=0.8 (R H 2B 3B HR RBI SB BB BA OBP SLG OPS; catalog minimum_columns). The AB minimum is min_ab.",
             "schema": {
               "type": "number"
             }
@@ -534,6 +751,12 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LeaderboardResult"
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "description": "leaderboards.csv: Player, Bats, R ... OPS, Score (the page exports its Top N: pass limit)"
                 }
               }
             }
@@ -564,6 +787,14 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait. Sent while the data is still loading (error.details.retry_after); absent when the data is missing.",
+                "schema": {
+                  "type": "integer"
                 }
               }
             }
@@ -610,9 +841,81 @@
           "player",
           "seasons",
           "games",
-          "stats"
+          "stats",
+          "best_season"
         ],
         "title": "CareerSummary",
+        "type": "object"
+      },
+      "Catalog": {
+        "additionalProperties": false,
+        "description": "Product configuration for the controls, so a client never hard-codes it.",
+        "properties": {
+          "api_version": {
+            "default": "v1",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "seasons": {
+            "$ref": "#/components/schemas/SeasonSpan"
+          },
+          "metrics": {
+            "description": "Every metric key used anywhere in the API.",
+            "items": {
+              "$ref": "#/components/schemas/MetricInfo"
+            },
+            "title": "Metrics",
+            "type": "array"
+          },
+          "historical": {
+            "$ref": "#/components/schemas/HistoricalCatalog"
+          },
+          "leaderboards": {
+            "$ref": "#/components/schemas/LeaderboardCatalog"
+          }
+        },
+        "required": [
+          "api_version",
+          "seasons",
+          "metrics",
+          "historical",
+          "leaderboards"
+        ],
+        "title": "Catalog",
+        "type": "object"
+      },
+      "Column": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "description": "The page's column header (also the CSV header).",
+            "title": "Label",
+            "type": "string"
+          },
+          "field": {
+            "description": "Dotted path into a result row, e.g. 'stats.HR', 'player.name', 'team.season_name'.",
+            "title": "Field",
+            "type": "string"
+          },
+          "metric": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Metric key when the column is a stat (see catalog metrics), else null.",
+            "title": "Metric"
+          }
+        },
+        "required": [
+          "label",
+          "field",
+          "metric"
+        ],
+        "title": "Column",
         "type": "object"
       },
       "ComparisonMetric": {
@@ -730,7 +1033,7 @@
               }
             ],
             "default": null,
-            "description": "Structured extras, e.g. candidates.",
+            "description": "Structured extras, e.g. candidates. Left out when there are none.",
             "title": "Details"
           }
         },
@@ -798,10 +1101,323 @@
         },
         "required": [
           "status",
+          "api_version",
           "build",
-          "data_loaded"
+          "data_loaded",
+          "seasons"
         ],
         "title": "HealthInfo",
+        "type": "object"
+      },
+      "HistoricalCatalog": {
+        "additionalProperties": false,
+        "properties": {
+          "metrics": {
+            "description": "The page's Sort by options.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Metrics",
+            "type": "array"
+          },
+          "defaults": {
+            "$ref": "#/components/schemas/HistoricalDefaults"
+          },
+          "filters": {
+            "$ref": "#/components/schemas/HistoricalFilters"
+          },
+          "columns": {
+            "description": "The page's table columns, in order (SeasonRow fields).",
+            "items": {
+              "$ref": "#/components/schemas/Column"
+            },
+            "title": "Columns",
+            "type": "array"
+          }
+        },
+        "required": [
+          "metrics",
+          "defaults",
+          "filters",
+          "columns"
+        ],
+        "title": "HistoricalCatalog",
+        "type": "object"
+      },
+      "HistoricalDefaults": {
+        "additionalProperties": false,
+        "properties": {
+          "start": {
+            "title": "Start",
+            "type": "integer"
+          },
+          "end": {
+            "title": "End",
+            "type": "integer"
+          },
+          "metric": {
+            "title": "Metric",
+            "type": "string"
+          },
+          "order": {
+            "enum": [
+              "desc",
+              "asc"
+            ],
+            "title": "Order",
+            "type": "string"
+          },
+          "split": {
+            "description": "combined is combine=true on /seasons.",
+            "enum": [
+              "team",
+              "combined"
+            ],
+            "title": "Split",
+            "type": "string"
+          },
+          "bats": {
+            "description": "Every batting hand (the page starts with all selected).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Bats",
+            "type": "array"
+          },
+          "positions": {
+            "description": "Every season primary position (the page starts with all selected).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Positions",
+            "type": "array"
+          },
+          "position_source": {
+            "enum": [
+              "season",
+              "career"
+            ],
+            "title": "Position Source",
+            "type": "string"
+          },
+          "teams": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Teams",
+            "type": "array"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "metric",
+          "order",
+          "split",
+          "bats",
+          "positions",
+          "position_source",
+          "teams"
+        ],
+        "title": "HistoricalDefaults",
+        "type": "object"
+      },
+      "HistoricalFilters": {
+        "additionalProperties": false,
+        "properties": {
+          "bats": {
+            "items": {
+              "$ref": "#/components/schemas/Option"
+            },
+            "title": "Bats",
+            "type": "array"
+          },
+          "positions": {
+            "description": "Position options for position_source=season.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Positions",
+            "type": "array"
+          },
+          "positions_by_source": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "season / career → position options.",
+            "title": "Positions By Source",
+            "type": "object"
+          },
+          "position_sources": {
+            "items": {
+              "$ref": "#/components/schemas/Option"
+            },
+            "title": "Position Sources",
+            "type": "array"
+          },
+          "teams": {
+            "description": "Exactly the values teams= accepts.",
+            "items": {
+              "$ref": "#/components/schemas/Option"
+            },
+            "title": "Teams",
+            "type": "array"
+          },
+          "minimum_columns": {
+            "description": "Stats accepted as min_{STAT}. The AB minimum is min_ab.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Minimum Columns",
+            "type": "array"
+          }
+        },
+        "required": [
+          "bats",
+          "positions",
+          "positions_by_source",
+          "position_sources",
+          "teams",
+          "minimum_columns"
+        ],
+        "title": "HistoricalFilters",
+        "type": "object"
+      },
+      "LeaderboardAnswer": {
+        "additionalProperties": false,
+        "description": "The Leaderboards answer card (u1_answers.leaderboard_answer), without page-control wording.",
+        "properties": {
+          "headline": {
+            "title": "Headline",
+            "type": "string"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "context": {
+            "description": "What is ranked, e.g. 'Ranked by home runs'.",
+            "title": "Context",
+            "type": "string"
+          }
+        },
+        "required": [
+          "headline",
+          "body",
+          "context"
+        ],
+        "title": "LeaderboardAnswer",
+        "type": "object"
+      },
+      "LeaderboardCatalog": {
+        "additionalProperties": false,
+        "properties": {
+          "metrics": {
+            "description": "The page's Sort by options.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Metrics",
+            "type": "array"
+          },
+          "defaults": {
+            "$ref": "#/components/schemas/LeaderboardDefaults"
+          },
+          "columns": {
+            "description": "The page's table columns, in order (LeaderboardRow fields).",
+            "items": {
+              "$ref": "#/components/schemas/Column"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "weight_stats": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Weight Stats",
+            "type": "array"
+          },
+          "weight_bounds": {
+            "description": "[min, max] per weight.",
+            "items": {
+              "type": "number"
+            },
+            "title": "Weight Bounds",
+            "type": "array"
+          },
+          "weight_step": {
+            "title": "Weight Step",
+            "type": "number"
+          },
+          "limit_bounds": {
+            "description": "[min, max] of the page's Top N control (the API accepts 1–200).",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Limit Bounds",
+            "type": "array"
+          },
+          "minimum_columns": {
+            "description": "Stats accepted as min_{STAT}. The AB minimum is min_ab.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Minimum Columns",
+            "type": "array"
+          }
+        },
+        "required": [
+          "metrics",
+          "defaults",
+          "columns",
+          "weight_stats",
+          "weight_bounds",
+          "weight_step",
+          "limit_bounds",
+          "minimum_columns"
+        ],
+        "title": "LeaderboardCatalog",
+        "type": "object"
+      },
+      "LeaderboardDefaults": {
+        "additionalProperties": false,
+        "properties": {
+          "start": {
+            "title": "Start",
+            "type": "integer"
+          },
+          "end": {
+            "title": "End",
+            "type": "integer"
+          },
+          "metric": {
+            "title": "Metric",
+            "type": "string"
+          },
+          "weights": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Weights",
+            "type": "object"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "metric",
+          "weights",
+          "limit"
+        ],
+        "title": "LeaderboardDefaults",
         "type": "object"
       },
       "LeaderboardResult": {
@@ -831,7 +1447,14 @@
             "$ref": "#/components/schemas/Qualification"
           },
           "total_rows": {
+            "description": "Players that pass the minimums (before paging).",
             "title": "Total Rows",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "description": "0-based position of rows[0] in the full result.",
+            "title": "Offset",
             "type": "integer"
           },
           "rows": {
@@ -840,6 +1463,18 @@
             },
             "title": "Rows",
             "type": "array"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LeaderboardAnswer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Null when no player matches."
           }
         },
         "required": [
@@ -849,7 +1484,9 @@
           "weights",
           "qualification",
           "total_rows",
-          "rows"
+          "offset",
+          "rows",
+          "answer"
         ],
         "title": "LeaderboardResult",
         "type": "object"
@@ -887,6 +1524,7 @@
         "required": [
           "rank",
           "player",
+          "bats",
           "stats",
           "score"
         ],
@@ -1076,7 +1714,13 @@
             "type": "string"
           },
           "label": {
+            "description": "Short column label the app shows (AVG for BA).",
             "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "description": "Plain-language name for sentences and titles, e.g. 'home runs', 'batting average'.",
+            "title": "Name",
             "type": "string"
           },
           "kind": {
@@ -1103,10 +1747,32 @@
         "required": [
           "key",
           "label",
+          "name",
           "kind",
+          "higher_is_better",
           "decimals"
         ],
         "title": "MetricInfo",
+        "type": "object"
+      },
+      "Option": {
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "description": "What the query parameter accepts.",
+            "title": "Value",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "label"
+        ],
+        "title": "Option",
         "type": "object"
       },
       "PlayerRef": {
@@ -1321,7 +1987,12 @@
         "required": [
           "player",
           "first_season",
-          "last_season"
+          "last_season",
+          "career_primary_position",
+          "bats",
+          "throws",
+          "last_team",
+          "hall_of_fame"
         ],
         "title": "PlayerSummary",
         "type": "object"
@@ -1352,9 +2023,28 @@
             "type": "string"
           },
           "text": {
-            "description": "The same caption the app shows next to the ranking.",
+            "description": "The Streamlit page's caption (Markdown, names its controls). Kept for parity; other surfaces use summary / explanation.",
             "title": "Text",
             "type": "string"
+          },
+          "summary": {
+            "default": "",
+            "description": "Short plain-text line the page shows as a chip, e.g. 'Qualified hitters · at least 2,349 AB over 2020–2025'. Empty for counting stats.",
+            "title": "Summary",
+            "type": "string"
+          },
+          "explanation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "One or two plain-text sentences on the rule in force (no Markdown, no control names). Null for counting stats.",
+            "title": "Explanation"
           }
         },
         "required": [
@@ -1362,9 +2052,46 @@
           "min_ab",
           "qualified_ab",
           "mode",
-          "text"
+          "text",
+          "summary",
+          "explanation"
         ],
         "title": "Qualification",
+        "type": "object"
+      },
+      "SeasonAnswer": {
+        "additionalProperties": false,
+        "description": "The Historical Explorer answer card for these rows (u1_answers.season_answer).",
+        "properties": {
+          "headline": {
+            "title": "Headline",
+            "type": "string"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "context": {
+            "description": "Year · team · position of the top season.",
+            "title": "Context",
+            "type": "string"
+          },
+          "tile_metrics": {
+            "description": "Metric keys of the stat tiles, in order. Values are in rows[0].stats.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Tile Metrics",
+            "type": "array"
+          }
+        },
+        "required": [
+          "headline",
+          "body",
+          "context",
+          "tile_metrics"
+        ],
+        "title": "SeasonAnswer",
         "type": "object"
       },
       "SeasonLeadersResult": {
@@ -1402,9 +2129,33 @@
             "$ref": "#/components/schemas/Qualification"
           },
           "total_rows": {
-            "description": "Seasons that pass the filters (before the limit).",
+            "description": "Rows in the full result before paging (with include_below_minimum, below-minimum seasons are counted too).",
             "title": "Total Rows",
             "type": "integer"
+          },
+          "ranked_rows": {
+            "description": "Seasons that pass the filters and minimums (the ranked part of the result).",
+            "title": "Ranked Rows",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "description": "0-based position of rows[0] in the full result.",
+            "title": "Offset",
+            "type": "integer"
+          },
+          "player_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Set when the result is one player's seasons.",
+            "title": "Player Id"
           },
           "rows": {
             "items": {
@@ -1423,8 +2174,20 @@
               }
             ],
             "default": null,
-            "description": "The page's own answer headline for these rows.",
+            "description": "Same as answer.headline (kept for v1 compatibility).",
             "title": "Headline"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SeasonAnswer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Null when no season matches."
           }
         },
         "required": [
@@ -1435,7 +2198,12 @@
           "split_mode",
           "qualification",
           "total_rows",
-          "rows"
+          "ranked_rows",
+          "offset",
+          "player_id",
+          "rows",
+          "headline",
+          "answer"
         ],
         "title": "SeasonLeadersResult",
         "type": "object"
@@ -1444,8 +2212,16 @@
         "additionalProperties": false,
         "properties": {
           "rank": {
-            "title": "Rank",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "1-based rank in the full result. Null only for a season below the active minimum (include_below_minimum=true).",
+            "title": "Rank"
           },
           "player": {
             "$ref": "#/components/schemas/PlayerRef"
@@ -1489,6 +2265,12 @@
           },
           "stats": {
             "$ref": "#/components/schemas/StatLine"
+          },
+          "meets_minimum": {
+            "default": true,
+            "description": "False: below the active AB / stat minimums, shown only with include_below_minimum=true, never ranked.",
+            "title": "Meets Minimum",
+            "type": "boolean"
           }
         },
         "required": [
@@ -1497,9 +2279,30 @@
           "year",
           "team",
           "position",
-          "stats"
+          "bats",
+          "stats",
+          "meets_minimum"
         ],
         "title": "SeasonRow",
+        "type": "object"
+      },
+      "SeasonSpan": {
+        "additionalProperties": false,
+        "properties": {
+          "first": {
+            "title": "First",
+            "type": "integer"
+          },
+          "last": {
+            "title": "Last",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "first",
+          "last"
+        ],
+        "title": "SeasonSpan",
         "type": "object"
       },
       "StandingsResult": {
@@ -1762,6 +2565,22 @@
             "title": "Ops"
           }
         },
+        "required": [
+          "G",
+          "AB",
+          "R",
+          "H",
+          "2B",
+          "3B",
+          "HR",
+          "RBI",
+          "SB",
+          "BB",
+          "BA",
+          "OBP",
+          "SLG",
+          "OPS"
+        ],
         "title": "StatLine",
         "type": "object"
       },
@@ -1807,7 +2626,9 @@
         },
         "required": [
           "team_id",
-          "name"
+          "name",
+          "season_name",
+          "league"
         ],
         "title": "TeamRef",
         "type": "object"
@@ -1918,7 +2739,8 @@
         },
         "required": [
           "year",
-          "value"
+          "value",
+          "at_bats"
         ],
         "title": "TrendPoint",
         "type": "object"

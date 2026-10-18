@@ -49,6 +49,130 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/v1/catalog": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Control options, labels and defaults for the Historical Explorer and Leaderboards */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path?: never;
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description OK */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["Catalog"];
+                    };
+                };
+                /** @description Error */
+                readonly 500: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["ErrorResponse"];
+                    };
+                };
+                /** @description Error */
+                readonly 503: {
+                    headers: {
+                        /** @description Seconds to wait. Sent while the data is still loading (error.details.retry_after); absent when the data is missing. */
+                        readonly "Retry-After"?: number;
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["ErrorResponse"];
+                    };
+                };
+            };
+        };
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/v1/players/{player_id}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** One player's summary */
+        readonly get: {
+            readonly parameters: {
+                readonly query?: never;
+                readonly header?: never;
+                readonly path: {
+                    /** @description Lahman playerID. */
+                    readonly player_id: string;
+                };
+                readonly cookie?: never;
+            };
+            readonly requestBody?: never;
+            readonly responses: {
+                /** @description OK */
+                readonly 200: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["PlayerSummary"];
+                    };
+                };
+                /** @description Error */
+                readonly 404: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["ErrorResponse"];
+                    };
+                };
+                /** @description Error */
+                readonly 500: {
+                    headers: {
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["ErrorResponse"];
+                    };
+                };
+                /** @description Error */
+                readonly 503: {
+                    headers: {
+                        /** @description Seconds to wait. Sent while the data is still loading (error.details.retry_after); absent when the data is missing. */
+                        readonly "Retry-After"?: number;
+                        readonly [name: string]: unknown;
+                    };
+                    content: {
+                        readonly "application/json": components["schemas"]["ErrorResponse"];
+                    };
+                };
+            };
+        };
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/v1/players/search": {
         readonly parameters: {
             readonly query?: never;
@@ -101,6 +225,8 @@ export interface paths {
                 /** @description Error */
                 readonly 503: {
                     headers: {
+                        /** @description Seconds to wait. Sent while the data is still loading (error.details.retry_after); absent when the data is missing. */
+                        readonly "Retry-After"?: number;
                         readonly [name: string]: unknown;
                     };
                     content: {
@@ -176,6 +302,8 @@ export interface paths {
                 /** @description Error */
                 readonly 503: {
                     headers: {
+                        /** @description Seconds to wait. Sent while the data is still loading (error.details.retry_after); absent when the data is missing. */
+                        readonly "Retry-After"?: number;
                         readonly [name: string]: unknown;
                     };
                     content: {
@@ -258,6 +386,8 @@ export interface paths {
                 /** @description Error */
                 readonly 503: {
                     headers: {
+                        /** @description Seconds to wait. Sent while the data is still loading (error.details.retry_after); absent when the data is missing. */
+                        readonly "Retry-After"?: number;
                         readonly [name: string]: unknown;
                     };
                     content: {
@@ -281,7 +411,7 @@ export interface paths {
             readonly path?: never;
             readonly cookie?: never;
         };
-        /** Historical Explorer: best single seasons */
+        /** Historical Explorer: best single seasons (or one player's, ranked) */
         readonly get: {
             readonly parameters: {
                 readonly query?: {
@@ -289,17 +419,21 @@ export interface paths {
                     readonly start?: number;
                     /** @description Last season (inclusive). */
                     readonly end?: number;
-                    /** @description Sort stat. */
+                    /** @description Sort stat (catalog historical.metrics, or yearID). */
                     readonly metric?: string;
                     readonly order?: "desc" | "asc";
-                    /** @description 1–200, default 25. */
+                    /** @description JSON: 1-200, default 25. CSV: optional, every row when omitted. */
                     readonly limit?: number;
+                    /** @description 0-based position of the first row (paging). Ranks stay absolute. */
+                    readonly offset?: number;
+                    /** @description csv: the page's CSV export (same columns and rounding) for the same query. */
+                    readonly format?: "json" | "csv";
                     /** @description Comma list: L,R,B. */
                     readonly bats?: string;
                     /** @description Comma list, e.g. SS,2B. */
                     readonly positions?: string;
                     readonly position_source?: "season" | "career";
-                    /** @description Comma list of franchise names, 'American League', 'National League'. */
+                    /** @description Comma list of catalog historical.filters.teams values. */
                     readonly teams?: string;
                     /** @description Combine split-team seasons into one row. */
                     readonly combine?: boolean;
@@ -307,8 +441,12 @@ export interface paths {
                     readonly min_ab?: number;
                     /** @description Apply the qualified AB to rate-stat rankings (the app's default). */
                     readonly qualified?: boolean;
-                    /** @description Stat minimums, e.g. min_HR=20, min_OPS=0.8 (R AB H 2B 3B HR RBI SB BB BA OBP SLG OPS). */
+                    /** @description Stat minimums, e.g. min_HR=20, min_OPS=0.8 (R H 2B 3B HR RBI SB BB BA OBP SLG OPS; catalog minimum_columns). The AB minimum is min_ab. */
                     readonly "min_{STAT}"?: number;
+                    /** @description Only this player's seasons: the same query, rows limited to the player. Without start/end the range is the player's career. */
+                    readonly player_id?: string;
+                    /** @description With player_id: also return the player's seasons below the minimums (meets_minimum false, rank null), after the ranked ones. Never in CSV. */
+                    readonly include_below_minimum?: boolean;
                 };
                 readonly header?: never;
                 readonly path?: never;
@@ -323,6 +461,7 @@ export interface paths {
                     };
                     content: {
                         readonly "application/json": components["schemas"]["SeasonLeadersResult"];
+                        readonly "text/csv": string;
                     };
                 };
                 /** @description Error */
@@ -346,6 +485,8 @@ export interface paths {
                 /** @description Error */
                 readonly 503: {
                     headers: {
+                        /** @description Seconds to wait. Sent while the data is still loading (error.details.retry_after); absent when the data is missing. */
+                        readonly "Retry-After"?: number;
                         readonly [name: string]: unknown;
                     };
                     content: {
@@ -379,15 +520,19 @@ export interface paths {
                     readonly end?: number;
                     /** @description Sort stat or 'score'. */
                     readonly metric?: string;
-                    /** @description 1–200, default 25. */
+                    /** @description JSON: 1-200, default 25. CSV: optional, every row when omitted. */
                     readonly limit?: number;
+                    /** @description 0-based position of the first row (paging). Ranks stay absolute. */
+                    readonly offset?: number;
+                    /** @description csv: the page's CSV export (same columns and rounding) for the same query. */
+                    readonly format?: "json" | "csv";
                     /** @description Score weights, e.g. HR:1,RBI:1,SB:1 (the default). */
                     readonly weights?: string;
                     /** @description Minimum AB. Setting it switches qualification to manual. */
                     readonly min_ab?: number;
                     /** @description Apply the qualified AB to rate-stat rankings (the app's default). */
                     readonly qualified?: boolean;
-                    /** @description Stat minimums, e.g. min_HR=20, min_OPS=0.8 (R AB H 2B 3B HR RBI SB BB BA OBP SLG OPS). */
+                    /** @description Stat minimums, e.g. min_HR=20, min_OPS=0.8 (R H 2B 3B HR RBI SB BB BA OBP SLG OPS; catalog minimum_columns). The AB minimum is min_ab. */
                     readonly "min_{STAT}"?: number;
                 };
                 readonly header?: never;
@@ -403,6 +548,7 @@ export interface paths {
                     };
                     content: {
                         readonly "application/json": components["schemas"]["LeaderboardResult"];
+                        readonly "text/csv": string;
                     };
                 };
                 /** @description Error */
@@ -426,6 +572,8 @@ export interface paths {
                 /** @description Error */
                 readonly 503: {
                     headers: {
+                        /** @description Seconds to wait. Sent while the data is still loading (error.details.retry_after); absent when the data is missing. */
+                        readonly "Retry-After"?: number;
                         readonly [name: string]: unknown;
                     };
                     content: {
@@ -462,6 +610,43 @@ export interface components {
             readonly best_season: {
                 readonly [key: string]: unknown;
             } | null;
+        };
+        /**
+         * Catalog
+         * @description Product configuration for the controls, so a client never hard-codes it.
+         */
+        readonly Catalog: {
+            /**
+             * Api Version
+             * @default v1
+             */
+            readonly api_version: string;
+            readonly seasons: components["schemas"]["SeasonSpan"];
+            /**
+             * Metrics
+             * @description Every metric key used anywhere in the API.
+             */
+            readonly metrics: readonly components["schemas"]["MetricInfo"][];
+            readonly historical: components["schemas"]["HistoricalCatalog"];
+            readonly leaderboards: components["schemas"]["LeaderboardCatalog"];
+        };
+        /** Column */
+        readonly Column: {
+            /**
+             * Label
+             * @description The page's column header (also the CSV header).
+             */
+            readonly label: string;
+            /**
+             * Field
+             * @description Dotted path into a result row, e.g. 'stats.HR', 'player.name', 'team.season_name'.
+             */
+            readonly field: string;
+            /**
+             * Metric
+             * @description Metric key when the column is a stat (see catalog metrics), else null.
+             */
+            readonly metric: string | null;
         };
         /** ComparisonMetric */
         readonly ComparisonMetric: {
@@ -509,7 +694,7 @@ export interface components {
             readonly message: string;
             /**
              * Details
-             * @description Structured extras, e.g. candidates.
+             * @description Structured extras, e.g. candidates. Left out when there are none.
              * @default null
              */
             readonly details: {
@@ -546,6 +731,150 @@ export interface components {
              */
             readonly seasons: readonly number[] | null;
         };
+        /** HistoricalCatalog */
+        readonly HistoricalCatalog: {
+            /**
+             * Metrics
+             * @description The page's Sort by options.
+             */
+            readonly metrics: readonly string[];
+            readonly defaults: components["schemas"]["HistoricalDefaults"];
+            readonly filters: components["schemas"]["HistoricalFilters"];
+            /**
+             * Columns
+             * @description The page's table columns, in order (SeasonRow fields).
+             */
+            readonly columns: readonly components["schemas"]["Column"][];
+        };
+        /** HistoricalDefaults */
+        readonly HistoricalDefaults: {
+            /** Start */
+            readonly start: number;
+            /** End */
+            readonly end: number;
+            /** Metric */
+            readonly metric: string;
+            /**
+             * Order
+             * @enum {string}
+             */
+            readonly order: "desc" | "asc";
+            /**
+             * Split
+             * @description combined is combine=true on /seasons.
+             * @enum {string}
+             */
+            readonly split: "team" | "combined";
+            /**
+             * Bats
+             * @description Every batting hand (the page starts with all selected).
+             */
+            readonly bats: readonly string[];
+            /**
+             * Positions
+             * @description Every season primary position (the page starts with all selected).
+             */
+            readonly positions: readonly string[];
+            /**
+             * Position Source
+             * @enum {string}
+             */
+            readonly position_source: "season" | "career";
+            /** Teams */
+            readonly teams: readonly string[];
+        };
+        /** HistoricalFilters */
+        readonly HistoricalFilters: {
+            /** Bats */
+            readonly bats: readonly components["schemas"]["Option"][];
+            /**
+             * Positions
+             * @description Position options for position_source=season.
+             */
+            readonly positions: readonly string[];
+            /**
+             * Positions By Source
+             * @description season / career → position options.
+             */
+            readonly positions_by_source: {
+                readonly [key: string]: readonly string[];
+            };
+            /** Position Sources */
+            readonly position_sources: readonly components["schemas"]["Option"][];
+            /**
+             * Teams
+             * @description Exactly the values teams= accepts.
+             */
+            readonly teams: readonly components["schemas"]["Option"][];
+            /**
+             * Minimum Columns
+             * @description Stats accepted as min_{STAT}. The AB minimum is min_ab.
+             */
+            readonly minimum_columns: readonly string[];
+        };
+        /**
+         * LeaderboardAnswer
+         * @description The Leaderboards answer card (u1_answers.leaderboard_answer), without page-control wording.
+         */
+        readonly LeaderboardAnswer: {
+            /** Headline */
+            readonly headline: string;
+            /** Body */
+            readonly body: string;
+            /**
+             * Context
+             * @description What is ranked, e.g. 'Ranked by home runs'.
+             */
+            readonly context: string;
+        };
+        /** LeaderboardCatalog */
+        readonly LeaderboardCatalog: {
+            /**
+             * Metrics
+             * @description The page's Sort by options.
+             */
+            readonly metrics: readonly string[];
+            readonly defaults: components["schemas"]["LeaderboardDefaults"];
+            /**
+             * Columns
+             * @description The page's table columns, in order (LeaderboardRow fields).
+             */
+            readonly columns: readonly components["schemas"]["Column"][];
+            /** Weight Stats */
+            readonly weight_stats: readonly string[];
+            /**
+             * Weight Bounds
+             * @description [min, max] per weight.
+             */
+            readonly weight_bounds: readonly number[];
+            /** Weight Step */
+            readonly weight_step: number;
+            /**
+             * Limit Bounds
+             * @description [min, max] of the page's Top N control (the API accepts 1–200).
+             */
+            readonly limit_bounds: readonly number[];
+            /**
+             * Minimum Columns
+             * @description Stats accepted as min_{STAT}. The AB minimum is min_ab.
+             */
+            readonly minimum_columns: readonly string[];
+        };
+        /** LeaderboardDefaults */
+        readonly LeaderboardDefaults: {
+            /** Start */
+            readonly start: number;
+            /** End */
+            readonly end: number;
+            /** Metric */
+            readonly metric: string;
+            /** Weights */
+            readonly weights: {
+                readonly [key: string]: number;
+            };
+            /** Limit */
+            readonly limit: number;
+        };
         /**
          * LeaderboardResult
          * @description Leaderboards: totals over a span of seasons, ranked by one stat or the weighted score.
@@ -564,10 +893,24 @@ export interface components {
                 readonly [key: string]: number;
             };
             readonly qualification: components["schemas"]["Qualification"];
-            /** Total Rows */
+            /**
+             * Total Rows
+             * @description Players that pass the minimums (before paging).
+             */
             readonly total_rows: number;
+            /**
+             * Offset
+             * @description 0-based position of rows[0] in the full result.
+             * @default 0
+             */
+            readonly offset: number;
             /** Rows */
             readonly rows: readonly components["schemas"]["LeaderboardRow"][];
+            /**
+             * @description Null when no player matches.
+             * @default null
+             */
+            readonly answer: components["schemas"]["LeaderboardAnswer"] | null;
         };
         /** LeaderboardRow */
         readonly LeaderboardRow: {
@@ -642,8 +985,16 @@ export interface components {
         readonly MetricInfo: {
             /** Key */
             readonly key: string;
-            /** Label */
+            /**
+             * Label
+             * @description Short column label the app shows (AVG for BA).
+             */
             readonly label: string;
+            /**
+             * Name
+             * @description Plain-language name for sentences and titles, e.g. 'home runs', 'batting average'.
+             */
+            readonly name: string;
             /**
              * Kind
              * @enum {string}
@@ -659,6 +1010,16 @@ export interface components {
              * @description Display precision the app uses (rates 3, counts 0, score 1).
              */
             readonly decimals: number;
+        };
+        /** Option */
+        readonly Option: {
+            /**
+             * Value
+             * @description What the query parameter accepts.
+             */
+            readonly value: string;
+            /** Label */
+            readonly label: string;
         };
         /** PlayerRef */
         readonly PlayerRef: {
@@ -760,9 +1121,41 @@ export interface components {
             readonly mode: "auto" | "manual";
             /**
              * Text
-             * @description The same caption the app shows next to the ranking.
+             * @description The Streamlit page's caption (Markdown, names its controls). Kept for parity; other surfaces use summary / explanation.
              */
             readonly text: string;
+            /**
+             * Summary
+             * @description Short plain-text line the page shows as a chip, e.g. 'Qualified hitters · at least 2,349 AB over 2020–2025'. Empty for counting stats.
+             * @default
+             */
+            readonly summary: string;
+            /**
+             * Explanation
+             * @description One or two plain-text sentences on the rule in force (no Markdown, no control names). Null for counting stats.
+             * @default null
+             */
+            readonly explanation: string | null;
+        };
+        /**
+         * SeasonAnswer
+         * @description The Historical Explorer answer card for these rows (u1_answers.season_answer).
+         */
+        readonly SeasonAnswer: {
+            /** Headline */
+            readonly headline: string;
+            /** Body */
+            readonly body: string;
+            /**
+             * Context
+             * @description Year · team · position of the top season.
+             */
+            readonly context: string;
+            /**
+             * Tile Metrics
+             * @description Metric keys of the stat tiles, in order. Values are in rows[0].stats.
+             */
+            readonly tile_metrics: readonly string[];
         };
         /**
          * SeasonLeadersResult
@@ -787,22 +1180,47 @@ export interface components {
             readonly qualification: components["schemas"]["Qualification"];
             /**
              * Total Rows
-             * @description Seasons that pass the filters (before the limit).
+             * @description Rows in the full result before paging (with include_below_minimum, below-minimum seasons are counted too).
              */
             readonly total_rows: number;
+            /**
+             * Ranked Rows
+             * @description Seasons that pass the filters and minimums (the ranked part of the result).
+             */
+            readonly ranked_rows: number;
+            /**
+             * Offset
+             * @description 0-based position of rows[0] in the full result.
+             * @default 0
+             */
+            readonly offset: number;
+            /**
+             * Player Id
+             * @description Set when the result is one player's seasons.
+             * @default null
+             */
+            readonly player_id: string | null;
             /** Rows */
             readonly rows: readonly components["schemas"]["SeasonRow"][];
             /**
              * Headline
-             * @description The page's own answer headline for these rows.
+             * @description Same as answer.headline (kept for v1 compatibility).
              * @default null
              */
             readonly headline: string | null;
+            /**
+             * @description Null when no season matches.
+             * @default null
+             */
+            readonly answer: components["schemas"]["SeasonAnswer"] | null;
         };
         /** SeasonRow */
         readonly SeasonRow: {
-            /** Rank */
-            readonly rank: number;
+            /**
+             * Rank
+             * @description 1-based rank in the full result. Null only for a season below the active minimum (include_below_minimum=true).
+             */
+            readonly rank: number | null;
             readonly player: components["schemas"]["PlayerRef"];
             /** Year */
             readonly year: number;
@@ -815,6 +1233,19 @@ export interface components {
              */
             readonly bats: string | null;
             readonly stats: components["schemas"]["StatLine"];
+            /**
+             * Meets Minimum
+             * @description False: below the active AB / stat minimums, shown only with include_below_minimum=true, never ranked.
+             * @default true
+             */
+            readonly meets_minimum: boolean;
+        };
+        /** SeasonSpan */
+        readonly SeasonSpan: {
+            /** First */
+            readonly first: number;
+            /** Last */
+            readonly last: number;
         };
         /** StandingsResult */
         readonly StandingsResult: {

@@ -34,13 +34,15 @@ describe.skipIf(!ORIGIN)(`live Baseball API (pinned ${meta.api_commit})`, () => 
   it("serves the pinned schema", async () => {
     const { body } = await raw<{ info: { version: string }; paths: Record<string, unknown> }>("openapi.json");
     expect(body.info.version).toBe(meta.api_version);
-    expect(Object.keys(body.paths)).toEqual([
+    expect(Object.keys(body.paths).sort()).toEqual([
+      "/api/v1/catalog",
       "/api/v1/health",
-      "/api/v1/players/search",
+      "/api/v1/leaderboards",
       "/api/v1/players/resolve",
+      "/api/v1/players/search",
+      "/api/v1/players/{player_id}",
       "/api/v1/players/{player_id}/seasons",
       "/api/v1/seasons",
-      "/api/v1/leaderboards",
     ]);
   });
 
