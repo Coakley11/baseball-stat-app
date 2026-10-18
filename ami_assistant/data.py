@@ -2,7 +2,8 @@
 
 Inside the app the panel hands over the already-loaded ``yearly_df`` (no second CSV load).
 Outside Streamlit (tests, scripts) ``load_standalone_dataset`` builds it with
-``lahman_data.build_lahman_frames``, the function ``streamlit_app.load_data`` delegates to.
+``baseball_history.load_history_frames``, the canonical history layer that ``streamlit_app.load_data``
+and the web API also use.
 """
 
 from __future__ import annotations
@@ -107,9 +108,9 @@ def dataset_from_yearly(yearly: pd.DataFrame, *, source: str = "app") -> Basebal
 
 @functools.lru_cache(maxsize=1)
 def _frames(base_dir: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    from lahman_data import build_lahman_frames, read_lahman_csv
+    from baseball_history import load_history_frames
 
-    return build_lahman_frames(read_lahman_csv(Path(base_dir)), Path(base_dir))
+    return load_history_frames(Path(base_dir))
 
 
 def load_standalone_frames(base_dir: Path | str | None = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:

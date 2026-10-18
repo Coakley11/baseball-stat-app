@@ -44,7 +44,7 @@ TEAM = {"OF": "New York Yankees", "1B": "Washington Senators", "C": "Chicago Cub
 
 
 def synthetic_yearly() -> pd.DataFrame:
-    from lahman_data import add_rate_stats
+    from baseball_history import add_rate_stats
 
     rows: list[dict[str, Any]] = []
     for pid, name, first, last, pos, ab, hr, hr_step, sb in PLAYERS:
@@ -121,17 +121,28 @@ def _app_tree() -> ast.Module:
 
 
 def monolith_functions(*names: str) -> dict[str, Any]:
-    """Compile named top-level functions from streamlit_app.py (decorators dropped)."""
-    from lahman_data import add_rate_stats
+    """Compile named top-level functions from streamlit_app.py (decorators dropped).
+
+    Functions WEB-PREP1 moved to ``baseball_history`` (``safe_round_rate_stats``, …) are taken from
+    there, exactly as ``streamlit_app.py`` imports them; the compiled functions see the same names."""
+    import baseball_history
 
     nodes = []
     for node in _app_tree().body:
         if isinstance(node, ast.FunctionDef) and node.name in names:
             node.decorator_list = []
             nodes.append(node)
-    missing = set(names) - {n.name for n in nodes}
+    history = {k: v for k, v in vars(baseball_history).items() if not k.startswith("_")}
+    imported = _history_imports()
+    missing = set(names) - {n.name for n in nodes} - (imported & set(history))
     if missing:
         raise AssertionError(f"streamlit_app.py no longer defines {sorted(missing)}")
-    ns: dict[str, Any] = {"pd": pd, "np": np, "add_rate_stats": add_rate_stats}
+    ns: dict[str, Any] = {"pd": pd, "np": np, **{k: history[k] for k in imported if k in history}}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(APP_SRC), "exec"), ns)
     return ns
+
+
+def _history_imports() -> set[str]:
+    """The names ``streamlit_app.py`` imports from ``baseball_history``."""
+    return {alias.name for node in _app_tree().body
+            if isinstance(node, ast.ImportFrom) and node.module == "baseball_history" for alias in node.names}

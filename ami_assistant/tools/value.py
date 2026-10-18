@@ -25,7 +25,7 @@ from ami_assistant.data import BaseballDataset
 from ami_assistant.players import player_ref
 from ami_assistant.tools.registry import INSUFFICIENT_HISTORY, NOT_IN_POOL, ToolResult, fail, tool
 from ami_assistant.tools.stats import RATE_STATS, _num, _resolve_id, round_rates
-from lahman_data import add_rate_stats
+from baseball_history import add_rate_stats
 from projection_breakdown import classify_trend_direction
 from trend_slopes import RATE_SHRINK_PA, trend_slopes
 from valuation_scores import (
@@ -134,7 +134,7 @@ def _window_note(window: int) -> str:
         },
         "required": ["player_id"],
     },
-    reuses=("trend_slopes.trend_slopes", "projection_breakdown.classify_trend_direction", "lahman_data.add_rate_stats"),
+    reuses=("trend_slopes.trend_slopes", "projection_breakdown.classify_trend_direction", "baseball_history.add_rate_stats"),
     needs_dataset=True,
 )
 def get_player_trends(
@@ -227,7 +227,7 @@ def get_player_trends(
         },
         "required": ["stat"],
     },
-    reuses=("trend_slopes.trend_slopes", "lahman_data.add_rate_stats"),
+    reuses=("trend_slopes.trend_slopes", "baseball_history.add_rate_stats"),
     needs_dataset=True,
 )
 def get_trend_leaders(
@@ -317,7 +317,7 @@ def _contributions(row: pd.Series) -> tuple[list[dict[str, Any]], list[dict[str,
         }
     },
     reuses=("valuation_scores.valuation_hitter_pool", "valuation_scores.add_valuation_scores", "trend_slopes.trend_slopes",
-            "lahman_data.add_rate_stats"),
+            "baseball_history.add_rate_stats"),
     needs_dataset=True,
 )
 def get_player_valuation(

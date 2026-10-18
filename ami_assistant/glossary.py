@@ -4,7 +4,7 @@
 * Valuation terms come from the Valuation page guide (``page_guides.PAGE_GUIDES``).
 * Trend method and qualification rules come from the constants in ``trend_slopes`` and
   ``rate_stat_qualification``.
-* Formulas (BA/OBP/SLG/OPS) describe ``lahman_data.add_rate_stats``; tests check them.
+* Formulas (BA/OBP/SLG/OPS) describe ``baseball_history.add_rate_stats``; tests check them.
 * Inline page copy that isn't importable (the Sleepers column glossary) is quoted and pinned
   by tests against ``streamlit_app.py`` so it can't silently drift.
 """
@@ -111,16 +111,16 @@ def _terms() -> list[Term]:
             ("qualified", "qualification", "min ab", "minimum at-bats"), "rate_stat_qualification",
         ),
         Term(
-            "ops", "OPS", "On-base plus slugging: OBP + SLG.", ("Historical Explorer", "Leaderboards"), ("ops",), "lahman_data.add_rate_stats",
+            "ops", "OPS", "On-base plus slugging: OBP + SLG.", ("Historical Explorer", "Leaderboards"), ("ops",), "baseball_history.add_rate_stats",
         ),
         Term(
-            "obp", "OBP", "On-base percentage: (H + BB + HBP) ÷ (AB + BB + HBP + SF).", (), ("obp", "on-base"), "lahman_data.add_rate_stats",
+            "obp", "OBP", "On-base percentage: (H + BB + HBP) ÷ (AB + BB + HBP + SF).", (), ("obp", "on-base"), "baseball_history.add_rate_stats",
         ),
         Term(
-            "slg", "SLG", "Slugging: total bases ÷ AB, where total bases = 1B + 2×2B + 3×3B + 4×HR.", (), ("slg", "slugging"), "lahman_data.add_rate_stats",
+            "slg", "SLG", "Slugging: total bases ÷ AB, where total bases = 1B + 2×2B + 3×3B + 4×HR.", (), ("slg", "slugging"), "baseball_history.add_rate_stats",
         ),
         Term(
-            "ba", "BA", "Batting average: H ÷ AB.", (), ("ba", "batting average", "average", "avg"), "lahman_data.add_rate_stats",
+            "ba", "BA", "Batting average: H ÷ AB.", (), ("ba", "batting average", "average", "avg"), "baseball_history.add_rate_stats",
         ),
         Term(
             "official_standings", OFFICIAL_LABEL,

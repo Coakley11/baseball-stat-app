@@ -195,7 +195,7 @@ class GlossaryTests(unittest.TestCase):
     def test_rate_formulas_match_add_rate_stats(self) -> None:
         import pandas as pd
 
-        from lahman_data import add_rate_stats
+        from baseball_history import add_rate_stats
 
         row = add_rate_stats(pd.DataFrame([{"AB": 500, "H": 150, "2B": 30, "3B": 5, "HR": 25, "BB": 60, "HBP": 5, "SF": 5}])).iloc[0]
         self.assertAlmostEqual(row["BA"], 150 / 500)
@@ -227,10 +227,10 @@ class AppWiringTests(unittest.TestCase):
         block = APP[APP.index("from ami_assistant.ui import render_ami_assistant_panel") - 10: APP.index(call) + 200]
         self.assertIn("except ImportError:", block)
 
-    def test_load_data_delegates_to_lahman_data(self) -> None:
+    def test_load_data_delegates_to_baseball_history(self) -> None:
         body = APP[APP.index("def load_data(_hof_cache_key: float = 0.0):"):]
         body = body[: body.index("\n\n\n")]
-        self.assertIn("return build_lahman_frames(read_required_csv, BASE_DIR)", body)
+        self.assertIn("return _history.load_history_frames(BASE_DIR, read_csv=read_required_csv)", body)
 
 class U2U3HelpTests(unittest.TestCase):
     """Help for the U2/U3 pages restates each page's own rule; every rule is pinned to its source."""

@@ -33,8 +33,8 @@ class UnknownBioPlayersTests(unittest.TestCase):
 
     def test_app_aggregations_keep_unknown_bio_players(self):
         app = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
-        # The season (yearly) table is built in lahman_data, which load_data delegates to.
-        src = app + (ROOT / "lahman_data.py").read_text(encoding="utf-8")
+        # The season (yearly) table is built in baseball_history, which load_data delegates to.
+        src = app + (ROOT / "baseball_history.py").read_text(encoding="utf-8")
         grouped_by_bio = re.findall(r"\.groupby\(\[[^\]]*\"bats\"[^\]]*\][^)]*\)", src)
         self.assertGreaterEqual(len(grouped_by_bio), 2)
         for call in grouped_by_bio:

@@ -3,7 +3,7 @@
 Aggregation mirrors the pages exactly:
 
 * window totals — ``groupby(["playerID", "fullName", "bats"], dropna=False).sum()`` then
-  ``lahman_data.add_rate_stats`` (Career Totals);
+  ``baseball_history.add_rate_stats`` (Career Totals);
 * Leaderboards — ``leaderboard_aggregation.filter_yearly_for_leaderboards`` +
   ``aggregate_leaderboard_career_totals`` + ``add_rate_stats``;
 * rate-stat rankings — ``rate_stat_qualification.qualified_ab`` minimum AB, as the pages default;
@@ -27,7 +27,7 @@ from ami_assistant.tools.registry import (
     fail,
     tool,
 )
-from lahman_data import add_rate_stats
+from baseball_history import add_rate_stats
 from leaderboard_aggregation import aggregate_leaderboard_career_totals, filter_yearly_for_leaderboards
 from rate_stat_qualification import AB_PER_TEAM_GAME, RATE_STAT_KEYS, qualified_ab
 
@@ -150,7 +150,7 @@ def search_players(*, dataset: BaseballDataset, query: str) -> ToolResult:
     capability="historical_analytics",
     description="Career summary for one player: span, career totals and rates, best qualified seasons by OPS.",
     parameters={"properties": {"player_id": _PLAYER_ID_SCHEMA}, "required": ["player_id"]},
-    reuses=("lahman_data.add_rate_stats", "rate_stat_qualification.qualified_ab"),
+    reuses=("baseball_history.add_rate_stats", "rate_stat_qualification.qualified_ab"),
     needs_dataset=True,
 )
 def get_player_profile(*, dataset: BaseballDataset, player_id: str, best_n: int = 5) -> ToolResult:
@@ -187,7 +187,7 @@ def get_player_profile(*, dataset: BaseballDataset, player_id: str, best_n: int 
     capability="historical_analytics",
     description="Season-by-season batting lines for one player, optionally limited to a season range.",
     parameters={"properties": {"player_id": _PLAYER_ID_SCHEMA, "year_range": _RANGE_SCHEMA}, "required": ["player_id"]},
-    reuses=("lahman_data.build_lahman_frames (yearly rows)",),
+    reuses=("baseball_history.load_history_frames (yearly rows)",),
     needs_dataset=True,
 )
 def get_player_seasons(*, dataset: BaseballDataset, player_id: str, year_range: Any = None) -> ToolResult:
@@ -236,7 +236,7 @@ def get_player_seasons(*, dataset: BaseballDataset, player_id: str, year_range: 
         },
         "required": ["player_ids"],
     },
-    reuses=("lahman_data.add_rate_stats", "rate_stat_qualification.qualified_ab"),
+    reuses=("baseball_history.add_rate_stats", "rate_stat_qualification.qualified_ab"),
     needs_dataset=True,
 )
 def compare_players(
@@ -330,7 +330,7 @@ def compare_players(
     reuses=(
         "leaderboard_aggregation.filter_yearly_for_leaderboards",
         "leaderboard_aggregation.aggregate_leaderboard_career_totals",
-        "lahman_data.add_rate_stats",
+        "baseball_history.add_rate_stats",
         "rate_stat_qualification.qualified_ab",
     ),
     needs_dataset=True,

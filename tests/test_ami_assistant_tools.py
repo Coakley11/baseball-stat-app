@@ -15,7 +15,7 @@ from ami_assistant.data import load_standalone_dataset, load_standalone_frames
 from ami_assistant.tools import REGISTRY
 from ami_assistant.tools import registry as codes
 from ami_assistant.tools.value import TREND_STATS, page_trend_table, valuation_pool, window_rows
-from lahman_data import add_rate_stats
+from baseball_history import add_rate_stats
 from leaderboard_aggregation import aggregate_leaderboard_career_totals, filter_yearly_for_leaderboards
 from rate_stat_qualification import qualified_ab, season_lengths
 from tests.ami_assistant_fixtures import monolith_functions, page_section
