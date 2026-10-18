@@ -333,7 +333,7 @@ PAGES: tuple[PageHelp, ...] = (
                   "Start-Sit recommendations", "Recommended Starters", "Build & Analyze", "Offers & Activity",
                   "Trade partner to search", "Players I Give", "Players I Receive", "Analyze Exact Trade",
                   "Propose Trade", "Confirm and send proposal", "Find Trade Ideas", "Manage team"),
-        questions=("Which positions are empty?", "What does Draft mean on my lineup?",
+        questions=("Is my lineup saved?", "Which positions are still open?", "What do you think of this trade?",
                    "What does Use Suggested Lineup do?"),
         terms=("lineup_status", "use_suggested_lineup", "trade_verdict", "commissioner_tools", "eligibility"),
         next_steps=("Use **View Waiver Options For Open Positions** to jump to [[Waiver Wire / Add-Drop Center]] for an "
@@ -358,7 +358,7 @@ PAGES: tuple[PageHelp, ...] = (
         controls=("Consider add", "Compare", "See trend", "Manage team", "Search available players",
                   "Filter available players by position", "Add player (waiver pool)", "Drop player (your roster)",
                   "Add to Pending Moves", "Confirm Pending Waiver Moves", "Plan Add"),
-        questions=("Which position needs the most help?", "What does Consider add do?", "Where can I gain a point?"),
+        questions=("Who should I consider adding?", "Which position needs the most help?", "What does Consider add do?"),
         terms=("consider_add", "commissioner_tools"),
         sources=(MONOLITH, "fantasy_waiver_wire_ui.py"),
         aliases=("waiver", "waivers", "waiver wire", "add drop", "add/drop", "free agents", "check waivers"),

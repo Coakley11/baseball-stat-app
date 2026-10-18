@@ -133,7 +133,14 @@ class IntentRoutingTests(unittest.TestCase):
             ("Why didn't Mike Trout count last week?", fr.F_PLAYER_WEEK, "explain_player_week"),
             ("Who should I start this week?", fr.F_LINEUP, "get_lineup_report"),
             ("What's on my bench?", fr.F_LINEUP, "get_lineup_report"),
-            ("Which positions are empty?", fr.F_EMPTY, "get_lineup_report"),
+            ("Which positions are empty?", fr.F_EMPTY, "get_lineup_status"),
+            ("Is my lineup saved?", fr.F_LINEUP_STATUS, "get_lineup_status"),
+            ("Who owns Juan Soto?", fr.F_OWNER, "get_player_owner"),
+            ("Who's available at catcher?", fr.F_POOL, "find_available_players"),
+            ("Who should I consider adding?", fr.F_WAIVER, "get_waiver_recommendations"),
+            ("What position do I most need help at?", fr.F_WAIVER, "get_waiver_recommendations"),
+            ("What do you think of this trade?", fr.F_TRADE, "evaluate_trade"),
+            ("Why did Adames count even though I dropped him later?", fr.F_PLAYER_WEEK, "explain_player_week"),
             ("Do I have an eligible shortstop?", fr.F_FIND_ELIGIBLE, "find_eligible_players"),
             ("Can George Springer play 3B?", fr.F_ELIGIBLE, "check_slot_eligibility"),
             ("Would trading Aaron Judge for Kyle Tucker leave me without a catcher?", fr.F_TRADE, "evaluate_trade"),
@@ -163,9 +170,15 @@ class IntentRoutingTests(unittest.TestCase):
         self.assertEqual(route("Do I have anyone on my bench who can help at shortstop?").calls[0].args,
                          {"slot": "SS", "bench_only": True})
         # "this trade" without players can't be read from Trade Center yet: ask for names.
-        unclear = route("Would this trade leave me without a catcher?")
-        self.assertEqual(unclear.calls, [])
-        self.assertIn("Name the players", unclear.clarification)
+        # "this trade" is the one composed in Trade Center (pending_trade_draft): no names needed.
+        pending = route("Would this trade leave me without a catcher?")
+        self.assertEqual(pending.calls[0].args, {"slot": "C"})
+        self.assertEqual(route("Why did Adames count even though I dropped him later?").calls[0].args, {"player": "Adames"})
+        self.assertEqual(route("Why is Corbin Carroll recommended?", page="Waiver Wire / Add-Drop Center").calls[0].args,
+                         {"player": "Corbin Carroll"})
+        # Off the Waiver Wire, "why is X recommended" is still a draft question; "best available" is draft talk.
+        self.assertEqual(route("Why is Bobby Witt recommended?", page="Draft Assistant Simulator").intent, r.DRAFT_EXPLAIN)
+        self.assertEqual(route("Who has the most career HR since 2010?").intent, r.LEADERBOARD)
 
     def test_league_instructions_and_navigation(self) -> None:
         for question, action in (("Use suggested lineup for me", "use_suggested_lineup"), ("Finalize week 2", "finalize_week"),

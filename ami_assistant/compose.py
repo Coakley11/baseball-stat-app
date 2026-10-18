@@ -19,7 +19,6 @@ from ami_assistant.data import DATA_SOURCE_LABEL
 from ami_assistant.glossary import TERMS
 from ami_assistant.tools.registry import ToolResult
 from fantasy_read_api import ELIGIBILITY_RULE
-from u3_answers import ROSTER_ISSUE_LABEL, TRADE_VALUE_LABELS
 
 RATE = {"BA", "OBP", "SLG", "OPS"}
 STAT_NAMES = {
@@ -781,14 +780,19 @@ class Composer:
                              f"when it was saved), so {p} didn't count. Players added later count from the next week they start.",
         }
         text = texts.get(reason, "")
-        if reason == "not_in_lineup":
-            if not d.get("on_a_roster"):
-                text += f" {p} isn't on any roster in this league."
-            elif d.get("owner_now") and d["owner_now"] != d["team"]:
-                text += f" {p} is on {d['owner_now']}'s roster now."
         stats = d.get("stats")
         if reason == "counted" and stats:
             text += f" {p} contributed {stats.get('H', 0)}-for-{stats.get('AB', 0)}, {stats.get('HR', 0)} HR, {stats.get('R', 0)} R, {stats.get('RBI', 0)} RBI, {stats.get('SB', 0)} SB."
+        # Today's roster, for contrast only: a finalized week is frozen whatever happened since.
+        now = ("a free agent now" if d.get("owner_status") == "free_agent"
+               else f"on {d['owner_now']}'s roster now" if d.get("owner_now") and d["owner_now"] != d["team"] else "")
+        if now and reason in ("counted", "no_stats", "bench"):
+            text += (f" {p} is {now}, but {w['label']} is frozen with the lineup {d['team']} saved for it, so later "
+                     "drops and trades don't change it.")
+        elif now and reason == "not_in_lineup":
+            text += f" {p} is {now}."
+        elif reason == "not_in_lineup" and not d.get("on_a_roster"):
+            text += f" {p} isn't on any roster in this league."
         return text
 
     def _fantasy_lineup(self, plan, results) -> str:
@@ -807,22 +811,41 @@ class Composer:
             lines.append(access_line)
         return "\n\n".join(lines)
 
+    def _fantasy_lineup_status(self, plan, results) -> str:
+        """The Lineup page's own answer for this week (week_lineup_status), not AMI's reading of it."""
+        d = _first(results, "get_lineup_status").data
+        lines = [f"**{d['team']} · {d['week_text']}: {d['status']}**", d["headline"]]
+        if d.get("body"):
+            lines.append(d["body"])
+        if d.get("edit_message"):
+            lines.append(f"_{d['edit_message']}_")
+        access_line = self._access_line(d.get("access"))
+        if access_line:
+            lines.append(access_line)
+        lines.append(f"_{d['basis']}_")
+        return "\n\n".join(x for x in lines if x)
+
     def _fantasy_empty_slots(self, plan, results) -> str:
-        d = _first(results, "get_lineup_report").data
-        missing = d.get("missing_slots") or []
-        if missing:
-            text = f"**{d['team']} can't fill: {', '.join(missing)}** — no rostered player is eligible there."
+        d = _first(results, "get_lineup_status").data
+        open_ = d.get("open_positions") or []
+        lines = [f"**{d['team']} · {d['week_text']}** ({d['status']})"]
+        if open_:
+            lines.append("Open: " + ", ".join(open_) + ".")
         else:
-            text = f"**Every lineup slot can be filled** from {d['team']}'s roster."
-        extra = []
-        for w in d.get("slot_warnings") or []:
-            extra.append(f"- {w}")
-        if extra:
-            text += "\n\n" + "\n".join(extra)
-        weakest = d.get("weakest")
-        if weakest:
-            text += "\n\nWeakest area in the lineup diagnosis: " + (", ".join(weakest) if isinstance(weakest, list) else str(weakest)) + "."
-        return text + f"\n\n_{ELIGIBILITY_RULE} This is the rule Save Lineup checks._"
+            lines.append("Every starting spot in the saved lineup is filled.")
+        if d.get("from_bench"):
+            lines.append("Your bench can fill: " + ", ".join(d["from_bench"]) + ".")
+        if d.get("needs_waiver_or_trade"):
+            lines.append("Only a waiver add or a trade can fill: " + ", ".join(d["needs_waiver_or_trade"]) + ".")
+        if d.get("not_eligible"):
+            lines.append("Not eligible where they're placed: " + ", ".join(d["not_eligible"]) + ".")
+        if not d.get("roster_loaded"):
+            lines.append("_Load current stats on League Standings to check who on your bench can fill each spot._")
+        lines.append(f"_{d['basis']} {ELIGIBILITY_RULE}_")
+        access_line = self._access_line(d.get("access"))
+        if access_line:
+            lines.append(access_line)
+        return "\n\n".join(lines)
 
     def _fantasy_slot_eligibility(self, plan, results) -> str:
         d = _first(results, "check_slot_eligibility").data
@@ -850,27 +873,25 @@ class Composer:
         return text + f"\n\n_{d['rule']}_"
 
     def _fantasy_trade(self, plan, results) -> str:
+        """The Trade Center card for the trade (evaluate_trade_for_team), in its own words."""
         d = _first(results, "evaluate_trade").data
-        lines = [f"**{d['team']} gives {', '.join(d['give'])} · gets {', '.join(d['receive'])}** (with {d['partner']})"]
+        where = " (the trade in Trade Center)" if d.get("source") == "trade_center" else ""
+        lines = [f"**{d['team']} gives {', '.join(d['give'])} · gets {', '.join(d['receive'])}** (with {d['partner']}){where}"]
         slot = d.get("slot_check")
         if slot:
-            after = slot["eligible_after"]
-            if after:
-                lines.append(f"You'd still have a {slot['slot_name']}: {', '.join(after)}.")
-            else:
-                lines.append(f"**Yes — this would leave you without an eligible {slot['slot_name']}.**")
-        if d.get("legality_warnings"):
-            lines.append("Roster/lineup warnings:\n" + "\n".join(f"- {w}" for w in d["legality_warnings"]))
-        elif not slot:
-            lines.append("No roster or lineup problems for either team.")
-        if d.get("verdict_text"):
-            # The Trade Center card's wording for the engine's own verdict (u3_answers' mapping, not a new judgment).
-            label = TRADE_VALUE_LABELS.get(str(d.get("verdict") or ""), "")
-            lines.append(f"Value{f' — **{label}**' if label else ''}: {d['verdict_text']}")
-            if d.get("legality_warnings"):
-                lines.append(f"_On Trade Center the card reads “{ROSTER_ISSUE_LABEL}” instead when a warning is about "
-                             "your own roster (a required slot it can't fill, or too many players). AMI can't tell "
-                             "which kind each warning is yet._")
+            lines.append(f"**Yes — this would leave you without an eligible {slot['slot_name']}.**" if slot["leaves_unfilled"]
+                         else f"**No** — you'd still have an eligible {slot['slot_name']}.")
+        lines.append(f"**{d['verdict_label']}** — {d['verdict_body']}" if d.get("verdict_label") else d.get("verdict_body", ""))
+        issues = d.get("required_position_issues", []) + d.get("roster_size_issues", [])
+        if issues:
+            lines.append("Your roster:\n" + "\n".join(f"- {i}" for i in issues))
+        if d.get("open_roster_spots"):
+            lines.append("Note: " + " ".join(d["open_roster_spots"]))
+        if d.get("other_team_notes"):
+            lines.append(f"{d['partner']}:\n" + "\n".join(f"- {i}" for i in d["other_team_notes"]))
+        if d.get("helps") or d.get("hurts"):
+            lines.append(" · ".join(x for x in (f"Helps: {', '.join(d['helps'])}" if d.get("helps") else "",
+                                                f"Hurts: {', '.join(d['hurts'])}" if d.get("hurts") else "") if x))
         if not d.get("proposal_ok") and d.get("proposal_message"):
             lines.append(f"It couldn't be proposed as is: {d['proposal_message']}")
         access_line = self._access_line(d.get("access"))
@@ -878,17 +899,65 @@ class Composer:
             lines.append(access_line)
         lines.append(f"_{d['basis']} AMI only evaluates; propose trades in Trade Center on "
                      f"{display_label('Fantasy Lineup Assistant')}._")
-        return "\n\n".join(lines)
+        return "\n\n".join(x for x in lines if x)
 
     def _fantasy_waiver(self, plan, results) -> str:
+        """The Waiver Wire's own answer (waiver_recommendations_view): needs, top adds and why."""
         res = _first(results, "get_waiver_recommendations")
-        parts = [res.message if res is not None else "AMI can't read the Waiver Wire's recommendations yet."]
-        if plan.position:
-            parts[0] += f" For {plan.position}, use the Waiver Wire's position filter."
-        howto = _first(results, "find_feature")
-        if howto is not None and howto.ok:
-            parts.append(f"On **{howto.data['page']}**:\n" + "\n".join(f"- {s}" for s in howto.data["steps"]))
-        return "\n\n".join(parts)
+        if res is None or not res.ok:
+            parts = [res.message if res is not None else "AMI couldn't read the Waiver Wire's recommendations."]
+            howto = _first(results, "find_feature")
+            if howto is not None and howto.ok:
+                parts.append(f"On **{howto.data['page']}**:\n" + "\n".join(f"- {s}" for s in howto.data["steps"]))
+            return "\n\n".join(parts)
+        d = res.data
+        label = display_label("Waiver Wire / Add-Drop Center")
+        where = "" if d["position"] == "All positions" else f" at {d['position']}"
+        if "asked_player" in d:
+            card = d.get("asked_card")
+            if card:
+                return "\n\n".join(x for x in (
+                    f"**{card['player']}** ({card['positions']}, {card['mlb_team']}) is #{card['rank']} on {label}{where}.",
+                    card["why"], card.get("comparison") or "", card.get("stat_line") or "",
+                    f"_{d['headline']}. Consider add only puts the player in the move planner; AMI can't add or drop anyone._") if x)
+            own = d.get("asked_owner") or {}
+            status = {"your_team": "is already on your team", "other_team": f"is on {own.get('owner_team')}'s roster",
+                      "free_agent": "is a free agent but isn't among the top recommendations"}.get(own.get("status"), "isn't in the waiver pool")
+            return f"{own.get('player') or d['asked_player']} {status}. {label}'s top adds{where}:\n" + "\n".join(
+                f"- **{c['player']}** ({c['positions']}) — {c['why']}" for c in d["adds"])
+        lines = [f"**{d['headline']}**"]
+        if d.get("open_roster_spots"):
+            lines.append("Open roster spots: " + ", ".join(d["open_roster_spots"]) + ".")
+        if d["adds"]:
+            lines.append(f"Top adds{where} ({label}'s cards):\n" + "\n".join(
+                f"{c['rank']}. **{c['player']}** ({c['positions']}, {c['mlb_team']}) — {c['why']}"
+                + (f" {c['comparison']}" if c.get("comparison") else "") for c in d["adds"]))
+        else:
+            lines.append(f"No free agent{where} is recommended right now.")
+        if re.search(r"\bdrop\b", self.question.lower()) and d.get("drops"):
+            lines.append("Drop candidates:\n" + "\n".join(f"- **{x['player']}** — {x['why']}" for x in d["drops"]))
+        lines.append("_Consider add only puts a player in the move planner; AMI can't add or drop anyone._")
+        access_line = self._access_line(d.get("access"))
+        if access_line:
+            lines.append(access_line)
+        return "\n\n".join(lines)
+
+    def _fantasy_owner(self, plan, results) -> str:
+        d = _first(results, "get_player_owner").data
+        p = d["player"]
+        return {"your_team": f"**{p}** is on your team ({d['my_team']}).",
+                "other_team": f"**{p}** is on **{d['owner_team']}**.",
+                "free_agent": f"**{p}** isn't on any roster in this league — a free agent."}.get(d["status"], d.get("basis", ""))
+
+    def _fantasy_pool(self, plan, results) -> str:
+        d = _first(results, "find_available_players").data
+        where = "" if d["position"] == "All positions" else f" at {d['position']}"
+        if not d["rows"]:
+            return f"No unrostered players{where} in the stats this session loaded."
+        lines = [f"**Available{where}** — {d['total']} unrostered, first {len(d['rows'])} in the pool's order:",
+                 "\n".join(f"- **{r['player']}** ({r['positions']}, {r['mlb_team']})" for r in d["rows"]),
+                 f"_{d['basis']} For who to add and why, ask “Who should I consider adding?”_"]
+        return "\n\n".join(lines)
 
 
 POSITION_PLURAL = r.POSITION_NAMES

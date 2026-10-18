@@ -13,12 +13,11 @@ from typing import Any, Mapping
 
 from ami_assistant.safety import clean_text
 from ami_assistant.tools.registry import MISSING_DRAFT_CONTEXT, NOT_IN_POOL, ToolResult, fail, tool
-from baseball_monetization import FeatureId
 from player_name_normalization import normalize_player_name_for_merge
 
-# Recommendations and team-needs analysis are "Advanced draft intelligence" in the plan registry;
-# AMI applies the UI's gate for it once the app enforces it (see tools.registry.entitlement_block).
-ADVANCED_DRAFT_INTELLIGENCE = FeatureId.ADVANCED_DRAFT_INTELLIGENCE.value
+# Recommendations, their explanations and team needs are shared plan capabilities
+# (baseball_monetization.CAPABILITY_FEATURES → advanced draft intelligence); AMI applies the same
+# gate once the app enforces it (see tools.registry.entitlement_block).
 
 SNAPSHOT_KEY = "_ami_draft_snapshot"
 PROJECTION_KEY = "_ami_draft_projection"
@@ -118,7 +117,7 @@ def get_active_draft_context(*, session: Mapping[str, Any]) -> ToolResult:
 @tool(
     "get_draft_recommendations",
     capability="draft_intelligence",
-    feature=ADVANCED_DRAFT_INTELLIGENCE,
+    plan_capability="draft_recommendations",
     description=(
         "The draft page's own ranked recommendations (Decision Score, Player Grade, Roster Fit, Why this pick) "
         "and best available players, optionally for one position."
@@ -161,7 +160,7 @@ def get_draft_recommendations(*, session: Mapping[str, Any], position: str | Non
 @tool(
     "explain_draft_recommendation",
     capability="draft_intelligence",
-    feature=ADVANCED_DRAFT_INTELLIGENCE,
+    plan_capability="draft_recommendation_explanation",
     description="Why the draft page recommends a player: the row's scores and its 'Why this pick' text, verbatim.",
     parameters={"properties": {"player": {"type": "string"}}, "required": ["player"]},
     reuses=("draft_ami_helpers.compact_recommendation_rows (cached rows)",),
@@ -203,7 +202,7 @@ def explain_draft_recommendation(*, session: Mapping[str, Any], player: str) -> 
 @tool(
     "get_team_needs",
     capability="draft_intelligence",
-    feature=ADVANCED_DRAFT_INTELLIGENCE,
+    plan_capability="draft_team_needs",
     description="Your draft team's open positions and category strengths/weaknesses versus the remaining pool.",
     reuses=("applied_math_context.cache_draft_assistant_ami_context (category_diagnostics)",),
     needs_session=True,

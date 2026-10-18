@@ -18,6 +18,7 @@ import pandas as pd
 
 import fantasy_read_api as api
 import u1_answers
+from ami_assistant.conversation import load_conversation
 from ami_assistant.engine import ask
 from ami_assistant.fantasy_router import F_FIND_ELIGIBLE, F_GAINS, F_STANDINGS, F_WAIVER
 from ami_assistant.tools import REGISTRY
@@ -147,10 +148,11 @@ class ParityTests(LeagueCase):
             ev = api.evaluate_trade_for_team(self.session, my_team="Team A", partner_team="Team C", give=["Cal Raleigh"],
                                              receive=["Kyle Tucker"], roster_stats=self.stats)
         self.assertEqual((res.data["verdict"], res.data["weighted_gain"]), (ev.verdict, ev.weighted_gain))
-        self.assertEqual(res.data["legality_warnings"], list(ev.legality_warnings))
-        self.assertEqual(res.data["partner"], "Team C")  # inferred from who owns Kyle Tucker
-        self.assertEqual(res.data["slot_check"]["eligible_after"], [])  # no catcher left, by Save Lineup's rule
-        self.assertTrue(any("without an eligible C" in w for w in res.data["legality_warnings"]))
+        self.assertEqual((res.data["verdict_label"], res.data["verdict_body"]), (ev.verdict_label, ev.verdict_body))
+        self.assertEqual(res.data["required_position_issues"], list(ev.required_position_issues))
+        self.assertEqual(res.data["partner"], "Team C")  # Kyle Tucker's owner, from player_owner
+        self.assertTrue(res.data["slot_check"]["leaves_unfilled"])  # straight from the shared roster issues
+        self.assertEqual(res.data["verdict_label"], "Creates roster issue")
 
     def test_lineup_report_is_the_lineup_assistants(self) -> None:
         res = self.call("get_lineup_report")
@@ -202,18 +204,20 @@ class AccessTests(LeagueCase):
 
     def test_another_managers_team_private_data_is_refused(self) -> None:
         for name, args in (("get_lineup_report", {"team": "Team B"}), ("find_eligible_players", {"team": "Team B", "slot": "C"}),
-                           ("explain_player_week", {"team": "Team B", "player": "Juan Soto"}),
+                           ("get_lineup_status", {"team": "Team B"}), ("get_waiver_recommendations", {"team": "Team B"}),
                            ("evaluate_trade", {"team": "Team B", "give": ["Juan Soto"], "receive": ["Aaron Judge"]})):
             res = self.call(name, **args)
             self.assertEqual(res.error_code, ft.NOT_YOUR_TEAM, name)
         self.assertTrue(self.call("get_official_standings", team="Team B").ok)  # league-wide data stays readable
+        # A started week's frozen lineup is visible league-wide (week_view's rule), so is why a player counted.
+        self.assertTrue(self.call("explain_player_week", team="Team B", player="Juan Soto", week=1).ok)
         self.assertTrue(self.call("get_week_lineup", team="Team B", week=1).ok)  # a week that has started
         self.assertEqual(self.call("get_week_lineup", team="Team B", week=30).error_code, ft.NOT_YOUR_TEAM)  # upcoming
 
     def test_a_team_must_exist_before_access_is_trusted(self) -> None:
-        # The shared team_access treats unknown names like unclaimed teams; AMI checks the league first.
+        # The shared team_access refuses a team that isn't in the league (633538f); AMI's own check agrees.
         with _as(ME):
-            self.assertTrue(api.team_access(self.session, "Nope").can_manage)
+            self.assertFalse(api.team_access(self.session, "Nope").can_manage)
         for name in ("get_lineup_report", "get_official_standings", "find_eligible_players"):
             args = {"team": "Nope"} if name != "find_eligible_players" else {"team": "Nope", "slot": "C"}
             self.assertEqual(self.call(name, **args).error_code, ft.UNKNOWN_TEAM, name)
@@ -222,11 +226,11 @@ class AccessTests(LeagueCase):
 class NoLeagueTests(unittest.TestCase):
     def test_every_fantasy_tool_says_there_is_no_league(self) -> None:
         args = {"check_slot_eligibility": {"player": "Judge", "slot": "SS"}, "find_eligible_players": {"slot": "SS"},
-                "explain_player_week": {"player": "Judge"}, "evaluate_trade": {"give": ["A"], "receive": ["B"]}}
+                "explain_player_week": {"player": "Judge"}, "evaluate_trade": {"give": ["A"], "receive": ["B"]},
+                "get_player_owner": {"player": "Judge"}}
         for name in FANTASY_TOOLS:
             res = REGISTRY.call(name, args.get(name, {}), session={})
-            expected = codes.NOT_WIRED if name == "get_waiver_recommendations" else codes.MISSING_ACTIVE_LEAGUE
-            self.assertEqual(res.error_code, expected, name)
+            self.assertEqual(res.error_code, codes.MISSING_ACTIVE_LEAGUE, name)
 
 
 class NoCalendarTests(LeagueCase):
@@ -269,6 +273,7 @@ class NoRosterStatsTests(LeagueCase):
 
 class SideEffectTests(LeagueCase):
     ARGS = {"get_week": {"week": 1}, "get_week_lineup": {"week": 1}, "explain_player_week": {"player": "Judge"},
+            "get_player_owner": {"player": "Juan Soto"},
             "check_slot_eligibility": {"player": "Cal Raleigh", "slot": "1B"}, "find_eligible_players": {"slot": "C"},
             "evaluate_trade": {"give": ["Cal Raleigh"], "receive": ["Kyle Tucker"], "slot": "C"}}
 
@@ -311,11 +316,9 @@ class ConversationTests(LeagueCase):
         self.assertEqual(third.intent, F_FIND_ELIGIBLE)
         self.assertIn("Cal Raleigh", third.answer)
         self.assertEqual(fourth.intent, F_WAIVER)
-        self.assertIn("For C", fourth.answer)  # the catcher context carried over
-        self.assertIn("can't read the Waiver Wire", fourth.answer)
-        # Nothing was read from the league, so the source line must not say so.
-        self.assertFalse(any("Your league" in b for b in fourth.basis), fourth.basis)
-        self.assertEqual(fourth.grounding_label, "App help")
+        self.assertEqual(load_conversation(self.session).position, "C")  # the catcher context carried over
+        self.assertIn("aren't loaded", fourth.answer)  # this fixture has no free-agent pool loaded; never fetched
+        self.assertEqual(fourth.grounding_label, "App data")  # the Waiver Wire reader, not page help
 
     def test_snapshot_answer_never_claims_to_be_the_standings(self) -> None:
         with _as(ME):

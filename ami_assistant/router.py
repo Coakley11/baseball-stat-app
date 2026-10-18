@@ -508,12 +508,13 @@ class Router:
             return Plan(DRAFT_NEEDS, APP_DATA, [ToolCall("get_team_needs", {})])
         if _FANTASY.search(low) or (_SELF.search(low) and not mentioned):
             # League questions the fantasy router didn't recognize ("Who should I drop?", "I need a
-            # shortstop"): roster moves are Waiver Wire territory, which AMI can't read yet.
+            # shortstop"): roster moves are Waiver Wire territory. Its recommendations, plus the steps
+            # (AMI never makes the move).
             howto = find_howto(q) or find_howto("waivers")
             calls = [ToolCall("get_waiver_recommendations", {"position": position} if position else {})]
             if howto:
                 calls.append(ToolCall("find_feature", {"task": howto.key}))
-            return Plan(F_WAIVER, PRODUCT_HELP, calls, position=position)
+            return Plan(F_WAIVER, APP_DATA, calls, position=position)
         return None
 
     # ---- stats ---------------------------------------------------------------------

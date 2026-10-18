@@ -167,8 +167,8 @@ def _terms() -> list[Term]:
             "The status on Lineup & Trades says where this week's lineup stands: **Not saved** (nothing saved for the "
             "week yet), **Draft** (not submitted: a lineup is being built but hasn't been saved with Save Lineup) or "
             "**Saved and locked** (saved with Save Lineup, and the week is locked). A week that locks with nothing "
-            "saved just says **Locked**. AMI can explain these, but it "
-            "can't see your lineup's current status yet; the page shows it at the top.",
+            "saved just says **Locked**. Ask “Is my lineup saved?” for yours: AMI reads it with the page's own "
+            "status reader (it never infers it).",
             ("Fantasy Lineup Assistant",),
             ("lineup status", "not saved", "saved and locked", "not submitted", "draft (not submitted)"),
             "u3_answers.lineup_answer",

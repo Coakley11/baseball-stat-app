@@ -63,14 +63,15 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability(
         "fantasy_team", "Fantasy league (read-only)", LIVE,
-        ("Where am I in the standings?", "Where could I gain a roto point?", "What happened last week?",
-         "Can Springer play shortstop?", "Would trading Judge for Tucker leave me without a catcher?",
+        ("Where am I in the standings?", "Is my lineup saved?", "Who should I consider adding?",
+         "What do you think of this trade?", "What happened last week?", "Can Springer play shortstop?",
          "How would my current roster rank right now?"),
         ("get_active_league", "get_official_standings", "get_current_roster_standings", "get_week", "get_week_lineup",
-         "explain_player_week", "get_lineup_report", "check_slot_eligibility", "find_eligible_players",
-         "evaluate_trade", "get_waiver_recommendations"),
-        notes=("Built on fantasy_read_api / fantasy_league_peek (Phase D). Official standings and the current-roster "
-               "what-if are never mixed. Waiver recommendations wait on a shared waiver reader."),
+         "explain_player_week", "get_lineup_status", "get_lineup_report", "check_slot_eligibility",
+         "find_eligible_players", "get_player_owner", "find_available_players", "evaluate_trade",
+         "get_waiver_recommendations"),
+        notes=("Built on fantasy_read_api's shared readers over fantasy_league_peek. Official standings and the "
+               "current-roster what-if are never mixed. Read-only: no lineup, waiver, trade or week changes."),
     ),
     Capability(
         "future_actions", "Actions (draft, waivers, trades, lineup)", DISABLED,

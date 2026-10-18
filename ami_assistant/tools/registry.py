@@ -5,11 +5,13 @@ A ``ToolSpec`` with ``mutates=True`` cannot be registered — future write actio
 wired they must call the same canonical transaction functions as the UI, after explicit
 user confirmation (see docs/AMI_ASSISTANT_FOUNDATION.md).
 
-Plans: a tool may name the ``baseball_monetization.FeatureId`` it belongs to (``feature``).
-When the app enforces that feature, AMI applies the same check the UI does
-(``can_use_feature`` on the entitlement snapshot the host already resolved this run). AMI never
-resolves entitlements itself (that may call the billing provider) and fails closed when the
-snapshot is missing or still loading. While nothing is enforced, nothing changes.
+Plans: a tool may name the shared capability it serves (``plan_capability``, a key of
+``baseball_monetization.CAPABILITY_FEATURES``, e.g. "draft_team_needs"). The plan feature behind
+it, and whether it is enforced, come from that metadata, and the decision is
+``entitlement_for_capability`` — the same gate the pages and API apply — on the entitlement
+snapshot the host already resolved this run. AMI never resolves entitlements itself (that may call
+the billing provider) and fails closed when an enforced feature's snapshot is missing or still
+loading. While nothing is enforced, nothing changes.
 """
 
 from __future__ import annotations
@@ -69,7 +71,7 @@ class ToolSpec:
     needs_session: bool = False
     mutates: bool = False
     wired: bool = True
-    feature: str = ""  # baseball_monetization.FeatureId value, when the tool belongs to a plan feature
+    plan_capability: str = ""  # baseball_monetization.CAPABILITY_FEATURES key, when the tool serves one
 
     def schema(self) -> dict[str, Any]:
         """Provider-neutral JSON-schema description (works for Claude tools or OpenAI functions)."""
@@ -109,9 +111,9 @@ class ToolRegistry:
         spec = self._tools.get(name)
         if spec is None:
             return fail(name, BAD_ARGUMENT, f"No AMI tool named {name!r}.")
-        blocked = entitlement_block(spec.feature, entitlement)
+        blocked = entitlement_block(spec.plan_capability, entitlement)
         if blocked is not None:
-            return fail(name, blocked[0], blocked[1], feature=spec.feature)
+            return fail(name, blocked[0], blocked[1], capability=spec.plan_capability)
         kwargs = dict(args or {})
         if spec.needs_dataset:
             kwargs["dataset"] = dataset
@@ -128,27 +130,19 @@ class ToolRegistry:
         return result
 
 
-def enforced_features() -> frozenset[str]:
-    """Features the app enforces right now: the ones its page gate checks
-    (``ENFORCED_PAGE_FEATURES``), plus a feature-level set if the app defines one."""
-    try:
-        import baseball_monetization as bm
-    except ImportError:
-        return frozenset()
-    feats = list(bm.ENFORCED_PAGE_FEATURES.values()) + list(getattr(bm, "ENFORCED_FEATURES", ()) or ())
-    return frozenset(str(getattr(f, "value", f)) for f in feats)
-
-
-def entitlement_block(feature: str, entitlement: Any) -> tuple[str, str] | None:
-    """(error code, message) when the UI's own gate would refuse ``feature``; None otherwise."""
-    if not feature or feature not in enforced_features():
+def entitlement_block(capability: str, entitlement: Any) -> tuple[str, str] | None:
+    """(error code, message) when the shared plan gate would refuse ``capability``; None otherwise."""
+    if not capability:
         return None
-    from baseball_monetization import FeatureId, can_use_feature, feature_definition
+    import baseball_monetization as bm
 
-    name = feature_definition(FeatureId(feature)).name
+    feature = bm.feature_for_capability(capability)
+    if feature is None or feature not in bm.enforced_features():
+        return None
+    name = bm.feature_definition(feature).name
     if entitlement is None or not getattr(entitlement, "ready", False):
         return ENTITLEMENT_LOADING, f"AMI can't confirm your plan for {name} yet. Try again in a moment."
-    if can_use_feature(entitlement, FeatureId(feature)):
+    if bm.entitlement_for_capability(entitlement, capability):
         return None
     return NOT_ENTITLED, f"{name} is part of Pro. See Pricing & Upgrade to compare plans."
 
@@ -166,7 +160,7 @@ def tool(
     needs_dataset: bool = False,
     needs_session: bool = False,
     wired: bool = True,
-    feature: str = "",
+    plan_capability: str = "",
 ) -> Callable[[Callable[..., ToolResult]], Callable[..., ToolResult]]:
     def deco(func: Callable[..., ToolResult]) -> Callable[..., ToolResult]:
         REGISTRY.register(
@@ -180,7 +174,7 @@ def tool(
                 needs_dataset=needs_dataset,
                 needs_session=needs_session,
                 wired=wired,
-                feature=feature,
+                plan_capability=plan_capability,
             )
         )
         return func

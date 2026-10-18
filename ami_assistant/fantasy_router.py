@@ -19,7 +19,7 @@ import re
 from typing import Any
 
 from ami_assistant.capabilities import APP_DATA, PRODUCT_HELP
-from ami_assistant.context import AmiPageContext
+from ami_assistant.context import DRAFT_PAGES, AmiPageContext
 from ami_assistant.conversation import ConversationState
 from ami_assistant.glossary import match_term
 from ami_assistant.page_help import find_howto
@@ -39,8 +39,13 @@ F_ELIGIBLE = "fantasy_slot_eligibility"
 F_FIND_ELIGIBLE = "fantasy_find_eligible"
 F_TRADE = "fantasy_trade"
 F_WAIVER = "fantasy_waiver"
+F_LINEUP_STATUS = "fantasy_lineup_status"
+F_OWNER = "fantasy_owner"
+F_POOL = "fantasy_pool"
 FANTASY_INTENTS = frozenset({F_LEAGUE, F_STANDINGS, F_SNAPSHOT, F_GAINS, F_STRENGTHS, F_WEEK, F_WEEK_LINEUP,
-                             F_PLAYER_WEEK, F_LINEUP, F_EMPTY, F_ELIGIBLE, F_FIND_ELIGIBLE, F_TRADE, F_WAIVER})
+                             F_PLAYER_WEEK, F_LINEUP, F_EMPTY, F_ELIGIBLE, F_FIND_ELIGIBLE, F_TRADE, F_WAIVER,
+                             F_LINEUP_STATUS, F_OWNER, F_POOL})
+WAIVER_PAGE = "Waiver Wire / Add-Drop Center"
 # Help terms that "what is / what does … mean" questions should explain rather than look up.
 FANTASY_HELP_TERMS = frozenset({"official_standings", "current_roster_snapshot", "use_suggested_lineup",
                                 "consider_add", "eligibility", "explore_more", "lineup_status", "trade_verdict",
@@ -65,8 +70,11 @@ _TRADE_SIDES = (
     re.compile(r"\btrad(?:e|ing)\s+(?P<give>.+?)\s+for\s+(?P<recv>.+?)(?=$|\?|,|\s+(?:leave|would|help|do|does|to|and get|improve|hurt|make)\b)", re.I),
     re.compile(r"\bgive\s+(?:up\s+)?(?P<give>.+?)\s+(?:and get|for|to get)\s+(?P<recv>.+?)(?=$|\?|,|\s+(?:would|leave|help|do|does)\b)", re.I),
 )
-_PLAYER_WEEK = re.compile(r"\b(?:didn'?t|did not|doesn'?t|does not|wasn'?t|was not)\b.*\bcount|\bwhy\b.*\bnot count")
-_PLAYER_WEEK_NAME = re.compile(r"(?:didn'?t|did not|doesn'?t|does not|wasn'?t|was not)\s+(?P<p>.+?)\s+count|why\s+(?P<p2>.+?)\s+(?:didn'?t|did not|doesn'?t|wasn'?t)\s+count", re.I)
+_PLAYER_WEEK = re.compile(r"\b(?:didn'?t|did not|doesn'?t|does not|wasn'?t|was not)\b.*\bcount|\bwhy\b.*\bnot count"
+                          r"|\b(?:why|how) (?:did|does|do)\b.+?\bcounts?\b|\bdid\b.+?\bcount\b")
+_PLAYER_WEEK_NAME = re.compile(r"(?:didn'?t|did not|doesn'?t|does not|wasn'?t|was not)\s+(?P<p>.+?)\s+count"
+                               r"|why\s+(?P<p2>.+?)\s+(?:didn'?t|did not|doesn'?t|wasn'?t)\s+count"
+                               r"|(?:why|how)?\s*(?:did|does|do)\s+(?P<p3>.+?)\s+counts?\b", re.I)
 _WEEK_REF = re.compile(r"\b(?:last week|this week|week (?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve))\b")
 _WEEK_LINEUP = re.compile(r"\blineup\b|\bwho (?:was|were) (?:in|starting|on)\b|\bstarters\b")
 _WEEK_STATUS = re.compile(r"\bfinali[sz]ed?\b|\b(?:is|has) (?:this|last|the) week\b.*\b(?:final|over|done|scored)\b|\bbeen finali")
@@ -76,7 +84,7 @@ _SNAPSHOT = re.compile(r"\bcurrent rosters?\b|\brosters? would rank\b|\bwould (?
 _GAINS = re.compile(r"\bgain (?:a |any |more )?(?:roto )?points?\b|\b(?:pick up|get|earn|win) (?:a |more |some )?(?:roto )?points?\b|\bclosest gains?\b|\bmove up\b|\bcatch up\b")
 _STRENGTHS = re.compile(r"\b(?:strongest|best|weakest|worst) categor|\bcategor\w* (?:am i|are we|is my team) (?:strongest|weakest|best|worst)|\bwhat am i (?:good|bad) at\b")
 _STANDINGS = re.compile(r"\bstandings\b|\bwhat place\b|\bwhich place\b|\bwhere (?:am i|do i stand|do i rank|are we|does my team stand)\b|\bhow far\b.*\b(?:first|1st|lead|leader|top)\b|\bin first\b|\bmy (?:place|rank|ranking)\b|\bam i winning\b|\bwho(?:'s| is) (?:winning|leading|in first)\b")
-_EMPTY = re.compile(r"\b(?:which|what) (?:positions?|slots?) (?:are|is) (?:empty|open|unfilled|missing)\b|\bempty (?:slots?|positions?)\b|\bopen (?:slots?|positions?)\b|\bunfill(?:ed|able)\b|\bcan'?t (?:i )?fill\b|\b(?:which|what) positions? needs? (?:the most )?help\b")
+_EMPTY = re.compile(r"\b(?:which|what) (?:positions?|slots?) (?:are|is) (?:empty|open|unfilled|missing)\b|\bempty (?:slots?|positions?)\b|\bopen (?:slots?|positions?)\b|\bunfill(?:ed|able)\b|\bcan'?t (?:i )?fill\b|\bpositions? (?:are |is )?(?:still )?(?:open|empty|unfilled)\b")
 _ELIGIBLE = (
     re.compile(r"\bcan (?P<p>.+?) (?:play|start|go|fill|be (?:used|played|started))(?: at| in| as)?\b(?P<rest>.*)", re.I),
     re.compile(r"\bwhy (?:can'?t|cannot|can not|isn'?t|is not|won'?t) (?P<p>.+?) (?:play|start|go|be|fill|eligible)\b(?P<rest>.*)", re.I),
@@ -84,7 +92,20 @@ _ELIGIBLE = (
 )
 _FIND_ELIGIBLE = re.compile(rf"\bdo i have (?:an? |any )?(?:eligible )?{_POS}\b|\b(?:anyone|anybody|someone|somebody|who)\b.*\b(?:can|could) (?:help|play|fill|cover)\b|\bwho can play\b|\beligible {_POS}\b")
 _LINEUP = re.compile(r"\bwho should i start\b|\bstart this week\b|\brecommended starters\b|\bmy (?:best )?lineup\b|\bstart or sit\b|\bstart/sit\b|\bmy (?:bench|starters)\b|\bwho(?:'s| is) (?:starting|on my bench)\b")
-_WAIVER = re.compile(r"\bwaivers?\b|\bwaiver wire\b|\bfree agents?\b|\bpick ?up\b|\bwho should i (?:add|drop|pick up)\b|\bavailable players?\b|\bwaiver player\b|\bwho (?:can|could|should) i add\b")
+_WAIVER = re.compile(r"\bwaivers?\b|\bwaiver wire\b|\bfree agents?\b|\bpick ?up\b|\bwho should i (?:add|drop|pick up)\b"
+                     r"|\bwaiver player\b|\bwho (?:can|could|should) i (?:add|consider)\b|\bconsider adding\b"
+                     r"|\bpositions? (?:do i |should i )?(?:most )?needs? (?:the most )?help\b|\bneed (?:the most )?help (?:at|with)\b"
+                     r"|\bbiggest needs?\b")
+# "Why is Corbin Carroll recommended?" on the Waiver Wire (draft pages keep their own meaning).
+_WAIVER_WHY = re.compile(r"\bwhy (?:is|was) (?P<p>.+?) (?:recommended|suggested|a good add|on the list)\b", re.I)
+_LINEUP_STATUS_Q = re.compile(r"\b(?:is|was|has) (?:my|the|our) lineup (?:been )?(?:saved|locked|submitted|set|complete|done|ready)\b"
+                              r"|\blineup (?:status|saved|locked|complete)\b|\bdid i save my lineup\b|\bis my lineup\b")
+_OWNER = re.compile(r"\bwho (?:owns|rostered|picked up) (?P<p>.+?)\??$"
+                    r"|\bis (?P<p2>.+?) (?:available|a free agent|rostered|taken|owned|on (?:a|my|any|someone'?s) (?:team|roster))\b"
+                    r"|\bwhose (?:team|roster) is (?P<p3>.+?) on\b", re.I)
+_POOL = re.compile(r"\bwho(?:'s| is| are) (?:available|out there)\b|\bavailable (?:at|catchers|outfielders|shortstops|"
+                   r"first basemen|second basemen|third basemen|hitters|players at)\b"
+                   r"|\b(?:list|show)(?: me)? (?:the |some )?(?:available|free agent|unrostered)\b")
 _LEAGUE = re.compile(r"\b(?:which|what) league\b|\bmy league\b|\bwhat(?:'s| is) my team\b|\bwhich team is mine\b|\bam i (?:the )?commissioner\b|\bwho (?:is|are) (?:in )?my league\b")
 _FOLLOWUP = re.compile(r"^(?:what about|how about|and\b|ok(?:ay)?\b|now\b)")
 _THIS = re.compile(r"^(?:this player|that player|he|him|this slot|that slot|it)$")
@@ -138,6 +159,20 @@ def _player_for(raw: str, conv: ConversationState, ctx: AmiPageContext) -> str:
     return name
 
 
+def _last_trade(conv: ConversationState) -> dict[str, Any]:
+    """The players of the last named trade in this conversation ({} → the Trade Center draft)."""
+    for turn in reversed(conv.turns):
+        if turn.intent != F_TRADE:
+            continue
+        orig = " " + re.sub(r"\s+", " ", turn.question.replace("’", "'")).strip() + " "
+        for pattern in _TRADE_SIDES:
+            m = pattern.search(orig)
+            if m and _split_players(m.group("give")) and _split_players(m.group("recv")):
+                return {"give": _split_players(m.group("give")), "receive": _split_players(m.group("recv"))}
+        return {}
+    return {}
+
+
 def fantasy_plan(question: str, ctx: AmiPageContext, conv: ConversationState) -> Plan | None:
     """A plan for a fantasy league question, or None when it isn't one."""
     q = str(question or "").strip()
@@ -168,14 +203,18 @@ def fantasy_plan(question: str, ctx: AmiPageContext, conv: ConversationState) ->
                     if slot:
                         args["slot"] = slot
                     return Plan(F_TRADE, APP_DATA, [ToolCall("evaluate_trade", args)], position=slot)
-        if re.search(r"\b(?:this|the|that) trade\b", low):
-            return Plan(F_TRADE, APP_DATA, position=slot, clarification=(
-                "AMI can't read the trade you're building in Trade Center yet. Name the players, e.g. "
-                "“Would trading Aaron Judge for Kyle Tucker leave me without a catcher?”"))
+        if re.search(r"\b(?:this|the|that|my) trade\b", low):
+            return Plan(F_TRADE, APP_DATA, [ToolCall("evaluate_trade", {"slot": slot} if slot else {})], position=slot)
+    if conv.intent == F_TRADE and re.search(r"\bleave (?:me|us)\b|\bwithout an?\b", low) and slot:
+        # "Would this leave me without a catcher?" after a trade question: the same trade.
+        args = dict(_last_trade(conv))
+        args["slot"] = slot
+        return Plan(F_TRADE, APP_DATA, [ToolCall("evaluate_trade", args)], position=slot)
 
     if _PLAYER_WEEK.search(low):
         m = _PLAYER_WEEK_NAME.search(orig)
-        raw = (m.group("p") or m.group("p2")) if m else ""
+        raw = (m.group("p") or m.group("p2") or m.group("p3")) if m else ""
+        raw = re.sub(r"\s+(?:even though|although|though|when|after|if)\b.*$", "", raw, flags=re.I)
         raw = re.sub(r"\b(?:last week|this week|week \d+)\b", "", raw, flags=re.I).strip()
         player = _player_for(raw, conv, ctx)
         if not player:
@@ -203,8 +242,18 @@ def fantasy_plan(question: str, ctx: AmiPageContext, conv: ConversationState) ->
         return Plan(F_STRENGTHS, APP_DATA, [ToolCall("get_official_standings", {})])
     if _STANDINGS.search(low):
         return Plan(F_STANDINGS, APP_DATA, [ToolCall("get_official_standings", {})])
-    if _EMPTY.search(low):
-        return Plan(F_EMPTY, APP_DATA, [ToolCall("get_lineup_report", {})])
+    if _LINEUP_STATUS_Q.search(low):
+        return Plan(F_LINEUP_STATUS, APP_DATA, [ToolCall("get_lineup_status", {})])
+    if _EMPTY.search(low) and not _WAIVER.search(low):
+        return Plan(F_EMPTY, APP_DATA, [ToolCall("get_lineup_status", {})])
+    on_draft_page = ctx.page in DRAFT_PAGES  # "Is X available?" there means the draft board
+    m = _OWNER.search(orig) if not on_draft_page else None
+    if m:
+        player = _clean_name(m.group("p") or m.group("p2") or m.group("p3"))
+        if player and player.lower() not in ("anyone", "anybody", "someone", "it", "this", "that"):
+            return Plan(F_OWNER, APP_DATA, [ToolCall("get_player_owner", {"player": player})], subject=player)
+    if _POOL.search(low) and not on_draft_page and " best available " not in low:  # that one is draft talk
+        return Plan(F_POOL, APP_DATA, [ToolCall("find_available_players", {"position": slot} if slot else {})], position=slot)
 
     for pattern in _ELIGIBLE:
         m = pattern.search(orig)
@@ -223,12 +272,15 @@ def fantasy_plan(question: str, ctx: AmiPageContext, conv: ConversationState) ->
                     [ToolCall("find_eligible_players", {"slot": slot, "bench_only": "bench" in low})], position=slot)
     if _LINEUP.search(low):
         return Plan(F_LINEUP, APP_DATA, [ToolCall("get_lineup_report", {})])
-    if _WAIVER.search(low) and not _HOWTO.search(stripped):
+    why = _WAIVER_WHY.search(orig) if (ctx.page == WAIVER_PAGE or "waiver" in low or conv.intent == F_WAIVER) else None
+    if why or (_WAIVER.search(low) and not _HOWTO.search(stripped)):
         position = slot or (conv.position if followup else "")
-        calls = [ToolCall("get_waiver_recommendations", {"position": position} if position else {}),
-                 ToolCall("find_feature", {"task": "consider_add"})]
-        # No shared waiver reader yet: the answer is page help, so it's grounded as such.
-        return Plan(F_WAIVER, PRODUCT_HELP, calls, position=position)
+        args: dict[str, Any] = {"position": position} if position else {}
+        player = _player_for(why.group("p"), conv, ctx) if why else ""
+        if player and not re.match(r"^(?:this|that|the) (?:waiver )?player$", player.lower()):
+            args["player"] = player
+        return Plan(F_WAIVER, APP_DATA, [ToolCall("get_waiver_recommendations", args)], position=position,
+                    subject=args.get("player", ""))
     if _LEAGUE.search(low):
         return Plan(F_LEAGUE, APP_DATA, [ToolCall("get_active_league", {})])
     if followup and conv.intent in (F_GAINS, F_STRENGTHS, F_STANDINGS) and re.search(r"\bpoints?\b|\bcategor", low):

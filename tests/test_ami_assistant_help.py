@@ -306,8 +306,8 @@ class U2U3HelpTests(unittest.TestCase):
         definition = TERMS["lineup_status"].definition
         for status in LINEUP_STATUSES:
             self.assertIn(f"**{status}**", definition)
-        # Until fantasy_read_api has week_lineup_status, AMI explains statuses but never infers yours.
-        self.assertIn("can't see your lineup's current status", definition)
+        # Your actual status comes from fantasy_read_api.week_lineup_status (the page's reader), never inferred.
+        self.assertIn("Is my lineup saved?", definition)
 
     def test_trade_verdicts_are_the_trade_centers(self) -> None:
         from u3_answers import ROSTER_ISSUE_LABEL, TRADE_VALUE_LABELS, TRADE_VALUE_THRESHOLD, trade_verdict

@@ -90,10 +90,11 @@ class ReadOnlyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             reg.register(spec)
 
-    def test_unwired_fantasy_tools_are_not_offered_to_a_model(self) -> None:
+    def test_every_tool_is_wired_and_offered(self) -> None:
+        # The waiver reader exists now (633538f); no unwired contract remains to hide from a model.
         offered = {s["name"] for s in REGISTRY.schemas()}
-        self.assertNotIn("get_waiver_recommendations", offered)
-        self.assertFalse(REGISTRY.get("get_waiver_recommendations").wired)
+        self.assertEqual(offered, set(REGISTRY.names()))
+        self.assertTrue(all(REGISTRY.get(n).wired for n in REGISTRY.names()))
 
     def test_no_tool_can_change_the_app(self) -> None:
         # The app supports these actions; AMI must not, in any spelling.
@@ -208,7 +209,8 @@ class ConversationStorageTests(unittest.TestCase):
         self.assertNotIn("ami_assistant", (ROOT / "page_state.py").read_text(encoding="utf-8"))
 
 class EntitlementGateTests(unittest.TestCase):
-    """AMI applies the UI's own plan gate to tools tied to a plan feature, and only when the app enforces it."""
+    """AMI applies the shared plan gate (CAPABILITY_FEATURES + entitlement_for_capability) to the tools that
+    serve a plan capability, and only while the app enforces that feature."""
 
     DRAFT_TOOLS = {"get_draft_recommendations", "explain_draft_recommendation", "get_team_needs"}
     ARGS = {"explain_draft_recommendation": {"player": "Bobby Witt"}}
@@ -216,18 +218,29 @@ class EntitlementGateTests(unittest.TestCase):
     def _enforce(self, *features):
         import baseball_monetization as bm
 
-        return mock.patch.object(bm, "ENFORCED_PAGE_FEATURES", MappingProxyType({f"page {i}": f for i, f in enumerate(features)}))
+        return mock.patch.object(bm, "ENFORCED_FEATURES", frozenset(features))  # feature-level enforcement
 
-    def test_tagged_tools_are_advanced_draft_intelligence(self) -> None:
-        from baseball_monetization import FeatureId
+    def test_tagged_tools_use_the_shared_capability_metadata(self) -> None:
+        from baseball_monetization import CAPABILITY_FEATURES, FeatureId
 
-        tagged = {s.name: s.feature for s in REGISTRY.specs() if s.feature}
-        self.assertEqual(tagged, {name: FeatureId.ADVANCED_DRAFT_INTELLIGENCE.value for name in self.DRAFT_TOOLS})
+        tagged = {s.name: s.plan_capability for s in REGISTRY.specs() if s.plan_capability}
+        self.assertEqual(tagged, {"get_draft_recommendations": "draft_recommendations",
+                                  "explain_draft_recommendation": "draft_recommendation_explanation",
+                                  "get_team_needs": "draft_team_needs"})
+        for cap in tagged.values():
+            self.assertEqual(CAPABILITY_FEATURES[cap], FeatureId.ADVANCED_DRAFT_INTELLIGENCE)
+        # Draft Lab and ML Predictions are plan capabilities too; AMI has no tool that serves them
+        # (it declines projection questions and doesn't read Draft Lab results). A tool that ever reads
+        # them must carry the matching tag, so its reuses must not name those sources untagged.
+        for spec in REGISTRY.specs():
+            sources = " ".join(spec.reuses).lower()
+            if any(k in sources for k in ("ml_predict", "draft_lab", "draft lab", "next-season")):
+                self.assertIn(spec.plan_capability, ("draft_lab_simulation", "ml_predictions"), spec.name)
 
     def test_nothing_changes_while_nothing_is_enforced(self) -> None:
-        from ami_assistant.tools.registry import enforced_features
+        import baseball_monetization as bm
 
-        self.assertEqual(enforced_features(), frozenset())  # the app enforces no feature today
+        self.assertEqual(bm.enforced_features(), frozenset())  # the app enforces no feature today
         for name in self.DRAFT_TOOLS:
             self.assertEqual(REGISTRY.call(name, self.ARGS.get(name, {}), session={}, entitlement=None).error_code,
                              codes.MISSING_DRAFT_CONTEXT)
@@ -252,9 +265,23 @@ class EntitlementGateTests(unittest.TestCase):
             answer = ask("Who should I draft next?", session_state={}, active_page="Draft Assistant Simulator",
                          dataset=synthetic_dataset(), entitlement=free).answer
             self.assertIn("part of Pro", answer)
-        with self._enforce(FeatureId.ML_PREDICTIONS):  # another feature enforced: draft tools stay open
+        for other in (FeatureId.ML_PREDICTIONS, FeatureId.DRAFT_LAB):  # other features enforced: draft tools stay open
+            with self._enforce(other):
+                self.assertEqual(REGISTRY.call("get_team_needs", {}, session={}, entitlement=free).error_code,
+                                 codes.MISSING_DRAFT_CONTEXT)
+                self.assertTrue(REGISTRY.call("explain_metric", {"term": "ops"}, entitlement=free).ok)
+                # ML questions never reach a model-output tool, so nothing to gate: AMI declines them.
+                ml = ask("Who will hit the most home runs next season?", session_state={}, dataset=synthetic_dataset(),
+                         entitlement=free)
+                self.assertIn("ML Predictions", ml.answer)
+                self.assertEqual(ml.tools, [])
+        # Page-level enforcement reaches the same gate (enforced_features() includes page features).
+        import baseball_monetization as bm
+
+        with mock.patch.object(bm, "ENFORCED_PAGE_FEATURES",
+                               MappingProxyType({"Draft Assistant Simulator": FeatureId.ADVANCED_DRAFT_INTELLIGENCE})):
             self.assertEqual(REGISTRY.call("get_team_needs", {}, session={}, entitlement=free).error_code,
-                             codes.MISSING_DRAFT_CONTEXT)
+                             codes.NOT_ENTITLED)
 
     def test_ami_never_resolves_entitlements_itself(self) -> None:
         # Resolving may call the billing provider; AMI only uses the snapshot the host already has.
