@@ -49,10 +49,46 @@ describe("Baseball API proxy", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("allows the player seasons path for a Lahman id", async () => {
+  it.each([
+    ["/api/baseball/players/judgeaa01/seasons", "http://api.test/api/v1/players/judgeaa01/seasons"],
+    ["/api/baseball/players/judgeaa01", "http://api.test/api/v1/players/judgeaa01"],
+    ["/api/baseball/catalog", "http://api.test/api/v1/catalog"],
+    ["/api/baseball/players/search?q=judge&limit=8", "http://api.test/api/v1/players/search?q=judge&limit=8"],
+  ])("allows %s", async (path, target) => {
     const fetchImpl = upstream(200, {});
-    await proxyBaseballApi(get("/api/baseball/players/judgeaa01/seasons"), { origin: ORIGIN, fetchImpl });
-    expect(fetchImpl.mock.calls[0]![0]).toBe("http://api.test/api/v1/players/judgeaa01/seasons");
+    await proxyBaseballApi(get(path), { origin: ORIGIN, fetchImpl });
+    expect(fetchImpl.mock.calls[0]![0]).toBe(target);
+  });
+
+  it("passes a CSV download through unchanged: bytes, content type and the API's filename", async () => {
+    const csv = ["Year,Player,Bats", "2025,Cal Raleigh,B", '2025,"Giménez, André",L', ""].join("\r\n");
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(csv, {
+          status: 200,
+          headers: {
+            "content-type": "text/csv; charset=utf-8",
+            "content-disposition": 'attachment; filename="historical_explorer.csv"',
+            "content-length": String(csv.length),
+            "set-cookie": "x=1",
+          },
+        }),
+    );
+    const res = await proxyBaseballApi(get("/api/baseball/seasons?start=2025&end=2025&metric=HR&format=csv"), { origin: ORIGIN, fetchImpl });
+    expect(fetchImpl.mock.calls[0]![0]).toBe("http://api.test/api/v1/seasons?start=2025&end=2025&metric=HR&format=csv");
+    expect(res.headers.get("content-type")).toBe("text/csv; charset=utf-8");
+    expect(res.headers.get("content-disposition")).toBe('attachment; filename="historical_explorer.csv"');
+    expect(res.headers.get("set-cookie")).toBeNull();
+    expect(await res.text()).toBe(csv);
+  });
+
+  it("passes the API's still-loading hint through so the client can wait as told", async () => {
+    const res = await proxyBaseballApi(get("/api/baseball/catalog"), {
+      origin: ORIGIN,
+      fetchImpl: upstream(503, { error: { code: "data_unavailable", message: "loading" } }, { "retry-after": "2" }),
+    });
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("2");
   });
 
   it("reports an unreachable API as 502 upstream_unavailable", async () => {

@@ -1,10 +1,8 @@
 /**
- * Frontend models for the Baseball Explorer read API (WEB-M1 scope).
- *
- * TEMPORARY: these are hand-written to describe the JSON the frontend needs. When the Python
- * API publishes its OpenAPI schema, replace this file with generated types (or re-export them
- * from here) and fix whatever the compiler flags. Pages import from "@/lib/api", never from a
- * fixture, so only the adapter and this file should need to change.
+ * View models the pages use. The wire format is the generated OpenAPI types
+ * (generated/baseball-api.ts); only the HTTP adapter (http/mapping.ts) reads those and fills
+ * these in, so pages never depend on wire names. Pages import from "@/lib/api", never from a
+ * fixture or the generated file.
  *
  * Design rules:
  * - Every number is authoritative Python output. The frontend never ranks, qualifies, sums or
@@ -19,18 +17,21 @@ export type MetricKey = string;
 
 /**
  * How a metric's value is displayed. `rate` → ".311" / "1.159", `count` → "1,234",
- * `score` → one decimal at most.
+ * `score` → one decimal at most, `year` → "2024" (no thousands separator).
  */
-export type StatFormat = "rate" | "count" | "score";
+export type StatFormat = "rate" | "count" | "score" | "year";
 
 export interface MetricDefinition {
   key: MetricKey;
   /** Short label for tiles, axes and table headers: "HR", "AVG", "Score". */
   label: string;
-  /** Plain-language name for sentences and controls: "home runs", "OPS". */
+  /** Plain-language name for sentences and controls ("home runs"), from the API. */
   name: string;
   format: StatFormat;
 }
+
+/** Rows per page of a ranked table (the page size the pages ask the API for). */
+export const TABLE_PAGE_SIZE = 25;
 
 export interface YearRange {
   start: number;
@@ -64,11 +65,12 @@ export interface PlayerSeason {
   position: string | null;
   stats: StatLine;
   /**
-   * Whether the season meets the active at-bat minimum. Only meaningful when the qualification
-   * applies; rows below it can still appear (e.g. on a single player's timeline) but are never
-   * the answer.
+   * Whether the season meets the active minimums (the API's `meets_minimum`). Seasons below
+   * them only appear on one player's timeline, unranked.
    */
   qualified: boolean;
+  /** 1-based rank in the full result; `null` for an unranked below-minimum season. */
+  rank: number | null;
 }
 
 /**
@@ -77,11 +79,10 @@ export interface PlayerSeason {
  */
 export interface QualificationInfo {
   kind: "qualified" | "manual" | "none" | "not_applicable";
-  /**
-   * "Qualified hitters · at least 2,349 AB over 2020–2025". `null` until the API publishes
-   * surface-neutral copy (handoff R4); the UI then shows only the number.
-   */
+  /** The chip line: "Qualified hitters · at least 2,349 AB over 2020–2025". `null` for counting stats. */
   summary: string | null;
+  /** One or two plain-text sentences on the rule in force; `null` when there is none. */
+  explanation: string | null;
   minAtBats: number | null;
   scope: "season" | "span";
 }
@@ -90,13 +91,10 @@ export interface QualificationInfo {
 export interface Answer {
   /** Short claim: "Aaron Judge, 2024: 1.159 OPS". */
   headline: string;
-  /**
-   * One or two scoped sentences: "…is the highest among the 2,412 seasons shown (2010–2025)."
-   * `null` when the source doesn't provide it (real API until handoff R2/R3).
-   */
-  detail: string | null;
-  /** Optional context line, e.g. "2024 · NYY · CF". */
-  context: string | null;
+  /** One or two scoped sentences: "…is the highest among the 2,412 seasons shown (2010–2025)." */
+  detail: string;
+  /** Context line, e.g. "2024 · New York Yankees · OF" or "Ranked by home runs". */
+  context: string;
 }
 
 /* ------------------------------------------------------------------ catalog */
@@ -106,12 +104,91 @@ export interface ExplorerDefaults {
   metric: MetricKey;
 }
 
+/**
+ * One table column, exactly as the API describes it: the header, where the value sits in a row
+ * (`field`, a dotted path like "stats.HR"), and the stat it belongs to (`null` for text).
+ * The same list is the CSV header, so tables and exports always agree.
+ */
+export interface TableColumn {
+  label: string;
+  field: string;
+  metric: MetricKey | null;
+}
+
+export interface FilterOption {
+  value: string;
+  label: string;
+}
+
+export type PositionSource = "season" | "career";
+
+/** The filters the API applies to Historical Explorer (parameters of /seasons). */
+export interface HistoricalFilters {
+  /** Batting hands to include; empty = all. */
+  bats: string[];
+  positionSource: PositionSource;
+  /** Primary positions to include; empty = all. */
+  positions: string[];
+  /** Franchises / leagues to include (values from the catalog); empty = all. */
+  teams: string[];
+  /** One row per player-season (primary team) instead of one per team. */
+  combine: boolean;
+}
+
+export const NO_HISTORICAL_FILTERS: HistoricalFilters = {
+  bats: [],
+  positionSource: "season",
+  positions: [],
+  teams: [],
+  combine: false,
+};
+
 export interface Catalog {
   /** First and last seasons the data covers. */
   years: YearRange;
   metrics: MetricDefinition[];
-  historical: ExplorerDefaults & { metrics: MetricKey[]; order: SortOrder };
-  leaderboards: ExplorerDefaults & { metrics: MetricKey[] };
+  historical: ExplorerDefaults & {
+    metrics: MetricKey[];
+    order: SortOrder;
+    columns: TableColumn[];
+    filters: {
+      bats: FilterOption[];
+      positionSources: FilterOption[];
+      /** Position options for each position source. */
+      positionsBySource: Record<PositionSource, string[]>;
+      teams: FilterOption[];
+    };
+  };
+  leaderboards: ExplorerDefaults & {
+    metrics: MetricKey[];
+    columns: TableColumn[];
+    /** Default weights behind the weighted score. */
+    weights: Record<MetricKey, number>;
+    weightStats: MetricKey[];
+    weightBounds: [number, number];
+    weightStep: number;
+    /** The default and allowed range of "how many players". */
+    limit: number;
+    limitBounds: [number, number];
+  };
+}
+
+/** A table cell value, resolved from the row by the column's `field`. */
+export type CellValue = string | number | null;
+
+export interface TableRow {
+  id: string;
+  /** The API's rank for this row; `null` for an unranked row. */
+  rank: number | null;
+  /** One value per column, in column order. */
+  cells: CellValue[];
+  /** A short note about this row, e.g. "Below AB minimum". */
+  note: string | null;
+}
+
+export interface ResultTable {
+  columns: TableColumn[];
+  rows: TableRow[];
 }
 
 /* ------------------------------------------------------- historical explorer */
@@ -122,6 +199,10 @@ export interface HistoricalExplorerQuery {
   order: SortOrder;
   /** Restrict to one player's seasons; null = every player. */
   playerId: string | null;
+  /** Filters; omitted = none. */
+  filters?: HistoricalFilters;
+  /** 0-based position of the first row wanted; omitted = 0. */
+  offset?: number;
 }
 
 /** The default visual the API recommends for this answer. */
@@ -150,14 +231,18 @@ export interface HistoricalExplorerResult {
   answer: Answer | null;
   /** The season the answer is about. */
   topSeasonId: string | null;
-  /** Metrics to show as tiles for the top season, the ranked metric first. */
+  /** Metrics to show as tiles for the top season, in order (the API's `tile_metrics`). */
   keyMetrics: MetricKey[];
-  /** Table columns, in display order. */
-  columns: MetricKey[];
-  /** Ranked seasons (first page). Player scope: every season, ranked; see `qualified`. */
+  /** The page of seasons returned, with their stats (for tiles and charts). */
   seasons: PlayerSeason[];
-  /** Seasons matching the question in total (may exceed `seasons.length`). */
+  /** The same page as a table, in the API's column order. */
+  table: ResultTable;
+  /** Rows in the full result (one player's view also counts unranked seasons). */
   totalCount: number;
+  /** Seasons that pass the filters and minimums. */
+  rankedCount: number;
+  /** 0-based position of the first row returned. */
+  offset: number;
   player: PlayerSummary | null;
   chart: SeasonChart | null;
 }
@@ -167,20 +252,20 @@ export interface HistoricalExplorerResult {
 export interface LeaderboardQuery {
   yearRange: YearRange;
   metric: MetricKey;
+  /** How many players (Top N); omitted = the catalog default. */
+  limit?: number;
+  /** Custom weights for the score; omitted = the API's defaults. */
+  weights?: Record<MetricKey, number>;
 }
 
 export interface LeaderboardEntry {
   rank: number;
   player: Pick<PlayerSummary, "id" | "name">;
-  /** Seasons played inside the range; `null` when the source doesn't report it (real API). */
-  seasons: number | null;
   /** Totals (and rates from totals) over the range. */
   stats: StatLine;
 }
 
 export interface ScoreDefinition {
-  /** "HR + RBI + SB, each weighted 1"; `null` until the API words it (handoff R3). */
-  summary: string | null;
   weights: { metric: MetricKey; weight: number }[];
 }
 
@@ -189,11 +274,11 @@ export interface LeaderboardResult {
   metric: MetricDefinition;
   qualification: QualificationInfo;
   answer: Answer | null;
-  /** Ranked entries (first page). */
+  /** Ranked entries (the Top N asked for). */
   entries: LeaderboardEntry[];
   /** Players ranked in total. */
   totalRanked: number;
-  columns: MetricKey[];
+  table: ResultTable;
   /** Present when `metric` is the weighted score. */
   score: ScoreDefinition | null;
 }

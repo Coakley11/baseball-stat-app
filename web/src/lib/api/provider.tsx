@@ -28,12 +28,14 @@ function lazySampleClient(): BaseballClient {
   const loaded = import("baseball-sample-data").then((m) => m.createMockClient());
   return {
     source: "mock",
-    capabilities: { playerSeasonRanking: true },
+    capabilities: { playerSeasonRanking: true, csvExport: false, paging: false },
     getCatalog: async (options) => (await loaded).getCatalog(options),
     searchPlayers: async (text, options) => (await loaded).searchPlayers(text, options),
     getPlayer: async (id, options) => (await loaded).getPlayer(id, options),
     getHistoricalExplorer: async (query, options) => (await loaded).getHistoricalExplorer(query, options),
     getLeaderboard: async (query, options) => (await loaded).getLeaderboard(query, options),
+    historicalExportUrl: () => null,
+    leaderboardExportUrl: () => null,
   };
 }
 

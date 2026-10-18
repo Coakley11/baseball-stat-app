@@ -6,9 +6,13 @@
 import type { LeaderboardEntry, LeaderboardResult, QualificationInfo, StatLine } from "../../types";
 import { CATALOG, metricDefinition } from "./catalog";
 import { playerRef } from "./players";
+import { leaderboardTable } from "./table";
 
 const RANGE = CATALOG.leaderboards.yearRange;
-const COLUMNS = ["AB", "H", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"];
+type Seed = Omit<LeaderboardResult, "table">;
+
+const finishAll = (seeds: Record<string, Seed>): Record<string, LeaderboardResult> =>
+  Object.fromEntries(Object.entries(seeds).map(([k, v]) => [k, { ...v, table: leaderboardTable(CATALOG.leaderboards.columns, v.entries) }]));
 
 type Totals = [seasons: number, AB: number, H: number, HR: number, RBI: number, SB: number, BB: number | null,
   BA: number, OBP: number, SLG: number, OPS: number, score: number];
@@ -36,15 +40,15 @@ function entries(order: string[]): LeaderboardEntry[] {
   return order.map((id, i) => {
     const t = TOTALS[id];
     if (!t) throw new Error(`Fixture totals missing: ${id}`);
-    const [seasons, AB, H, HR, RBI, SB, BB, BA, OBP, SLG, OPS, score] = t;
+    const [, AB, H, HR, RBI, SB, BB, BA, OBP, SLG, OPS, score] = t;
     const stats: StatLine = { AB, H, HR, RBI, SB, BB, BA, OBP, SLG, OPS, score };
-    return { rank: i + 1, player: playerRef(id), seasons, stats };
+    return { rank: i + 1, player: playerRef(id), stats };
   });
 }
 
-const COUNTING: QualificationInfo = { kind: "not_applicable", summary: "", minAtBats: null, scope: "span" };
+const COUNTING: QualificationInfo = { kind: "not_applicable", summary: null, explanation: null, minAtBats: null, scope: "span" };
 
-export const LEADERBOARD_SCENARIOS: Record<string, LeaderboardResult> = {
+const LEADERBOARD_SEEDS: Record<string, Seed> = {
   score: {
     query: { yearRange: RANGE, metric: "score" },
     metric: metricDefinition("score"),
@@ -52,16 +56,14 @@ export const LEADERBOARD_SCENARIOS: Record<string, LeaderboardResult> = {
     answer: {
       headline: "José Ramírez leads 2020–2025 in weighted score: 954",
       detail: "Ahead of Shohei Ohtani (938) and Aaron Judge (879). Score adds up HR + RBI + SB over 2020–2025.",
-      context: null,
+      context: "Ranked by weighted score",
     },
     entries: entries([
       "ramirjo01", "ohtansh01", "judgeaa01", "alonspe01", "olsonma02", "schwaky01", "sotoju01", "guerrvl02",
       "freemfr01", "harpebr03", "rileyau01", "wittbo02", "acunaro01", "tatisfe02", "seageco01",
     ]),
     totalRanked: 1604,
-    columns: ["score", ...COLUMNS],
     score: {
-      summary: "HR + RBI + SB, each weighted 1. Other stats are weighted 0.",
       weights: [{ metric: "HR", weight: 1 }, { metric: "RBI", weight: 1 }, { metric: "SB", weight: 1 }],
     },
   },
@@ -72,14 +74,13 @@ export const LEADERBOARD_SCENARIOS: Record<string, LeaderboardResult> = {
     answer: {
       headline: "Aaron Judge leads 2020–2025 in home runs: 258",
       detail: "Ahead of Shohei Ohtani (240) and Kyle Schwarber (230). Total home runs over 2020–2025.",
-      context: null,
+      context: "Ranked by home runs",
     },
     entries: entries([
       "judgeaa01", "ohtansh01", "schwaky01", "alonspe01", "olsonma02", "sotoju01", "ramirjo01", "rileyau01",
       "guerrvl02", "harpebr03", "tatisfe02", "freemfr01", "seageco01", "acunaro01", "wittbo02",
     ]),
     totalRanked: 1604,
-    columns: COLUMNS,
     score: null,
   },
   // Ronald Acuña Jr. (2,052 AB) falls under the span minimum, so he is not ranked here.
@@ -89,20 +90,20 @@ export const LEADERBOARD_SCENARIOS: Record<string, LeaderboardResult> = {
     qualification: {
       kind: "qualified",
       summary: "Qualified hitters · at least 2,349 AB over 2020–2025",
+      explanation: null,
       minAtBats: 2349,
       scope: "span",
     },
     answer: {
       headline: "Aaron Judge leads 2020–2025 in OPS: 1.058",
       detail: "Ahead of Shohei Ohtani (.962) and Juan Soto (.955). OPS from each player's combined totals over 2020–2025.",
-      context: null,
+      context: "Ranked by OPS",
     },
     entries: entries([
       "judgeaa01", "ohtansh01", "sotoju01", "harpebr03", "freemfr01", "seageco01", "tatisfe02", "olsonma02",
       "ramirjo01", "guerrvl02", "wittbo02", "schwaky01", "rileyau01", "alonspe01",
     ]),
     totalRanked: 142,
-    columns: COLUMNS,
     score: null,
   },
 };
@@ -115,7 +116,7 @@ const HR_2010: [id: string, seasons: number, HR: number][] = [
   ["olsonma02", 10, 280], ["ohtansh01", 8, 280],
 ];
 
-const LONG_RANGE_SCENARIOS: Record<string, LeaderboardResult> = {
+const LONG_RANGE_SEEDS: Record<string, Seed> = {
   HR: {
     query: { yearRange: { start: 2010, end: 2025 }, metric: "HR" },
     metric: metricDefinition("HR"),
@@ -123,14 +124,16 @@ const LONG_RANGE_SCENARIOS: Record<string, LeaderboardResult> = {
     answer: {
       headline: "Giancarlo Stanton leads 2010–2025 in home runs: 429",
       detail: "Ahead of Mike Trout (404) and Freddie Freeman (367). Total home runs over 2010–2025.",
-      context: null,
+      context: "Ranked by home runs",
     },
-    entries: HR_2010.map(([id, seasons, HR], i) => ({ rank: i + 1, player: playerRef(id), seasons, stats: { HR } })),
+    entries: HR_2010.map(([id, , HR], i) => ({ rank: i + 1, player: playerRef(id), stats: { HR } })),
     totalRanked: 4213,
-    columns: ["HR"],
     score: null,
   },
 };
+
+export const LEADERBOARD_SCENARIOS = finishAll(LEADERBOARD_SEEDS);
+const LONG_RANGE_SCENARIOS = finishAll(LONG_RANGE_SEEDS);
 
 const BY_RANGE: Record<string, Record<string, LeaderboardResult>> = {
   [`${RANGE.start}-${RANGE.end}`]: LEADERBOARD_SCENARIOS,

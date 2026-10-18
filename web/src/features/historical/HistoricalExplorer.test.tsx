@@ -51,7 +51,7 @@ describe("Historical Explorer", () => {
   it("shows one player's seasons as a timeline with below-minimum seasons marked", async () => {
     open("player=judgeaa01&metric=OPS");
     expect(await screen.findByRole("figure", { name: "Aaron Judge · OPS by season" })).toBeInTheDocument();
-    expect(screen.getAllByText("Below the at-bat minimum").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Below the minimum").length).toBeGreaterThan(0);
     expect(screen.getByRole("img", { name: /10 seasons from 2016 to 2025/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Best seasons by every player" })).toHaveAttribute("href", "/players/historical?metric=OPS");
   });
@@ -60,7 +60,7 @@ describe("Historical Explorer", () => {
     open("");
     await screen.findByRole("heading", { name: "Aaron Judge, 2022: 62 home runs" });
     const table = screen.getByRole("table");
-    expect(within(table).getByText(/Showing 15 of 9,718 seasons/)).toBeInTheDocument();
+    expect(within(table).getByText(/Rows 1–15 of 9,718 seasons/)).toBeInTheDocument();
     expect(within(table).getByRole("columnheader", { name: /HR/ })).toHaveAttribute("aria-sort", "descending");
     expect(table.closest("details")).not.toHaveAttribute("open");
   });

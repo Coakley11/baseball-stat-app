@@ -19,6 +19,8 @@ export function formatStat(value: number | null | undefined, format: StatFormat)
     }
     case "score":
       return SCORE.format(value);
+    case "year":
+      return String(Math.trunc(value));
     case "count":
       return COUNT.format(value);
   }

@@ -21,7 +21,7 @@ describe("Leaderboards", () => {
   it("leads with what is ranked, the top 3, and a top-10 visual", async () => {
     open("");
     expect(await screen.findByRole("heading", { level: 2, name: "José Ramírez leads 2020–2025 in weighted score: 954" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Answer" })).toHaveTextContent("Ranked by weighted score · 2020–2025");
+    expect(screen.getByRole("region", { name: "Answer" })).toHaveTextContent("Ranked by weighted score");
 
     const podium = screen.getByRole("heading", { name: "Top 3" }).closest("section")!;
     const cards = within(podium).getAllByRole("listitem");
@@ -43,13 +43,12 @@ describe("Leaderboards", () => {
     expect(screen.getByText("142 qualified hitters ranked")).toBeInTheDocument();
   });
 
-  it("explains the weighted score and keeps the full ranking under Explore more", async () => {
+  it("keeps the ranking table, in the API's column order, under Explore more", async () => {
     open("");
     await screen.findByRole("heading", { name: /José Ramírez leads/ });
-    expect(screen.getByText("HR + RBI + SB, each weighted 1. Other stats are weighted 0.")).toBeInTheDocument();
     const table = screen.getByRole("table");
     expect(table.closest("details")).not.toHaveAttribute("open");
-    expect(within(table).getByText(/Showing 15 of 1,604 ranked/)).toBeInTheDocument();
+    expect(within(table).getByText(/Top 15 of 1,604 ranked by weighted score/)).toBeInTheDocument();
     expect(within(table).getByRole("columnheader", { name: /Score/ })).toHaveAttribute("aria-sort", "descending");
     // Corey Seager's walks are missing in the sample: shown as a dash, not zero.
     const seager = within(table).getByRole("row", { name: /Corey Seager/ });

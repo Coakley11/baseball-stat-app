@@ -65,7 +65,7 @@ describe("fixture adapter", () => {
     const seasons = await client.getHistoricalExplorer({ ...HIST_DEFAULT, yearRange: { start: 2020, end: 2025 } });
     expect(seasons.answer?.detail).toContain("(2020–2025)");
     const leaders = await client.getLeaderboard({ yearRange: { start: 2010, end: 2025 }, metric: "HR" });
-    expect(leaders.columns).toEqual(["HR"]);
+    expect(leaders.table.columns.at(-1)?.label).toBe("Score");
     expect(leaders.entries[0]?.player.name).toBe("Giancarlo Stanton");
   });
 

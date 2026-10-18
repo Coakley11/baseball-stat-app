@@ -161,6 +161,18 @@ export function ButtonLink({ variant = "secondary", className, ...rest }: Compon
   return <Link className={cx(styles.button, styles[variant], className)} {...rest} />;
 }
 
+/**
+ * A plain link to a file the server builds (e.g. a CSV). The browser downloads it using the
+ * server's own Content-Disposition filename; `download` just asks for a download, not a page.
+ */
+export function DownloadLink({ variant = "secondary", className, children, ...rest }: ComponentProps<"a"> & { variant?: ButtonVariant }) {
+  return (
+    <a className={cx(styles.button, styles[variant], className)} download {...rest}>
+      {children}
+    </a>
+  );
+}
+
 /** 1–4 next steps. Stacks full-width on narrow phones. */
 export function ActionRow({ label, children }: { label: string; children: ReactNode }) {
   return (

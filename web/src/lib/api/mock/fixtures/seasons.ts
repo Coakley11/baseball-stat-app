@@ -12,7 +12,7 @@ type Line = [AB: number, H: number, HR: number, RBI: number, SB: number | null, 
 function season(playerId: string, year: number, team: string | null, position: string | null, line: Line): PlayerSeason {
   const [AB, H, HR, RBI, SB, BB, BA, OBP, SLG, OPS] = line;
   const stats: StatLine = { AB, H, HR, RBI, SB, BB, BA, OBP, SLG, OPS };
-  return { id: `${playerId}-${year}`, player: playerRef(playerId), year, team, teamName: null, position, stats, qualified: true };
+  return { id: `${playerId}-${year}`, player: playerRef(playerId), year, team, teamName: null, position, stats, qualified: true, rank: null };
 }
 
 const ALL: PlayerSeason[] = [
@@ -60,9 +60,11 @@ const BY_ID = new Map(ALL.map((s) => [s.id, s]));
  * as declared by the fixture author (the mock never evaluates the rule itself).
  */
 export function seasonRows(ids: string[], unqualified: string[] = []): PlayerSeason[] {
+  let rank = 0;
   return ids.map((id) => {
     const found = BY_ID.get(id);
     if (!found) throw new Error(`Fixture season missing: ${id}`);
-    return { ...found, qualified: !unqualified.includes(id) };
+    const qualified = !unqualified.includes(id);
+    return { ...found, qualified, rank: qualified ? ++rank : null };
   });
 }

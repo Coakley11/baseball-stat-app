@@ -17,12 +17,16 @@ export const PROXY_PREFIX = "/api/baseball/";
 const TIMEOUT_MS = 30_000;
 const ALLOWED_PATHS = [
   /^health$/,
+  /^catalog$/,
   /^players\/search$/,
+  // A Lahman player id, but not the `search` / `resolve` routes (resolve isn't exposed).
+  /^players\/(?!search$|resolve$)[A-Za-z0-9._-]{1,32}$/,
   /^players\/[A-Za-z0-9._-]{1,32}\/seasons$/,
   /^seasons$/,
   /^leaderboards$/,
 ];
-const PASSED_HEADERS = ["content-type", "cache-control", "server-timing"];
+// content-disposition names CSV downloads; retry-after is the API's "still loading" hint.
+const PASSED_HEADERS = ["content-type", "content-disposition", "cache-control", "server-timing", "retry-after"];
 
 /** BASEBALL_API_ORIGIN, or the local API in development. `null` in production without one. */
 export function baseballApiOrigin(env: Record<string, string | undefined> = process.env): string | null {

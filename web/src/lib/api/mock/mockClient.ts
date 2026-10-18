@@ -19,6 +19,7 @@ import type {
   PlayerSummary,
   YearRange,
 } from "../types";
+import { NO_HISTORICAL_FILTERS } from "../types";
 import { CATALOG } from "./fixtures/catalog";
 import { findHistoricalScenario, HISTORICAL_SCENARIOS } from "./fixtures/historical";
 import { findLeaderboardScenario, LEADERBOARD_SCENARIOS } from "./fixtures/leaderboards";
@@ -82,7 +83,7 @@ export function createMockClient(options: MockClientOptions = {}): BaseballClien
 
   return {
     source: "mock",
-    capabilities: { playerSeasonRanking: true },
+    capabilities: { playerSeasonRanking: true, csvExport: false, paging: false },
 
     async getCatalog(request) {
       await wait(Math.min(latencyMs, 100), request?.signal);
@@ -110,10 +111,22 @@ export function createMockClient(options: MockClientOptions = {}): BaseballClien
       if (query.playerId !== null && !PLAYERS.some((p: PlayerSummary) => p.id === query.playerId)) {
         throw new BaseballApiError("invalid_request", "That player isn't in the data.");
       }
-      const canned = findHistoricalScenario(query.yearRange, query.playerId, query.metric, query.order);
+      // Sample data has no filters or later pages: only the plain question is canned.
+      const plain = !query.offset && !(query.filters && JSON.stringify(query.filters) !== JSON.stringify(NO_HISTORICAL_FILTERS));
+      const canned = plain ? findHistoricalScenario(query.yearRange, query.playerId, query.metric, query.order) : undefined;
       if (scenario === "empty") {
         const base = canned ?? Object.values(HISTORICAL_SCENARIOS)[0]!;
-        return { ...base, query, answer: null, topSeasonId: null, seasons: [], totalCount: 0, chart: null };
+        return {
+          ...base,
+          query,
+          answer: null,
+          topSeasonId: null,
+          seasons: [],
+          table: { columns: base.table.columns, rows: [] },
+          totalCount: 0,
+          rankedCount: 0,
+          chart: null,
+        };
       }
       if (!canned) {
         throw new BaseballApiError(
@@ -130,10 +143,10 @@ export function createMockClient(options: MockClientOptions = {}): BaseballClien
         throw new BaseballApiError("invalid_request", `"${query.metric}" isn't a stat this page can rank.`);
       }
       checkRange(query.yearRange);
-      const canned = findLeaderboardScenario(query.yearRange, query.metric);
+      const canned = query.weights ? undefined : findLeaderboardScenario(query.yearRange, query.metric);
       if (scenario === "empty") {
         const base = canned ?? LEADERBOARD_SCENARIOS.OPS!;
-        return { ...base, query, answer: null, entries: [], totalRanked: 0 };
+        return { ...base, query, answer: null, entries: [], table: { columns: base.table.columns, rows: [] }, totalRanked: 0 };
       }
       if (!canned) {
         throw new BaseballApiError(
@@ -143,5 +156,9 @@ export function createMockClient(options: MockClientOptions = {}): BaseballClien
       }
       return canned;
     },
+
+    // Sample data has no CSV: the pages hide the download.
+    historicalExportUrl: () => null,
+    leaderboardExportUrl: () => null,
   };
 }

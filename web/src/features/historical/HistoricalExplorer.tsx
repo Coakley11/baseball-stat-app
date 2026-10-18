@@ -9,13 +9,17 @@ import {
   ActionRow,
   AnswerCard,
   Badge,
+  Button,
   ButtonLink,
+  DownloadLink,
   EmptyState,
+  ErrorState,
   ExploreMore,
   LoadingState,
   MetricTiles,
 } from "@/components/ui/primitives";
 import {
+  TABLE_PAGE_SIZE,
   useBaseballClient,
   useBaseballQuery,
   type Catalog,
@@ -23,22 +27,23 @@ import {
   type PlayerSeason,
   type QueryState,
 } from "@/lib/api";
-import { formatStat, formatYearRange } from "@/lib/format";
+import { formatCount, formatStat, formatYearRange } from "@/lib/format";
 
 import { metricOf, questionSummary, type ReadableParams } from "../shared/params";
-import { qualificationLabel } from "../shared/qualification";
 import { ParamIssueView, QueryErrorView } from "../shared/QueryProblem";
 import { MetricSelect, QuestionBar, YearRangeFields } from "../shared/QuestionControls";
 import shared from "../shared/questions.module.css";
+import { ResultTableView } from "../shared/ResultTableView";
+import { TablePager } from "../shared/TablePager";
 import { useSearchParamUpdater } from "../shared/useSearchParamUpdater";
 import styles from "./historical.module.css";
-import { HISTORICAL_PATH, historicalHref, readHistoricalParams, type HistoricalUrlState } from "./params";
+import { HistoricalFilterPanel } from "./HistoricalFilterPanel";
+import { filterParams, HISTORICAL_PATH, hasFilters, historicalHref, readHistoricalParams, type HistoricalUrlState } from "./params";
 import { PlayerPicker } from "./PlayerPicker";
-import { SeasonTable } from "./SeasonTable";
 
 /**
  * Question controls → answer card → default visual → next actions → Explore more.
- * The question is the URL; every number on screen comes from the client's result.
+ * The question is the URL; every number and sentence on screen comes from the client's result.
  */
 export function HistoricalExplorer() {
   const searchParams = useSearchParams();
@@ -54,13 +59,14 @@ export function HistoricalExplorer() {
 function ExplorerWithCatalog({ catalog, params }: { catalog: Catalog; params: ReadableParams }) {
   const state = readHistoricalParams(params, catalog);
   const update = useSearchParamUpdater();
+  const client = useBaseballClient();
   const { query } = state;
-  // One-player ranking only where the data source supports it (not the real API yet: R8).
-  const playerView = useBaseballClient().capabilities.playerSeasonRanking;
+  // One-player ranking only where the data source supports it.
+  const playerView = client.capabilities.playerSeasonRanking;
   const playerUnavailable = !playerView && state.scope === "player";
   const needsPlayer = playerView && state.scope === "player" && query.playerId === null;
-  const key = state.issue || needsPlayer || playerUnavailable ? null : JSON.stringify(query);
-  const result = useBaseballQuery(key, (client, options) => client.getHistoricalExplorer(query, options));
+  const blocked = state.issue !== null || needsPlayer || playerUnavailable;
+  const result = useBaseballQuery(blocked ? null : JSON.stringify(query), (c, options) => c.getHistoricalExplorer(query, options));
   const metrics = catalog.historical.metrics.flatMap((k) => metricOf(catalog, k) ?? []);
   const playerName = result.status === "success" ? result.data.player?.name : undefined;
   const summary = questionSummary(
@@ -68,6 +74,7 @@ function ExplorerWithCatalog({ catalog, params }: { catalog: Catalog; params: Re
     state.issue?.kind === "metric" ? undefined : metricOf(catalog, query.metric),
     state.scope === "all" ? "All players" : (playerName ?? "One player"),
     query.order === "asc" ? "Lowest first" : null,
+    hasFilters(query.filters) ? "Filtered" : null,
   );
 
   return (
@@ -77,25 +84,25 @@ function ExplorerWithCatalog({ catalog, params }: { catalog: Catalog; params: Re
           key={`${state.rawRange.start}-${state.rawRange.end}`}
           value={state.rawRange}
           bounds={catalog.years}
-          onCommit={({ start, end }) => update({ from: start, to: end })}
+          onCommit={({ start, end }) => update({ from: start, to: end, page: null })}
         />
         <MetricSelect
           label="Rank by"
           metrics={metrics}
           value={state.issue?.kind === "metric" ? null : query.metric}
-          onChange={(metric) => update({ metric })}
+          onChange={(metric) => update({ metric, page: null })}
         />
         {playerView && (
           <ScopeChoice
             scope={state.scope}
-            onChange={(scope) => update(scope === "all" ? { scope: null, player: null } : { scope: "player" })}
+            onChange={(scope) => update(scope === "all" ? { scope: null, player: null, page: null } : { scope: "player", page: null })}
           />
         )}
         {playerView && state.scope === "player" && (
           <PlayerPicker
             selectedId={query.playerId}
-            onSelect={(player) => update({ player, scope: null })}
-            onClear={() => update({ player: null, scope: "player" })}
+            onSelect={(player) => update({ player, scope: null, page: null })}
+            onClear={() => update({ player: null, scope: "player", page: null })}
           />
         )}
       </QuestionBar>
@@ -111,18 +118,30 @@ function ExplorerWithCatalog({ catalog, params }: { catalog: Catalog; params: Re
         />
       </section>
 
-      <ExploreMore description="Order, every season returned, and the filters still to come">
-        <AdvancedFilters state={state} onOrder={(order) => update({ order: order === catalog.historical.order ? null : order })} />
+      <ExploreMore description="Filters, every season returned, and the CSV download">
+        {client.capabilities.paging ? (
+          <HistoricalFilterPanel
+            catalog={catalog}
+            filters={query.filters ?? { bats: [], positionSource: "season", positions: [], teams: [], combine: false }}
+            order={query.order}
+            onChange={(next) => update({ ...filterParams(next), page: null })}
+            onOrder={(order) => update({ order: order === catalog.historical.order ? null : order, page: null })}
+          />
+        ) : (
+          <OrderOnly order={query.order} onOrder={(order) => update({ order: order === catalog.historical.order ? null : order, page: null })} />
+        )}
         {result.status === "success" && result.data.seasons.length > 0 && (
+          <SeasonsTable state={state} first={result.data} catalog={catalog} onPage={(page) => update({ page: page > 1 ? String(page) : null })} />
+        )}
+        {result.status === "success" && result.data.qualification.explanation && (
           <div>
-            <h3 className={shared.subheading}>All seasons</h3>
-            <SeasonTable result={result.data} catalog={catalog} />
+            <h3 className={shared.subheading}>About the minimum</h3>
+            <p>{result.data.qualification.explanation}</p>
           </div>
         )}
         <p className={shared.note}>
-          Batting hand, position, franchise and league filters, split-season handling, stat minimums, Hall of Fame Case
-          Mode, the relationship finder and CSV export are still in the current app. They move here with the Baseball
-          API.
+          Hall of Fame Case Mode, stat minimums you set yourself, several franchises at once, the relationship finder and
+          scatterplot are still in the current app.
         </p>
       </ExploreMore>
     </div>
@@ -149,7 +168,7 @@ function ResultArea({
     return (
       <EmptyState
         title="One-player rankings aren't available yet"
-        message="Ranking a single player's seasons needs support from the baseball data service, which is coming. The best seasons by every player are available now."
+        message="Ranking a single player's seasons needs support from the baseball data service. The best seasons by every player are available now."
         action={<ButtonLink href={historicalHref({ ...state.query, playerId: null }, catalog)}>Best seasons by every player</ButtonLink>}
       />
     );
@@ -165,27 +184,33 @@ function ResultArea({
   if (result.status === "error") return <QueryErrorView error={result.error} retry={result.retry} resetHref={HISTORICAL_PATH} />;
   if (result.status !== "success") return <LoadingState label="Finding seasons" />;
   const data = result.data;
-  if (data.seasons.length === 0) {
+  if (data.seasons.length === 0 || !data.answer) {
     return (
       <EmptyState
         title="No seasons match"
-        message={`Nothing in ${formatYearRange(data.query.yearRange)} matches this question. Widen the seasons or choose another stat.`}
+        message={`Nothing in ${formatYearRange(data.query.yearRange)} matches this question. Widen the seasons, clear a filter or choose another stat.`}
         action={<ButtonLink href={HISTORICAL_PATH}>Start from the default question</ButtonLink>}
       />
     );
   }
-  return <HistoricalAnswer result={data} catalog={catalog} playerView={playerView} />;
+  return <HistoricalAnswer result={data} answer={data.answer} catalog={catalog} playerView={playerView} />;
 }
 
-function HistoricalAnswer({ result, catalog, playerView }: { result: HistoricalExplorerResult; catalog: Catalog; playerView: boolean }) {
+function HistoricalAnswer({
+  result,
+  answer,
+  catalog,
+  playerView,
+}: {
+  result: HistoricalExplorerResult;
+  answer: NonNullable<HistoricalExplorerResult["answer"]>;
+  catalog: Catalog;
+  playerView: boolean;
+}) {
   const chartId = useId();
-  const { answer, metric, qualification } = result;
+  const { metric, qualification } = result;
   const byId = new Map(result.seasons.map((s) => [s.id, s]));
   const top = result.topSeasonId ? byId.get(result.topSeasonId) : undefined;
-  const qualificationApplies = qualification.kind !== "not_applicable";
-  const qualificationText = qualificationLabel(qualification);
-  // Without an API answer, a title that states the question and claims nothing about the data.
-  const headline = answer?.headline ?? `Best seasons by ${metric.name}, ${formatYearRange(result.query.yearRange)}`;
 
   const tiles = top
     ? result.keyMetrics.map((key) => {
@@ -196,13 +221,13 @@ function HistoricalAnswer({ result, catalog, playerView }: { result: HistoricalE
 
   return (
     <>
-      <AnswerCard kicker={answer?.context ?? `Ranked by ${metric.name}`} headline={headline} detail={answer?.detail ?? undefined}>
+      <AnswerCard kicker={answer.context} headline={answer.headline} detail={answer.detail}>
         {tiles.length > 0 && <MetricTiles items={tiles} label={top ? `${top.player.name}, ${top.year}` : undefined} />}
       </AnswerCard>
 
-      {qualificationApplies && qualificationText && (
+      {qualification.summary && (
         <div className={shared.chips}>
-          <Badge tone={qualification.kind === "none" ? "warn" : "accent"}>{qualificationText}</Badge>
+          <Badge tone={qualification.kind === "none" ? "warn" : "accent"}>{qualification.summary}</Badge>
         </div>
       )}
 
@@ -211,7 +236,7 @@ function HistoricalAnswer({ result, catalog, playerView }: { result: HistoricalE
           <h2 id={chartId} className="sr-only">
             {result.chart.title}
           </h2>
-          <SeasonChart result={result} byId={byId} qualificationApplies={qualificationApplies} />
+          <SeasonChart result={result} byId={byId} />
         </section>
       )}
 
@@ -220,15 +245,7 @@ function HistoricalAnswer({ result, catalog, playerView }: { result: HistoricalE
   );
 }
 
-function SeasonChart({
-  result,
-  byId,
-  qualificationApplies,
-}: {
-  result: HistoricalExplorerResult;
-  byId: Map<string, PlayerSeason>;
-  qualificationApplies: boolean;
-}) {
+function SeasonChart({ result, byId }: { result: HistoricalExplorerResult; byId: Map<string, PlayerSeason> }) {
   const chart = result.chart!;
   const { metric } = result;
   const seasons = chart.seasonIds.flatMap((id) => byId.get(id) ?? []);
@@ -239,13 +256,13 @@ function SeasonChart({
         title={chart.title}
         valueLabel={metric.label}
         formatTick={(v) => formatStat(v, metric.format)}
-        hollowLabel={qualificationApplies ? "Below the at-bat minimum" : undefined}
+        hollowLabel="Below the minimum"
         points={seasons.map((s) => ({
           year: s.year,
           value: s.stats[metric.key] ?? null,
           display: formatStat(s.stats[metric.key], metric.format),
           highlight: s.id === result.topSeasonId,
-          hollow: qualificationApplies && !s.qualified,
+          hollow: !s.qualified,
         }))}
       />
     );
@@ -253,7 +270,7 @@ function SeasonChart({
 
   const items: RankingBarItem[] = seasons.map((s, i) => ({
     id: s.id,
-    rank: i + 1,
+    rank: s.rank ?? i + 1,
     label: s.player.name,
     sublabel: [s.year, s.team].filter(Boolean).join(" · "),
     value: s.stats[metric.key] ?? null,
@@ -298,12 +315,87 @@ function NextActions({
           All of {top.player.name}&apos;s seasons
         </ButtonLink>
       ) : (
-        <ButtonLink variant="primary" href={historicalHref({ ...query, playerId: null }, catalog)}>
+        <ButtonLink variant="primary" href={historicalHref({ ...query, playerId: null, filters: undefined }, catalog)}>
           Best seasons by every player
         </ButtonLink>
       )}
       <ButtonLink href={leadersLink}>Leaders over {formatYearRange(query.yearRange)}</ButtonLink>
     </ActionRow>
+  );
+}
+
+/** The ranked table (Explore more): the API's columns, Previous / Next over its pages, and its CSV. */
+function SeasonsTable({
+  state,
+  first,
+  catalog,
+  onPage,
+}: {
+  state: HistoricalUrlState;
+  first: HistoricalExplorerResult;
+  catalog: Catalog;
+  onPage: (page: number) => void;
+}) {
+  const client = useBaseballClient();
+  const paging = client.capabilities.paging;
+  const page = paging ? state.page : 1;
+  const pageQuery = { ...state.query, offset: (page - 1) * TABLE_PAGE_SIZE };
+  const later = useBaseballQuery(page > 1 ? JSON.stringify(pageQuery) : null, (c, options) => c.getHistoricalExplorer(pageQuery, options));
+  const exportUrl = client.capabilities.csvExport ? client.historicalExportUrl(state.query) : null;
+
+  let shown: HistoricalExplorerResult | null = first;
+  let pending: QueryState<HistoricalExplorerResult> | null = null;
+  if (page > 1) {
+    if (later.status === "success") shown = later.data;
+    else {
+      shown = null;
+      pending = later;
+    }
+  }
+
+  return (
+    <div>
+      <h3 className={shared.subheading}>Seasons</h3>
+      {shown ? (
+        <>
+          <ResultTableView
+            table={shown.table}
+            catalog={catalog}
+            label="Seasons"
+            caption={`Rows ${formatCount(shown.offset + 1)}–${formatCount(shown.offset + shown.table.rows.length)} of ${formatCount(shown.totalCount)} seasons, ranked by ${shown.metric.name} (${shown.query.order === "asc" ? "lowest" : "highest"} first).`}
+            rankedMetric={shown.metric.key}
+            sortDirection={shown.query.order === "asc" ? "ascending" : "descending"}
+          />
+          {paging && <TablePager offset={shown.offset} shown={shown.table.rows.length} total={shown.totalCount} pageSize={TABLE_PAGE_SIZE} onPage={(offset) => onPage(offset / TABLE_PAGE_SIZE + 1)} />}
+        </>
+      ) : pending?.status === "error" ? (
+        <ErrorState title="This page of seasons didn't load" message={pending.error.message} action={<Button variant="primary" onClick={pending.retry}>Try again</Button>} />
+      ) : (
+        <LoadingState label="Loading more seasons" />
+      )}
+      {exportUrl && (
+        <p className={shared.exportRow}>
+          <DownloadLink href={exportUrl}>Download CSV</DownloadLink>
+          <span className={shared.note}>Every ranked season for this question ({formatCount(first.rankedCount)}), as the Python app exports it.</span>
+        </p>
+      )}
+    </div>
+  );
+}
+
+
+function OrderOnly({ order, onOrder }: { order: "asc" | "desc"; onOrder: (order: "asc" | "desc") => void }) {
+  const id = useId();
+  return (
+    <div className={shared.field} style={{ maxWidth: 260 }}>
+      <label className={shared.label} htmlFor={id}>
+        Order
+      </label>
+      <select id={id} className={shared.select} value={order} onChange={(e) => onOrder(e.target.value === "asc" ? "asc" : "desc")}>
+        <option value="desc">Highest first</option>
+        <option value="asc">Lowest first</option>
+      </select>
+    </div>
   );
 }
 
@@ -323,28 +415,5 @@ function ScopeChoice({ scope, onChange }: { scope: "all" | "player"; onChange: (
         </label>
       </div>
     </fieldset>
-  );
-}
-
-function AdvancedFilters({ state, onOrder }: { state: HistoricalUrlState; onOrder: (order: "asc" | "desc") => void }) {
-  const id = useId();
-  return (
-    <div>
-      <h3 className={shared.subheading}>Advanced filters</h3>
-      <div className={shared.field} style={{ maxWidth: 260 }}>
-        <label className={shared.label} htmlFor={id}>
-          Order
-        </label>
-        <select
-          id={id}
-          className={shared.select}
-          value={state.query.order}
-          onChange={(e) => onOrder(e.target.value === "asc" ? "asc" : "desc")}
-        >
-          <option value="desc">Highest first</option>
-          <option value="asc">Lowest first</option>
-        </select>
-      </div>
-    </div>
   );
 }

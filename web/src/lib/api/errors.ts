@@ -11,11 +11,14 @@ export type BaseballApiErrorKind = "unavailable" | "invalid_request" | "unsuppor
 
 export class BaseballApiError extends Error {
   readonly kind: BaseballApiErrorKind;
+  /** Seconds the service asked us to wait before retrying (its Retry-After header), if any. */
+  readonly retryAfterSeconds: number | null;
 
-  constructor(kind: BaseballApiErrorKind, message: string) {
+  constructor(kind: BaseballApiErrorKind, message: string, retryAfterSeconds: number | null = null) {
     super(message);
     this.name = "BaseballApiError";
     this.kind = kind;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 

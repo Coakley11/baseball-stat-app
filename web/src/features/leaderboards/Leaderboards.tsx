@@ -1,14 +1,16 @@
 "use client";
 
 import { useSearchParams } from "next/navigation";
-import { useId } from "react";
+import { useId, useState } from "react";
 
 import { RankingBars } from "@/components/charts/RankingBars";
 import {
   ActionRow,
   AnswerCard,
   Badge,
+  Button,
   ButtonLink,
+  DownloadLink,
   EmptyState,
   ExploreMore,
   LoadingState,
@@ -16,22 +18,22 @@ import {
   Podium,
   SectionHeader,
 } from "@/components/ui/primitives";
-import { useBaseballClient, useBaseballQuery, type Catalog, type LeaderboardEntry, type LeaderboardResult, type QueryState } from "@/lib/api";
+import { useBaseballClient, useBaseballQuery, type Catalog, type LeaderboardResult, type QueryState } from "@/lib/api";
 import { formatCount, formatStat, formatYearRange } from "@/lib/format";
 
 import { historicalHref } from "../historical/params";
 import { metricOf, questionSummary, type ReadableParams } from "../shared/params";
-import { qualificationLabel } from "../shared/qualification";
 import { ParamIssueView, QueryErrorView } from "../shared/QueryProblem";
 import { MetricSelect, QuestionBar, YearRangeFields } from "../shared/QuestionControls";
 import shared from "../shared/questions.module.css";
+import { ResultTableView } from "../shared/ResultTableView";
 import { useSearchParamUpdater } from "../shared/useSearchParamUpdater";
-import { LEADERBOARDS_PATH, readLeaderboardParams, type LeaderboardUrlState } from "./params";
+import { formatWeights, LEADERBOARDS_PATH, readLeaderboardParams, sameWeights, type LeaderboardUrlState } from "./params";
 
 /**
- * Who leads over a span of seasons: the ranked metric and qualification rule up front, the top
- * three as cards, a top-10 visual, next steps, and the full ranking under Explore more.
- * Ranking, totals and qualification are the API's; this only presents them.
+ * Who leads over a span of seasons: the answer the API wrote, the qualification rule, the top
+ * three as cards, a top-10 visual, next steps, and the ranking table, score weights and CSV under
+ * Explore more. Ranking, totals, qualification and wording are the API's; this only presents them.
  */
 export function Leaderboards() {
   const searchParams = useSearchParams();
@@ -47,10 +49,12 @@ export function Leaderboards() {
 function LeaderboardsWithCatalog({ catalog, params }: { catalog: Catalog; params: ReadableParams }) {
   const state = readLeaderboardParams(params, catalog);
   const update = useSearchParamUpdater();
+  const client = useBaseballClient();
   const { query } = state;
   const key = state.issue ? null : JSON.stringify(query);
-  const result = useBaseballQuery(key, (client, options) => client.getLeaderboard(query, options));
+  const result = useBaseballQuery(key, (c, options) => c.getLeaderboard(query, options));
   const metrics = catalog.leaderboards.metrics.flatMap((k) => metricOf(catalog, k) ?? []);
+  const exportUrl = client.capabilities.csvExport && !state.issue ? client.leaderboardExportUrl(query) : null;
 
   return (
     <div className={shared.page}>
@@ -77,24 +81,35 @@ function LeaderboardsWithCatalog({ catalog, params }: { catalog: Catalog; params
         <ResultArea state={state} result={result} catalog={catalog} />
       </section>
 
-      <ExploreMore description="The full ranking, how the score works, and the controls still to come">
-        {result.status === "success" && result.data.entries.length > 0 && <FullRanking result={result.data} catalog={catalog} />}
-        {result.status === "success" && result.data.score && (
+      <ExploreMore description="The ranking table, how many players, score weights and the CSV download">
+        {client.capabilities.paging && <TopNAndWeights catalog={catalog} state={state} onChange={(changes) => update(changes)} />}
+        {result.status === "success" && result.data.entries.length > 0 && (
           <div>
-            <h3 className={shared.subheading}>How the score works</h3>
-            {result.data.score.summary ? (
-              <p>{result.data.score.summary}</p>
-            ) : (
-              <p>
-                Weights in this score:{" "}
-                {result.data.score.weights.map((w) => `${metricOf(catalog, w.metric)?.label ?? w.metric} ×${w.weight}`).join(", ")}.
+            <h3 className={shared.subheading}>Ranking table</h3>
+            <ResultTableView
+              table={result.data.table}
+              catalog={catalog}
+              label="Ranking table"
+              caption={`Top ${formatCount(result.data.entries.length)} of ${formatCount(result.data.totalRanked)} ranked by ${result.data.metric.name} over ${formatYearRange(result.data.query.yearRange)}.`}
+              rankedMetric={result.data.metric.key}
+              sortDirection="descending"
+            />
+            {exportUrl && (
+              <p className={shared.exportRow}>
+                <DownloadLink href={exportUrl}>Download CSV</DownloadLink>
+                <span className={shared.note}>The top {formatCount(result.data.entries.length)} shown here, as the Python app exports it.</span>
               </p>
             )}
           </div>
         )}
+        {result.status === "success" && result.data.qualification.explanation && (
+          <div>
+            <h3 className={shared.subheading}>About the minimum</h3>
+            <p>{result.data.qualification.explanation}</p>
+          </div>
+        )}
         <p className={shared.note}>
-          Custom stat weights, at-bat minimums, the number of players shown and CSV export are still in the current app.
-          They move here with the Baseball API.
+          At-bat minimums you set yourself, and the other Streamlit filters, are still in the current app.
         </p>
       </ExploreMore>
     </div>
@@ -106,52 +121,46 @@ function ResultArea({ state, result, catalog }: { state: LeaderboardUrlState; re
   if (result.status === "error") return <QueryErrorView error={result.error} retry={result.retry} resetHref={LEADERBOARDS_PATH} />;
   if (result.status !== "success") return <LoadingState label="Ranking players" />;
   const data = result.data;
-  if (data.entries.length === 0) {
+  if (data.entries.length === 0 || !data.answer) {
     const qualified = data.qualification.kind === "qualified" || data.qualification.kind === "manual";
     return (
       <EmptyState
         title={qualified ? "No qualified hitters" : "No players match"}
         message={
           qualified
-            ? `Nobody reaches the at-bat minimum for ${formatYearRange(data.query.yearRange)} (${qualificationLabel(data.qualification)}). Try a longer span of seasons.`
+            ? `Nobody reaches the at-bat minimum for ${formatYearRange(data.query.yearRange)}${data.qualification.summary ? ` (${data.qualification.summary})` : ""}. Try a longer span of seasons.`
             : `Nobody matches this question for ${formatYearRange(data.query.yearRange)}. Try other seasons or another stat.`
         }
         action={<ButtonLink href={LEADERBOARDS_PATH}>Start from the default question</ButtonLink>}
       />
     );
   }
-  return <LeaderboardAnswer result={data} catalog={catalog} />;
+  return <LeaderboardAnswer result={data} answer={data.answer} catalog={catalog} />;
 }
 
-function playerCardSub(entry: LeaderboardEntry): string | undefined {
-  if (entry.seasons !== null) return `${entry.seasons} season${entry.seasons === 1 ? "" : "s"}`;
-  const games = entry.stats.G;
-  return games !== null && games !== undefined ? `${formatCount(games)} games` : undefined;
-}
-
-function LeaderboardAnswer({ result, catalog }: { result: LeaderboardResult; catalog: Catalog }) {
+function LeaderboardAnswer({
+  result,
+  answer,
+  catalog,
+}: {
+  result: LeaderboardResult;
+  answer: NonNullable<LeaderboardResult["answer"]>;
+  catalog: Catalog;
+}) {
   const podiumId = useId();
   const chartId = useId();
   const playerView = useBaseballClient().capabilities.playerSeasonRanking;
-  const { answer, metric, qualification, query } = result;
+  const { metric, qualification, query } = result;
   const podium = result.entries.slice(0, 3);
   const leader = result.entries[0]!;
   const range = formatYearRange(query.yearRange);
-  const qualificationText = qualificationLabel(qualification);
 
   return (
     <>
-      {/* Without an API answer (handoff R3), a title that states the question and claims nothing. */}
-      <AnswerCard
-        kicker={`Ranked by ${metric.name} · ${range}`}
-        headline={answer?.headline ?? `Leaders by ${metric.name}, ${range}`}
-        detail={answer?.detail ?? undefined}
-      />
+      <AnswerCard kicker={answer.context} headline={answer.headline} detail={answer.detail} />
 
       <div className={shared.chips}>
-        {qualification.kind !== "not_applicable" && qualificationText && (
-          <Badge tone={qualification.kind === "none" ? "warn" : "accent"}>{qualificationText}</Badge>
-        )}
+        {qualification.summary && <Badge tone={qualification.kind === "none" ? "warn" : "accent"}>{qualification.summary}</Badge>}
         <Badge>
           {formatCount(result.totalRanked)} {qualification.kind === "qualified" ? "qualified hitters" : "players"} ranked
         </Badge>
@@ -165,7 +174,7 @@ function LeaderboardAnswer({ result, catalog }: { result: LeaderboardResult; cat
               <PlayerCard
                 rank={entry.rank}
                 name={entry.player.name}
-                sub={playerCardSub(entry)}
+                sub={entry.stats.AB !== null && entry.stats.AB !== undefined ? `${formatCount(entry.stats.AB)} AB` : undefined}
                 value={formatStat(entry.stats[metric.key], metric.format)}
                 valueLabel={metric.label}
                 lead={entry.rank === 1}
@@ -180,7 +189,7 @@ function LeaderboardAnswer({ result, catalog }: { result: LeaderboardResult; cat
           Top 10 by {metric.name}
         </h2>
         <RankingBars
-          title={`Top 10 by ${metric.name}, ${range}`}
+          title={`Top ${Math.min(10, result.entries.length)} by ${metric.name}, ${range}`}
           valueLabel={metric.label}
           items={result.entries.slice(0, 10).map((entry) => ({
             id: entry.player.id,
@@ -193,13 +202,7 @@ function LeaderboardAnswer({ result, catalog }: { result: LeaderboardResult; cat
         />
       </section>
 
-      <NextActions
-        result={result}
-        catalog={catalog}
-        leaderId={leader.player.id}
-        leaderName={leader.player.name}
-        playerView={playerView}
-      />
+      <NextActions result={result} catalog={catalog} leaderId={leader.player.id} leaderName={leader.player.name} playerView={playerView} />
     </>
   );
 }
@@ -236,52 +239,89 @@ function NextActions({
   );
 }
 
-function FullRanking({ result, catalog }: { result: LeaderboardResult; catalog: Catalog }) {
-  const columns = result.columns.map((key) => ({ key, def: metricOf(catalog, key) }));
+/** How many players (Top N) and the score's stat weights. Both are API parameters; Apply sends the weights. */
+function TopNAndWeights({
+  catalog,
+  state,
+  onChange,
+}: {
+  catalog: Catalog;
+  state: LeaderboardUrlState;
+  onChange: (changes: Record<string, string | null>) => void;
+}) {
+  const id = useId();
+  const { limit, limitBounds, weights: defaults, weightStats, weightBounds, weightStep } = catalog.leaderboards;
+  const current = state.query.weights ?? defaults;
+  const [draft, setDraft] = useState<Record<string, string>>(() =>
+    Object.fromEntries(weightStats.map((stat) => [stat, String(current[stat] ?? 0)])),
+  );
+  const parsed = Object.fromEntries(weightStats.map((stat) => [stat, Number(draft[stat])]));
+  const valid = weightStats.every((s) => Number.isFinite(parsed[s]) && parsed[s]! >= weightBounds[0] && parsed[s]! <= weightBounds[1]) && weightStats.some((s) => parsed[s]! > 0);
+  const changed = !sameWeights(parsed, current);
+  const counts = [...new Set([limitBounds[0], 10, limit, 50, limitBounds[1]])].filter((n) => n >= limitBounds[0] && n <= limitBounds[1]).sort((a, b) => a - b);
+  const apply = () => onChange({ w: sameWeights(parsed, defaults) ? null : formatWeights(parsed) });
+
   return (
     <div>
-      <h3 className={shared.subheading}>Ranking table</h3>
-      <div className={shared.tableScroll} role="region" aria-label="Full ranking" tabIndex={0}>
-        <table className={shared.table}>
-          <caption>
-            Showing {formatCount(result.entries.length)} of {formatCount(result.totalRanked)} ranked, by {result.metric.name} over{" "}
-            {formatYearRange(result.query.yearRange)}.
-          </caption>
-          <thead>
-            <tr>
-              <th scope="col">Rank</th>
-              <th scope="col" className={shared.stickyCell}>
-                Player
-              </th>
-              <th scope="col">Seasons</th>
-              {columns.map(({ key, def }) => {
-                const sorted = key === result.metric.key;
-                return (
-                  <th key={key} scope="col" className={sorted ? shared.sortedCol : undefined} aria-sort={sorted ? "descending" : undefined}>
-                    {def?.label ?? key}
-                    {sorted && <span aria-hidden="true"> ↓</span>}
-                  </th>
-                );
-              })}
-            </tr>
-          </thead>
-          <tbody>
-            {result.entries.map((entry) => (
-              <tr key={entry.player.id}>
-                <td>{entry.rank}</td>
-                <th scope="row" className={shared.stickyCell}>
-                  {entry.player.name}
-                </th>
-                <td>{entry.seasons}</td>
-                {columns.map(({ key, def }) => (
-                  <td key={key} className={key === result.metric.key ? shared.sortedCol : undefined}>
-                    {formatStat(entry.stats[key], def?.format ?? "count")}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className={shared.field} style={{ maxWidth: 260 }}>
+        <label className={shared.label} htmlFor={`${id}-top`}>
+          Players shown
+        </label>
+        <select
+          id={`${id}-top`}
+          className={shared.select}
+          value={state.query.limit ?? limit}
+          onChange={(e) => onChange({ top: Number(e.target.value) === limit ? null : e.target.value })}
+        >
+          {counts.map((n) => (
+            <option key={n} value={n}>
+              Top {n}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <h3 className={shared.subheading} style={{ marginTop: "var(--space-5)" }}>
+        Score weights
+      </h3>
+      <p className={shared.note} style={{ marginBottom: "var(--space-3)" }}>
+        The Python app adds up the weighted stats for the Score ranking. Rate stats count ×100.
+      </p>
+      <div className={shared.weightGrid}>
+        {weightStats.map((stat) => (
+          <div key={stat} className={shared.weightField}>
+            <label className={shared.label} htmlFor={`${id}-w-${stat}`}>
+              {metricOf(catalog, stat)?.label ?? stat}
+            </label>
+            <input
+              id={`${id}-w-${stat}`}
+              className={shared.input}
+              type="number"
+              inputMode="decimal"
+              min={weightBounds[0]}
+              max={weightBounds[1]}
+              step={weightStep}
+              value={draft[stat] ?? "0"}
+              onChange={(e) => setDraft((d) => ({ ...d, [stat]: e.target.value }))}
+            />
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-2)", marginTop: "var(--space-3)", alignItems: "center" }}>
+        <Button variant="primary" disabled={!valid || !changed} onClick={apply}>
+          Apply weights
+        </Button>
+        <Button
+          variant="ghost"
+          disabled={sameWeights(parsed, defaults) && !state.query.weights}
+          onClick={() => {
+            setDraft(Object.fromEntries(weightStats.map((stat) => [stat, String(defaults[stat] ?? 0)])));
+            onChange({ w: null });
+          }}
+        >
+          Reset to defaults
+        </Button>
+        {!valid && <span className={shared.note}>Use values from {weightBounds[0]} to {weightBounds[1]}, with at least one above zero.</span>}
       </div>
     </div>
   );

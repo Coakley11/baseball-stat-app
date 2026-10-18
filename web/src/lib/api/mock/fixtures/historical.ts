@@ -4,17 +4,33 @@
  * adapter only looks them up. Any other question is "not in the sample data".
  */
 import type { HistoricalExplorerResult, QualificationInfo } from "../../types";
+import { seasonTable } from "./table";
 import { CATALOG, metricDefinition } from "./catalog";
 import { PLAYERS } from "./players";
 import { seasonRows } from "./seasons";
 
 const RANGE = CATALOG.historical.yearRange;
-const COLUMNS = ["AB", "H", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"];
+type Seed = Omit<HistoricalExplorerResult, "table" | "rankedCount" | "offset">;
 
-const COUNTING: QualificationInfo = { kind: "not_applicable", summary: "", minAtBats: null, scope: "season" };
+/** Adds what the API returns around the rows: the table in catalog column order, counts, offset. */
+function finish(seed: Seed): HistoricalExplorerResult {
+  const below = seed.seasons.filter((s) => !s.qualified).length;
+  return {
+    ...seed,
+    table: seasonTable(CATALOG.historical.columns, seed.seasons),
+    rankedCount: seed.totalCount - below,
+    offset: 0,
+  };
+}
+
+const finishAll = (seeds: Record<string, Seed>): Record<string, HistoricalExplorerResult> =>
+  Object.fromEntries(Object.entries(seeds).map(([k, v]) => [k, finish(v)]));
+
+const COUNTING: QualificationInfo = { kind: "not_applicable", summary: null, explanation: null, minAtBats: null, scope: "season" };
 const QUALIFIED_SEASON: QualificationInfo = {
   kind: "qualified",
   summary: "Qualified seasons · at least 437 AB in the season",
+  explanation: null,
   minAtBats: 437,
   scope: "season",
 };
@@ -40,7 +56,7 @@ const JUDGE_YEARS = ["2016", "2017", "2018", "2019", "2020", "2021", "2022", "20
 const JUDGE_SHORT = ["judgeaa01-2016", "judgeaa01-2018", "judgeaa01-2019", "judgeaa01-2020", "judgeaa01-2023"];
 const VLAD_YEARS = ["2019", "2020", "2021", "2022", "2023", "2024", "2025"].map((y) => `guerrvl02-${y}`);
 
-export const HISTORICAL_SCENARIOS: Record<string, HistoricalExplorerResult> = {
+const HISTORICAL_SEEDS: Record<string, Seed> = {
   "all|HR|desc": {
     query: { yearRange: RANGE, metric: "HR", order: "desc", playerId: null },
     metric: metricDefinition("HR"),
@@ -52,7 +68,6 @@ export const HISTORICAL_SCENARIOS: Record<string, HistoricalExplorerResult> = {
     },
     topSeasonId: "judgeaa01-2022",
     keyMetrics: ["HR", "RBI", "BA", "OPS"],
-    columns: COLUMNS,
     seasons: HR_ALL,
     totalCount: 9718,
     player: null,
@@ -69,7 +84,6 @@ export const HISTORICAL_SCENARIOS: Record<string, HistoricalExplorerResult> = {
     },
     topSeasonId: "judgeaa01-2024",
     keyMetrics: ["OPS", "HR", "RBI", "BA"],
-    columns: COLUMNS,
     seasons: OPS_ALL,
     totalCount: 2412,
     player: null,
@@ -86,7 +100,6 @@ export const HISTORICAL_SCENARIOS: Record<string, HistoricalExplorerResult> = {
     },
     topSeasonId: "judgeaa01-2022",
     keyMetrics: ["HR", "RBI", "BA", "OPS"],
-    columns: COLUMNS,
     seasons: seasonRows([
       "judgeaa01-2022", "judgeaa01-2024", "judgeaa01-2025", "judgeaa01-2017", "judgeaa01-2021",
       "judgeaa01-2023", "judgeaa01-2018", "judgeaa01-2019", "judgeaa01-2020", "judgeaa01-2016",
@@ -106,7 +119,6 @@ export const HISTORICAL_SCENARIOS: Record<string, HistoricalExplorerResult> = {
     },
     topSeasonId: "judgeaa01-2024",
     keyMetrics: ["OPS", "HR", "RBI", "BA"],
-    columns: COLUMNS,
     seasons: seasonRows([
       "judgeaa01-2024", "judgeaa01-2025", "judgeaa01-2022", "judgeaa01-2017", "judgeaa01-2021",
       "judgeaa01-2023", "judgeaa01-2019", "judgeaa01-2018", "judgeaa01-2020", "judgeaa01-2016",
@@ -126,7 +138,6 @@ export const HISTORICAL_SCENARIOS: Record<string, HistoricalExplorerResult> = {
     },
     topSeasonId: "guerrvl02-2021",
     keyMetrics: ["HR", "RBI", "BA", "OPS"],
-    columns: COLUMNS,
     seasons: seasonRows([
       "guerrvl02-2021", "guerrvl02-2022", "guerrvl02-2024", "guerrvl02-2023", "guerrvl02-2025",
       "guerrvl02-2019", "guerrvl02-2020",
@@ -146,7 +157,6 @@ export const HISTORICAL_SCENARIOS: Record<string, HistoricalExplorerResult> = {
     },
     topSeasonId: "guerrvl02-2021",
     keyMetrics: ["OPS", "HR", "RBI", "BA"],
-    columns: COLUMNS,
     seasons: seasonRows([
       "guerrvl02-2021", "guerrvl02-2024", "guerrvl02-2025", "guerrvl02-2022", "guerrvl02-2023",
       "guerrvl02-2019", "guerrvl02-2020",
@@ -170,7 +180,7 @@ const OPS_2020 = seasonRows([
   "olsonma02-2023", "raleica01-2025", "guerrvl02-2024", "schwaky01-2025", "judgeaa01-2021",
 ]);
 
-const RECENT_SCENARIOS: Record<string, HistoricalExplorerResult> = {
+const RECENT_SEEDS: Record<string, Seed> = {
   "all|HR|desc": {
     query: { yearRange: RANGE_2020, metric: "HR", order: "desc", playerId: null },
     metric: metricDefinition("HR"),
@@ -182,7 +192,6 @@ const RECENT_SCENARIOS: Record<string, HistoricalExplorerResult> = {
     },
     topSeasonId: "judgeaa01-2022",
     keyMetrics: ["HR", "RBI", "BA", "OPS"],
-    columns: COLUMNS,
     seasons: HR_2020,
     totalCount: 3874,
     player: null,
@@ -199,13 +208,15 @@ const RECENT_SCENARIOS: Record<string, HistoricalExplorerResult> = {
     },
     topSeasonId: "judgeaa01-2024",
     keyMetrics: ["OPS", "HR", "RBI", "BA"],
-    columns: COLUMNS,
     seasons: OPS_2020,
     totalCount: 1012,
     player: null,
     chart: { kind: "ranking", title: "Top 10 seasons by OPS", seasonIds: OPS_2020.slice(0, 10).map((s) => s.id) },
   },
 };
+
+export const HISTORICAL_SCENARIOS = finishAll(HISTORICAL_SEEDS);
+const RECENT_SCENARIOS = finishAll(RECENT_SEEDS);
 
 const BY_RANGE: Record<string, Record<string, HistoricalExplorerResult>> = {
   [`${RANGE.start}-${RANGE.end}`]: HISTORICAL_SCENARIOS,

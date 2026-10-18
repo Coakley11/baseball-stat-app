@@ -22,14 +22,26 @@ export interface BaseballClient {
   getPlayer(id: string, options?: RequestOptions): Promise<PlayerSummary | null>;
   getHistoricalExplorer(query: HistoricalExplorerQuery, options?: RequestOptions): Promise<HistoricalExplorerResult>;
   getLeaderboard(query: LeaderboardQuery, options?: RequestOptions): Promise<LeaderboardResult>;
+  /**
+   * Link to the API's CSV export of every ranked row for this question (the file is named by the
+   * API's Content-Disposition). `null` when the source has no export.
+   */
+  historicalExportUrl(query: HistoricalExplorerQuery): string | null;
+  /** As above for Leaderboards (the Top N in `query.limit`). */
+  leaderboardExportUrl(query: LeaderboardQuery): string | null;
 }
 
 export interface ClientCapabilities {
   /**
-   * Ranking one player's seasons (Historical Explorer "One player"). The real API doesn't
-   * support it yet (handoff R8), so it is hidden there rather than computed in the browser.
+   * Ranking one player's seasons (Historical Explorer "One player"), with the player's
+   * below-minimum seasons marked. Sources that can't do it hide the view; the browser never
+   * computes it.
    */
   playerSeasonRanking: boolean;
+  /** Downloadable CSV exports (built by the Python API). */
+  csvExport: boolean;
+  /** Later pages of a ranked table (`offset`) and Historical Explorer's filters. */
+  paging: boolean;
 }
 
 export interface RequestOptions {
