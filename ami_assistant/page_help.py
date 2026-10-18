@@ -32,7 +32,8 @@ from u3_answers import ROSTER_ISSUE_LABEL, TRADE_VALUE_LABELS
 from valuation_scores import VALUATION_MIN_AB
 
 # Where each page's controls live: "streamlit_app.py" means that page's branch of the
-# main page router; other files are the modules the page delegates to.
+# main page router, "streamlit_app.py::<function>" one top-level function of it (U4's answer
+# cards), and other files are the modules the page delegates to.
 MONOLITH = "streamlit_app.py"
 
 # Home's buttons (home_page.render_home): the task cards, the draft card's four choices (U3A),
@@ -40,7 +41,7 @@ MONOLITH = "streamlit_app.py"
 # renders Home in both states and compares the buttons it actually draws with these.
 HOME_TASK_BUTTONS = tuple(button for _icon, title, _line, button, _page in TASKS if title != DRAFT_TASK)
 HOME_DRAFT_BUTTONS = tuple(label for label, _page in HOME_DRAFT_CHOICES)
-HOME_LEAGUE_BUTTONS = ("League standings", "Set lineup", "Waiver wire", "Start or import a draft", "Open saved drafts")
+HOME_LEAGUE_BUTTONS = ("League Standings", "Set Lineup", "Waiver Wire", "Start or import a draft", "Open saved drafts")
 DRAFT_TOOL_PAGES = tuple(page for page, _icon, _name, _purpose in DRAFT_TOOLS)
 # The visible statuses on Lineup & Trades (u3_answers.lineup_answer) and the Trade Center
 # verdict card (u3_answers.trade_verdict); tests check them against those functions.
@@ -205,10 +206,12 @@ PAGES: tuple[PageHelp, ...] = (
     PageHelp(
         "Valuation",
         controls=("Valuation Window (Years)", "Minimum Games Played", "Fantasy Position", "Draft Room sync (optional)",
-                  "Valuation blend weights", "Weight: Current Score", "Weight: Trend Score", "Valuation Insight Summaries"),
+                  "Valuation blend weights", "Weight: Current Score", "Weight: Trend Score", "Valuation Insight Summaries",
+                  "Show top player"),
         questions=("Who are the best values?", "Is Gunnar Henderson undervalued?", "What does Valuation Score mean?"),
         terms=("valuation_score", "current_score", "trend_score"),
         next_steps=("Shortlist names here, then confirm on [[Trend Value]] or [[Comparison Tool]].",),
+        sources=(MONOLITH, f"{MONOLITH}::_render_u2_valuation_answer"),
         aliases=("valuation", "value"),
         headline="One score per hitter: recent production blended with trend, then ranked.",
         reading=("Valuation Score blends two parts, production (Current Score) and trend (Trend Score), using the "
@@ -243,33 +246,45 @@ PAGES: tuple[PageHelp, ...] = (
     ),
     PageHelp(
         "Draft Room Simulator",
-        controls=("Number of Teams", "Rounds", "Scoring Format", "Your Team", "Search player", "Set player on pick",
-                  "Undo Last Pick", "Save Draft Board Now", "Team to View", "Post-draft roster grades"),
+        controls=("Draft Player", "Import Draft", "Save Draft", "Open Saved Drafts", "Number of Teams", "Rounds",
+                  "Scoring Format", "Your Team", "Search player", "Set player on pick", "Undo Last Pick",
+                  "Save Draft Board Now", "Team to View", "Post-draft roster grades"),
         questions=("How do I log picks for my draft?", "What does Relative Draft Grade mean?"),
         terms=("relative_draft_grade",),
         next_steps=("Open [[Draft Assistant Simulator]] for pick recommendations based on the board you entered.",),
+        sources=(MONOLITH, f"{MONOLITH}::_render_u4_draft_room_answer"),
         aliases=("draft room", "draft board"),
+        reading=("The page leads with an answer card: where the board stands (no picks yet, which pick is next, or "
+                 "complete) and whether it's saved, with **Draft Player**, **Import Draft**, **Save Draft** and "
+                 "**Open Saved Drafts** right under it.",),
     ),
     PageHelp(
         "Draft Assistant Simulator",
         controls=("Projection Window", "League Format", "Recommendations to Show",
                   "Position & category priorities (auto-filled; override if needed)", "Positions to prioritize",
                   "Categories / skills to strengthen", "Sort recommendations by", "Next pick recommendations",
-                  "Top players left by market value", "Inspect player", "Position scarcity & roster category heatmap"),
+                  "Top players left by market value", "Inspect player", "Position scarcity & roster category heatmap",
+                  "Open Draft Board"),
         questions=("Who should I draft next?", "Why is this player recommended?", "What positions am I weak at?"),
         terms=("decision_score", "player_grade", "roster_fit", "fantasy_edge"),
         next_steps=("Enter picks in [[Draft Room Simulator]] (or draft live in [[Live Draft Room]]) to keep recommendations "
                     "current.",),
+        sources=(MONOLITH, f"{MONOLITH}::_render_u4_draft_assistant_answer"),
         aliases=("draft assistant", "assistant"),
+        reading=("The page leads with an answer card: the pick it already ranks first for your team (by Decision "
+                 "Score) and your open positions, with **Open Draft Board** to enter picks.",),
     ),
     PageHelp(
         "Draft Lab / Simulation",
-        controls=("Projection Window", "Fantasy Format", "Projection Style", "Picks per Team",
+        controls=("Simulation settings", "Projection Window", "Fantasy Format", "Projection Style", "Picks per Team",
                   "Run 4-Team Draft Simulation", "Full Draft Pick Order", "Team Rosters", "Final Team Rankings",
                   "Roster Needs Analysis", "Best, Good, and Questionable Picks"),
         questions=("What can I do on this page?", "What does Decision Score mean?"),
         terms=("decision_score", "player_grade"),
         aliases=("draft lab", "simulation", "mock draft"),
+        reading=("After a run, the page leads with the projected best draft from the simulation's own team ranking, "
+                 "that team's best pick and its open positions. **Simulation settings** and **Run 4-Team Draft "
+                 "Simulation** sit under the answer.",),
     ),
     PageHelp(
         "Live Draft Room",
@@ -294,13 +309,13 @@ PAGES: tuple[PageHelp, ...] = (
     ),
     PageHelp(
         "Fantasy Standings Tracker",
-        controls=("League Standings (official)", "Completed week", "Set lineup", "Check waivers", "Explore trades",
+        controls=("League Standings (official)", "Completed week", "Set Lineup", "Check Waivers", "Explore Trades",
                   "Scoring Format", "Current Stats Source", "MLB API Season", "Refresh MLB stats",
                   "Drafted Rosters With Current Stats", "How current rosters would rank (not official standings)"),
         questions=("Where am I in the standings?", "Where could I gain a roto point?",
                    "What are my strongest categories?"),
         terms=("official_standings", "current_roster_snapshot"),
-        next_steps=("Use **Set lineup**, **Check waivers** or **Explore trades** under the answer.",),
+        next_steps=("Use **Set Lineup**, **Check Waivers** or **Explore Trades** under the answer.",),
         sources=(MONOLITH, "league_home_ui.py", "fantasy_season_results_ui.py", "fantasy_standings_snapshot.py"),
         # Old names stay understood: the page was "Fantasy Standings Tracker" (and showed
         # "Live Fantasy Standings") before Phase D5 / U1.
@@ -511,10 +526,10 @@ HOWTOS: tuple[HowTo, ...] = (
         "manage_league", "Manage your league", "Fantasy Standings Tracker",
         ("Start at **[[Fantasy Standings Tracker]]** (Home's **Open my league** card goes there): your place and "
          "what to do next.",
-         "Use **Set lineup**, **Check waivers** and **Explore trades** under the answer for the next step.",
+         "Use **Set Lineup**, **Check Waivers** and **Explore Trades** under the answer for the next step.",
          "Leagues are picked, renamed and shared in **[[Saved Draft Library]]** (also under My League)."),
         ("manage my league", "manage league", "my league", "run my league", "fantasy league"),
-        ("Set lineup", "Check waivers", "Explore trades"),
+        ("Set Lineup", "Check Waivers", "Explore Trades"),
     ),
     HowTo(
         # Home's draft card (draft_tools.HOME_DRAFT_CHOICES), each with the tool's own purpose line.

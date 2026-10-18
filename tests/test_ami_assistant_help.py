@@ -30,8 +30,21 @@ def page_source(page_key: str) -> str:
     ph = PAGE_HELP[page_key]
     parts = []
     for src in ph.sources:
-        parts.append(page_section(page_key) if src == MONOLITH else (ROOT / src).read_text(encoding="utf-8"))
+        if src == MONOLITH:
+            parts.append(page_section(page_key))
+        elif src.startswith(f"{MONOLITH}::"):
+            parts.append(_monolith_function(src.split("::", 1)[1]))
+        else:
+            parts.append((ROOT / src).read_text(encoding="utf-8"))
     return "\n".join(parts)
+
+
+def _monolith_function(name: str) -> str:
+    """One top-level function of streamlit_app.py (e.g. a U4 answer card the page calls)."""
+    for node in ast.parse(APP).body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.get_source_segment(APP, node) or ""
+    raise AssertionError(f"streamlit_app.py has no function {name}")
 
 
 def label_in(label: str, source: str) -> bool:
