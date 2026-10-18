@@ -89,11 +89,12 @@ def explain_metric(*, term: str) -> ToolResult:
     "explain_draft_tools",
     capability="app_guidance",
     description="What each draft tool is for (Live Draft Room, Draft Room Simulator, Draft Assistant, Draft Lab, "
-                "Saved Draft Library) and which Home draft choice opens it. All five, or the ones named.",
-    parameters={"properties": {"pages": {"type": "array", "items": {"type": "string"}}}},
+                "Saved Draft Library) and which Home draft choice opens it. All five, the ones named, or one "
+                "tool (focus) followed by the others for contrast.",
+    parameters={"properties": {"pages": {"type": "array", "items": {"type": "string"}}, "focus": {"type": "string"}}},
     reuses=("draft_tools.DRAFT_TOOLS", "draft_tools.HOME_DRAFT_CHOICES"),
 )
-def explain_draft_tools(*, pages: list[str] | None = None) -> ToolResult:
+def explain_draft_tools(*, pages: list[str] | None = None, focus: str = "") -> ToolResult:
     from draft_tools import DRAFT_TOOLS, HOME_DRAFT_CHOICES
     from home_page import DRAFT_TASK
 
@@ -105,7 +106,11 @@ def explain_draft_tools(*, pages: list[str] | None = None) -> ToolResult:
         for page, _icon, name, why in DRAFT_TOOLS
         if not wanted or page in wanted
     ]
-    return ToolResult(tool="explain_draft_tools", ok=True, data={"tools": tools, "all": not wanted, "home_card": DRAFT_TASK})
+    focus = focus if focus in DRAFT_TOOL_PAGES and not wanted else ""
+    if focus:
+        tools.sort(key=lambda t: t["page_key"] != focus)  # stable: the asked-about tool first
+    return ToolResult(tool="explain_draft_tools", ok=True,
+                      data={"tools": tools, "all": not wanted, "home_card": DRAFT_TASK, "focus": focus})
 
 
 @tool(

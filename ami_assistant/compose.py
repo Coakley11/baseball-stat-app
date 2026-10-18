@@ -211,6 +211,14 @@ class Composer:
 
     def _help_draft_tools(self, plan, results) -> str:
         d = _first(results, "explain_draft_tools").data
+        if d.get("focus"):
+            first, others = d["tools"][0], d["tools"][1:]
+            home = f" On Home: “{first['home_choice']}”." if first.get("home_choice") else ""
+            return "\n\n".join([
+                f"**{first['page']}** — {first['purpose']}{home}",
+                "**The other draft tools:**\n" + "\n".join(f"- **{t['page']}** — {t['purpose']}" for t in others),
+                first["navigation"],
+            ])
         head = ("**The draft tools**, and what each one is for:" if d.get("all")
                 else "**" + " vs ".join(t["page"] for t in d["tools"]) + "**:")
         lines = [head, "\n".join(

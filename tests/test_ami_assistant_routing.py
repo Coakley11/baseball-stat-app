@@ -336,6 +336,64 @@ class U2U3HelpRoutingTests(unittest.TestCase):
         # Drafting players is still drafting.
         self.assertEqual(route("Draft Bobby Witt for me").intent, r.ACTION)
 
+class DraftToolExplanationTests(unittest.TestCase):
+    """Asking what a draft tool is (or how it differs) is product help; asking for picks is draft intelligence."""
+
+    def test_explanations_route_to_draft_tool_help(self) -> None:
+        for question, args in (
+            ("How is Live Draft different?", {"focus": "Live Draft Room"}),
+            ("What is Live Draft Room for?", {"focus": "Live Draft Room"}),
+            ("When should I use Draft Lab?", {"focus": "Draft Lab / Simulation"}),
+            ("What's the difference between Live Draft and Draft Lab?", {"pages": ["Live Draft Room", "Draft Lab / Simulation"]}),
+            ("Which draft tool should I use?", {"pages": []}),
+        ):
+            plan = route(question)
+            self.assertEqual((plan.intent, plan.calls[0].args), (r.HELP_DRAFT_TOOLS, args), question)
+
+    def test_active_draft_requests_keep_their_routing(self) -> None:
+        for question, page, intent in (
+            ("Who should I draft next?", "Draft Assistant Simulator", r.DRAFT_NEXT),
+            ("Who should I draft next in Live Draft?", "Live Draft Room", r.DRAFT_NEXT),
+            ("Who should I take when I'm on the clock?", "Live Draft Room", r.DRAFT_NEXT),
+            ("Why is Bobby Witt recommended?", "Draft Assistant Simulator", r.DRAFT_EXPLAIN),
+        ):
+            self.assertEqual(route(question, page=page).intent, intent, question)
+        # Naming a tool without asking about it is still page help / how-to, as before.
+        self.assertEqual(route("What is Live Draft Room?").calls[0].args, {"page": "Live Draft Room"})
+        self.assertEqual(route("How do I start a live draft?").calls[0].args, {"task": "live_draft"})
+
+    def test_focused_answer_uses_draft_tools_and_follow_ups(self) -> None:
+        import draft_tools
+
+        ds = synthetic_dataset()
+        answer = ask("How is Live Draft different?", session_state={}, active_page="Home", dataset=ds).answer
+        self.assertTrue(answer.startswith("**Live Draft Room** — " + draft_tools.purpose("Live Draft Room")))
+        for page, _icon, _name, why in draft_tools.DRAFT_TOOLS:  # every tool, in the tools' own words
+            self.assertIn(why, answer)
+        self.assertNotIn("no draft in progress", answer.lower())
+        session: dict = {}
+        ask("Which draft tool should I use?", session_state=session, active_page="Home", dataset=ds)
+        follow = ask("What about Draft Lab?", session_state=session, active_page="Home", dataset=ds)
+        self.assertEqual((follow.intent, follow.tools[0]["tool"]), (r.HELP_DRAFT_TOOLS, "explain_draft_tools"))
+        self.assertTrue(follow.answer.startswith("**Draft Lab / Simulation** — "))
+        # Outside a draft-tools conversation, "What about …?" keeps its existing meaning.
+        fresh: dict = {}
+        ask("Who should I draft next?", session_state=fresh, active_page="Draft Assistant Simulator", dataset=ds)
+        self.assertEqual(ask("What about Draft Lab?", session_state=fresh, active_page="Draft Assistant Simulator",
+                             dataset=ds).intent, r.DRAFT_NEXT)
+
+    def test_draft_tool_questions_change_nothing_but_the_conversation(self) -> None:
+        import pickle
+
+        from ami_assistant.conversation import SESSION_KEY
+
+        session = {"compare_players": ["Aaron Judge"], "active_page": "Home"}
+        before = pickle.dumps(session)
+        for question in ("How is Live Draft different?", "What is Live Draft Room for?", "What about Draft Lab?"):
+            ask(question, session_state=session, active_page="Home", dataset=synthetic_dataset())
+        session.pop(SESSION_KEY, None)
+        self.assertEqual(pickle.dumps(session), before)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -129,6 +129,16 @@ _EXPLORE = re.compile(
     r"(?:filters?|tables?|charts?|controls|settings|scatter ?plots?|weights) (?:go|went|gone|moved))\b")
 _EXPLORE_ASK = re.compile(r"\b(?:where|find|happened|under|went|gone|moved|see|show)\b")
 _DRAFT_TOOLS_ASK = re.compile(r"\bdraft (?:tools?|pages?|options|choices)\b|\bwhich draft (?:tool|page)\b")
+# "How is Live Draft different?", "What is Draft Lab for?": a question about one draft tool itself.
+_DRAFT_TOOL_EXPLAIN = re.compile(
+    r"\b(?:different|difference|differs?|compare[ds]?|comparison|versus|vs\.?|instead of|better than|"
+    r"when (?:should|would|do) i use|why (?:would|should) i use|should i use)\b|\bwhat(?:'s| is| are)\b.*\bfor\b"
+    r"|\bwhat does\b.*\bdo\b")
+# Requests for the active draft's picks always go to draft intelligence, whichever tool is named.
+_ACTIVE_DRAFT = re.compile(
+    r"\bwho should i (?:draft|take|pick|target)\b|\bdraft next\b|\bnext pick\b|\bon the clock\b|\brecommend|"
+    r"\bbest (?:available|pick)\b|\bmy (?:team|roster)(?:'s)? needs?\b|\bwhy is\b.*\brecommended\b")
+_FOLLOW_ON = re.compile(r"^(?:what about|how about|and\b|or\b|ok(?:ay)?\b|now\b)|\bit\b")
 # "What does Draft mean on my lineup?" — the Lineup page's status, not drafting players.
 _LINEUP_STATUS = re.compile(r"\b(?:not saved|saved and locked|not submitted|lineup status)\b"
                             r"|\bdraft\b.*\blineup\b|\blineup\b.*\bdraft\b")
@@ -349,7 +359,7 @@ class Router:
         if named is not None:
             return Plan(HELP_PAGE, PRODUCT_HELP, [ToolCall("explain_app_page", {"page": named.key})], page=named.key)
 
-        help_plan = self._ui_help_plan(q, low, ctx)
+        help_plan = self._ui_help_plan(q, low, ctx, conv)
         if help_plan is not None:
             return help_plan
 
@@ -414,11 +424,18 @@ class Router:
 
     # ---- help / actions ------------------------------------------------------------
     @staticmethod
-    def _ui_help_plan(q: str, low: str, ctx: AmiPageContext) -> Plan | None:
+    def _ui_help_plan(q: str, low: str, ctx: AmiPageContext, conv: ConversationState) -> Plan | None:
         """Questions about the redesigned UI itself: the draft tools, Explore more, lineup status."""
         tools = find_draft_tools(q)
-        if _DRAFT_TOOLS_ASK.search(low) or len(tools) >= 2:
-            return Plan(HELP_DRAFT_TOOLS, PRODUCT_HELP, [ToolCall("explain_draft_tools", {"pages": tools if len(tools) >= 2 else []})])
+        if not _ACTIVE_DRAFT.search(low):
+            if _DRAFT_TOOLS_ASK.search(low) or len(tools) >= 2:
+                return Plan(HELP_DRAFT_TOOLS, PRODUCT_HELP,
+                            [ToolCall("explain_draft_tools", {"pages": tools if len(tools) >= 2 else []})])
+            # One tool, asked about as a tool ("How is Live Draft different?"), or a follow-up to a
+            # draft-tools answer ("What about Draft Lab?"): that tool first, the others for contrast.
+            last = conv.turns[-1].intent if conv.turns else ""
+            if len(tools) == 1 and (_DRAFT_TOOL_EXPLAIN.search(low) or (last == HELP_DRAFT_TOOLS and _FOLLOW_ON.search(low.strip()))):
+                return Plan(HELP_DRAFT_TOOLS, PRODUCT_HELP, [ToolCall("explain_draft_tools", {"focus": tools[0]})])
         if _EXPLORE.search(low) and _EXPLORE_ASK.search(low):
             page = find_page(q)
             used = []
