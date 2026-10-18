@@ -31,6 +31,7 @@ import { formatCount, formatStat, formatYearRange } from "@/lib/format";
 
 import { metricOf, questionSummary, type ReadableParams } from "../shared/params";
 import { ParamIssueView, QueryErrorView } from "../shared/QueryProblem";
+import { MinimumsPanel } from "../shared/MinimumsPanel";
 import { MetricSelect, QuestionBar, YearRangeFields } from "../shared/QuestionControls";
 import shared from "../shared/questions.module.css";
 import { ResultTableView } from "../shared/ResultTableView";
@@ -69,21 +70,30 @@ function ExplorerWithCatalog({ catalog, params }: { catalog: Catalog; params: Re
   const result = useBaseballQuery(blocked ? null : JSON.stringify(query), (c, options) => c.getHistoricalExplorer(query, options));
   const metrics = catalog.historical.metrics.flatMap((k) => metricOf(catalog, k) ?? []);
   const playerName = result.status === "success" ? result.data.player?.name : undefined;
+  // One player: a bound the user didn't choose is the player's career bound, which the API
+  // reports back; until it has, the box is empty ("Career").
+  const resolved = result.status === "success" ? result.data.query.yearRange : null;
+  const shownRange = {
+    start: state.rawRange.start || (resolved ? String(resolved.start) : ""),
+    end: state.rawRange.end || (resolved ? String(resolved.end) : ""),
+  };
+  const summaryRange = shownRange.start === "" && shownRange.end === "" ? { start: "Career", end: "Career" } : shownRange;
   const summary = questionSummary(
-    state.rawRange,
+    summaryRange,
     state.issue?.kind === "metric" ? undefined : metricOf(catalog, query.metric),
     state.scope === "all" ? "All players" : (playerName ?? "One player"),
     query.order === "asc" ? "Lowest first" : null,
-    hasFilters(query.filters) ? "Filtered" : null,
+    hasFilters(query.filters, query.minimums) ? "Filtered" : null,
   );
 
   return (
     <div className={shared.page}>
       <QuestionBar label="Your question" summary={summary} forceOpen={state.issue !== null || needsPlayer}>
         <YearRangeFields
-          key={`${state.rawRange.start}-${state.rawRange.end}`}
-          value={state.rawRange}
+          key={`${shownRange.start}-${shownRange.end}`}
+          value={shownRange}
           bounds={catalog.years}
+          placeholder={state.scope === "player" ? "Career" : undefined}
           onCommit={({ start, end }) => update({ from: start, to: end, page: null })}
         />
         <MetricSelect
@@ -130,6 +140,16 @@ function ExplorerWithCatalog({ catalog, params }: { catalog: Catalog; params: Re
         ) : (
           <OrderOnly order={query.order} onOrder={(order) => update({ order: order === catalog.historical.order ? null : order, page: null })} />
         )}
+        {client.capabilities.paging && (
+          <MinimumsPanel
+            key={JSON.stringify(query.minimums)}
+            catalog={catalog}
+            columns={catalog.historical.filters.minimumColumns}
+            minimums={query.minimums ?? { ab: null, stats: {} }}
+            status={result.status === "success" ? result.data.qualification.summary : null}
+            onApply={(changes) => update({ ...changes, page: null })}
+          />
+        )}
         {result.status === "success" && result.data.seasons.length > 0 && (
           <SeasonsTable state={state} first={result.data} catalog={catalog} onPage={(page) => update({ page: page > 1 ? String(page) : null })} />
         )}
@@ -140,8 +160,7 @@ function ExplorerWithCatalog({ catalog, params }: { catalog: Catalog; params: Re
           </div>
         )}
         <p className={shared.note}>
-          Hall of Fame Case Mode, stat minimums you set yourself, several franchises at once, the relationship finder and
-          scatterplot are still in the current app.
+          Hall of Fame Case Mode, the relationship finder and the scatterplot are still in the current app.
         </p>
       </ExploreMore>
     </div>

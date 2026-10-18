@@ -53,6 +53,7 @@ export function toCatalog(res: Schemas["Catalog"]): Catalog {
           career: [...(positions.career ?? [])],
         },
         teams: h.filters.teams.map((o) => ({ ...o })),
+        minimumColumns: [...h.filters.minimum_columns],
       },
     },
     leaderboards: {
@@ -66,6 +67,7 @@ export function toCatalog(res: Schemas["Catalog"]): Catalog {
       weightStep: l.weight_step,
       limit: l.defaults.limit,
       limitBounds: [l.limit_bounds[0] ?? 5, l.limit_bounds[1] ?? 100],
+      minimumColumns: [...l.minimum_columns],
     },
   };
 }

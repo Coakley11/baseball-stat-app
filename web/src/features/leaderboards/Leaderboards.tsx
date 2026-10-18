@@ -24,6 +24,7 @@ import { formatCount, formatStat, formatYearRange } from "@/lib/format";
 import { historicalHref } from "../historical/params";
 import { metricOf, questionSummary, type ReadableParams } from "../shared/params";
 import { ParamIssueView, QueryErrorView } from "../shared/QueryProblem";
+import { MinimumsPanel } from "../shared/MinimumsPanel";
 import { MetricSelect, QuestionBar, YearRangeFields } from "../shared/QuestionControls";
 import shared from "../shared/questions.module.css";
 import { ResultTableView } from "../shared/ResultTableView";
@@ -83,6 +84,16 @@ function LeaderboardsWithCatalog({ catalog, params }: { catalog: Catalog; params
 
       <ExploreMore description="The ranking table, how many players, score weights and the CSV download">
         {client.capabilities.paging && <TopNAndWeights catalog={catalog} state={state} onChange={(changes) => update(changes)} />}
+        {client.capabilities.paging && (
+          <MinimumsPanel
+            key={JSON.stringify(query.minimums)}
+            catalog={catalog}
+            columns={catalog.leaderboards.minimumColumns}
+            minimums={query.minimums ?? { ab: null, stats: {} }}
+            status={result.status === "success" ? result.data.qualification.summary : null}
+            onApply={(changes) => update(changes)}
+          />
+        )}
         {result.status === "success" && result.data.entries.length > 0 && (
           <div>
             <h3 className={shared.subheading}>Ranking table</h3>
@@ -109,7 +120,7 @@ function LeaderboardsWithCatalog({ catalog, params }: { catalog: Catalog; params
           </div>
         )}
         <p className={shared.note}>
-          At-bat minimums you set yourself, and the other Streamlit filters, are still in the current app.
+          The other Streamlit filters are still in the current app.
         </p>
       </ExploreMore>
     </div>
@@ -295,6 +306,7 @@ function TopNAndWeights({
             </label>
             <input
               id={`${id}-w-${stat}`}
+              aria-label={`Weight for ${metricOf(catalog, stat)?.label ?? stat}`}
               className={shared.input}
               type="number"
               inputMode="decimal"

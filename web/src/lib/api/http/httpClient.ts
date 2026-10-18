@@ -7,7 +7,7 @@
 import type { BaseballClient, RequestOptions } from "../client";
 import { BaseballApiError } from "../errors";
 import type { components } from "../generated/baseball-api";
-import { TABLE_PAGE_SIZE, type Catalog, type HistoricalExplorerQuery, type LeaderboardQuery } from "../types";
+import { TABLE_PAGE_SIZE, type Catalog, type HistoricalExplorerQuery, type LeaderboardQuery, type Minimums } from "../types";
 import { toCatalog, toHistoricalResult, toLeaderboardResult, toPlayerSummary } from "./mapping";
 
 type Schemas = components["schemas"];
@@ -56,14 +56,25 @@ function queryString(params: Params): string {
   return new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)])).toString();
 }
 
+/** `min_ab` and `min_{STAT}` for the minimums the user set (none set = the API's automatic minimum). */
+function minimumParams(minimums: Minimums | undefined): Params {
+  const params: Params = {};
+  if (!minimums) return params;
+  if (minimums.ab !== null) params.min_ab = minimums.ab;
+  for (const [stat, value] of Object.entries(minimums.stats)) params[`min_${stat}`] = value;
+  return params;
+}
+
 /** The /seasons parameters for a Historical Explorer question (without paging or format). */
 function historicalParams(query: HistoricalExplorerQuery): Params {
-  const params: Params = {
-    start: query.yearRange.start,
-    end: query.yearRange.end,
-    metric: query.metric,
-    order: query.order,
-  };
+  // One player's seasons: a bound the user didn't choose is left out, so the API uses the
+  // player's career for it. Everything else always sends the range.
+  const chosen = query.playerId !== null ? query.explicitRange : undefined;
+  const params: Params = {};
+  if (!chosen || chosen.start) params.start = query.yearRange.start;
+  if (!chosen || chosen.end) params.end = query.yearRange.end;
+  params.metric = query.metric;
+  params.order = query.order;
   const f = query.filters;
   if (f) {
     if (f.bats.length) params.bats = f.bats.join(",");
@@ -73,11 +84,12 @@ function historicalParams(query: HistoricalExplorerQuery): Params {
     if (f.combine) params.combine = true;
   }
   if (query.playerId !== null) params.player_id = query.playerId;
-  return params;
+  return { ...params, ...minimumParams(query.minimums) };
 }
 
 function leaderboardParams(query: LeaderboardQuery): Params {
   const params: Params = { start: query.yearRange.start, end: query.yearRange.end, metric: query.metric };
+  Object.assign(params, minimumParams(query.minimums));
   if (query.weights) {
     params.weights = Object.entries(query.weights)
       .map(([stat, weight]) => `${stat}:${weight}`)

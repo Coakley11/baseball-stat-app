@@ -107,13 +107,18 @@ export function createMockClient(options: MockClientOptions = {}): BaseballClien
       if (!CATALOG.historical.metrics.includes(query.metric)) {
         throw new BaseballApiError("invalid_request", `"${query.metric}" isn't a stat this page can rank.`);
       }
-      checkRange(query.yearRange);
+      if (query.playerId === null) checkRange(query.yearRange);
       if (query.playerId !== null && !PLAYERS.some((p: PlayerSummary) => p.id === query.playerId)) {
         throw new BaseballApiError("invalid_request", "That player isn't in the data.");
       }
       // Sample data has no filters or later pages: only the plain question is canned.
+      const chosen = query.playerId !== null ? query.explicitRange : undefined;
+      const range = {
+        start: !chosen || chosen.start ? query.yearRange.start : CATALOG.historical.yearRange.start,
+        end: !chosen || chosen.end ? query.yearRange.end : CATALOG.historical.yearRange.end,
+      };
       const plain = !query.offset && !(query.filters && JSON.stringify(query.filters) !== JSON.stringify(NO_HISTORICAL_FILTERS));
-      const canned = plain ? findHistoricalScenario(query.yearRange, query.playerId, query.metric, query.order) : undefined;
+      const canned = plain ? findHistoricalScenario(range, query.playerId, query.metric, query.order) : undefined;
       if (scenario === "empty") {
         const base = canned ?? Object.values(HISTORICAL_SCENARIOS)[0]!;
         return {

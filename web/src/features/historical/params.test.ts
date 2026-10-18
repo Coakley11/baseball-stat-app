@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { NO_HISTORICAL_FILTERS } from "@/lib/api";
+import { NO_HISTORICAL_FILTERS, NO_MINIMUMS } from "@/lib/api";
 import { CATALOG } from "@/lib/api/mock/fixtures/catalog";
 
 import { historicalHref, readHistoricalParams } from "./params";
@@ -10,14 +10,31 @@ const read = (search: string) => readHistoricalParams(new URLSearchParams(search
 describe("Historical Explorer URL", () => {
   it("uses the catalog defaults for a bare URL", () => {
     const state = read("");
-    expect(state.query).toEqual({ yearRange: { start: 2010, end: 2025 }, metric: "HR", order: "desc", playerId: null, filters: NO_HISTORICAL_FILTERS });
+    expect(state.query).toEqual({
+      yearRange: { start: 2010, end: 2025 },
+      metric: "HR",
+      order: "desc",
+      playerId: null,
+      filters: NO_HISTORICAL_FILTERS,
+      minimums: NO_MINIMUMS,
+      explicitRange: { start: false, end: false },
+    });
+    expect(state.rawRange).toEqual({ start: "2010", end: "2025" });
     expect(state.scope).toBe("all");
     expect(state.issue).toBeNull();
   });
 
   it("reads a full question", () => {
     const state = read("from=2015&to=2020&metric=OPS&order=asc&player=judgeaa01");
-    expect(state.query).toEqual({ yearRange: { start: 2015, end: 2020 }, metric: "OPS", order: "asc", playerId: "judgeaa01", filters: NO_HISTORICAL_FILTERS });
+    expect(state.query).toEqual({
+      yearRange: { start: 2015, end: 2020 },
+      metric: "OPS",
+      order: "asc",
+      playerId: "judgeaa01",
+      filters: NO_HISTORICAL_FILTERS,
+      minimums: NO_MINIMUMS,
+      explicitRange: { start: true, end: true },
+    });
     expect(state.scope).toBe("player");
   });
 
@@ -34,6 +51,59 @@ describe("Historical Explorer URL", () => {
     const href = historicalHref({ ...read("").query, filters }, CATALOG);
     expect(href).toBe("/players/historical?bats=B&pos=C&combine=1");
     expect(read(href.split("?")[1]!).query.filters).toEqual(filters);
+  });
+
+  it("one player: only the bounds the user chose are explicit; the rest is the player's career", () => {
+    const none = read("player=cabremi01");
+    expect(none.query.explicitRange).toEqual({ start: false, end: false });
+    expect(none.rawRange).toEqual({ start: "", end: "" }); // the page fills in the career the API reports
+    expect(none.issue).toBeNull();
+
+    const fromOnly = read("player=cabremi01&from=2015");
+    expect(fromOnly.query.explicitRange).toEqual({ start: true, end: false });
+    expect(fromOnly.rawRange).toEqual({ start: "2015", end: "" });
+
+    const both = read("player=cabremi01&from=2015&to=2020");
+    expect(both.query.explicitRange).toEqual({ start: true, end: true });
+
+    // Choosing "One player" before a player: the same career rule.
+    expect(read("scope=player").rawRange).toEqual({ start: "", end: "" });
+  });
+
+  it("all players keep the default range", () => {
+    expect(read("").rawRange).toEqual({ start: "2010", end: "2025" });
+    expect(read("from=2015").rawRange).toEqual({ start: "2015", end: "2025" });
+    expect(read("from=2015").query.yearRange).toEqual({ start: 2015, end: 2025 });
+  });
+
+  it("one player: a bad bound is still caught (outside the data), but a missing one is not an error", () => {
+    expect(read("player=cabremi01&from=1700").issue?.kind).toBe("range");
+    expect(read("player=cabremi01&from=2020&to=2010").issue?.kind).toBe("range");
+    expect(read("player=cabremi01&to=2008").issue).toBeNull();
+  });
+
+  it("reads minimums, ignoring stats the catalog doesn't list and negative values", () => {
+    expect(read("minab=300&mins=HR:30,OPS:0.8").query.minimums).toEqual({ ab: 300, stats: { HR: 30, OPS: 0.8 } });
+    expect(read("minab=0").query.minimums).toEqual({ ab: 0, stats: {} }); // 0 = no minimum, not "unset"
+    expect(read("minab=-5&mins=WAR:3,HR:-1,RBI:").query.minimums).toEqual(NO_MINIMUMS);
+    expect(read("minab=abc").query.minimums?.ab).toBeNull();
+  });
+
+  it("reads several franchises", () => {
+    const state = read("team=Boston+Red+Sox,New+York+Yankees,American+League");
+    expect(state.query.filters?.teams).toEqual(["Boston Red Sox", "New York Yankees", "American League"]);
+  });
+
+  it("links carry only the bounds the user chose, plus filters and minimums", () => {
+    const player = read("player=cabremi01&metric=OPS").query;
+    // The API reports the career back; a link to every player's seasons must not carry it.
+    expect(historicalHref({ ...player, yearRange: { start: 2003, end: 2023 }, playerId: null }, CATALOG)).toBe("/players/historical?metric=OPS");
+    expect(historicalHref({ ...read("from=2015&to=2020").query, playerId: "judgeaa01" }, CATALOG)).toBe("/players/historical?from=2015&to=2020&player=judgeaa01");
+    expect(historicalHref({ ...read("minab=300&mins=HR:30&team=Boston+Red+Sox").query }, CATALOG)).toBe(
+      "/players/historical?team=Boston+Red+Sox&minab=300&mins=HR%3A30",
+    );
+    // A query without explicit-range information (e.g. from Leaderboards) uses the default comparison.
+    expect(historicalHref({ yearRange: { start: 2020, end: 2025 }, metric: "HR" }, CATALOG)).toBe("/players/historical?from=2020");
   });
 
   it("knows when a player is still to be chosen", () => {

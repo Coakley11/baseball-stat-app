@@ -32,7 +32,26 @@ const REQUESTS = [
   q("seasons", { ...HE, bats: "L", positions: "SS", position_source: "season", limit: 25 }),
   q("seasons", { ...HE, metric: "OPS", player_id: "judgeaa01", limit: 25, include_below_minimum: true }),
   q("seasons", { ...HE, player_id: "guerrvl02", limit: 25, include_below_minimum: true }),
-  // Leaderboards: start, end, metric, [weights], limit
+  // One player: a bound the user didn't choose is left out, so the API uses the career
+  q("seasons", { metric: "OPS", order: "desc", player_id: "cabremi01", limit: 25, include_below_minimum: true }),
+  q("seasons", { metric: "OPS", order: "desc", player_id: "judgeaa01", limit: 25, include_below_minimum: true }),
+  q("seasons", { start: 2015, metric: "OPS", order: "desc", player_id: "cabremi01", limit: 25, include_below_minimum: true }),
+  q("seasons", { end: 2008, metric: "OPS", order: "desc", player_id: "cabremi01", limit: 25, include_below_minimum: true }),
+  q("seasons", { start: 2015, end: 2020, metric: "OPS", order: "desc", player_id: "cabremi01", limit: 25, include_below_minimum: true }),
+  // Minimums the user sets, and several franchises
+  q("seasons", { ...HE, min_ab: 500, limit: 25 }),
+  q("seasons", { ...HE, metric: "OPS", min_ab: 300, min_HR: 30, limit: 25 }),
+  q("seasons", { ...HE, metric: "OPS", min_ab: 0, limit: 25 }),
+  q("seasons", { ...HE, teams: "Boston Red Sox,New York Yankees", limit: 25 }),
+  q("seasons", { ...HE, teams: "Boston Red Sox", limit: 25 }),
+  q("seasons", { ...HE, teams: "New York Yankees", limit: 25 }),
+  q("seasons", { ...HE, teams: "American League,Chicago Cubs", limit: 25 }),
+  q("seasons", { ...HE, metric: "OPS", min_ab: 300, format: "csv", start: 2025 }),
+  // Leaderboards: start, end, metric, [minimums], [weights], limit
+  q("leaderboards", { start: 2020, end: 2025, metric: "OPS", min_ab: 1000, limit: 25 }),
+  q("leaderboards", { start: 2020, end: 2025, metric: "OPS", min_ab: 1000, min_HR: 100, limit: 25 }),
+  q("leaderboards", { start: 2020, end: 2025, metric: "HR", min_ab: 1000, limit: 25 }),
+  // Leaderboards (default minimums)
   q("leaderboards", { start: 2020, end: 2025, metric: "score", limit: 25 }),
   q("leaderboards", { start: 2020, end: 2025, metric: "score", limit: 10 }),
   q("leaderboards", { start: 2020, end: 2025, metric: "score", weights: "HR:2,RBI:1", limit: 25 }),

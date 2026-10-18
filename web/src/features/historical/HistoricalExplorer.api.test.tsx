@@ -17,7 +17,9 @@ const HE_HR = "seasons?start=2010&end=2025&metric=HR&order=desc&limit=25";
 const HE_OPS = "seasons?start=2010&end=2025&metric=OPS&order=desc&limit=25";
 const HE_PAGE2 = `${HE_HR}&offset=25`;
 const HE_FILTERED = "seasons?start=2010&end=2025&metric=HR&order=desc&bats=L&positions=SS&position_source=season&limit=25";
-const HE_JUDGE = "seasons?start=2010&end=2025&metric=OPS&order=desc&player_id=judgeaa01&limit=25&include_below_minimum=true";
+const HE_JUDGE = "seasons?metric=OPS&order=desc&player_id=judgeaa01&limit=25&include_below_minimum=true"; // career: no years sent
+const CABRERA = "seasons?metric=OPS&order=desc&player_id=cabremi01&limit=25&include_below_minimum=true";
+const CABRERA_FROM = "seasons?start=2015&metric=OPS&order=desc&player_id=cabremi01&limit=25&include_below_minimum=true";
 
 function open(search: string, options: RecordedClientOptions = {}) {
   nav.reset("/players/historical", search);
@@ -61,7 +63,8 @@ describe("Historical Explorer on the real API (recorded, 5ca7a26)", () => {
     const raw = recorded<Schemas["SeasonLeadersResult"]>(HE_OPS);
     open("metric=OPS");
     expect(await screen.findByRole("heading", { name: raw.answer!.headline })).toBeInTheDocument();
-    expect(screen.getByText(raw.qualification.summary)).toBeInTheDocument();
+    // The chip, and the same line again beside the minimums controls.
+    expect(screen.getAllByText(raw.qualification.summary).length).toBeGreaterThan(0);
     expect(screen.getByText(raw.qualification.explanation!)).toBeInTheDocument();
     expect(screen.queryByText(/Stat minimum filters/)).toBeNull();
   });
@@ -156,8 +159,109 @@ describe("Historical Explorer on the real API (recorded, 5ca7a26)", () => {
     const belowCount = raw.rows.filter((r) => !r.meets_minimum).length;
     const table = within(screen.getByRole("region", { name: "Seasons" })).getByRole("table");
     expect(within(table).getAllByText("Below the minimum")).toHaveLength(belowCount);
-    expect(screen.getByText("2010–2025 · OPS · Aaron Judge")).toBeInTheDocument();
+    expect(screen.getByText(`${raw.start}–${raw.end} · OPS · Aaron Judge`)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Best seasons by every player" })).toHaveAttribute("href", "/players/historical?metric=OPS");
+  });
+
+  it("one player with no chosen years uses the player's whole career, as the API reports it", async () => {
+    const raw = recorded<Schemas["SeasonLeadersResult"]>(CABRERA);
+    const { fetchImpl } = open("player=cabremi01&metric=OPS");
+    expect(await screen.findByRole("heading", { level: 2, name: raw.answer!.headline })).toBeInTheDocument();
+    expect(fetchImpl.mock.calls.map(([u]) => String(u)).filter((u) => u.includes("player_id")).every((u) => !/[?&](start|end)=/.test(u))).toBe(true);
+    // The boxes show the career the API returned, not the all-players default.
+    expect(screen.getByLabelText("From season")).toHaveValue(String(raw.start));
+    expect(screen.getByLabelText("To season")).toHaveValue(String(raw.end));
+    expect(raw.start).toBeLessThan(2010);
+    expect(screen.getByText(`${raw.start}–${raw.end} · OPS · Miguel Cabrera`)).toBeInTheDocument();
+    // Below-minimum career seasons are shown, unranked and marked.
+    const table = within(screen.getByRole("region", { name: "Seasons" })).getByRole("table");
+    expect(within(table).getAllByText("Below the minimum")).toHaveLength(raw.rows.filter((r) => !r.meets_minimum).length);
+  });
+
+  it("one player: a chosen bound is kept and the other is still the career", async () => {
+    const raw = recorded<Schemas["SeasonLeadersResult"]>(CABRERA_FROM);
+    const { fetchImpl } = open("player=cabremi01&metric=OPS&from=2015");
+    expect(await screen.findByRole("heading", { level: 2, name: raw.answer!.headline })).toBeInTheDocument();
+    expect(fetchImpl.mock.calls.some(([u]) => String(u).endsWith(CABRERA_FROM))).toBe(true);
+    expect(screen.getByLabelText("From season")).toHaveValue("2015");
+    expect(screen.getByLabelText("To season")).toHaveValue(String(raw.end));
+  });
+
+  it("all players keep the default range", async () => {
+    open("");
+    await screen.findByRole("region", { name: "Answer" });
+    expect(screen.getByLabelText("From season")).toHaveValue("2010");
+    expect(screen.getByLabelText("To season")).toHaveValue("2025");
+  });
+
+  it("choosing One player alone doesn't put the all-players range in the URL", async () => {
+    const user = userEvent.setup();
+    open("");
+    await screen.findByRole("region", { name: "Answer" });
+    await user.click(screen.getByText("One player"));
+    expect(nav.push).toHaveBeenLastCalledWith("/players/historical?scope=player", { scroll: false });
+  });
+
+  it("the link from a player's seasons back to all players doesn't carry the career as a chosen range", async () => {
+    open("player=cabremi01&metric=OPS");
+    await screen.findByRole("region", { name: "Answer" });
+    expect(screen.getByRole("link", { name: "Best seasons by every player" })).toHaveAttribute("href", "/players/historical?metric=OPS");
+  });
+
+  it("minimums: Apply writes them to the URL; the API's own line says what applies", async () => {
+    const user = userEvent.setup();
+    open("");
+    await screen.findByRole("region", { name: "Answer" });
+    expect(screen.getByRole("button", { name: "Apply minimums" })).toBeDisabled();
+    await user.type(screen.getByLabelText("Minimum at-bats"), "500");
+    await user.type(screen.getByLabelText("Minimum HR"), "30");
+    await user.click(screen.getByRole("button", { name: "Apply minimums" }));
+    expect(nav.push).toHaveBeenLastCalledWith("/players/historical?minab=500&mins=HR%3A30", { scroll: false });
+  });
+
+  it("minimums in the URL go to the API and its qualification line is shown", async () => {
+    const OPS_BOTH = "seasons?start=2010&end=2025&metric=OPS&order=desc&min_ab=300&min_HR=30&limit=25";
+    const raw = recorded<Schemas["SeasonLeadersResult"]>(OPS_BOTH);
+    const { fetchImpl } = open("metric=OPS&minab=300&mins=HR:30");
+    expect(await screen.findByRole("heading", { level: 2, name: raw.answer!.headline })).toBeInTheDocument();
+    expect(fetchImpl.mock.calls.some(([u]) => String(u).endsWith(OPS_BOTH))).toBe(true);
+    expect(screen.getAllByText("Minimum you set · at least 300 AB in the season").length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Minimum at-bats")).toHaveValue(300);
+    expect(screen.getByLabelText("Minimum HR")).toHaveValue(30);
+    expect(screen.getByText(/of .+ seasons/, { selector: "caption" })).toHaveTextContent(`of ${formatCount(raw.total_rows)} seasons`);
+    expect(screen.getByText("2010–2025 · OPS · All players · Filtered")).toBeInTheDocument();
+  });
+
+  it("0 at-bats means no minimum, and Reset clears every minimum", async () => {
+    const user = userEvent.setup();
+    const OPS_ZERO = "seasons?start=2010&end=2025&metric=OPS&order=desc&min_ab=0&limit=25";
+    open("metric=OPS&minab=0");
+    expect(await screen.findByRole("heading", { name: recorded<Schemas["SeasonLeadersResult"]>(OPS_ZERO).answer!.headline })).toBeInTheDocument();
+    expect(screen.getAllByText("No at-bat minimum · part-time players can lead this list").length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Minimum at-bats")).toHaveValue(0);
+    await user.click(screen.getByRole("button", { name: "Reset minimums" }));
+    expect(nav.push).toHaveBeenLastCalledWith("/players/historical?metric=OPS", { scroll: false });
+  });
+
+  it("several franchises: each checkbox adds to the URL list, and Clear empties it", async () => {
+    const user = userEvent.setup();
+    open("team=Boston+Red+Sox");
+    await screen.findByRole("region", { name: "Answer" });
+    expect(screen.getByLabelText("Boston Red Sox")).toBeChecked();
+    expect(screen.getByText(/1 selected/)).toBeInTheDocument();
+    await user.click(screen.getByLabelText("New York Yankees"));
+    expect(nav.push).toHaveBeenLastCalledWith("/players/historical?team=Boston+Red+Sox%2CNew+York+Yankees", { scroll: false });
+  });
+
+  it("several franchises in the URL: the API's union, with both checked", async () => {
+    const both = "seasons?start=2010&end=2025&metric=HR&order=desc&teams=Boston+Red+Sox%2CNew+York+Yankees&limit=25";
+    const raw = recorded<Schemas["SeasonLeadersResult"]>(both);
+    open("team=Boston+Red+Sox,New+York+Yankees");
+    expect(await screen.findByRole("heading", { level: 2, name: raw.answer!.headline })).toBeInTheDocument();
+    expect(screen.getByLabelText("Boston Red Sox")).toBeChecked();
+    expect(screen.getByLabelText("New York Yankees")).toBeChecked();
+    expect(screen.getByText(/2 selected/)).toBeInTheDocument();
+    expect(screen.getByText(/of .+ seasons/, { selector: "caption" })).toHaveTextContent(`of ${formatCount(raw.total_rows)} seasons`);
   });
 
   it("offers the one-player choice and a player search", async () => {

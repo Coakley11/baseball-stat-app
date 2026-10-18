@@ -31,7 +31,6 @@ export function HistoricalFilterPanel({
   const id = useId();
   const { filters: options } = catalog.historical;
   const positions = options.positionsBySource[filters.positionSource];
-  const team = filters.teams[0] ?? "All Teams";
 
   return (
     <div className={shared.filterGrid}>
@@ -45,23 +44,33 @@ export function HistoricalFilterPanel({
         </select>
       </div>
 
-      <div className={shared.field}>
-        <label className={shared.label} htmlFor={`${id}-team`}>
+      <fieldset className={shared.filterGroup} style={{ gridColumn: "1 / -1" }}>
+        <legend>
           Franchise / league
-        </label>
-        <select
-          id={`${id}-team`}
-          className={shared.select}
-          value={team}
-          onChange={(e) => onChange({ ...filters, teams: e.target.value === "All Teams" ? [] : [e.target.value] })}
-        >
-          {options.teams.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-      </div>
+          {filters.teams.length > 0 && (
+            <span className={shared.hint}>
+              {" "}
+              · {filters.teams.length} selected{" "}
+              <button type="button" className={shared.linkButton} onClick={() => onChange({ ...filters, teams: [] })}>
+                Clear
+              </button>
+            </span>
+          )}
+        </legend>
+        <div className={`${shared.checks} ${shared.checksScroll}`}>
+          {options.teams
+            .filter((o) => o.value !== "All Teams")
+            .map((o) => (
+              <label key={o.value} className={shared.check}>
+                <input type="checkbox" checked={filters.teams.includes(o.value)} onChange={() => onChange({ ...filters, teams: toggle(filters.teams, o.value) })} />
+                {o.label}
+              </label>
+            ))}
+        </div>
+        <p className={shared.note} style={{ marginTop: "var(--space-2)" }}>
+          {filters.teams.length === 0 ? "All teams." : "Seasons with any of the selected teams or leagues."}
+        </p>
+      </fieldset>
 
       <div className={shared.field}>
         <label className={shared.label} htmlFor={`${id}-psrc`}>

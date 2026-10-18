@@ -53,7 +53,15 @@ export const CATALOG: Catalog = {
       bats: [{ value: "B", label: "Both" }, { value: "L", label: "Left" }, { value: "R", label: "Right" }],
       positionSources: [{ value: "season", label: "Season Primary Position" }, { value: "career", label: "Career Primary Position" }],
       positionsBySource: { season: ["1B", "2B", "3B", "C", "CF", "LF", "RF", "SS"], career: ["1B", "2B", "3B", "C", "CF", "LF", "RF", "SS"] },
-      teams: [{ value: "All Teams", label: "All Teams" }, { value: "American League", label: "American League" }, { value: "National League", label: "National League" }],
+      teams: [
+        { value: "All Teams", label: "All Teams" },
+        { value: "American League", label: "American League" },
+        { value: "National League", label: "National League" },
+        { value: "Boston Red Sox", label: "Boston Red Sox" },
+        { value: "Chicago Cubs", label: "Chicago Cubs" },
+        { value: "New York Yankees", label: "New York Yankees" },
+      ],
+      minimumColumns: ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"],
     },
   },
   leaderboards: {
@@ -67,6 +75,7 @@ export const CATALOG: Catalog = {
     weightStep: 0.5,
     limit: 25,
     limitBounds: [5, 100],
+    minimumColumns: ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"],
   },
 };
 

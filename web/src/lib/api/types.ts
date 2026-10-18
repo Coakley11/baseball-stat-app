@@ -135,6 +135,18 @@ export interface HistoricalFilters {
   combine: boolean;
 }
 
+/**
+ * Minimums the user sets (the API applies them; nothing is evaluated here). `ab: null` means the
+ * API's automatic qualified minimum; a number, including 0, is the user's own. `stats` holds
+ * other stat minimums by key ("HR": 20).
+ */
+export interface Minimums {
+  ab: number | null;
+  stats: Record<MetricKey, number>;
+}
+
+export const NO_MINIMUMS: Minimums = { ab: null, stats: {} };
+
 export const NO_HISTORICAL_FILTERS: HistoricalFilters = {
   bats: [],
   positionSource: "season",
@@ -157,6 +169,8 @@ export interface Catalog {
       /** Position options for each position source. */
       positionsBySource: Record<PositionSource, string[]>;
       teams: FilterOption[];
+      /** Stats that accept a user minimum (besides at-bats). */
+      minimumColumns: MetricKey[];
     };
   };
   leaderboards: ExplorerDefaults & {
@@ -170,6 +184,8 @@ export interface Catalog {
     /** The default and allowed range of "how many players". */
     limit: number;
     limitBounds: [number, number];
+    /** Stats that accept a user minimum (besides at-bats). */
+    minimumColumns: MetricKey[];
   };
 }
 
@@ -201,6 +217,14 @@ export interface HistoricalExplorerQuery {
   playerId: string | null;
   /** Filters; omitted = none. */
   filters?: HistoricalFilters;
+  /** Minimums the user set; omitted = the API's automatic qualified minimum. */
+  minimums?: Minimums;
+  /**
+   * For one player's seasons: which bounds of `yearRange` the user actually chose. A bound they
+   * didn't choose is left out of the request, so the API uses the player's career for it.
+   * Ignored for all players, which always use `yearRange`.
+   */
+  explicitRange?: { start: boolean; end: boolean };
   /** 0-based position of the first row wanted; omitted = 0. */
   offset?: number;
 }
@@ -254,6 +278,8 @@ export interface LeaderboardQuery {
   metric: MetricKey;
   /** How many players (Top N); omitted = the catalog default. */
   limit?: number;
+  /** Minimums the user set; omitted = the API's automatic qualified minimum. */
+  minimums?: Minimums;
   /** Custom weights for the score; omitted = the API's defaults. */
   weights?: Record<MetricKey, number>;
 }

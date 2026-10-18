@@ -68,10 +68,13 @@ export function QuestionBar({
 export function YearRangeFields({
   value,
   bounds,
+  placeholder,
   onCommit,
 }: {
   /** As written in the URL (may be invalid, so the user can see and fix it). */
   value: { start: string; end: string };
+  /** Shown in an empty box, e.g. "Career" for one player's unchosen bound. */
+  placeholder?: string;
   bounds: YearRange;
   onCommit: (range: { start: string; end: string }) => void;
 }) {
@@ -102,6 +105,7 @@ export function YearRangeFields({
           pattern="[0-9]*"
           maxLength={4}
           value={start}
+          placeholder={placeholder}
           onChange={(e) => setStart(e.target.value)}
           onBlur={commit}
           onKeyDown={(e) => e.key === "Enter" && commit()}
@@ -120,6 +124,7 @@ export function YearRangeFields({
           pattern="[0-9]*"
           maxLength={4}
           value={end}
+          placeholder={placeholder}
           onChange={(e) => setEnd(e.target.value)}
           onBlur={commit}
           onKeyDown={(e) => e.key === "Enter" && commit()}

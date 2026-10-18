@@ -9,7 +9,7 @@ const read = (search: string) => readLeaderboardParams(new URLSearchParams(searc
 describe("Leaderboards URL", () => {
   it("uses the catalog defaults for a bare URL", () => {
     const state = read("");
-    expect(state.query).toEqual({ yearRange: { start: 2020, end: 2025 }, metric: "score", limit: 25, weights: undefined });
+    expect(state.query).toEqual({ yearRange: { start: 2020, end: 2025 }, metric: "score", limit: 25, weights: undefined, minimums: { ab: null, stats: {} } });
     expect(state.issue).toBeNull();
   });
 
@@ -32,6 +32,12 @@ describe("Leaderboards URL", () => {
     expect(formatWeights({ HR: 2, RBI: 1, SB: 0 })).toBe("HR:2,RBI:1");
     expect(sameWeights({ HR: 1, RBI: 1, SB: 1 }, { SB: 1, RBI: 1, HR: 1, R: 0 })).toBe(true);
     expect(sameWeights({ HR: 1 }, { HR: 2 })).toBe(false);
+  });
+
+  it("reads minimums the user sets", () => {
+    expect(read("minab=1000&mins=HR:100").query.minimums).toEqual({ ab: 1000, stats: { HR: 100 } });
+    expect(read("minab=0").query.minimums?.ab).toBe(0);
+    expect(read("mins=WAR:3").query.minimums).toEqual({ ab: null, stats: {} });
   });
 
   it("flags an unknown stat and impossible seasons without guessing", () => {

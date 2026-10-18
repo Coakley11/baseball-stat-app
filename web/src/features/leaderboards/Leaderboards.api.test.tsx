@@ -68,7 +68,8 @@ describe("Leaderboards on the real API (recorded, 5ca7a26)", () => {
     const raw = recorded<Schemas["LeaderboardResult"]>(LB_OPS);
     open("metric=OPS");
     expect(await screen.findByRole("heading", { name: raw.answer!.headline })).toBeInTheDocument();
-    expect(screen.getByText(raw.qualification.summary)).toBeInTheDocument();
+    // The chip, and the same line again beside the minimums controls.
+    expect(screen.getAllByText(raw.qualification.summary).length).toBeGreaterThan(0);
     expect(screen.getByText(raw.qualification.explanation!)).toBeInTheDocument();
     expect(screen.getByText(`${formatCount(raw.total_rows)} qualified hitters ranked`)).toBeInTheDocument();
     expect(screen.queryByText(/Stat minimum filters/)).toBeNull();
@@ -93,13 +94,13 @@ describe("Leaderboards on the real API (recorded, 5ca7a26)", () => {
     const { fetchImpl } = open("w=HR:2,RBI:1");
     expect(await screen.findByRole("heading", { name: raw.answer!.headline })).toBeInTheDocument();
     expect(fetchImpl.mock.calls.some(([url]) => String(url).endsWith(LB_WEIGHTED))).toBe(true);
-    expect(screen.getByLabelText("HR")).toHaveValue(2);
-    expect(screen.getByLabelText("SB")).toHaveValue(0);
+    expect(screen.getByLabelText("Weight for HR")).toHaveValue(2);
+    expect(screen.getByLabelText("Weight for SB")).toHaveValue(0);
 
     // Changing a weight enables Apply; applying writes it to the URL (the API recomputes).
     expect(screen.getByRole("button", { name: "Apply weights" })).toBeDisabled();
-    await user.clear(screen.getByLabelText("SB"));
-    await user.type(screen.getByLabelText("SB"), "1");
+    await user.clear(screen.getByLabelText("Weight for SB"));
+    await user.type(screen.getByLabelText("Weight for SB"), "1");
     await user.click(screen.getByRole("button", { name: "Apply weights" }));
     expect(nav.push).toHaveBeenLastCalledWith("/players/leaderboards?w=HR%3A2%2CRBI%3A1%2CSB%3A1", { scroll: false });
   });
@@ -109,11 +110,33 @@ describe("Leaderboards on the real API (recorded, 5ca7a26)", () => {
     open("");
     await screen.findByRole("region", { name: "Answer" });
     for (const stat of ["HR", "RBI", "SB"]) {
-      await user.clear(screen.getByLabelText(stat));
-      await user.type(screen.getByLabelText(stat), "0");
+      await user.clear(screen.getByLabelText(`Weight for ${stat}`));
+      await user.type(screen.getByLabelText(`Weight for ${stat}`), "0");
     }
     expect(screen.getByRole("button", { name: "Apply weights" })).toBeDisabled();
     expect(screen.getByText(/at least one above zero/)).toBeInTheDocument();
+  });
+
+  it("minimums: Apply writes them to the URL", async () => {
+    const user = userEvent.setup();
+    open("metric=OPS");
+    await screen.findByRole("region", { name: "Answer" });
+    await user.type(screen.getByLabelText("Minimum at-bats"), "1000");
+    await user.type(screen.getByLabelText("Minimum HR"), "100");
+    await user.click(screen.getByRole("button", { name: "Apply minimums" }));
+    expect(nav.push).toHaveBeenLastCalledWith("/players/leaderboards?metric=OPS&minab=1000&mins=HR%3A100", { scroll: false });
+  });
+
+  it("minimums in the URL go to the API; its qualification line and ranked count are shown", async () => {
+    const KEY = "leaderboards?start=2020&end=2025&metric=OPS&min_ab=1000&min_HR=100&limit=25";
+    const raw = recorded<Schemas["LeaderboardResult"]>(KEY);
+    const { fetchImpl } = open("metric=OPS&minab=1000&mins=HR:100");
+    expect(await screen.findByRole("heading", { name: raw.answer!.headline })).toBeInTheDocument();
+    expect(fetchImpl.mock.calls.some(([u]) => String(u).endsWith(KEY))).toBe(true);
+    expect(screen.getAllByText("Minimum you set · at least 1,000 AB over 2020–2025").length).toBeGreaterThan(0);
+    // With a minimum the user set, they are "players", not the automatic rule's "qualified hitters".
+    expect(screen.getByText(`${formatCount(raw.total_rows)} players ranked`)).toBeInTheDocument();
+    expect(screen.getByLabelText("Minimum at-bats")).toHaveValue(1000);
   });
 
   it("links to the API's CSV for the Top N shown", async () => {
