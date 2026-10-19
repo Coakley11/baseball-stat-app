@@ -142,6 +142,9 @@ _FOLLOW_ON = re.compile(r"^(?:what about|how about|and\b|or\b|ok(?:ay)?\b|now\b)
 # "What does Draft mean on my lineup?" — the Lineup page's status, not drafting players.
 _LINEUP_STATUS = re.compile(r"\b(?:not saved|saved and locked|not submitted|lineup status)\b"
                             r"|\bdraft\b.*\blineup\b|\blineup\b.*\bdraft\b")
+# "Where did Baseball Insight go?", "What is Command Center?": the full-analysis handoff (U5).
+_FULL_ANALYSIS_Q = re.compile(r"\bbaseball insight\b|\bcommand center\b|\bfull analysis\b|\bdeep(?:er)? analysis\b"
+                              r"|\bapplied mathematical intelligence\b")
 _MEANING = re.compile(r"\bmean(?:s|ing)?\b|^(?:what(?:'s| is| are| does)|whats|explain)\b")
 _PROJECTION = re.compile(r"\b(?:project(?:s|ed|ion|ions)?|forecast\w*|predict(?:s|ed|ion|ions)?|next season|next year)\b")
 _CAPABILITIES = re.compile(r"\b(?:what can you (?:do|answer|help)|what do you know|who are you|what are you|what should i ask)\b|^help$")
@@ -447,6 +450,8 @@ class Router:
                         focus="explore_more", used_context=used)
         if _LINEUP_STATUS.search(low) and _MEANING.search(low.strip()):
             return Plan(HELP_METRIC, PRODUCT_HELP, [ToolCall("explain_metric", {"term": "lineup_status"})])
+        if _FULL_ANALYSIS_Q.search(low):
+            return Plan(HELP_METRIC, PRODUCT_HELP, [ToolCall("explain_metric", {"term": "full_analysis"})])
         return None
 
     @staticmethod

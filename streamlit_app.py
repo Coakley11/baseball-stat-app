@@ -14814,7 +14814,7 @@ try:
 except ImportError:
     pass
 
-from baseball_ami_sidebar import render_baseball_insight_sidebar
+from baseball_ami_sidebar import submit_baseball_insight
 
 st.session_state["_suite_runtime_app_id"] = "baseball"
 
@@ -14830,30 +14830,36 @@ def _force_save_before_ami_return(active_page: str) -> None:
     st.session_state["_suite_defer_baseball_save_reason"] = f"ami_send:{active_page}"
 
 
-# AMI in-app assistant: read-only answers from this app's data and help (ami_assistant/).
+def _ami_full_analysis(question: str, page: str) -> dict:
+    """Ask AMI's "Get full analysis": the Command Center handoff the ⚾ Baseball Insight box used
+    (same page context, source state and save deferral). Runs only when the user presses it."""
+    return submit_baseball_insight(
+        st.session_state,
+        source_page=page,
+        question=question,
+        context_extra_builder=(
+            lambda: build_baseball_applied_math_context(page, st.session_state)
+            if build_baseball_applied_math_context
+            else None
+        ),
+        source_state_builder=(
+            lambda: build_source_state(page, st.session_state)
+            if build_source_state
+            else None
+        ),
+        on_after_send=lambda: _force_save_before_ami_return(page),
+    )
+
+
+# U5: Ask AMI is the app's one question box (sidebar on desktop, a bar at the top on phones).
+# Quick answers are read-only; Get full analysis hands the question to Command Center.
 try:
     from ami_assistant.ui import render_ami_assistant_panel
 
-    render_ami_assistant_panel(st, active_page=active_page, yearly_df=yearly_df, entitlement=_monetization_snapshot)
+    render_ami_assistant_panel(st, active_page=active_page, yearly_df=yearly_df, entitlement=_monetization_snapshot,
+                               full_analysis=_ami_full_analysis)
 except ImportError:
     pass
-
-render_baseball_insight_sidebar(
-    st,
-    source_page=active_page,
-    session_state=st.session_state,
-    context_extra_builder=(
-        lambda: build_baseball_applied_math_context(active_page, st.session_state)
-        if build_baseball_applied_math_context
-        else None
-    ),
-    source_state_builder=(
-        lambda: build_source_state(active_page, st.session_state)
-        if build_source_state
-        else None
-    ),
-    on_after_send=lambda: _force_save_before_ami_return(active_page),
-)
 
 # Save filters when leaving a page; restore when returning via left sidebar (not contextual transfer).
 pg_state.handle_sidebar_page_state(

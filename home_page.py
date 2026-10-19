@@ -160,9 +160,9 @@ def render_home(st: Any, session: Any, *, navigate: Callable[..., Any], render_t
     ui.section_label(st, "Ask a question")
     st.markdown(
         '<div class="u1-card u1-ami-slot"><div class="u1-card-title">💬 Ask AMI</div>'
-        '<div class="u1-card-body">Ask a baseball question in plain English. For now, use the '
-        '<strong>Baseball Insight</strong> box in the sidebar (on a phone, tap the <strong>»</strong> '
-        "at the top left).</div></div>",
+        '<div class="u1-card-body">Ask a baseball question in plain English: use <strong>Ask AMI</strong> in the '
+        "sidebar (on a phone, the <strong>Ask AMI</strong> bar at the top of each page). For a deeper write-up, "
+        "press <strong>Get full analysis</strong> under an answer.</div></div>",
         unsafe_allow_html=True,
     )
     if render_tutorial_bar is not None:
