@@ -1,0 +1,145 @@
+.home {
+  max-width: var(--content-max);
+}
+
+.tasks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+@media (min-width: 720px) {
+  .tasks {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-4);
+  }
+}
+
+.tasks > li {
+  display: flex;
+}
+
+.task {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.taskLater {
+  background: var(--surface-2);
+  box-shadow: none;
+}
+
+.taskHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+}
+
+.taskIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-m);
+  background: var(--accent-soft);
+  color: var(--accent-soft-ink);
+  flex: 0 0 auto;
+}
+
+.taskLater .taskIcon {
+  background: var(--surface-3);
+  color: var(--muted);
+}
+
+.taskTitle {
+  font-size: var(--text-xl);
+  font-weight: 700;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.taskBody {
+  color: var(--ink-2);
+}
+
+.taskActions {
+  margin-top: auto;
+  padding-top: var(--space-2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.taskLaterNote {
+  margin-top: auto;
+  padding-top: var(--space-2);
+  font-size: var(--text-s);
+  color: var(--muted);
+}
+
+.questions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+@media (min-width: 720px) {
+  .questions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.question {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 52px;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-m);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.question:hover {
+  border-color: var(--accent);
+  color: var(--accent-soft-ink);
+  background: var(--accent-soft);
+}
+
+.question svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.amiText {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.amiTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 700;
+}
+
+.amiBody {
+  color: var(--muted);
+  font-size: var(--text-s);
+}
