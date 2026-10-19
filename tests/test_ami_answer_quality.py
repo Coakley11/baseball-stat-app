@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -23,12 +24,14 @@ FAMILIES = (
 
 class TestAnswerQualityAudit(unittest.TestCase):
     def test_quality_audit_runs(self) -> None:
-        proc = subprocess.run(
-            [sys.executable, str(ROOT / "ami_answer_quality_audit.py")],
-            cwd=str(ROOT),
-            capture_output=True,
-            text=True,
-        )
+        # Save to a temp file: the default --save path is the tracked docs report.
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = subprocess.run(
+                [sys.executable, str(ROOT / "ami_answer_quality_audit.py"), "--save", str(Path(tmp) / "report.json")],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+            )
         self.assertIn("Answer quality audit:", proc.stdout, proc.stdout + proc.stderr)
 
     def test_quality_cases_cover_families(self) -> None:
