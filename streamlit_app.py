@@ -12567,7 +12567,7 @@ def render_developer_mode_sidebar_toggle():
             mark_dev_mode_checkbox_materialized,
         )
 
-        if dev_mode_checkbox_materialized():
+        if dev_mode_checkbox_materialized(st.session_state):
             return
         if not claim_sidebar_render(st.session_state, GUARD_DEV_TOGGLE):
             return
@@ -12609,7 +12609,7 @@ def render_developer_mode_sidebar_toggle():
     try:
         from suite_sidebar_run import mark_dev_mode_checkbox_materialized
 
-        mark_dev_mode_checkbox_materialized()
+        mark_dev_mode_checkbox_materialized(st.session_state)
     except ImportError:
         pass
     try:
@@ -13785,23 +13785,16 @@ def _record_sidebar_nav_trace(phase: str, *, rerun_source: str = "", **kwargs: o
 
 def _render_baseball_sidebar_chrome(st_obj) -> None:
     """Single top-left Login / Account & Workspace control (Investment/Music pattern)."""
-    # Once per Streamlit script-run. Importing this file as `streamlit_app` while the
-    # entry script is already `__main__` re-executes module-level chrome and caused
-    # duplicate Build captions + StreamlitDuplicateElementKey on the Login expander.
     try:
-        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        from suite_sidebar_run import GUARD_ACCOUNT, claim_sidebar_render
 
-        _ctx = get_script_run_ctx()
-        _run_token = id(_ctx) if _ctx is not None else None
-    except Exception:
-        _run_token = None
-    if (
-        _run_token is not None
-        and st_obj.session_state.get("_baseball_sidebar_chrome_run_token") == _run_token
-    ):
-        return
-    if _run_token is not None:
-        st_obj.session_state["_baseball_sidebar_chrome_run_token"] = _run_token
+        # reset_sidebar_run_guards() runs at script startup. Unlike ScriptRunContext
+        # identity, this claim resets for every rerun while still blocking duplicate
+        # chrome within one execution.
+        if not claim_sidebar_render(st_obj.session_state, GUARD_ACCOUNT):
+            return
+    except ImportError:
+        pass
     head = "?"
     try:
         import subprocess

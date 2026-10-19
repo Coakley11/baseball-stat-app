@@ -63,18 +63,28 @@ class SuiteAuthBrowserBridgeTests(unittest.TestCase):
         st = mock.Mock()
         st.query_params = {"suite_sid": "sid-save"}
         st.session_state = {AUTH_USER_ID_KEY: "uuid-1"}
-        with mock.patch("suite_storage_supabase.save_browser_auth_session", return_value={"write_committed": True}), mock.patch(
+        with mock.patch(
+            "suite_storage_supabase.save_browser_auth_session",
+            return_value={"write_committed": True, "token_generation": 1},
+        ), mock.patch(
             "suite_auth_browser_bridge_diag.readback_after_browser_auth_save",
             return_value={
                 "readback_record_complete": True,
                 "readback_row_found": True,
+                "owner_match": True,
+                "token_identity_match": True,
+                "generation_match": True,
+                "record_unambiguous": True,
                 "failure_reason": "ok",
                 "matching_row_id": "row-1",
             },
         ), mock.patch(
             "live_draft_auth_prestart_stage1_diag.emit_prestart_hydration_checkpoint"
         ) as emit:
-            save_browser_auth_tokens(st, _tokens(), auth_user_id="uuid-1")
+            result = save_browser_auth_tokens(st, _tokens(), auth_user_id="uuid-1")
+            self.assertTrue(result["persistence_succeeded"])
+            self.assertTrue(result["bridge_record_complete"])
+            self.assertEqual(result["failure_reason"], "ok")
             self.assertTrue(emit.called)
             checkpoints = [
                 (c[0][1] if len(c[0]) > 1 else c[1].get("checkpoint"))
@@ -88,13 +98,39 @@ class SuiteAuthBrowserBridgeTests(unittest.TestCase):
         st = mock.Mock()
         st.query_params = {"suite_sid": "sid-save"}
         st.session_state = {SESSION_STATE_SID_KEY: "sid-save", AUTH_USER_ID_KEY: "uuid-1"}
-        with mock.patch("suite_storage_supabase.save_browser_auth_session", return_value={"write_committed": True}) as save, mock.patch(
+        with mock.patch(
+            "suite_storage_supabase.save_browser_auth_session",
+            return_value={"write_committed": True, "token_generation": 1},
+        ) as save, mock.patch(
             "suite_auth_browser_bridge_diag.readback_after_browser_auth_save",
-            return_value={"readback_record_complete": True, "readback_row_found": True, "failure_reason": "ok"},
+            return_value={
+                "readback_record_complete": True,
+                "readback_row_found": True,
+                "owner_match": True,
+                "token_identity_match": True,
+                "generation_match": True,
+                "record_unambiguous": True,
+                "failure_reason": "ok",
+            },
         ), mock.patch("live_draft_auth_prestart_stage1_diag.emit_prestart_hydration_checkpoint"):
             save_browser_auth_tokens(st, _tokens(), auth_user_id="")
             save.assert_called_once()
             self.assertEqual(save.call_args.kwargs["user_id"], "uuid-1")
+
+    def test_save_failure_returns_sanitized_structured_result(self) -> None:
+        st = mock.Mock()
+        st.query_params = {}
+        st.session_state = {AUTH_USER_ID_KEY: "uuid-1"}
+        with mock.patch(
+            "suite_storage_supabase.save_browser_auth_session",
+            side_effect=RuntimeError("do-not-expose-this-detail"),
+        ), mock.patch("live_draft_auth_prestart_stage1_diag.emit_prestart_hydration_checkpoint"):
+            result = save_browser_auth_tokens(st, _tokens(), auth_user_id="uuid-1")
+        self.assertTrue(result["persistence_attempted"])
+        self.assertFalse(result["persistence_succeeded"])
+        self.assertEqual(result["failure_reason"], "save_error:RuntimeError")
+        self.assertNotIn("do-not-expose", str(result))
+        self.assertNotIn("suite_sid", str(result))
 
     def test_restore_calls_apply_authenticated_user_on_valid_tokens(self) -> None:
         session: dict = {}

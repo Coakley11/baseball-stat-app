@@ -216,10 +216,13 @@ def development_entitlement(plan: Plan | str) -> EntitlementSnapshot:
 def authenticated_subject(session: Mapping) -> tuple[str,bool,str]:
     """Return only Supabase-validated identity; workspace/email are never authority."""
     try:
-        from suite_auth import AUTH_TOKENS_KEY, AUTH_USER_ID_KEY, is_auth_enabled, is_authenticated
-        if is_auth_enabled() and is_authenticated(dict(session)):
+        from suite_auth import AUTH_TOKENS_KEY, AUTH_USER_ID_KEY, auth_session_complete, is_auth_enabled
+        if is_auth_enabled() and auth_session_complete(dict(session)):
             tokens=session.get(AUTH_TOKENS_KEY) or {}
-            return str(session.get(AUTH_USER_ID_KEY) or "").strip(), True, str(tokens.get("access_token") or "") if isinstance(tokens,Mapping) else ""
+            user_id = str(session.get(AUTH_USER_ID_KEY) or "").strip()
+            token = str(tokens.get("access_token") or "").strip() if isinstance(tokens,Mapping) else ""
+            if user_id and token:
+                return user_id, True, token
     except Exception: pass
     return "",False,""
 

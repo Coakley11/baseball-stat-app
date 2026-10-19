@@ -873,12 +873,12 @@ def load_browser_auth_session_record(session_id: str) -> dict[str, Any] | None:
                 "item_type": f"eq.{_AUTH_SESSION_ITEM_TYPE}",
                 "item_key": f"eq.{sid}",
                 "valid": "eq.true",
-                "limit": "1",
+                "limit": "2",
             },
             prefer="return=representation",
             use_cache=False,
         )
-    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
         return None
     row = rows[0]
     payload = row.get("payload")
@@ -1011,12 +1011,12 @@ def load_browser_auth_session(session_id: str) -> dict[str, Any] | None:
                 "item_type": f"eq.{_AUTH_SESSION_ITEM_TYPE}",
                 "item_key": f"eq.{sid}",
                 "valid": "eq.true",
-                "limit": "1",
+                "limit": "2",
             },
             prefer="return=representation",
             use_cache=False,
         )
-    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
         return None
     payload = rows[0].get("payload")
     if not isinstance(payload, dict):

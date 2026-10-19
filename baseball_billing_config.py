@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 # This is a public Stripe identifier, not a credential. Keeping the expected test
 # value here makes it impossible to accidentally charge against an unreviewed price.
-BASEBALL_PRO_TEST_PRICE_ID = "price_1UO5FtGot4wcmURUVFW5wWiw"
+BASEBALL_PRO_TEST_PRICE_ID = "price_1UOJuhKBFPikFnl8SDE6hKwc"
 
 
 class RolloutMode(str, Enum):

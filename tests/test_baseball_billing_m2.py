@@ -106,6 +106,27 @@ def test_test_checkout_requires_exact_server_controlled_price_and_webhook():
     assert not config(stripe_webhook_secret="").checkout_enabled
 
 
+def test_test_and_live_modes_keep_separate_price_mappings():
+    environment = {
+        "BASEBALL_BILLING_ROLLOUT": "test",
+        "BASEBALL_STRIPE_MODE": "test",
+        "STRIPE_BASEBALL_PRO_TEST_PRICE_ID": BASEBALL_PRO_TEST_PRICE_ID,
+        "STRIPE_BASEBALL_PRO_LIVE_PRICE_ID": "price_live_reviewed",
+    }
+    sandbox = BillingConfig.from_environ(environment)
+    assert sandbox.pro_price_id == "price_1UOJuhKBFPikFnl8SDE6hKwc"
+    assert sandbox.price_valid
+
+    live = BillingConfig.from_environ(
+        {
+            **environment,
+            "BASEBALL_BILLING_ROLLOUT": "live",
+            "BASEBALL_STRIPE_MODE": "live",
+        }
+    )
+    assert live.pro_price_id == "price_live_reviewed"
+
+
 def test_checkout_requires_identity_reuses_customer_and_uses_trusted_price():
     store = InMemoryStore()
     stripe = gateway()
