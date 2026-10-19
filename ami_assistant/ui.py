@@ -42,7 +42,9 @@ MAX_SUGGESTIONS = 3
 # question back to the user. Full analysis isn't offered under these.
 NO_FULL_ANALYSIS_INTENTS = frozenset({"action_request", "clarify", "capabilities"})
 # A tool refused for access or plan reasons: Get full analysis must not become a way around that.
-REFUSED_CODES = frozenset({"not_your_team", "unknown_team", "not_entitled", "entitlement_loading"})
+REFUSED_CODES = frozenset({"not_your_team", "unknown_team", "not_entitled", "entitlement_loading",
+                           # "this trade" with nothing composed: Command Center couldn't see it either.
+                           "no_pending_trade"})
 FULL_ANALYSIS_HELP = ("Sends this question, with this page's context, to Command Center for a deeper written "
                       "analysis. That saves the request to your account; quick answers here are never saved.")
 

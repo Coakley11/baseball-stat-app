@@ -96,7 +96,9 @@ class QuickAnswerTests(unittest.TestCase):
                      {"answer": "x", "grounding": "app_data", "intent": "fantasy_lineup_status",
                       "tools": [{"tool": "get_lineup_status", "ok": False, "error_code": "not_your_team"}]},
                      {"answer": "x", "grounding": "app_data", "intent": "draft_next",
-                      "tools": [{"tool": "get_draft_recommendations", "ok": False, "error_code": "not_entitled"}]}):
+                      "tools": [{"tool": "get_draft_recommendations", "ok": False, "error_code": "not_entitled"}]},
+                     {"answer": "x", "grounding": "app_data", "intent": "fantasy_trade",
+                      "tools": [{"tool": "evaluate_trade", "ok": False, "error_code": "no_pending_trade"}]}):
             self.assertFalse(full_analysis_offered(last), last)
         for last in ({"answer": "x", "grounding": "app_data", "intent": "compare"},
                      {"answer": "x", "grounding": "app_data", "intent": "fantasy_standings"},
