@@ -198,6 +198,19 @@ def _terms() -> list[Term]:
             "ui_hierarchy.commissioner_panel + fantasy_team_control",
         ),
         Term(
+            "full_analysis", "Get full analysis",
+            "Ask AMI answers right away from this app's own data. Under an answer about players, stats or your "
+            "league, **Get full analysis** sends the same question, with this page's context, to Command Center "
+            "(Applied Mathematical Intelligence) for a deeper written analysis; open Command Center to read it. It "
+            "replaces the old ⚾ Baseball Insight box. It runs only when you press it, and it saves the request to "
+            "your account; quick Ask AMI answers are never saved. Hall of Fame Case Mode on Career Totals still sends "
+            "its case from the page.",
+            ("Home",),
+            ("get full analysis", "full analysis", "baseball insight", "command center", "deep analysis",
+             "deeper analysis", "applied mathematical intelligence"),
+            "ami_assistant.ui + baseball_ami_sidebar.submit_baseball_insight",
+        ),
+        Term(
             "explore_more", "Explore more",
             "Redesigned pages lead with the answer, then one chart, then the next step. The filters, full tables, "
             "advanced settings and detailed charts are still there, under the **Explore more** label further down the "

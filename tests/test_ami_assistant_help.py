@@ -230,14 +230,15 @@ class GlossaryTests(unittest.TestCase):
 
 
 class AppWiringTests(unittest.TestCase):
-    def test_panel_is_rendered_once_before_the_insight_sender_and_guarded(self) -> None:
-        call = "render_ami_assistant_panel(st, active_page=active_page, yearly_df=yearly_df, entitlement=_monetization_snapshot)"
+    def test_ask_ami_is_the_one_question_box_and_guarded(self) -> None:
+        call = "render_ami_assistant_panel(st, active_page=active_page, yearly_df=yearly_df, entitlement=_monetization_snapshot,"
+        self.assertEqual(APP.count("render_ami_assistant_panel("), 1)
         self.assertEqual(APP.count(call), 1)
+        self.assertIn("full_analysis=_ami_full_analysis)", APP[APP.index(call): APP.index(call) + 200])
         # AMI gets the page gate's own plan snapshot for this run, resolved before the panel renders.
         self.assertLess(APP.index("_monetization_snapshot = current_entitlement("), APP.index(call))
-        self.assertLess(APP.index(call), APP.index("render_baseball_insight_sidebar(\r\n") if "\r\n" in APP
-                        else APP.index("render_baseball_insight_sidebar(\n"))
-        block = APP[APP.index("from ami_assistant.ui import render_ami_assistant_panel") - 10: APP.index(call) + 200]
+        self.assertNotIn("render_baseball_insight_sidebar(", APP)  # U5: no second question box
+        block = APP[APP.index("from ami_assistant.ui import render_ami_assistant_panel") - 10: APP.index(call) + 300]
         self.assertIn("except ImportError:", block)
 
     def test_load_data_delegates_to_baseball_history(self) -> None:
