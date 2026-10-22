@@ -109,6 +109,28 @@ _POOL = re.compile(r"\bwho(?:'s| is| are) (?:available|out there)\b|\bavailable 
 _LEAGUE = re.compile(r"\b(?:which|what) league\b|\bmy league\b|\bwhat(?:'s| is) my team\b|\bwhich team is mine\b|\bam i (?:the )?commissioner\b|\bwho (?:is|are) (?:in )?my league\b")
 _FOLLOWUP = re.compile(r"^(?:what about|how about|and\b|ok(?:ay)?\b|now\b)")
 _THIS = re.compile(r"^(?:this player|that player|he|him|this slot|that slot|it)$")
+_POSSESSIVE_TEAM = re.compile(r"\b(.+?)(?:'s|s')\s+(?:lineup|roster|team|starters|bench|standings?|record|stats?|"
+                              r"schedule|week|waiver|trade|players?)\b", re.I)
+_TEAM_FOR = re.compile(r"\bfor\s+(.+?)(?:\?|$|\s+(?:this|last|in) )", re.I)
+
+
+def _extract_named_team(question: str, league_teams: tuple[str, ...]) -> str:
+    """Match an explicit team name in the question against the league roster."""
+    if not league_teams:
+        return ""
+    q = str(question or "")
+    q_low = q.lower().replace("\u2019", "'")
+    for name in league_teams:
+        nl = name.lower()
+        for pat in (_POSSESSIVE_TEAM, _TEAM_FOR):
+            m = pat.search(q)
+            if m and m.group(1).strip().lower().replace("\u2019", "'") == nl:
+                return name
+        if nl in q_low:
+            before = q_low.split(nl)[0]
+            if before.endswith(("is ", "has ", "did ", "does ", "was ", "about ", "for ")):
+                return name
+    return ""
 
 
 def _low(text: str) -> str:
@@ -192,6 +214,8 @@ def fantasy_plan(question: str, ctx: AmiPageContext, conv: ConversationState) ->
     week = parse_week(q)
     slot = parse_slot(q)
     followup = bool(_FOLLOWUP.search(stripped)) and conv.intent in FANTASY_INTENTS
+    named_team = _extract_named_team(q, tuple(ctx.league.get("teams") or ()))
+    _t: dict[str, Any] = {"team": named_team} if named_team else {}
 
     if _TRADE.search(low) and (_TRADE_EVAL.search(low) or "?" in q):
         for pattern in _TRADE_SIDES:
@@ -199,16 +223,17 @@ def fantasy_plan(question: str, ctx: AmiPageContext, conv: ConversationState) ->
             if m:
                 give, recv = _split_players(m.group("give")), _split_players(m.group("recv"))
                 if give and recv:
-                    args: dict[str, Any] = {"give": give, "receive": recv}
+                    args: dict[str, Any] = {"give": give, "receive": recv, **_t}
                     if slot:
                         args["slot"] = slot
                     return Plan(F_TRADE, APP_DATA, [ToolCall("evaluate_trade", args)], position=slot)
         if re.search(r"\b(?:this|the|that|my) trade\b", low):
-            return Plan(F_TRADE, APP_DATA, [ToolCall("evaluate_trade", {"slot": slot} if slot else {})], position=slot)
+            return Plan(F_TRADE, APP_DATA, [ToolCall("evaluate_trade", {"slot": slot, **_t} if slot else {**_t})], position=slot)
     if conv.intent == F_TRADE and re.search(r"\bleave (?:me|us)\b|\bwithout an?\b", low) and slot:
         # "Would this leave me without a catcher?" after a trade question: the same trade.
         args = dict(_last_trade(conv))
         args["slot"] = slot
+        args.update(_t)
         return Plan(F_TRADE, APP_DATA, [ToolCall("evaluate_trade", args)], position=slot)
 
     if _PLAYER_WEEK.search(low):
@@ -219,33 +244,33 @@ def fantasy_plan(question: str, ctx: AmiPageContext, conv: ConversationState) ->
         player = _player_for(raw, conv, ctx)
         if not player:
             return Plan(F_PLAYER_WEEK, APP_DATA, clarification="Which player?")
-        args = {"player": player}
+        args = {"player": player, **_t}
         if week:
             args["week"] = week
         return Plan(F_PLAYER_WEEK, APP_DATA, [ToolCall("explain_player_week", args)], week=week, subject=player)
 
     if _WEEK_REF.search(low) or (week is None and _WEEK_STATUS.search(low)):
         which = "current" if "this week" in low else "last_final"
-        args = {"week": week} if week else {"which": which}
+        args = {"week": week, **_t} if week else {"which": which, **_t}
         if _WEEK_LINEUP.search(low):
-            lineup_args = {"week": week} if week else {"which": which}
+            lineup_args = {"week": week, **_t} if week else {"which": which, **_t}
             notes = ["“Last week” means the most recent finalized week."] if "last week" in low and not week else []
             return Plan(F_WEEK_LINEUP, APP_DATA, [ToolCall("get_week_lineup", lineup_args)], week=week, notes=notes)
         if _WEEK_STATUS.search(low) or _WEEK_SUMMARY.search(low) or week:
             return Plan(F_WEEK, APP_DATA, [ToolCall("get_week", args)], week=week)
 
     if _SNAPSHOT.search(low):
-        return Plan(F_SNAPSHOT, APP_DATA, [ToolCall("get_current_roster_standings", {})])
+        return Plan(F_SNAPSHOT, APP_DATA, [ToolCall("get_current_roster_standings", {**_t})])
     if _GAINS.search(low):
-        return Plan(F_GAINS, APP_DATA, [ToolCall("get_official_standings", {})])
+        return Plan(F_GAINS, APP_DATA, [ToolCall("get_official_standings", {**_t})])
     if _STRENGTHS.search(low):
-        return Plan(F_STRENGTHS, APP_DATA, [ToolCall("get_official_standings", {})])
+        return Plan(F_STRENGTHS, APP_DATA, [ToolCall("get_official_standings", {**_t})])
     if _STANDINGS.search(low):
-        return Plan(F_STANDINGS, APP_DATA, [ToolCall("get_official_standings", {})])
+        return Plan(F_STANDINGS, APP_DATA, [ToolCall("get_official_standings", {**_t})])
     if _LINEUP_STATUS_Q.search(low):
-        return Plan(F_LINEUP_STATUS, APP_DATA, [ToolCall("get_lineup_status", {})])
+        return Plan(F_LINEUP_STATUS, APP_DATA, [ToolCall("get_lineup_status", {**_t})])
     if _EMPTY.search(low) and not _WAIVER.search(low):
-        return Plan(F_EMPTY, APP_DATA, [ToolCall("get_lineup_status", {})])
+        return Plan(F_EMPTY, APP_DATA, [ToolCall("get_lineup_status", {**_t})])
     on_draft_page = ctx.page in DRAFT_PAGES  # "Is X available?" there means the draft board
     m = _OWNER.search(orig) if not on_draft_page else None
     if m:
@@ -269,13 +294,13 @@ def fantasy_plan(question: str, ctx: AmiPageContext, conv: ConversationState) ->
 
     if _FIND_ELIGIBLE.search(low) and slot:
         return Plan(F_FIND_ELIGIBLE, APP_DATA,
-                    [ToolCall("find_eligible_players", {"slot": slot, "bench_only": "bench" in low})], position=slot)
+                    [ToolCall("find_eligible_players", {"slot": slot, "bench_only": "bench" in low, **_t})], position=slot)
     if _LINEUP.search(low):
-        return Plan(F_LINEUP, APP_DATA, [ToolCall("get_lineup_report", {})])
+        return Plan(F_LINEUP, APP_DATA, [ToolCall("get_lineup_report", {**_t})])
     why = _WAIVER_WHY.search(orig) if (ctx.page == WAIVER_PAGE or "waiver" in low or conv.intent == F_WAIVER) else None
     if why or (_WAIVER.search(low) and not _HOWTO.search(stripped)):
         position = slot or (conv.position if followup else "")
-        args: dict[str, Any] = {"position": position} if position else {}
+        args: dict[str, Any] = {"position": position, **_t} if position else {**_t}
         player = _player_for(why.group("p"), conv, ctx) if why else ""
         if player and not re.match(r"^(?:this|that|the) (?:waiver )?player$", player.lower()):
             args["player"] = player
@@ -284,5 +309,5 @@ def fantasy_plan(question: str, ctx: AmiPageContext, conv: ConversationState) ->
     if _LEAGUE.search(low):
         return Plan(F_LEAGUE, APP_DATA, [ToolCall("get_active_league", {})])
     if followup and conv.intent in (F_GAINS, F_STRENGTHS, F_STANDINGS) and re.search(r"\bpoints?\b|\bcategor", low):
-        return Plan(F_GAINS, APP_DATA, [ToolCall("get_official_standings", {})])
+        return Plan(F_GAINS, APP_DATA, [ToolCall("get_official_standings", {**_t})])
     return None

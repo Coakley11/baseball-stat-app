@@ -196,9 +196,11 @@ def _league_summary(session: Mapping[str, Any]) -> dict[str, Any]:
     if not brief:
         return {}
     week = brief.get("current_week") or {}
+    teams_raw = brief.get("teams") or []
     out = {
         "league_name": clean_text(brief.get("league_name"), 60),
         "my_team": clean_text(brief.get("my_team"), 60),
+        "teams": tuple(clean_text(t, 80) for t in teams_raw if t),
         "access_mode": clean_text((brief.get("access") or {}).get("mode"), 30),
         "week_label": clean_text(week.get("label"), 30),
         "week_status": clean_text(week.get("status"), 20),
