@@ -223,6 +223,57 @@ class AccessTests(LeagueCase):
             self.assertEqual(self.call(name, **args).error_code, ft.UNKNOWN_TEAM, name)
 
 
+class NamedTeamTests(LeagueCase):
+    """A question that names a team is about that team, never silently about mine."""
+
+    def ask(self, question: str):
+        with _as(ME):
+            return ask(question, session_state=self.session, active_page="Fantasy Lineup Assistant",
+                       dataset=synthetic_dataset())
+
+    def test_another_managers_team_is_refused_not_swapped_for_mine(self) -> None:
+        res = self.ask("Is Team B's lineup saved?")
+        self.assertEqual([(t["tool"], t["error_code"]) for t in res.tools], [("get_lineup_status", ft.NOT_YOUR_TEAM)])
+        self.assertIn("Team B", res.answer)
+        self.assertNotIn("Team A", res.answer)
+
+    def test_commissioner_reads_an_unclaimed_teams_status(self) -> None:
+        res = self.ask("Is Team C's lineup saved?")
+        self.assertEqual([(t["tool"], t["ok"]) for t in res.tools], [("get_lineup_status", True)])
+        direct = self.call("get_lineup_status", team="Team C")
+        self.assertEqual(direct.data["team"], "Team C")
+        self.assertIn("Team C", res.answer)
+        self.assertNotIn("Team A", res.answer)
+
+    def test_a_team_that_is_not_in_the_league_is_not_found(self) -> None:
+        res = self.ask("Is Team Z's lineup saved?")
+        self.assertEqual([(t["tool"], t["error_code"]) for t in res.tools], [("get_lineup_status", ft.UNKNOWN_TEAM)])
+        self.assertIn("no team called", res.answer)
+        self.assertIn("Team Z", res.answer)
+
+    def test_my_lineup_still_means_my_team(self) -> None:
+        res = self.ask("Is my lineup saved?")
+        self.assertEqual([(t["tool"], t["ok"]) for t in res.tools], [("get_lineup_status", True)])
+        self.assertNotIn("Team B", res.answer)
+
+    def test_team_name_extraction(self) -> None:
+        from ami_assistant.fantasy_router import _extract_named_team
+
+        teams = ("Team 1", "Team 10", "Yankees", "Bob's Bombers")
+        cases = {
+            "Is Team 10's lineup saved?": "Team 10",
+            "Is Team 1's lineup saved?": "Team 1",
+            "How is Bob's Bombers doing in the standings?": "Bob's Bombers",
+            "Is the Yankees' lineup set?": "Yankees",
+            "Is Team Z's lineup saved?": "Team Z",
+            "Is my team's lineup saved?": "",
+            "Is this week's lineup saved?": "",
+            "Is my lineup saved?": "",
+        }
+        for question, expected in cases.items():
+            self.assertEqual(_extract_named_team(question, teams), expected, question)
+
+
 class NoLeagueTests(unittest.TestCase):
     def test_every_fantasy_tool_says_there_is_no_league(self) -> None:
         args = {"check_slot_eligibility": {"player": "Judge", "slot": "SS"}, "find_eligible_players": {"slot": "SS"},

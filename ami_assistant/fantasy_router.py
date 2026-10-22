@@ -109,28 +109,34 @@ _POOL = re.compile(r"\bwho(?:'s| is| are) (?:available|out there)\b|\bavailable 
 _LEAGUE = re.compile(r"\b(?:which|what) league\b|\bmy league\b|\bwhat(?:'s| is) my team\b|\bwhich team is mine\b|\bam i (?:the )?commissioner\b|\bwho (?:is|are) (?:in )?my league\b")
 _FOLLOWUP = re.compile(r"^(?:what about|how about|and\b|ok(?:ay)?\b|now\b)")
 _THIS = re.compile(r"^(?:this player|that player|he|him|this slot|that slot|it)$")
-_POSSESSIVE_TEAM = re.compile(r"\b(.+?)(?:'s|s')\s+(?:lineup|roster|team|starters|bench|standings?|record|stats?|"
-                              r"schedule|week|waiver|trade|players?)\b", re.I)
-_TEAM_FOR = re.compile(r"\bfor\s+(.+?)(?:\?|$|\s+(?:this|last|in) )", re.I)
+_POSSESSIVE_TEAM = re.compile(r"((?:[\w.&-]+\s+){0,4}[\w.&-]+)(?:'s|')\s+(?:\w+\s+)?"
+                              r"(?:lineup|roster|team|starters|bench|standings?|record|schedule)\b")
+_LEAD_WORDS = frozenset("is are was were has have had did does do how how's hows what what's whats where who show tell "
+                        "me check see about for and so please can could would will should you i ok okay hey now then "
+                        "the".split())
+_NOT_A_TEAM = frozenset("my our your his her their its this that next last every each another other whose".split())
 
 
 def _extract_named_team(question: str, league_teams: tuple[str, ...]) -> str:
-    """Match an explicit team name in the question against the league roster."""
-    if not league_teams:
-        return ""
-    q = str(question or "")
-    q_low = q.lower().replace("\u2019", "'")
+    """The team a question names explicitly: the longest league team named as a whole phrase, else an explicit
+    possessive ("Team Z's lineup") passed through so the tool can say there is no such team. "" = my team."""
+    q = str(question or "").replace("\u2019", "'")
+    best = ""
     for name in league_teams:
-        nl = name.lower()
-        for pat in (_POSSESSIVE_TEAM, _TEAM_FOR):
-            m = pat.search(q)
-            if m and m.group(1).strip().lower().replace("\u2019", "'") == nl:
-                return name
-        if nl in q_low:
-            before = q_low.split(nl)[0]
-            if before.endswith(("is ", "has ", "did ", "does ", "was ", "about ", "for ")):
-                return name
-    return ""
+        n = str(name or "").strip()
+        if n and len(n) > len(best) and re.search(rf"(?<![\w]){re.escape(n)}(?![\w])", q, re.I):
+            best = n
+    if best:
+        return best
+    m = _POSSESSIVE_TEAM.search(q)
+    if not m:
+        return ""
+    words = m.group(1).split()
+    while words and words[0].lower() in _LEAD_WORDS:
+        words.pop(0)
+    if not words or words[0].lower() in _NOT_A_TEAM or not (words[0][0].isupper() or words[0][0].isdigit()):
+        return ""
+    return " ".join(words)
 
 
 def _low(text: str) -> str:
