@@ -58,7 +58,7 @@ class TestAmiBlobPersistence(unittest.TestCase):
 
     @patch("suite_activity_client.record_activity")
     @patch("suite_account.remember_saved_item")
-    def test_activity_recorded_before_blob_save(self, remember_mock, record_mock) -> None:
+    def test_activity_recorded_after_durable_save(self, remember_mock, record_mock) -> None:
         order: list[str] = []
 
         def _record(*_args, **_kwargs):
@@ -78,9 +78,10 @@ class TestAmiBlobPersistence(unittest.TestCase):
                 context={"current_pick": 8, "available_players": [{"player": "A"}]},
                 session_state={},
             )
-        self.assertEqual(order[:2], ["activity", "blob"])
+        # Durable first: a send is announced (activity) only after the context blob is accepted.
+        self.assertEqual(order, ["blob", "blob", "activity"])
         remember_apps = [call.args[0] for call in remember_mock.call_args_list]
-        self.assertEqual(remember_apps, ["applied_intelligence"])
+        self.assertEqual(remember_apps, ["applied_intelligence", "baseball"])
 
     @patch("suite_account.remember_saved_item")
     def test_duplicate_send_still_updates_blob(self, remember_mock) -> None:

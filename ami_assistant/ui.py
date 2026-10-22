@@ -131,6 +131,10 @@ def _send_full_analysis(st: Any, full_analysis: FullAnalysis, last: dict[str, An
         log.exception("AMI full-analysis handoff failed on %s", page)
         st.session_state[FULL_ANALYSIS_KEY] = {"question": question, "failed": True}
         return
+    if result.get("save_failed"):
+        log.warning("AMI full-analysis handoff was not saved on %s", page)
+        st.session_state[FULL_ANALYSIS_KEY] = {"question": question, "failed": True}
+        return
     st.session_state[FULL_ANALYSIS_KEY] = {"question": question, "duplicate": bool(result.get("duplicate"))}
 
 

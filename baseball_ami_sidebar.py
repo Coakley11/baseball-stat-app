@@ -209,7 +209,7 @@ def submit_baseball_insight(
     )
     ss["_last_analytical_question"] = result
     ss[f"_ami_send_gen_{SOURCE_APP}_{page_suffix}"] = send_gen + 1
-    if on_after_send is not None and not result.get("duplicate"):
+    if on_after_send is not None and not result.get("duplicate") and not result.get("save_failed"):
         try:
             on_after_send()
         except Exception:

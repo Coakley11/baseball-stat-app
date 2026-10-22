@@ -335,9 +335,9 @@ class EndToEndHandoffTests(unittest.TestCase):
         stack.enter_context(mock.patch("suite_activity_client.record_activity",
                                        side_effect=lambda *a, **k: self.rec["activity"].append((a, k))))
         stack.enter_context(mock.patch("suite_analytical_question._store_question_context_blob",
-                                       side_effect=lambda p: self.rec["blob"].append(p)))
+                                       side_effect=lambda p: self.rec["blob"].append(p) or True))
         stack.enter_context(mock.patch("suite_analytical_question._upsert_applied_intelligence_resume",
-                                       side_effect=lambda p, **k: self.rec["upsert"].append(p)))
+                                       side_effect=self._upsert))
         stack.enter_context(mock.patch("requests.sessions.Session.request",
                                        side_effect=AssertionError("no network in the isolated handoff")))
         return stack
@@ -387,6 +387,38 @@ class EndToEndHandoffTests(unittest.TestCase):
         self.assertIn("Couldn't send this to Command Center", "\n".join(e.value for e in at.sidebar.error))
         self.assertEqual(self.rec["upsert"], [])
         self.assertIsNotNone(_button(at, "Get full analysis"))  # still available to retry
+
+    def test_a_rejected_save_is_a_failure_and_the_retry_saves_once(self) -> None:
+        self.store_down = True
+        with self._isolated():
+            at = AppTest.from_function(_handoff_app, default_timeout=90)
+            at.session_state["test_page"] = "Career Totals"
+            at.run()
+            _ask(at, "Who has the most career HR since 2010?")
+            _button(at, "Get full analysis").click()
+            at.run(timeout=90)
+            self.assertIn("Couldn't send this to Command Center", "\n".join(e.value for e in at.sidebar.error))
+            self.assertFalse(at.sidebar.success)
+            self.assertEqual((self.rec["upsert"], self.rec["blob"], self.rec["activity"]), ([], [], []),
+                             "a rejected save leaves no Continue card, context blob or activity")
+            self.assertNotIn("_ami_last_send", at.session_state, "the dedup marker is not spent")
+            self.assertNotIn("_suite_defer_baseball_save_reason", at.session_state)
+
+            self.store_down = False
+            _button(at, "Get full analysis").click()
+            at.run(timeout=90)
+            self.assertIn("Full analysis requested", "\n".join(s.value for s in at.sidebar.success))
+            self.assertTrue(_button(at, "Full analysis requested").disabled)
+        self.assertEqual([u["question"] for u in self.rec["upsert"]], ["Who has the most career HR since 2010?"])
+        self.assertEqual(len(self.rec["blob"]), 1)
+        self.assertEqual(len(self.rec["activity"]), 1)
+        self.assertEqual(self.rec["upsert"][0]["source_page"], "Career Totals")
+
+    def _upsert(self, payload, **_kw):
+        if getattr(self, "store_down", False):
+            return False
+        self.rec["upsert"].append(payload)
+        return True
         self.assertNotIn("_suite_defer_baseball_save_reason", at.session_state)
 
 
