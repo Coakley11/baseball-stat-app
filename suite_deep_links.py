@@ -22,14 +22,25 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
-from music_resume_payload import (
-    decode_payload_b64,
-    encode_payload_b64,
-    legacy_resume_key_for_payload,
-    normalize_resume_kind,
-)
-
 from suite_workspace import append_suite_workspace_param, normalize_workspace_id, resolve_workspace_id
+
+# Music's typed Continue envelope (``music_resume_payload``) is imported only where a Music link is
+# built. Apps that never build one (Baseball) don't ship that module, and a top-level import made
+# every deep link fail there. The names stay reachable as attributes for callers that used them.
+_MUSIC_PAYLOAD_NAMES = frozenset({
+    "decode_payload_b64",
+    "encode_payload_b64",
+    "legacy_resume_key_for_payload",
+    "normalize_resume_kind",
+})
+
+
+def __getattr__(name: str) -> Any:
+    if name in _MUSIC_PAYLOAD_NAMES:
+        import music_resume_payload
+
+        return getattr(music_resume_payload, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # Mirror app_urls.py — updated when dev URLs change.
 APP_BASE_URLS: dict[str, str] = {
@@ -651,6 +662,8 @@ def merge_handoff_metrics_from_action_url(metrics: dict[str, Any], action_url: s
 
 def _music_scalar_params_from_payload(payload: dict[str, Any]) -> dict[str, str]:
     """Flatten common Music resume scalars into query params."""
+    from music_resume_payload import normalize_resume_kind
+
     params: dict[str, str] = {}
     pick = str(payload.get("pick_key") or "").strip()
     if pick:
@@ -711,6 +724,8 @@ def build_music_continue_url(
     base_url: str = "",
 ) -> str:
     """Deep link that restores a specific Music task (Continue card)."""
+    from music_resume_payload import encode_payload_b64, legacy_resume_key_for_payload
+
     base = (base_url or app_base_url("music")).strip().rstrip("/")
     if not base or not payload:
         return ""
