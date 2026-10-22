@@ -164,3 +164,93 @@ analysis?" answer from a new glossary term, `full_analysis`.
   panel before the phone container's CSS arrived. Re-measured once settled, it is
   `display: none` and the phone bar is the only visible surface.
 - **Page context:** the "Looking at" line follows the page ("Compare Players · …").
+
+## 7. On the final candidate (`ami/u5-unified-entry`)
+
+The combined candidate `integration/baseball-final-candidate @ 7beb515` was built from
+`674055b`, before U5. This branch brings U5 onto it and finishes the brief.
+
+| Commit | What |
+|---|---|
+| `a7ca857` | U5A: merge of the approved `u5/unified-ask-ami @ fbaa666` onto `7beb515`, with no conflicts |
+| `86c647a` | U5B: Home opens Ask AMI; the phone bar opens with the answer; Home's cards move up on phones; the full-analysis button is spent after one send and withheld after refusals |
+| `a71ec99` | U5C: acceptance tests (Home entry; the isolated end-to-end Command Center handoff) |
+| `ccd6835` | U5C: no Get full analysis for "this trade" when nothing is composed |
+
+**Home → Ask AMI.**
+- Home's Ask card shows Home's own first two suggested questions as one-tap buttons
+  (`ami_assistant.ui.queue_question`). They ask into the one Ask AMI conversation; there is no
+  second input.
+- The answer appears in the sidebar panel on desktop, or in the phone bar, which opens itself
+  when a question is queued or answered.
+
+**Home on phones.**
+- On Home only, at phone widths, the brand banner is hidden. The page switcher and "What would
+  you like to do?" already say where you are.
+- The style rides in the "Start here" label's own markdown, so desktop is unchanged (task cards
+  at 305 px before and after).
+
+| Width | Candidate | U5 before the fix | After |
+|---|---|---|---|
+| 430 / 390 / 360 (first task card) | 431 px | 487 px (the Ask AMI bar added 56 px) | **382 px** (the Ask AMI bar stays at 190 px) |
+
+The candidate review reported 1,110–1,240 px. In a fresh session, and in the `qa_perf` QA
+workspace the review used, this checkout measures 431 px on the candidate, so the review's figure
+probably reflects a different state (possibly a signed-in session). The fix lifts the cards about
+105 px in any state.
+
+**Get full analysis, hardened.**
+- **One send per answer.** After a successful send, the button becomes a disabled "Full analysis
+  requested". After a failure it stays available to retry. The send runs from `on_click`, so it
+  can't double-fire on a redraw.
+- **Never offered after a refusal:** not your team, unknown team, not entitled, plan not ready,
+  or "this trade" with nothing composed in Trade Center. So it is never a way around AMI's access
+  or plan checks.
+- **Isolated end-to-end test** (`EndToEndHandoffTests`), on the real
+  `submit_baseball_insight` → `submit_analytical_question` pipeline, with every cloud writer
+  recorded and the network off:
+  - a history question (Career Totals) and a league question (League Standings) each reach
+    Command Center once, with their page and the page's analysis context;
+  - the quick answer saved nothing;
+  - the save deferral is set;
+  - a failed handoff shows "Couldn't send this to Command Center right now.", writes nothing and
+    can be retried.
+
+**Release blocker (pre-existing, not U5).**
+- The Command Center handoff imports `suite_deep_links`, which imports `music_resume_payload`.
+  That module is not in the Baseball repo on any branch (`origin/dev`, `dev` or the candidate).
+- In this checkout, both the old Baseball Insight button and Get full analysis therefore raise
+  `ModuleNotFoundError` before writing anything. U5 shows the failure message; the old box
+  raised into the page.
+- The end-to-end test gets the module from the local Command Center checkout
+  (`daniel-ai-command-center`, read-only).
+- Before release, the Command Center owner should sync `music_resume_payload.py` (or make
+  `suite_deep_links` not need it for Baseball), and confirm how the hosted app gets it.
+
+### 7.1 Verification on `ami/u5-unified-entry`
+
+**AMI tests.**
+- `tests/test_ami_assistant_u5.py`: 18 passed, including the three isolated end-to-end handoff tests.
+- The updated help, button-label and submit-audit tests pass.
+
+**Focused regression** (185 files, one process, compared with a clean scratch checkout of `7beb515`):
+
+| | failed | passed |
+|---|---|---|
+| Candidate `7beb515` | 99 | 1,569 |
+| `ami/u5-unified-entry` | 110 (+2 errors) | 1,623 |
+
+None of the differences is a U5 regression:
+- **`test_web_prep_api_parity` (6):** fails only in the combined run, with `module 'portfolio_demo' has no attribute 'apply_pending_draft_demo'`. Another test leaves a different `portfolio_demo` in `sys.modules`. Run alone on the U5 branch, the file passes 6/6. Run together with the U5 tests, it also passes, so the U5 tests are not the source.
+- **`test_workflow_persist_guard` (9):** these fail in isolation on both the candidate and U5 (9 failed / 38 passed on each). The cause is pre-existing and depends on local `data/`.
+- The other 16 tests that differed between runs depend on test order or timing (deploy marker, U1 label path pollution, Live Draft timing). All pass in isolation on U5.
+- 4 tests fail on the candidate but not on U5.
+
+**API and shared code are unchanged.** `git diff 7beb515 HEAD` is empty for `baseball_api`, `baseball_history`, `fantasy_read_api`, the league peek, `baseball_monetization`, `suite_analytical_question`, `applied_math_context`, persistence and `web/`.
+
+**Browser** (real app, plus a stub-handoff harness that writes nothing), at 1280, 430, 390 and 360 px:
+- Exactly one visible Ask AMI input: the sidebar on desktop, the phone bar at y = 190 px on phones. No Baseball Insight box anywhere.
+- Home starter answered. The conversation carried over to Compare Players: "Earlier" lists the Home question.
+- 8/8 functional questions answered on a synthetic QA workspace, and "Drop Aaron Judge" was refused.
+- Get full analysis: on success, a confirmation and a spent button; on failure, the message and a retry. No horizontal overflow.
+- On the real app, the button was shown but never pressed, because a real send writes to Command Center.

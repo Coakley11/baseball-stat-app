@@ -77,10 +77,12 @@ class QuickAnswerTests(unittest.TestCase):
         at.run(timeout=60)
         self.assertEqual(at.session_state["_test_handoffs"], [["Who had the higher OPS from 2022 to 2025?", "Comparison Tool"]])
         self.assertIn("Full analysis requested", "\n".join(s.value for s in at.sidebar.success))
-        _button(at, "Get full analysis").click()
-        at.run(timeout=60)
-        self.assertEqual(len(at.session_state["_test_handoffs"]), 2)
-        self.assertIn("already asked for this analysis", "\n".join(i.value for i in at.sidebar.info))
+        # One send per answer: the button is spent, so a second press can't submit again.
+        spent = _button(at, "Full analysis requested")
+        self.assertIsNotNone(spent)
+        self.assertTrue(spent.disabled)
+        self.assertIsNone(_button(at, "Get full analysis"))
+        self.assertEqual(len(at.session_state["_test_handoffs"]), 1)
         next(b for b in at.sidebar.button if b.label == "Clear conversation").click()
         at.run()
         self.assertNotIn(FULL_ANALYSIS_KEY, at.session_state)
@@ -89,7 +91,14 @@ class QuickAnswerTests(unittest.TestCase):
         for last in ({"answer": "x", "grounding": "product_help", "intent": "help_page"},
                      {"answer": "x", "grounding": "product_help", "intent": "action_request"},
                      {"answer": "Which player?", "grounding": "app_data", "intent": "clarify"},
-                     {"answer": "AMI is unavailable", "grounding": "app_data", "intent": "compare", "error": True}):
+                     {"answer": "AMI is unavailable", "grounding": "app_data", "intent": "compare", "error": True},
+                     # A tool refused for access or plan reasons: no way around it through Command Center.
+                     {"answer": "x", "grounding": "app_data", "intent": "fantasy_lineup_status",
+                      "tools": [{"tool": "get_lineup_status", "ok": False, "error_code": "not_your_team"}]},
+                     {"answer": "x", "grounding": "app_data", "intent": "draft_next",
+                      "tools": [{"tool": "get_draft_recommendations", "ok": False, "error_code": "not_entitled"}]},
+                     {"answer": "x", "grounding": "app_data", "intent": "fantasy_trade",
+                      "tools": [{"tool": "evaluate_trade", "ok": False, "error_code": "no_pending_trade"}]}):
             self.assertFalse(full_analysis_offered(last), last)
         for last in ({"answer": "x", "grounding": "app_data", "intent": "compare"},
                      {"answer": "x", "grounding": "app_data", "intent": "fantasy_standings"},
@@ -233,6 +242,152 @@ class WiringAndHelpTests(unittest.TestCase):
             answer = ask(q, session_state={}, active_page="Home", dataset=synthetic_dataset()).answer
             self.assertIn("Get full analysis", answer, q)
             self.assertIn("never saved", answer, q)
+
+def _home_app() -> None:
+    import streamlit as st
+
+    import home_page
+    from ami_assistant.ui import render_ami_assistant_panel
+    from tests.ami_assistant_fixtures import synthetic_yearly
+
+    render_ami_assistant_panel(st, active_page="Home", yearly_df=synthetic_yearly(),
+                               full_analysis=lambda q, p: {"duplicate": False})
+    home_page.render_home(st, st.session_state, navigate=lambda page, **_kw: None)
+
+
+class HomeEntryTests(unittest.TestCase):
+    def test_home_asks_into_the_one_conversation(self) -> None:
+        from ami_assistant.page_help import HOME_ASK_BUTTONS
+
+        at = AppTest.from_function(_home_app, default_timeout=60)
+        at.run()
+        # Home's Ask card buttons (the phone bar's "Try:" suggestions show the same questions, keyed apart).
+        main_buttons = [b for b in at.main.button if str(b.key or "").startswith("u1_action_home_ask_")]
+        self.assertEqual([b.label for b in main_buttons], list(HOME_ASK_BUTTONS))  # Home's own suggested questions
+        self.assertEqual(sum(1 for t in at.text_input if t.label == "Ask AMI"), 2, "no new input: sidebar + phone bar only")
+        main_buttons[0].click()
+        at.run(timeout=60)
+        self.assertEqual(at.session_state[LAST_KEY]["question"], HOME_ASK_BUTTONS[0])
+        self.assertIn(f"**You asked:** {HOME_ASK_BUTTONS[0]}", "\n".join(m.value for m in at.sidebar.markdown))
+        phone = next(e for e in at.expander if e.label == "💬 Ask AMI")
+        self.assertTrue(phone.proto.expanded, "the phone bar opens with the answer")
+
+    def test_home_skips_the_brand_banner_on_phones_only(self) -> None:
+        from mobile_foundation import PHONE_MAX_PX
+
+        at = AppTest.from_function(_home_app, default_timeout=60)
+        at.run()
+        css = "\n".join(m.value for m in at.main.markdown if "title-box" in m.value)
+        self.assertIn(f"@media (max-width: {PHONE_MAX_PX}px)", css)
+        self.assertIn(':has(.title-box) { display: none; }', css)
+
+
+def _handoff_app() -> None:
+    """The panel with the app's own handoff (same body as streamlit_app._ami_full_analysis)."""
+    import streamlit as st
+
+    from ami_assistant.ui import render_ami_assistant_panel
+    from applied_math_context import build_baseball_applied_math_context, build_source_state
+    from baseball_ami_sidebar import submit_baseball_insight
+    from tests.ami_assistant_fixtures import synthetic_yearly
+
+    def _ami_full_analysis(question: str, page: str) -> dict:
+        return submit_baseball_insight(
+            st.session_state, source_page=page, question=question,
+            context_extra_builder=lambda: build_baseball_applied_math_context(page, st.session_state),
+            source_state_builder=lambda: build_source_state(page, st.session_state),
+            on_after_send=lambda: st.session_state.__setitem__("_suite_defer_baseball_save_reason", f"ami_send:{page}"),
+        )
+
+    render_ami_assistant_panel(st, active_page=st.session_state.get("test_page", "Career Totals"),
+                               yearly_df=synthetic_yearly(), full_analysis=_ami_full_analysis)
+
+
+COMMAND_CENTER = Path.home() / "Documents" / "GitHub" / "daniel-ai-command-center"
+
+
+class EndToEndHandoffTests(unittest.TestCase):
+    """The real Get full analysis → Command Center pipeline, isolated: every cloud writer is a
+    recorder and the network is off. Command Center's own checkout supplies the module the pipeline
+    imports (music_resume_payload, not synced into this repo); without it the test is skipped."""
+
+    def setUp(self) -> None:
+        import sys
+
+        if not (COMMAND_CENTER / "music_resume_payload.py").is_file():
+            self.skipTest("Command Center checkout not available")
+        self._path = str(COMMAND_CENTER)
+        self._added = self._path not in sys.path
+        if self._added:
+            sys.path.append(self._path)
+        self.rec = {"activity": [], "blob": [], "upsert": []}
+
+    def tearDown(self) -> None:
+        import sys
+
+        if getattr(self, "_added", False) and self._path in sys.path:
+            sys.path.remove(self._path)
+
+    def _isolated(self):
+        from contextlib import ExitStack
+
+        stack = ExitStack()
+        stack.enter_context(mock.patch("suite_activity_client.record_activity",
+                                       side_effect=lambda *a, **k: self.rec["activity"].append((a, k))))
+        stack.enter_context(mock.patch("suite_analytical_question._store_question_context_blob",
+                                       side_effect=lambda p: self.rec["blob"].append(p)))
+        stack.enter_context(mock.patch("suite_analytical_question._upsert_applied_intelligence_resume",
+                                       side_effect=lambda p, **k: self.rec["upsert"].append(p)))
+        stack.enter_context(mock.patch("requests.sessions.Session.request",
+                                       side_effect=AssertionError("no network in the isolated handoff")))
+        return stack
+
+    def test_history_question_reaches_command_center_once(self) -> None:
+        with self._isolated():
+            at = AppTest.from_function(_handoff_app, default_timeout=90)
+            at.session_state["test_page"] = "Career Totals"
+            at.run()
+            _ask(at, "Who has the most career HR since 2010?")
+            self.assertEqual(self.rec, {"activity": [], "blob": [], "upsert": []}, "the quick answer saved nothing")
+            _button(at, "Get full analysis").click()
+            at.run(timeout=90)
+        self.assertFalse(at.exception)
+        self.assertEqual(len(self.rec["upsert"]), 1)
+        sent = self.rec["upsert"][0]
+        self.assertEqual((sent["question"], sent["source_page"], sent["source_app"]),
+                         ("Who has the most career HR since 2010?", "Career Totals", "baseball"))
+        self.assertEqual(sent["context"].get("page"), "Career Totals")  # the page's own analysis context
+        self.assertEqual(len(self.rec["blob"]), 1)
+        self.assertEqual(self.rec["activity"][0][1].get("page"), "Career Totals")
+        self.assertEqual(at.session_state["_suite_defer_baseball_save_reason"], "ami_send:Career Totals")
+        self.assertIn("Full analysis requested", "\n".join(s.value for s in at.sidebar.success))
+        self.assertTrue(_button(at, "Full analysis requested").disabled)  # no second submission
+
+    def test_league_question_carries_the_league_page(self) -> None:
+        with self._isolated():
+            at = AppTest.from_function(_handoff_app, default_timeout=90)
+            at.session_state["test_page"] = "Fantasy Standings Tracker"
+            at.run()
+            _ask(at, "Where am I in the standings?")
+            _button(at, "Get full analysis").click()
+            at.run(timeout=90)
+        self.assertEqual([(u["question"], u["source_page"]) for u in self.rec["upsert"]],
+                         [("Where am I in the standings?", "Fantasy Standings Tracker")])
+
+    def test_a_failed_handoff_says_so_and_can_be_retried(self) -> None:
+        with self._isolated(), mock.patch("suite_analytical_question.build_applied_math_resume_url",
+                                          side_effect=ModuleNotFoundError("No module named 'music_resume_payload'")):
+            at = AppTest.from_function(_handoff_app, default_timeout=90)
+            at.session_state["test_page"] = "Career Totals"
+            at.run()
+            _ask(at, "Who has the most career HR since 2010?")
+            _button(at, "Get full analysis").click()
+            at.run(timeout=90)
+        self.assertFalse(at.exception, "a failed handoff never breaks the page")
+        self.assertIn("Couldn't send this to Command Center", "\n".join(e.value for e in at.sidebar.error))
+        self.assertEqual(self.rec["upsert"], [])
+        self.assertIsNotNone(_button(at, "Get full analysis"))  # still available to retry
+        self.assertNotIn("_suite_defer_baseball_save_reason", at.session_state)
 
 
 if __name__ == "__main__":

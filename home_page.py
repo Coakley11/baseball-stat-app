@@ -143,7 +143,9 @@ def render_home(st: Any, session: Any, *, navigate: Callable[..., Any], render_t
 
     ui.page_head(st, "What would you like to do?",
                  "Look up players, spot who's rising, prepare for your draft and run your fantasy league.")
-    st.markdown('<div class="u1-label u1-home-tasks">Start here</div>', unsafe_allow_html=True)
+    # The phone-only style rides in the label's own markdown, so it adds no element (or gap) on desktop.
+    st.markdown(_compact_home_on_phones_css() + '<div class="u1-label u1-home-tasks">Start here</div>',
+                unsafe_allow_html=True)
     for row in (TASKS[:2], TASKS[2:]):
         cols = st.columns(2)
         for col, (icon, title, body, button, page) in zip(cols, row):
@@ -161,12 +163,41 @@ def render_home(st: Any, session: Any, *, navigate: Callable[..., Any], render_t
     st.markdown(
         '<div class="u1-card u1-ami-slot"><div class="u1-card-title">💬 Ask AMI</div>'
         '<div class="u1-card-body">Ask a baseball question in plain English: use <strong>Ask AMI</strong> in the '
-        "sidebar (on a phone, the <strong>Ask AMI</strong> bar at the top of each page). For a deeper write-up, "
-        "press <strong>Get full analysis</strong> under an answer.</div></div>",
+        "sidebar (on a phone, the <strong>Ask AMI</strong> bar at the top of each page), or tap a question below. "
+        "For a deeper write-up, press <strong>Get full analysis</strong> under an answer.</div></div>",
         unsafe_allow_html=True,
     )
+    _render_ask_ami_starters(st, session)
     if render_tutorial_bar is not None:
         render_tutorial_bar()
+
+
+HOME_ASK_STARTERS = 2  # one-tap questions on the Ask card (Home's own suggested questions)
+
+
+def _render_ask_ami_starters(st: Any, session: Any) -> None:
+    """Home's way into Ask AMI (U5): one-tap questions that open the same Ask AMI conversation —
+    no second question box. The answer shows in the sidebar panel, or the phone bar on a phone."""
+    import ui_hierarchy as ui
+
+    try:
+        from ami_assistant.ui import queue_question, suggested_questions
+    except ImportError:
+        return
+    questions = suggested_questions(HOME_PAGE)[:HOME_ASK_STARTERS]
+    if questions:
+        ui.action_row(st, [(q, lambda q=q: queue_question(session, q)) for q in questions], key="home_ask", primary=None)
+
+
+def _compact_home_on_phones_css() -> str:
+    """On phones, Home skips the brand banner: the page switcher and "What would you like to do?"
+    already say where you are, so the task cards move up. Desktop is unchanged."""
+    try:
+        from mobile_foundation import PHONE_MAX_PX
+    except ImportError:
+        PHONE_MAX_PX = 640
+    return (f"<style>@media (max-width: {PHONE_MAX_PX}px) {{ "
+            '[data-testid="stElementContainer"]:has(.title-box) { display: none; } }</style>\n')
 
 
 def _my_team(session: Any, context: dict[str, Any]) -> str:

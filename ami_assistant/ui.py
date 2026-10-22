@@ -41,6 +41,10 @@ MAX_SUGGESTIONS = 3
 # Answers that aren't analysis of the user's data: product help, refused instructions, a
 # question back to the user. Full analysis isn't offered under these.
 NO_FULL_ANALYSIS_INTENTS = frozenset({"action_request", "clarify", "capabilities"})
+# A tool refused for access or plan reasons: Get full analysis must not become a way around that.
+REFUSED_CODES = frozenset({"not_your_team", "unknown_team", "not_entitled", "entitlement_loading",
+                           # "this trade" with nothing composed: Command Center couldn't see it either.
+                           "no_pending_trade"})
 FULL_ANALYSIS_HELP = ("Sends this question, with this page's context, to Command Center for a deeper written "
                       "analysis. That saves the request to your account; quick answers here are never saved.")
 
@@ -65,9 +69,11 @@ def placeholder_for(page: str) -> str:
 def full_analysis_offered(last: Any) -> bool:
     """Offer Command Center only under an answer about data (the app's, the user's league, or a
     question AMI's data can't cover) — not under help, refusals or a clarifying question."""
-    return (isinstance(last, dict) and bool(last.get("answer")) and not last.get("error")
-            and last.get("grounding") in (APP_DATA, EXTERNAL_CURRENT)
-            and last.get("intent") not in NO_FULL_ANALYSIS_INTENTS)
+    if not (isinstance(last, dict) and bool(last.get("answer")) and not last.get("error")):
+        return False
+    refused = any(isinstance(t, dict) and t.get("error_code") in REFUSED_CODES for t in last.get("tools") or [])
+    return (last.get("grounding") in (APP_DATA, EXTERNAL_CURRENT) and last.get("intent") not in NO_FULL_ANALYSIS_INTENTS
+            and not refused)
 
 
 def _debug_visible(st: Any) -> bool:
@@ -108,6 +114,12 @@ def _clear(session: Any) -> None:
 
 def _queue(session: Any, question: str) -> None:
     session[PENDING_KEY] = question
+
+
+def queue_question(session: Any, question: str) -> None:
+    """Ask Ask AMI ``question`` on the next run (e.g. from Home's Ask card): the panel asks it into
+    the one shared conversation, and the phone bar opens with the answer. Use as a click callback."""
+    _queue(session, str(question or "").strip())
 
 
 def _send_full_analysis(st: Any, full_analysis: FullAnalysis, last: dict[str, Any]) -> None:
@@ -181,8 +193,13 @@ def _panel_body(st: Any, active_page: str, yearly_df: Any, entitlement: Any = No
             if meta:
                 box.caption(" · ".join(meta))
         if full_analysis is not None and full_analysis_offered(last):
-            if st.button("Get full analysis", key=f"{prefix}ami_full_analysis", width="stretch", help=FULL_ANALYSIS_HELP):
-                _send_full_analysis(st, full_analysis, last)
+            # One send per answer: once requested, the button is spent (a failed send can be retried).
+            done = ss.get(FULL_ANALYSIS_KEY)
+            sent = isinstance(done, dict) and done.get("question") == last.get("question") and not done.get("failed")
+            # on_click runs before the redraw, so the button is already spent when the panel draws again.
+            st.button("Full analysis requested" if sent else "Get full analysis", key=f"{prefix}ami_full_analysis",
+                      width="stretch", help=FULL_ANALYSIS_HELP, disabled=sent,
+                      on_click=_send_full_analysis, args=(st, full_analysis, dict(last)))
             _full_analysis_status(st, last)
         conv = load_conversation(ss)
         earlier = conv.turns[:-1][-3:]
@@ -252,7 +269,8 @@ def render_ami_assistant_panel(st: Any, *, active_page: str, yearly_df: Any = No
         with st.container(key=PHONE_ROOT_KEY):
             st.markdown(_surface_css(), unsafe_allow_html=True)
             last = st.session_state.get(LAST_KEY)
-            with st.expander("💬 Ask AMI", expanded=isinstance(last, dict) and bool(last.get("answer"))):
+            opened = bool(st.session_state.get(PENDING_KEY)) or (isinstance(last, dict) and bool(last.get("answer")))
+            with st.expander("💬 Ask AMI", expanded=opened):
                 _panel(active_page, yearly_df, entitlement, full_analysis, "phone")
     except Exception:
         log.exception("AMI phone entry failed on %s", active_page)

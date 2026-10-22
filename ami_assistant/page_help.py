@@ -42,6 +42,10 @@ MONOLITH = "streamlit_app.py"
 HOME_TASK_BUTTONS = tuple(button for _icon, title, _line, button, _page in TASKS if title != DRAFT_TASK)
 HOME_DRAFT_BUTTONS = tuple(label for label, _page in HOME_DRAFT_CHOICES)
 HOME_LEAGUE_BUTTONS = ("League Standings", "Set Lineup", "Waiver Wire", "Start or import a draft", "Open saved drafts")
+# Home's suggested questions; the first two are also one-tap buttons on Home's Ask card (U5).
+HOME_QUESTIONS = ("What can I do here?", "Where should I go to compare players?", "How do I manage my league?",
+                  "How do I start a draft?")
+HOME_ASK_BUTTONS = HOME_QUESTIONS[:2]
 DRAFT_TOOL_PAGES = tuple(page for page, _icon, _name, _purpose in DRAFT_TOOLS)
 # The visible statuses on Lineup & Trades (u3_answers.lineup_answer) and the Trade Center
 # verdict card (u3_answers.trade_verdict); tests check them against those functions.
@@ -126,11 +130,11 @@ class PageHelp:
 PAGES: tuple[PageHelp, ...] = (
     PageHelp(
         HOME_PAGE,
-        controls=HOME_TASK_BUTTONS + HOME_DRAFT_BUTTONS + HOME_LEAGUE_BUTTONS,
-        questions=("What can I do here?", "Where should I go to compare players?", "How do I manage my league?",
-                   "How do I start a draft?"),
+        controls=HOME_TASK_BUTTONS + HOME_DRAFT_BUTTONS + HOME_LEAGUE_BUTTONS + HOME_ASK_BUTTONS,
+        questions=HOME_QUESTIONS,
         next_steps=("Pick a task card, or use the sidebar sections: Players, Insights, Draft, My League, Account.",),
-        sources=("home_page.py", "draft_tools.py"),
+        # The Ask card's buttons are Home's own suggested questions (defined just above).
+        sources=("home_page.py", "draft_tools.py", "ami_assistant/page_help.py"),
         aliases=("home", "home page", "start page"),
         headline="Look up players, spot who's rising, prepare for your draft and run your fantasy league.",
     ),
