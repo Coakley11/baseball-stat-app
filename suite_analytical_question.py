@@ -1544,6 +1544,7 @@ def submit_analytical_question(
                 )
             except Exception as exc:
                 log.warning("record_activity failed for analytical_question: %s", exc)
+    save_ok = False
     if hof_case:
         player = _hof_case_player_name(payload)
         hof_payload = {
@@ -1551,7 +1552,11 @@ def submit_analytical_question(
             "action_url": action_url,
             "app_context_type": "baseball_hof_case",
         }
-        _store_question_context_blob(hof_payload)
+        try:
+            _store_question_context_blob(hof_payload)
+            save_ok = True
+        except Exception as exc:
+            log.warning("HOF blob store failed: %s", exc)
         if not duplicate:
             metrics = metrics_for_applied_math_resume(hof_payload)
             metrics["source_app"] = normalize_source_app_id(
@@ -1581,7 +1586,11 @@ def submit_analytical_question(
             except Exception as exc:
                 log.warning("record_activity failed for HOF case analysis: %s", exc)
     else:
-        _upsert_applied_intelligence_resume(payload, action_url=action_url)
+        try:
+            _upsert_applied_intelligence_resume(payload, action_url=action_url)
+            save_ok = True
+        except Exception as exc:
+            log.warning("upsert_applied_intelligence_resume failed: %s", exc)
     ss = payload.get("source_state")
     refresh_blob = not duplicate or (
         str(payload.get("source_app") or "").strip().lower() == "investment"
@@ -1589,10 +1598,14 @@ def submit_analytical_question(
         and bool(ss.get("entity_params"))
     )
     if refresh_blob and not hof_case and not defer_blob_save:
-        _store_question_context_blob(payload)
+        try:
+            _store_question_context_blob(payload)
+            save_ok = True
+        except Exception as exc:
+            log.warning("question context blob store failed: %s", exc)
     if defer_blob_save and session_state is not None and not duplicate and not hof_case:
         session_state["_ami_pending_blob_save"] = dict(payload)
-    if session_state is not None:
+    if session_state is not None and save_ok:
         session_state["_ami_last_send"] = {
             "question_id": payload["question_id"],
             "question": payload["question"],
@@ -1606,6 +1619,7 @@ def submit_analytical_question(
         "continue_title": card_title,
         "continue_subtitle": card_subtitle,
         "duplicate": duplicate,
+        "save_failed": not save_ok,
         "submitted_at": utc_now_iso(),
     }
 

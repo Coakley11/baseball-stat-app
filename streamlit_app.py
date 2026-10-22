@@ -16575,21 +16575,29 @@ elif active_page == "Career Totals":
                             if not store_ok
                             else "",
                         )
-                        st.session_state[HOF_INSIGHT_STAGED_KEY] = qid
-                        st.session_state["_ami_force_insight_render"] = True
-                        st.session_state["_ami_hydrated_insight_id"] = str(insight_dict.get("insight_id") or "")
-                        st.session_state["_ami_insight_return_preserve"] = True
-                        st.session_state["_skip_page_restore_for"] = "Career Totals"
-                        st.session_state["_suite_persist_insight_dirty"] = True
-                        record_hof_pipeline_step(
-                            st.session_state,
-                            "render_flags_set",
-                            ok=True,
-                            detail={
-                                "force_insight_render": True,
-                                "submit_render_this_run_pending": True,
-                            },
-                        )
+                        if store_ok:
+                            st.session_state[HOF_INSIGHT_STAGED_KEY] = qid
+                            st.session_state["_ami_force_insight_render"] = True
+                            st.session_state["_ami_hydrated_insight_id"] = str(insight_dict.get("insight_id") or "")
+                            st.session_state["_ami_insight_return_preserve"] = True
+                            st.session_state["_skip_page_restore_for"] = "Career Totals"
+                            st.session_state["_suite_persist_insight_dirty"] = True
+                            record_hof_pipeline_step(
+                                st.session_state,
+                                "render_flags_set",
+                                ok=True,
+                                detail={
+                                    "force_insight_render": True,
+                                    "submit_render_this_run_pending": True,
+                                },
+                            )
+                        else:
+                            record_hof_pipeline_step(
+                                st.session_state,
+                                "render_flags_set",
+                                ok=False,
+                                detail={"store_ok": False, "reason": "insight store failed"},
+                            )
                     except Exception as exc:
                         record_hof_pipeline_exception(st.session_state, "insight_stage_or_store", exc)
                         insight_dict = {}
