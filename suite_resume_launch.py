@@ -262,6 +262,23 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
         or resume.startswith("bb:saved_draft:")
     ):
         target_page = "Saved Draft Library"
+    hof_target = _qp_get(st, "suite_hof_target")
+    if not hof_target and resume.startswith("bb:hof_case:"):
+        hof_target = resume.split(":", 2)[-1].strip()
+    if hof_target:
+        st.session_state["_suite_resume_hof_target"] = hof_target
+    if not target_page and resume.startswith("bb:hof_case:"):
+        target_page = "Career Totals"
+    hist_stat = _qp_get(st, "suite_hist_stat")
+    if hist_stat:
+        st.session_state["_pending_historical_stat"] = hist_stat
+    hist_ys = _qp_get(st, "suite_hist_year_start")
+    hist_ye = _qp_get(st, "suite_hist_year_end")
+    if hist_ys and hist_ye:
+        st.session_state["_pending_historical_year_start"] = hist_ys
+        st.session_state["_pending_historical_year_end"] = hist_ye
+    if not target_page and resume.startswith("historical:"):
+        target_page = "Historical Explorer"
     trend_player = _qp_get(st, "suite_trend_player")
     if not trend_player and resume.startswith("trend:"):
         trend_player = resume.split(":", 1)[-1].strip()

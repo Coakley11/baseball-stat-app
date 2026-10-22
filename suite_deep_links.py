@@ -78,6 +78,8 @@ _BASEBALL_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("baseball:sleepers", "Fantasy Market"),
     ("baseball:trends", "Trend Value"),
     ("baseball:breakouts", "Trend Value"),
+    ("bb:hof_case:", "Career Totals"),
+    ("historical:", "Historical Explorer"),
 )
 
 _INVESTMENT_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
@@ -331,6 +333,20 @@ def build_resume_action_url(
             waiver_tx = rk.split(":", 2)[-1].strip()
         if waiver_tx and waiver_tx not in {"", "bb"}:
             params["suite_waiver_tx"] = waiver_tx[:80]
+        hof_target = str(m.get("target_player") or m.get("hof_case_target") or "").strip()
+        if not hof_target and rk.startswith("bb:hof_case:"):
+            hof_target = rk.split(":", 2)[-1].strip()
+        if hof_target:
+            params["suite_hof_target"] = hof_target[:120]
+        hist_stat = str(m.get("historical_stat") or m.get("stat") or "").strip()
+        if hist_stat:
+            params["suite_hist_stat"] = hist_stat[:40]
+        hist_ys = m.get("historical_year_start")
+        if hist_ys is not None and str(hist_ys).strip():
+            params["suite_hist_year_start"] = str(hist_ys).strip()[:10]
+        hist_ye = m.get("historical_year_end")
+        if hist_ye is not None and str(hist_ye).strip():
+            params["suite_hist_year_end"] = str(hist_ye).strip()[:10]
     elif app_key == "investment":
         hfp = str(m.get("holdings_fingerprint") or m.get("holdings_fp") or "").strip()
         if hfp:
@@ -487,6 +503,16 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
             if pa and pb:
                 metrics["players"] = [pa, pb]
             page = "Trend Value"
+        elif key.startswith("bb:hof_case:"):
+            target = key.split(":", 2)[-1].strip()
+            if target:
+                metrics["target_player"] = target
+            page = "Career Totals"
+        elif key.startswith("historical:"):
+            tail = key.split(":", 1)[-1].strip()
+            if tail:
+                metrics["historical_stat"] = tail
+            page = "Historical Explorer"
         elif "proj" in key.lower():
             page = "ML Projections"
     elif app_key == "investment":
