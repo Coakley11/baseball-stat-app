@@ -259,9 +259,9 @@ def rebuild_shared_room_player_pool(
         errors.append(f"fast_market_session:{type(exc).__name__}:{exc}"[:160])
 
     try:
-        import importlib
+        from running_app import running_app_module
 
-        app_mod = importlib.import_module("streamlit_app")
+        app_mod = running_app_module()
         # Prefer the live wrapper when available — same kwargs the app uses elsewhere.
         live_fn = getattr(app_mod, "get_cached_unified_projection_pool_live", None)
         pool = None
@@ -303,9 +303,9 @@ def rebuild_shared_room_player_pool(
         if market is None:
             # Last-resort: load market the same way the cached pool builder does.
             try:
-                import importlib
+                from running_app import running_app_module
 
-                app_mod = importlib.import_module("streamlit_app")
+                app_mod = running_app_module()
                 loader = getattr(app_mod, "load_fantasypros_market_data", None)
                 if callable(loader):
                     market = loader()
