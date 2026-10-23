@@ -6,19 +6,42 @@ Query params (read by suite_resume_launch in each app):
   suite_page    — target page/tab label
   suite_workspace — active workspace profile (daniel, ariel, guest, test_user)
   suite_pick_key, suite_song, suite_display_key, suite_instrument, suite_section_focus — music shortcuts
+  suite_resume_kind, suite_resume_payload — typed Music Continue restore envelope (base64url JSON)
+  suite_bpm, suite_backing_scope, suite_backing_sections, suite_groove, suite_mood, suite_intensity — music scalars
+  suite_multitrack_id, suite_creative_mode, suite_entry_mode — music task shortcuts
   suite_holdings_fp — investment portfolio fingerprint
   suite_player_a, suite_player_b — baseball comparison players
   suite_draft_room, suite_draft_section — live draft / draft lab resume
+  suite_trade_proposal, suite_league, suite_invite, suite_lineup_week, suite_waiver_tx — fantasy workflow resume
   suite_team — NBA favorite team
   suite_sim, suite_fl_domain, suite_fl_area, suite_fl_timeline_year, suite_fl_sim_year — Future Lens
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 from suite_workspace import append_suite_workspace_param, normalize_workspace_id, resolve_workspace_id
+
+# Music's typed Continue envelope (``music_resume_payload``) is imported only where a Music link is
+# built. Apps that never build one (Baseball) don't ship that module, and a top-level import made
+# every deep link fail there. The names stay reachable as attributes for callers that used them.
+_MUSIC_PAYLOAD_NAMES = frozenset({
+    "decode_payload_b64",
+    "encode_payload_b64",
+    "legacy_resume_key_for_payload",
+    "normalize_resume_kind",
+})
+
+
+def __getattr__(name: str) -> Any:
+    if name in _MUSIC_PAYLOAD_NAMES:
+        import music_resume_payload
+
+        return getattr(music_resume_payload, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # Mirror app_urls.py — updated when dev URLs change.
 APP_BASE_URLS: dict[str, str] = {
@@ -52,10 +75,10 @@ _BASEBALL_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("bb:hof_case:", "Career Totals"),
     ("baseball:projections", "ML Projections"),
     ("bb:proj", "ML Projections"),
-    ("baseball:trade", "Fantasy Lineup Assistant"),
-    ("bb:trade", "Fantasy Lineup Assistant"),
     ("bb:trade_center:", "Trade Center"),
     ("bb:trade_center", "Trade Center"),
+    ("baseball:trade", "Fantasy Lineup Assistant"),
+    ("bb:trade", "Fantasy Lineup Assistant"),
     ("bb:waiver:", "Waiver Wire / Add-Drop Center"),
     ("bb:waiver", "Waiver Wire / Add-Drop Center"),
     ("bb:lineup:", "Fantasy Lineup Assistant"),
@@ -63,12 +86,12 @@ _BASEBALL_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("bb:invite:", "Saved Draft Library"),
     ("bb:library:", "Saved Draft Library"),
     ("bb:library", "Saved Draft Library"),
+    ("bb:saved_draft:", "Saved Draft Library"),
     ("baseball:roster", "Draft Room"),
     ("baseball:sleepers", "Fantasy Market"),
     ("baseball:trends", "Trend Value"),
     ("baseball:breakouts", "Trend Value"),
     ("historical:", "Historical Explorer"),
-    ("bb:saved_draft:", "Saved Draft Library"),
     ("bb:standings:", "Fantasy Standings Tracker"),
     ("bb:draft_assistant", "Draft Assistant Simulator"),
     ("bb:simulator_draft", "Draft Room Simulator"),
@@ -286,17 +309,10 @@ def build_resume_action_url(
         if draft_section:
             params["suite_draft_section"] = draft_section[:40]
         hof_target = str(m.get("target_player") or m.get("hof_case_target") or "").strip()
-        if not hof_target and rk.startswith("bb:hof_case:"):
-            hof_target = rk.split(":", 2)[-1].strip()
         if hof_target:
             params["suite_hof_target"] = hof_target[:120]
         if rk.startswith("bb:hof_case:") or m.get("hof_case_mode"):
             params["suite_hof_case"] = "1"
-        saved_draft = str(m.get("draft_id") or "").strip()
-        if not saved_draft and rk.startswith("bb:saved_draft:"):
-            saved_draft = rk.split(":", 2)[-1].strip()
-        if saved_draft:
-            params["suite_saved_draft"] = saved_draft[:80]
         proposal_id = str(m.get("proposal_id") or "").strip()
         if not proposal_id and rk.startswith("bb:trade_center:"):
             proposal_id = rk.split(":", 2)[-1].strip()
@@ -307,20 +323,35 @@ def build_resume_action_url(
             league_id = rk.split(":", 2)[-1].strip()
         if league_id:
             params["suite_league"] = league_id[:80]
+        my_team = str(m.get("my_team") or m.get("team") or m.get("claimed_team") or "").strip()
+        if my_team:
+            params["suite_my_team"] = my_team[:80]
+        league_context_id = str(m.get("league_context_id") or "").strip()
+        if league_context_id:
+            params["suite_league_context"] = league_context_id[:80]
         invite_id = str(m.get("invite_id") or "").strip()
         if not invite_id and rk.startswith("bb:invite:"):
             invite_id = rk.split(":", 2)[-1].strip()
         if invite_id:
             params["suite_invite"] = invite_id[:80]
+        saved_draft = str(m.get("draft_id") or "").strip()
+        if not saved_draft and rk.startswith("bb:saved_draft:"):
+            saved_draft = rk.split(":", 2)[-1].strip()
+        if saved_draft:
+            params["suite_saved_draft"] = saved_draft[:80]
         week = m.get("week")
-        if week is None and rk.startswith("bb:lineup:") and ":w" in rk:
-            week = rk.rsplit(":w", 1)[-1].strip()
+        if week is None and rk.startswith("bb:lineup:"):
+            tail = rk.split(":", 2)[-1].strip()
+            if tail.startswith("w") and tail[1:].isdigit():
+                week = tail[1:]
+            elif ":w" in rk:
+                week = rk.rsplit(":w", 1)[-1].strip()
         if week is not None and str(week).strip():
             params["suite_lineup_week"] = str(week).strip()[:8]
         waiver_tx = str(m.get("waiver_tx_id") or m.get("transaction_id") or "").strip()
         if not waiver_tx and rk.startswith("bb:waiver:"):
             waiver_tx = rk.split(":", 2)[-1].strip()
-        if waiver_tx:
+        if waiver_tx and waiver_tx not in {"", "bb"}:
             params["suite_waiver_tx"] = waiver_tx[:80]
         hist_stat = str(m.get("sort_stat") or "").strip()
         if not hist_stat and rk.startswith("historical:"):
@@ -455,16 +486,59 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
         elif key.startswith("bb:draft_lab:"):
             metrics["draft_room_id"] = key.split(":", 2)[-1].strip()
             page = "Draft Lab / Simulation"
+        elif key.startswith("bb:trade_center:"):
+            metrics["proposal_id"] = key.split(":", 2)[-1].strip()
+            page = "Trade Center"
+        elif key.startswith("bb:trade_center"):
+            page = "Trade Center"
+        elif key.startswith("bb:waiver:"):
+            metrics["waiver_tx_id"] = key.split(":", 2)[-1].strip()
+            page = "Waiver Wire / Add-Drop Center"
+        elif key.startswith("bb:waiver"):
+            page = "Waiver Wire / Add-Drop Center"
+        elif key.startswith("bb:lineup:"):
+            page = "Fantasy Lineup Assistant"
+            tail = key.split(":", 2)[-1].strip()
+            if ":w" in key:
+                parts = key.split(":")
+                if parts and parts[-1].startswith("w"):
+                    metrics["week"] = parts[-1][1:]
+                if len(parts) >= 3 and parts[2] and not parts[2].startswith("w"):
+                    metrics["league_id"] = parts[2]
+            elif tail.startswith("w"):
+                metrics["week"] = tail[1:]
+        elif key.startswith("bb:lineup"):
+            page = "Fantasy Lineup Assistant"
+        elif key.startswith("bb:invite:"):
+            metrics["invite_id"] = key.split(":", 2)[-1].strip()
+            page = "Saved Draft Library"
+        elif key.startswith("bb:library:"):
+            metrics["league_id"] = key.split(":", 2)[-1].strip()
+            page = "Saved Draft Library"
+        elif key.startswith("bb:library") or key.startswith("bb:saved_draft:"):
+            if key.startswith("bb:saved_draft:"):
+                metrics["draft_id"] = key.split(":", 2)[-1].strip()
+            page = "Saved Draft Library"
         elif key.startswith("bb:hof_case:"):
             slug = key.split(":", 2)[-1].strip()
             metrics["hof_case_mode"] = True
             metrics["hof_case_target_slug"] = slug
-            if subtitle and subtitle != "Career Totals":
-                metrics["target_player"] = subtitle
+            # The subtitle is the target only when it is exactly the slug's name (a case summary is prose);
+            # otherwise Baseball resolves the target from the slug.
+            name = str(subtitle or "").strip()
+            if name and re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") == slug.lower():
+                metrics["target_player"] = name
             page = "Career Totals"
+        elif key.startswith("historical:"):
+            parts = key.split(":", 2)
+            if len(parts) >= 2 and parts[1].strip():
+                metrics["sort_stat"] = parts[1].strip()
+            if len(parts) >= 3 and "-" in parts[2]:
+                metrics["year_start"], metrics["year_end"] = (x.strip() for x in parts[2].split("-", 1))
+            page = "Historical Explorer"
         elif "draft" in key.lower():
             page = "Draft Simulation"
-        elif "trade" in key.lower():
+        elif key.startswith("bb:trade") or "trade" in key.lower():
             page = "Fantasy Lineup Assistant"
         elif key.startswith("trend:"):
             metrics["player"] = key.split(":", 1)[-1].strip()
@@ -513,14 +587,28 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
         elif key.startswith("future:"):
             page = page or "skills"
     elif app_key == "applied_intelligence":
-        if key.startswith("ai:question:"):
+        if key.startswith("ai:question:") or key.startswith("ai:practice_log_analysis:"):
             page = "Solve a Problem"
             qid = key.split(":", 2)[-1].strip() if key.count(":") >= 2 else ""
             if qid:
                 metrics["question_id"] = qid
                 metrics["dedupe_fingerprint"] = qid
+            if key.startswith("ai:practice_log_analysis:"):
+                metrics.setdefault("source_app", "music")
+                metrics.setdefault("handoff_kind", "practice_log_analysis")
+                metrics.setdefault("display_category", "analysis_handoff")
+                metrics.setdefault(
+                    "context",
+                    {
+                        "user_request": "analyze_practice",
+                        "handoff_kind": "practice_log_analysis",
+                        "display_category": "analysis_handoff",
+                    },
+                )
             if subtitle:
-                if "__ctx_json__:" in subtitle:
+                if key.startswith("ai:practice_log_analysis:") and subtitle.startswith("Updated"):
+                    metrics["context_summary"] = subtitle
+                elif "__ctx_json__:" in subtitle:
                     q_part, _, ctx_part = subtitle.partition("\n__ctx_json__:")
                     metrics["question"] = q_part.strip()
                     try:
@@ -545,7 +633,7 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
                     first_line, _, rest = subtitle.partition("\n")
                     metrics["question"] = first_line.replace("Question:", "", 1).strip()
                     metrics["context_summary"] = rest.strip() or subtitle
-                else:
+                elif not key.startswith("ai:practice_log_analysis:"):
                     metrics["question"] = subtitle.split("\n", 1)[0].strip()[:500]
                     if "\n" in subtitle:
                         metrics["context_summary"] = subtitle
@@ -575,27 +663,6 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
                         pass
 
     return page, metrics
-
-
-# --- Music-only helpers (shared suite copy). music_resume_payload is imported lazily: Baseball does not ship it.
-
-# Music's typed Continue envelope (``music_resume_payload``) is imported only where a Music link is
-# built. Apps that never build one (Baseball) don't ship that module, and a top-level import made
-# every deep link fail there. The names stay reachable as attributes for callers that used them.
-_MUSIC_PAYLOAD_NAMES = frozenset({
-    "decode_payload_b64",
-    "encode_payload_b64",
-    "legacy_resume_key_for_payload",
-    "normalize_resume_kind",
-})
-
-
-def __getattr__(name: str) -> Any:
-    if name in _MUSIC_PAYLOAD_NAMES:
-        import music_resume_payload
-
-        return getattr(music_resume_payload, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def merge_handoff_metrics_from_action_url(metrics: dict[str, Any], action_url: str) -> dict[str, Any]:
