@@ -1531,11 +1531,15 @@ def submit_analytical_question(
     record_activity_for_send = (not duplicate) or (not hof_case and source_app_norm == "baseball")
     # The local Command Center store is put on sys.path only by _load_storage_module (normally inside
     # record_activity). The saves below run before any activity, so load it here or the first send in a fresh
-    # process cannot reach it. Isolated runs without a private store still get None (fail closed).
+    # process cannot reach it. Isolated runs without a private store still get None (fail closed). Only without
+    # Supabase: with it every write goes there, and an importable local store would take the context blob
+    # (remember_saved_item prefers it) while the Continue card went to Supabase.
     try:
         from suite_activity_client import _load_storage_module
+        from suite_storage_config import cloud_storage_enabled
 
-        _load_storage_module()
+        if not cloud_storage_enabled():
+            _load_storage_module()
     except Exception as exc:
         log.warning("loading the local Command Center store failed: %s", exc)
     # Durable first: the Continue card (or HOF blob) must be accepted before anything announces the send,
