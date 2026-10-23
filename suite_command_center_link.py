@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 # Mirror app_urls.py when this module is copied into sibling repos.
 _HOMEPAGE_DEV_URL = "https://daniel-ai-command-center-ion4vh2cvo7bgdnkuktrb3.streamlit.app"
 _HOMEPAGE_PRODUCTION_URL = "https://daniel-ai-command-center-dexxnd7bf8jalxzqbyq55i.streamlit.app"
+# A staging deployment links back to its own Command Center (environment, or a root-level Streamlit secret).
+COMMAND_CENTER_URL_ENV = "SUITE_COMMAND_CENTER_URL"
 
 
 def command_center_url(*, workspace_id: str = "") -> str:
     """Public Command Center homepage URL with active workspace profile."""
+    override = os.environ.get(COMMAND_CENTER_URL_ENV, "").strip().rstrip("/")
     try:
         from app_urls import HOMEPAGE_DEV_URL, HOMEPAGE_PRODUCTION_URL
     except ImportError:
@@ -18,7 +22,7 @@ def command_center_url(*, workspace_id: str = "") -> str:
     else:
         dev = (HOMEPAGE_DEV_URL or "").strip()
         prod = (HOMEPAGE_PRODUCTION_URL or "").strip()
-    base = (dev or prod or _HOMEPAGE_DEV_URL).rstrip("/")
+    base = override or (dev or prod or _HOMEPAGE_DEV_URL).rstrip("/")
     try:
         from suite_workspace import append_suite_workspace_param, resolve_workspace_id
 

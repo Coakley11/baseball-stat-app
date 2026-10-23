@@ -19,6 +19,7 @@ Query params (read by suite_resume_launch in each app):
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 from urllib.parse import parse_qs, quote, urlencode, urlparse
@@ -52,6 +53,10 @@ APP_BASE_URLS: dict[str, str] = {
     "applied_intelligence": "https://applied-mathematical-intelligence-8l8bqrzpp6fghaj7xuig53.streamlit.app",
     "future_lens": "https://future-lens-ai-transition-simulator-m6n4kaku28ztzlxfts2xt6.streamlit.app",
 }
+
+# A staging deployment points suite links at its own apps: SUITE_APP_URL_<APP> (environment, or a root-level
+# Streamlit secret) replaces that app's base URL. Unset everywhere else, so production links are unchanged.
+APP_URL_OVERRIDE_ENV_PREFIX = "SUITE_APP_URL_"
 
 _NBA_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("nba:injury:", "🧠 Matchup Intelligence"),
@@ -133,7 +138,8 @@ def app_base_url(app: str) -> str:
     key = str(app or "").strip()
     if key == "math":
         key = "applied_intelligence"
-    return APP_BASE_URLS.get(key, "").strip()
+    override = os.environ.get(APP_URL_OVERRIDE_ENV_PREFIX + key.upper(), "").strip().rstrip("/")
+    return override or APP_BASE_URLS.get(key, "").strip()
 
 
 def _normalize_music_page(page: str, resume_key: str) -> str:
