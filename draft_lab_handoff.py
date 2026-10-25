@@ -134,6 +134,19 @@ def apply_live_draft_handoff_to_session(session: dict[str, Any], room: dict[str,
     session["live_draft_room"] = room
     record_draft_lab_handoff_diagnostics(session, extracted, loaded=True)
     apply_pending_draft_lab_widget_keys(session)
+    try:
+        from shared_draft_context import write_canonical_draft_settings
+
+        write_canonical_draft_settings(
+            session,
+            lookback_window=extracted.get("draft_lab_window"),
+            projection_style=extracted.get("draft_lab_projection_style"),
+            fantasy_format=extracted.get("draft_lab_scoring_type"),
+            source_page="Draft Lab / Simulation",
+            reason="live_draft_handoff",
+        )
+    except ImportError:
+        pass
     handoff_meta = {
         "source": "Live Draft Room",
         "team_count": extracted.get("draft_lab_team_count"),
