@@ -221,8 +221,8 @@ class WaiverRenderCallbackTests(unittest.TestCase):
             ]
         )
         st = self._mock_st()
-        with patch("fantasy_waiver_wire.recommend_adds_current", return_value=pd.DataFrame()), patch(
-            "fantasy_waiver_wire.recommend_drops_current", return_value=pd.DataFrame()
+        with patch("fantasy_waiver_wire_ui.recommend_adds_current", return_value=pd.DataFrame()), patch(
+            "fantasy_waiver_wire_ui.recommend_drops_current", return_value=pd.DataFrame()
         ):
             render_waiver_wire_page(st, session, current_stats_pool=stats)
 

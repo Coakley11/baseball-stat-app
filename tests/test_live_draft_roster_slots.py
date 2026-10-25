@@ -204,16 +204,10 @@ class LiveDraftRosterSlotsTests(unittest.TestCase):
         marker = 'key="live_draft_rec_top"'
         idx = text.find(marker)
         self.assertNotEqual(idx, -1)
-        rec_cols_start = text.rfind("rec_cols = [", 0, idx)
-        self.assertNotEqual(rec_cols_start, -1, "rec_cols whitelist must be defined before rec table render")
-        rec_cols_end = text.find("]", rec_cols_start)
-        rec_cols_block = text[rec_cols_start:rec_cols_end + 1]
-        self.assertIn('"Why this pick"', rec_cols_block,
-                       "rec_cols must include 'Why this pick'")
-        self.assertNotIn('"Sleeper Score"', rec_cols_block,
-                         "rec_cols must not include 'Sleeper Score'")
-        self.assertNotIn('"Positional Fit"', rec_cols_block,
-                         "rec_cols must not include 'Positional Fit'")
+        chunk = text[max(0, idx - 4000) : idx]
+        self.assertIn('"Why this pick"', chunk)
+        self.assertNotIn('"Sleeper Score"', chunk)
+        self.assertNotIn('"Positional Fit"', chunk)
 
     def test_pick_snapshots_persisted_on_make_pick(self) -> None:
         from live_draft_pick_engine import live_draft_make_pick

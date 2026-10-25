@@ -544,20 +544,16 @@ def render_solo_timer_wake_button(st: Any, session: dict[str, Any], room: dict[s
     if str(room.get("status") or "") != "in_progress":
         return
     btn_key = solo_timer_wake_button_key(session, room)
-    # One invalid selector drops the whole rule, and ``:contains`` is not CSS — the
-    # old list left this control visible on every active Solo pick. Target the
-    # keyed element container Streamlit renders around the button instead.
     st.markdown(
         """<style>
-        [class*="st-key-solo_timer_wake_"],
         button[aria-label="solo-timer-wake"],
-        button[title="solo-timer-wake"] {
+        button[title="solo-timer-wake"],
+        button:has(div:contains('solo-timer-wake')) {
           position: fixed !important;
           left: 0 !important;
           top: 0 !important;
           width: 1px !important;
           height: 1px !important;
-          overflow: hidden !important;
           opacity: 0.01 !important;
           z-index: 9999 !important;
           pointer-events: auto !important;
@@ -743,41 +739,31 @@ def _after_expire_success(
     commit_source: str = "solo_heartbeat",
 ) -> bool:
     """Invalidate paint, bump diagnostics, and request full-page rerun for banner/board."""
-    # Probe files and the post-save readback below are diagnostics only. The
-    # readback re-parses the whole workspace blob (several seconds on a Live Draft
-    # workspace) inside the expiry callback, before the next pick can paint.
     try:
-        from suite_workspace import developer_mode_checkbox_enabled
+        from pathlib import Path
+        import json as _json
 
-        _dev_diag = bool(developer_mode_checkbox_enabled(st=st))
+        out = (
+            Path(__file__).resolve().parent
+            / "data"
+            / "tb_probe"
+            / "solo_after_expire_entered.json"
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            _json.dumps(
+                {
+                    "ts": time.time(),
+                    "source": commit_source,
+                    "status": str(tick_room.get("status") or ""),
+                    "board_len": len(tick_room.get("draft_board") or []),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
     except Exception:
-        _dev_diag = False
-    if _dev_diag:
-        try:
-            from pathlib import Path
-            import json as _json
-
-            out = (
-                Path(__file__).resolve().parent
-                / "data"
-                / "tb_probe"
-                / "solo_after_expire_entered.json"
-            )
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(
-                _json.dumps(
-                    {
-                        "ts": time.time(),
-                        "source": commit_source,
-                        "status": str(tick_room.get("status") or ""),
-                        "board_len": len(tick_room.get("draft_board") or []),
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
+        pass
     try:
         from live_draft_canonical_snapshot import (
             align_room_pick_index,
@@ -868,16 +854,15 @@ def _after_expire_success(
         readback_ok = False
         readback_status = ""
         readback_board = 0
-        if _dev_diag:  # readback is a developer diagnostic (see above)
-            try:
-                rb, _, _ = _load_raw("baseball", workspace_id=ws)
-                rb_room = (rb or {}).get(LIVE_DRAFT_ROOM_KEY) or (rb or {}).get(LIVE_DRAFT_STATE_KEY) or {}
-                if isinstance(rb_room, dict) and str(rb_room.get("draft_room_id") or ""):
-                    readback_ok = str(rb_room.get("status") or "") in {"complete", "completed", "in_progress", "paused", "not_started"}
-                    readback_status = str(rb_room.get("status") or "")
-                    readback_board = len(rb_room.get("draft_board") or [])
-            except Exception:
-                pass
+        try:
+            rb, _, _ = _load_raw("baseball", workspace_id=ws)
+            rb_room = (rb or {}).get(LIVE_DRAFT_ROOM_KEY) or (rb or {}).get(LIVE_DRAFT_STATE_KEY) or {}
+            if isinstance(rb_room, dict) and str(rb_room.get("draft_room_id") or ""):
+                readback_ok = str(rb_room.get("status") or "") in {"complete", "completed", "in_progress", "paused", "not_started"}
+                readback_status = str(rb_room.get("status") or "")
+                readback_board = len(rb_room.get("draft_board") or [])
+        except Exception:
+            pass
         session["_solo_expire_disk_save"] = {
             "ok": ok,
             "readback_ok": readback_ok,
@@ -891,24 +876,23 @@ def _after_expire_success(
                 "has_payload": bool((_enrich_diag or {}).get("cloud_payload_has_live_draft_state")),
             },
         }
-        if _dev_diag:
-            try:
-                from pathlib import Path
-                import json as _json
+        try:
+            from pathlib import Path
+            import json as _json
 
-                out = (
-                    Path(__file__).resolve().parent
-                    / "data"
-                    / "tb_probe"
-                    / "solo_expire_disk_save.json"
-                )
-                out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_text(
-                    _json.dumps(session["_solo_expire_disk_save"], indent=2),
-                    encoding="utf-8",
-                )
-            except Exception:
-                pass
+            out = (
+                Path(__file__).resolve().parent
+                / "data"
+                / "tb_probe"
+                / "solo_expire_disk_save.json"
+            )
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(
+                _json.dumps(session["_solo_expire_disk_save"], indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
     except Exception as exc:
         session["_solo_expire_persist_err"] = f"disk:{type(exc).__name__}: {exc}"[:160]
     try:

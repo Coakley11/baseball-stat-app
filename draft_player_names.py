@@ -3,21 +3,13 @@
 from __future__ import annotations
 
 import difflib
-import functools
 import re
 import unicodedata
-from collections import Counter
 from typing import Any
 
 
 def _normalize_lookup_key(name: str) -> str:
-    return _normalize_text(str(name or ""))
-
-
-@functools.lru_cache(maxsize=1 << 16)
-def _normalize_text(text: str) -> str:
-    # Pure, so memoized: searches re-normalize the same pool names on every keystroke.
-    text = unicodedata.normalize("NFKD", text)
+    text = unicodedata.normalize("NFKD", str(name or ""))
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     text = text.lower().strip()
     text = re.sub(r"[^a-z0-9\s]", " ", text)
@@ -76,43 +68,15 @@ def search_draft_pool_names(query: str, names: list[str], *, limit: int = 20) ->
     q = _normalize_lookup_key(query)
     if len(q) < 2:
         return []
-    # Same matches as _name_matches_query, faster: a word's fuzzy match depends only on its
-    # first len(q) characters, and pool names share few distinct prefixes, so each prefix is
-    # scored once per search instead of once per word (difflib was ~75% of a search). Before
-    # difflib, a prefix sharing too few characters with q is ruled out: the ratio is
-    # matches / len(q), and matches can't exceed the shared character count (difflib's
-    # quick_ratio bound), so this never drops a match. Cheapest check first: characters of
-    # the prefix that occur in q at all.
-    q_len = len(q)
-    q_chars = Counter(q)
-    drop_q = {ord(c): None for c in q_chars}
-    need = 0.75 * q_len
-    by_prefix: dict[str, bool] = {}
-
-    def word_matches(word: str) -> bool:
-        if len(word) < q_len:
-            return False  # too short to start with q or be fuzzy-scored
-        prefix = word[:q_len]
-        hit = by_prefix.get(prefix)
-        if hit is None:
-            if prefix != q and (q_len - len(prefix.translate(drop_q)) < need
-                                or sum(min(k, q_chars[c]) for c, k in Counter(prefix).items()) < need):
-                hit = False
-            else:
-                hit = _word_prefix_matches(prefix, q)
-            by_prefix[prefix] = hit
-        return hit
-
     starts: list[str] = []
     contains: list[str] = []
     for name in names:
         key = _normalize_lookup_key(name)
-        if key.startswith(q) or any(word_matches(word) for word in key.split()):
+        if _name_matches_query(key, q):
             starts.append(name)
         elif q in key:
             contains.append(name)
-    started = set(starts)
-    out = starts + [n for n in contains if n not in started]
+    out = starts + [n for n in contains if n not in starts]
     return out[:limit]
 
 

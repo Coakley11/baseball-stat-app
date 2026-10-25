@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import unittest
-from threading import Event, Thread
 
 from suite_sidebar_run import (
     GUARD_ACCOUNT,
@@ -55,42 +54,11 @@ class SidebarRunGuardTests(unittest.TestCase):
         ss: dict = {}
         reset_sidebar_run_guards(ss)
         self.assertTrue(claim_sidebar_render(ss, GUARD_DEV_TOGGLE))
-        mark_dev_mode_checkbox_materialized(ss)
-        self.assertTrue(dev_mode_checkbox_materialized(ss))
+        mark_dev_mode_checkbox_materialized()
+        self.assertTrue(dev_mode_checkbox_materialized())
         reset_sidebar_run_guards(ss)
-        self.assertFalse(dev_mode_checkbox_materialized(ss))
+        self.assertFalse(dev_mode_checkbox_materialized())
         self.assertTrue(claim_sidebar_render(ss, GUARD_DEV_TOGGLE))
-
-    def test_concurrent_sessions_do_not_suppress_each_other(self) -> None:
-        """Interleave reset/claim so the former process-global guard would fail."""
-        session_a: dict = {}
-        session_b: dict = {}
-        a_reset = Event()
-        b_claimed = Event()
-        claims: dict[str, bool] = {}
-
-        def run_a() -> None:
-            reset_sidebar_run_guards(session_a)
-            a_reset.set()
-            self.assertTrue(b_claimed.wait(timeout=2))
-            claims["a"] = claim_sidebar_render(session_a, GUARD_ACCOUNT)
-
-        def run_b() -> None:
-            self.assertTrue(a_reset.wait(timeout=2))
-            reset_sidebar_run_guards(session_b)
-            claims["b"] = claim_sidebar_render(session_b, GUARD_ACCOUNT)
-            b_claimed.set()
-
-        threads = (Thread(target=run_a), Thread(target=run_b))
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=2)
-            self.assertFalse(thread.is_alive())
-
-        self.assertEqual(claims, {"a": True, "b": True})
-        self.assertFalse(claim_sidebar_render(session_a, GUARD_ACCOUNT))
-        self.assertFalse(claim_sidebar_render(session_b, GUARD_ACCOUNT))
 
 
 if __name__ == "__main__":

@@ -389,15 +389,7 @@ def required_human_participant_rows(
             or slot.get("canonical_identity")
             or owner_pid
         ).strip()
-        # Participant id first: it is unique per seat, while ``user_id`` can be shared
-        # (anonymous/local managers are all ``local:default``), which labelled the
-        # guest's seat with the host's name. Never borrow another team's presence.
-        presence = {}
-        for key in (owner_pid, owner_pid.lower(), uid.lower(), uid):
-            cand = joined_map.get(key) or {}
-            if cand and str(cand.get("team_name") or team).strip() == team:
-                presence = cand
-                break
+        presence = joined_map.get(uid.lower()) or joined_map.get(uid) or joined_map.get(owner_pid) or {}
         # Prefer presence / external_id display (coakley11) over raw email.
         display = str(
             presence.get("display_name")

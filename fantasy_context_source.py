@@ -671,12 +671,10 @@ def fantasy_context_using_markdown(session: dict[str, Any]) -> str:
 
 
 def _resolve_live_room(session: dict[str, Any]) -> dict[str, Any] | None:
-    # Read-only for every caller (the fallback below already returns the live room
-    # uncopied), so peek instead of deep-copying the blob and its full player pool.
     try:
-        from live_draft_state import LIVE_DRAFT_ROOM_KEY, peek_canonical_live_draft
+        from live_draft_state import LIVE_DRAFT_ROOM_KEY, canonical_live_draft
 
-        blob = peek_canonical_live_draft(session)
+        blob = canonical_live_draft(session)
         if isinstance(blob, dict) and blob.get("draft_room_id"):
             return blob
         room = session.get(LIVE_DRAFT_ROOM_KEY) or session.get("live_draft_room")
@@ -948,18 +946,11 @@ def _workflow_descriptor_cache_fingerprint(session: dict[str, Any]) -> str:
 
     active_draft = str(session.get("active_draft_archive_id") or "").strip()
     active_ctx = str(session.get("active_league_context_id") or "").strip()
-    active_rosters = ""
     try:
-        from fantasy_league_context import ensure_fantasy_league_context_state, league_rosters_cache_sig
+        from fantasy_league_context import ensure_fantasy_league_context_state
 
         store = ensure_fantasy_league_context_state(session)
         active_ctx = str(store.get("active_league_context_id") or active_ctx).strip()
-        # Waiver moves and trades change who is on which team without changing any id above;
-        # without this the cached descriptor kept serving the pre-move rosters.
-        active_context = (store.get("contexts") or {}).get(active_ctx)
-        active_rosters = league_rosters_cache_sig(active_context)
-        if isinstance(active_context, dict):  # a rename changes the heading, not the rosters
-            active_rosters += ":" + str(active_context.get("league_name") or active_context.get("display_name") or "")
     except ImportError:
         pass
 
@@ -980,7 +971,6 @@ def _workflow_descriptor_cache_fingerprint(session: dict[str, Any]) -> str:
             f"live_teams={live_teams}",
             f"active_draft={active_draft}",
             f"active_ctx={active_ctx}",
-            f"active_rosters={active_rosters}",
             f"auth={auth}",
             f"ws={workspace}",
         ]

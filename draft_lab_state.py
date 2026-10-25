@@ -360,22 +360,6 @@ def sync_draft_lab_results_state(
                 return []
             return df.head(int(limit)).to_dict(orient="records")
 
-    projection_settings_snapshot: dict[str, Any] = {}
-    try:
-        from shared_draft_context import read_canonical_draft_settings
-
-        canonical = read_canonical_draft_settings(session)
-        projection_settings_snapshot = {
-            "lookback_window": canonical.get("lookback_window"),
-            "projection_style": canonical.get("projection_style"),
-            "fantasy_format": canonical.get("fantasy_format"),
-        }
-    except ImportError:
-        projection_settings_snapshot = {
-            "lookback_window": widget_settings.get("draft_lab_window"),
-            "projection_style": widget_settings.get("draft_lab_projection_style"),
-            "fantasy_format": widget_settings.get("draft_lab_scoring_type"),
-        }
     blob: dict[str, Any] = {
         "schema_version": 2,
         "draft_records": _serialize_records(draft, limit=5000),
@@ -389,7 +373,6 @@ def sync_draft_lab_results_state(
         "handoff": results.get("handoff") if isinstance(results.get("handoff"), dict) else {},
         "source": str(results.get("source") or "").strip(),
         "widget_settings": dict(widget_settings),
-        "projection_settings_snapshot": projection_settings_snapshot,
         "picks_per_team": widget_settings.get("draft_lab_picks_per_team"),
         "active_tab": str(widget_settings.get("draft_lab_active_tab") or session.get("draft_lab_active_tab") or "").strip(),
         "preferred_tab": str(session.get("draft_lab_preferred_tab") or "").strip(),
@@ -445,11 +428,6 @@ def hydrate_draft_lab_results_state(session: dict[str, Any], state: dict[str, An
     for key, val in dict(blob.get("widget_settings") or {}).items():
         if key not in session and val is not None:
             session[key] = val
-    proj_snap = blob.get("projection_settings_snapshot")
-    if isinstance(proj_snap, dict):
-        results = session.get("draft_lab_results")
-        if isinstance(results, dict):
-            results["projection_settings_snapshot"] = dict(proj_snap)
     active_tab = str(blob.get("active_tab") or blob.get("preferred_tab") or "").strip()
     if active_tab in DRAFT_LAB_RESULT_TABS:
         session["draft_lab_active_tab"] = active_tab

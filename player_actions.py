@@ -30,56 +30,6 @@ def player_names_match(left: Any, right: Any) -> bool:
     return normalize_player_display_name(left) == normalize_player_display_name(right)
 
 
-def build_active_player_index(source_df: pd.DataFrame | None) -> dict[str, Any]:
-    """Latest season per playerID and per normalized name, for repeated active-player checks.
-
-    ``is_active_current_player_indexed(player, index)`` gives the same answer as
-    ``is_active_current_player(player, source_df)`` without scanning the table each call.
-    """
-    empty = {"by_id": {}, "by_name": {}, "dataset_max": None}
-    if source_df is None or source_df.empty or "yearID" not in source_df.columns:
-        return empty
-    years = pd.to_numeric(source_df["yearID"], errors="coerce")
-    if years.dropna().empty:
-        return empty
-    frame = pd.DataFrame({"year": years})
-    by_id: dict[str, int] = {}
-    if "playerID" in source_df.columns:
-        frame["pid"] = source_df["playerID"].astype(str).str.strip()
-        by_id = {k: int(v) for k, v in frame.dropna(subset=["year"]).groupby("pid")["year"].max().items()}
-    by_name: dict[str, int] = {}
-    if "fullName" in source_df.columns:
-        names = source_df["fullName"].fillna("").astype(str)
-        unique = pd.Series(names.unique())
-        normalized = dict(zip(unique, unique.map(normalize_player_display_name)))
-        frame["name"] = names.map(normalized)
-        by_name = {k: int(v) for k, v in frame.dropna(subset=["year"]).groupby("name")["year"].max().items()}
-    return {"by_id": by_id, "by_name": by_name, "dataset_max": int(years.max())}
-
-
-def is_active_current_player_indexed(player: Any, index: dict[str, Any]) -> bool:
-    """``is_active_current_player`` against a ``build_active_player_index`` result."""
-    if not index or index.get("dataset_max") is None:
-        return False
-    player_id = ""
-    display_name = ""
-    if isinstance(player, pd.Series):
-        player = player.to_dict()
-    if isinstance(player, dict):
-        player_id = str(player.get("playerID") or player.get("Player ID") or "").strip()
-        display_name = player_display_base(
-            player.get("fullName") or player.get("Player") or player.get("Name") or player.get("player") or ""
-        )
-    else:
-        display_name = player_display_base(player)
-    latest = index["by_id"].get(player_id) if player_id else None
-    if latest is None and display_name:
-        latest = index["by_name"].get(normalize_player_display_name(display_name))
-    if latest is None:
-        return False
-    return latest in (2025, 2026) or latest >= index["dataset_max"] - 1
-
-
 def is_active_current_player(player: Any, source_df: pd.DataFrame | None = None) -> bool:
     """True when ``player`` belongs to the current/recent MLB player pool."""
     if source_df is None or source_df.empty or "yearID" not in source_df.columns:

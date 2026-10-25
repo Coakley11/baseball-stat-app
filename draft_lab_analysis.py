@@ -531,52 +531,17 @@ def classify_team_picks(
     return pick_rows
 
 
-_PROJECTION_STAT_COLS = ("proj_HR", "proj_RBI", "proj_R", "proj_SB", "proj_BA", "proj_OPS", "proj_AB")
-
-
-def _backfill_projection_stats_from_pool(draft_df: pd.DataFrame, pool_df: pd.DataFrame) -> pd.DataFrame:
-    """Backfill raw projection columns from the pool for any board row missing them."""
-    if "playerID" not in pool_df.columns or "playerID" not in draft_df.columns:
-        return draft_df
-    pool_proj_cols = [c for c in _PROJECTION_STAT_COLS if c in pool_df.columns]
-    if not pool_proj_cols:
-        return draft_df
-    out = draft_df.copy()
-    pool_lookup = pool_df.set_index(pool_df["playerID"].astype(str))
-    for col in pool_proj_cols:
-        pool_lookup[col] = pd.to_numeric(pool_lookup[col], errors="coerce")
-    for idx, row in out.iterrows():
-        pid = str(row.get("playerID") or "").strip()
-        if not pid or pid not in pool_lookup.index:
-            continue
-        pool_row = pool_lookup.loc[pid]
-        if isinstance(pool_row, pd.DataFrame):
-            pool_row = pool_row.iloc[0]
-        for col in pool_proj_cols:
-            if col not in out.columns:
-                out[col] = np.nan
-            current = pd.to_numeric(row.get(col), errors="coerce") if col in row.index else np.nan
-            if pd.isna(current):
-                pool_val = pool_row.get(col)
-                if pd.notna(pool_val):
-                    out.at[idx, col] = pool_val
-    return out
-
-
 def enrich_lab_draft_metrics(
     draft_df: pd.DataFrame,
     pool_df: pd.DataFrame | None,
     config: dict[str, Any] | None,
 ) -> pd.DataFrame:
-    """Backfill Decision Score, fit metrics, and raw projections from the pool."""
+    """Backfill Decision Score and fit metrics using the shared draft scoring engine."""
     if draft_df is None or draft_df.empty:
         return draft_df
     out = apply_pick_time_snapshots(draft_df)
     if pool_df is None or getattr(pool_df, "empty", True):
         return out
-
-    out = _backfill_projection_stats_from_pool(out, pool_df)
-
     try:
         from live_draft_pick_scoring import apply_draft_pick_scoring
     except ImportError:
@@ -731,47 +696,15 @@ def analyze_draft_lab_results(
     if not team_summary.empty:
         team_summary["Projected Team Rank"] = team_summary["Total Projected Fantasy Value"].rank(ascending=False, method="min")
         cat_cols = ["Projected HR", "Projected RBI", "Projected R", "Projected SB", "Projected AVG", "Projected OPS"]
-        present_cats = [c for c in cat_cols if c in team_summary.columns]
-
-        cat_ranks: dict[str, pd.Series] = {}
-        for col in present_cats:
-            vals = pd.to_numeric(team_summary[col], errors="coerce")
-            cat_ranks[col] = vals.rank(ascending=False, method="min")
-
-        for idx, row in team_summary.iterrows():
-            team_vals = {c: pd.to_numeric(row.get(c), errors="coerce") for c in present_cats}
-            has_real_stats = any(pd.notna(v) and v > 0 for v in team_vals.values())
-            if not has_real_stats:
-                strengths_rows.append(
-                    {
-                        "Fantasy Team": row["Fantasy Team"],
-                        "Team Strengths": "Insufficient projections",
-                        "Team Weaknesses": "Insufficient projections",
-                    }
-                )
-                continue
-            team_rank_vals = {c: cat_ranks[c].at[idx] for c in present_cats if pd.notna(team_vals[c])}
-            if not team_rank_vals:
-                strengths_rows.append(
-                    {
-                        "Fantasy Team": row["Fantasy Team"],
-                        "Team Strengths": "Insufficient projections",
-                        "Team Weaknesses": "Insufficient projections",
-                    }
-                )
-                continue
-            sorted_by_rank = sorted(team_rank_vals.items(), key=lambda x: x[1])
-            top = [c.replace("Projected ", "") for c, _ in sorted_by_rank[:2]]
-            bottom = [c.replace("Projected ", "") for c, _ in sorted_by_rank[-2:]]
-            bottom = [c for c in bottom if c not in top]
-            if not bottom:
-                bottom_all = [c.replace("Projected ", "") for c, _ in reversed(sorted_by_rank)]
-                bottom = [c for c in bottom_all if c not in top][:2]
+        for _, row in team_summary.iterrows():
+            vals = row[[c for c in cat_cols if c in row.index]].astype(float)
+            top = vals.sort_values(ascending=False).head(2).index.tolist()
+            low = vals.sort_values().head(2).index.tolist()
             strengths_rows.append(
                 {
                     "Fantasy Team": row["Fantasy Team"],
-                    "Team Strengths": ", ".join(top) if top else "None identified",
-                    "Team Weaknesses": ", ".join(bottom) if bottom else "None identified",
+                    "Team Strengths": ", ".join([c.replace("Projected ", "") for c in top]),
+                    "Team Weaknesses": ", ".join([c.replace("Projected ", "") for c in low]),
                 }
             )
         team_summary = team_summary.sort_values("Projected Team Rank")

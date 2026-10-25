@@ -50,10 +50,7 @@ class BaseballAccountWorkspaceTests(unittest.TestCase):
         st.sidebar.expander.return_value.__enter__ = MagicMock(return_value=None)
         st.sidebar.expander.return_value.__exit__ = MagicMock(return_value=False)
         st.button.return_value = False
-        with patch("suite_workspace.bootstrap_suite_workspace"), patch(
-            "baseball_monetization_ui.render_account_subscription"
-        ):
-            render_baseball_account_workspace_control(st, on_reset=lambda _s: None)
+        render_baseball_account_workspace_control(st, on_reset=lambda _s: None)
         args, kwargs = st.sidebar.expander.call_args
         self.assertEqual(args[0], "Account & Workspace")
         captions = " ".join(str(c.args[0]) for c in st.caption.call_args_list)
@@ -86,8 +83,7 @@ class BaseballAccountWorkspaceTests(unittest.TestCase):
 
         st = MagicMock()
         st.session_state = {}
-        with patch("suite_workspace.bootstrap_suite_workspace"):
-            render_baseball_account_workspace_control(st, on_reset=lambda _s: None)
+        render_baseball_account_workspace_control(st, on_reset=lambda _s: None)
         st.sidebar.expander.assert_called()
         args, kwargs = st.sidebar.expander.call_args
         self.assertEqual(args[0], "Account & Workspace")
@@ -137,10 +133,7 @@ class BaseballAccountWorkspaceTests(unittest.TestCase):
         st.sidebar.expander.return_value.__exit__ = MagicMock(return_value=False)
         st.button.return_value = False
 
-        with patch("suite_workspace.bootstrap_suite_workspace"), patch(
-            "baseball_monetization_ui.render_account_subscription"
-        ):
-            render_baseball_account_workspace_control(st, on_reset=lambda _s: None)
+        render_baseball_account_workspace_control(st, on_reset=lambda _s: None)
         args, kwargs = st.sidebar.expander.call_args
         self.assertEqual(args[0], "Account & Workspace")
         st.markdown.assert_any_call("Signed in as **daniel@example.com**")

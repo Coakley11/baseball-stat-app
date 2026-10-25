@@ -19,30 +19,17 @@ Query params (read by suite_resume_launch in each app):
 
 from __future__ import annotations
 
-import os
-import re
 from typing import Any
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
+from music_resume_payload import (
+    decode_payload_b64,
+    encode_payload_b64,
+    legacy_resume_key_for_payload,
+    normalize_resume_kind,
+)
+
 from suite_workspace import append_suite_workspace_param, normalize_workspace_id, resolve_workspace_id
-
-# Music's typed Continue envelope (``music_resume_payload``) is imported only where a Music link is
-# built. Apps that never build one (Baseball) don't ship that module, and a top-level import made
-# every deep link fail there. The names stay reachable as attributes for callers that used them.
-_MUSIC_PAYLOAD_NAMES = frozenset({
-    "decode_payload_b64",
-    "encode_payload_b64",
-    "legacy_resume_key_for_payload",
-    "normalize_resume_kind",
-})
-
-
-def __getattr__(name: str) -> Any:
-    if name in _MUSIC_PAYLOAD_NAMES:
-        import music_resume_payload
-
-        return getattr(music_resume_payload, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # Mirror app_urls.py — updated when dev URLs change.
 APP_BASE_URLS: dict[str, str] = {
@@ -53,10 +40,6 @@ APP_BASE_URLS: dict[str, str] = {
     "applied_intelligence": "https://applied-mathematical-intelligence-8l8bqrzpp6fghaj7xuig53.streamlit.app",
     "future_lens": "https://future-lens-ai-transition-simulator-m6n4kaku28ztzlxfts2xt6.streamlit.app",
 }
-
-# A staging deployment points suite links at its own apps: SUITE_APP_URL_<APP> (environment, or a root-level
-# Streamlit secret) replaces that app's base URL. Unset everywhere else, so production links are unchanged.
-APP_URL_OVERRIDE_ENV_PREFIX = "SUITE_APP_URL_"
 
 _NBA_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("nba:injury:", "🧠 Matchup Intelligence"),
@@ -75,9 +58,8 @@ _BASEBALL_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("baseball:draft_prep", "Draft Simulation"),
     ("bb:draft", "Draft Simulation"),
     ("bb:live_draft:", "Live Draft Room"),
-    ("bb:draft_lab:", "Draft Lab / Simulation"),
-    ("bb:draft_lab", "Draft Lab / Simulation"),
-    ("bb:hof_case:", "Career Totals"),
+    ("bb:draft_lab:", "Draft Simulation Test Mode"),
+    ("bb:draft_lab", "Draft Simulation Test Mode"),
     ("baseball:projections", "ML Projections"),
     ("bb:proj", "ML Projections"),
     ("bb:trade_center:", "Trade Center"),
@@ -96,10 +78,6 @@ _BASEBALL_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
     ("baseball:sleepers", "Fantasy Market"),
     ("baseball:trends", "Trend Value"),
     ("baseball:breakouts", "Trend Value"),
-    ("historical:", "Historical Explorer"),
-    ("bb:standings:", "Fantasy Standings Tracker"),
-    ("bb:draft_assistant", "Draft Assistant Simulator"),
-    ("bb:simulator_draft", "Draft Room Simulator"),
 )
 
 _INVESTMENT_PAGE_BY_RESUME: tuple[tuple[str, str], ...] = (
@@ -138,8 +116,7 @@ def app_base_url(app: str) -> str:
     key = str(app or "").strip()
     if key == "math":
         key = "applied_intelligence"
-    override = os.environ.get(APP_URL_OVERRIDE_ENV_PREFIX + key.upper(), "").strip().rstrip("/")
-    return override or APP_BASE_URLS.get(key, "").strip()
+    return APP_BASE_URLS.get(key, "").strip()
 
 
 def _normalize_music_page(page: str, resume_key: str) -> str:
@@ -314,11 +291,6 @@ def build_resume_action_url(
             draft_section = "team_analysis"
         if draft_section:
             params["suite_draft_section"] = draft_section[:40]
-        hof_target = str(m.get("target_player") or m.get("hof_case_target") or "").strip()
-        if hof_target:
-            params["suite_hof_target"] = hof_target[:120]
-        if rk.startswith("bb:hof_case:") or m.get("hof_case_mode"):
-            params["suite_hof_case"] = "1"
         proposal_id = str(m.get("proposal_id") or "").strip()
         if not proposal_id and rk.startswith("bb:trade_center:"):
             proposal_id = rk.split(":", 2)[-1].strip()
@@ -359,23 +331,6 @@ def build_resume_action_url(
             waiver_tx = rk.split(":", 2)[-1].strip()
         if waiver_tx and waiver_tx not in {"", "bb"}:
             params["suite_waiver_tx"] = waiver_tx[:80]
-        hist_stat = str(m.get("sort_stat") or "").strip()
-        if not hist_stat and rk.startswith("historical:"):
-            parts = rk.split(":", 2)
-            if len(parts) >= 2:
-                hist_stat = parts[1].strip()
-        if hist_stat:
-            params["suite_historical_stat"] = hist_stat[:40]
-        ys = str(m.get("year_start") or "").strip()
-        ye = str(m.get("year_end") or "").strip()
-        if not ys and rk.startswith("historical:"):
-            parts = rk.split(":", 2)
-            if len(parts) >= 3 and "-" in parts[2]:
-                ys, ye = parts[2].split("-", 1)
-        if ys:
-            params["suite_historical_year_start"] = ys[:8]
-        if ye:
-            params["suite_historical_year_end"] = ye[:8]
     elif app_key == "investment":
         hfp = str(m.get("holdings_fingerprint") or m.get("holdings_fp") or "").strip()
         if hfp:
@@ -433,15 +388,6 @@ def build_resume_action_url(
         area = str(m.get("quant_area") or m.get("area") or "").strip()
         if area:
             params["suite_ai_area"] = area[:40]
-        if (
-            area == "hall_of_fame_case"
-            or str(m.get("app_context_type") or "").strip() == "baseball_hof_case"
-            or m.get("hof_case_mode")
-        ):
-            params["suite_hof_case"] = "1"
-            target = str(m.get("hof_case_target") or m.get("target_player") or "").strip()
-            if target:
-                params["suite_hof_target"] = target[:80]
         ctx = str(m.get("context_summary") or "").strip()
         ctx_json = str(m.get("context_json") or "").strip()
         if qid:
@@ -488,10 +434,10 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
         elif key.startswith("bb:draft_lab:team:"):
             metrics["draft_room_id"] = key.split(":", 3)[-1].strip()
             metrics["draft_section"] = "team_analysis"
-            page = "Draft Lab / Simulation"
+            page = "Draft Simulation Test Mode"
         elif key.startswith("bb:draft_lab:"):
             metrics["draft_room_id"] = key.split(":", 2)[-1].strip()
-            page = "Draft Lab / Simulation"
+            page = "Draft Simulation Test Mode"
         elif key.startswith("bb:trade_center:"):
             metrics["proposal_id"] = key.split(":", 2)[-1].strip()
             page = "Trade Center"
@@ -525,23 +471,6 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
             if key.startswith("bb:saved_draft:"):
                 metrics["draft_id"] = key.split(":", 2)[-1].strip()
             page = "Saved Draft Library"
-        elif key.startswith("bb:hof_case:"):
-            slug = key.split(":", 2)[-1].strip()
-            metrics["hof_case_mode"] = True
-            metrics["hof_case_target_slug"] = slug
-            # The subtitle is the target only when it is exactly the slug's name (a case summary is prose);
-            # otherwise Baseball resolves the target from the slug.
-            name = str(subtitle or "").strip()
-            if name and re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") == slug.lower():
-                metrics["target_player"] = name
-            page = "Career Totals"
-        elif key.startswith("historical:"):
-            parts = key.split(":", 2)
-            if len(parts) >= 2 and parts[1].strip():
-                metrics["sort_stat"] = parts[1].strip()
-            if len(parts) >= 3 and "-" in parts[2]:
-                metrics["year_start"], metrics["year_end"] = (x.strip() for x in parts[2].split("-", 1))
-            page = "Historical Explorer"
         elif "draft" in key.lower():
             page = "Draft Simulation"
         elif key.startswith("bb:trade") or "trade" in key.lower():
@@ -696,8 +625,6 @@ def merge_handoff_metrics_from_action_url(metrics: dict[str, Any], action_url: s
 
 def _music_scalar_params_from_payload(payload: dict[str, Any]) -> dict[str, str]:
     """Flatten common Music resume scalars into query params."""
-    from music_resume_payload import normalize_resume_kind
-
     params: dict[str, str] = {}
     pick = str(payload.get("pick_key") or "").strip()
     if pick:
@@ -758,8 +685,6 @@ def build_music_continue_url(
     base_url: str = "",
 ) -> str:
     """Deep link that restores a specific Music task (Continue card)."""
-    from music_resume_payload import encode_payload_b64, legacy_resume_key_for_payload
-
     base = (base_url or app_base_url("music")).strip().rstrip("/")
     if not base or not payload:
         return ""

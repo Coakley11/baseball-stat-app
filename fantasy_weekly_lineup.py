@@ -100,30 +100,34 @@ def position_tokens_from_row(row: pd.Series | dict[str, Any]) -> list[str]:
         raw_tokens = row.get("_pos_tokens")
         if isinstance(raw_tokens, list):
             tokens.extend(str(t).strip().upper() for t in raw_tokens if str(t).strip())
-    for col in ("Eligible Positions", "Primary Position", "Position", "Eligibility", "Positions"):
+    for col in ("Primary Position", "Position", "Eligibility", "Positions"):
         tokens.extend(_split_positions(getter(col)))
     tokens = list(dict.fromkeys(t for t in tokens if t))
     return tokens or ["DH"]
 
 
 def player_eligible_for_slot(pos_tokens: list[str], slot: str) -> bool:
-    """True when the player's eligible positions cover the lineup slot.
-
-    Eligibility comes from data only (fantasy_position_eligibility): a player fills a
-    position he is eligible at; OF covers LF/CF/RF; UTIL takes any hitter. There are no
-    assumed substitutions (a 1B is not a 3B unless he played there).
-    """
+    """True when hitter eligibility covers the lineup slot."""
     slot = str(slot or "").strip().upper()
-    if slot == "DH/UTIL":
-        slot = "UTIL"
-    try:
-        from fantasy_lineup_fill import can_fill
-
-        return bool(can_fill(pos_tokens, slot))
-    except ImportError:
-        if slot in ("UTIL", "DH"):
-            return not all(p in ("P", "SP", "RP") for p in pos_tokens)
-        return slot in pos_tokens
+    if slot in ("UTIL", "DH/UTIL", "DH"):
+        return not any(p in ("P", "SP", "RP") for p in pos_tokens)
+    if slot == "OF":
+        return any(p == "OF" for p in pos_tokens)
+    if slot in ("C", "1B", "2B", "3B", "SS"):
+        if pos_tokens == ["DH"] or (len(pos_tokens) == 1 and pos_tokens[0] == "DH"):
+            return False
+        if slot in pos_tokens:
+            return True
+        if slot == "1B" and "3B" in pos_tokens:
+            return True
+        if slot == "3B" and "1B" in pos_tokens:
+            return True
+        if slot == "2B" and "SS" in pos_tokens:
+            return True
+        if slot == "SS" and "2B" in pos_tokens:
+            return True
+        return False
+    return False
 
 
 def slot_display_name(slot: str) -> str:
@@ -260,16 +264,6 @@ def is_lineup_locked(
 
 
 def _assert_lineup_team_write(session: dict[str, Any], context: dict[str, Any], my_team: str) -> str | None:
-    try:
-        from fantasy_team_control import MODE_NONE, resolve_team_control
-
-        control = resolve_team_control(session, context, my_team)
-        if control.is_proxy:
-            return None  # commissioner acting for an unclaimed team
-        if control.mode == MODE_NONE and (context.get("team_ownership") or {}):
-            return control.reason or "You cannot manage this team."
-    except ImportError:
-        pass
     uid = str(session.get("_suite_auth_user_id") or session.get("_suite_cloud_user_id") or "").strip()
     if not uid:
         return None
@@ -434,7 +428,6 @@ def validate_weekly_lineup(
         "missing_slots": [],
         "ineligible_slots": [],
         "duplicate_players": [],
-        "unfillable_slots": [],
         "messages": [],
     }
     if roster_df is None or roster_df.empty:
@@ -454,6 +447,8 @@ def validate_weekly_lineup(
         slot_label = slot_display_name(base_slot)
         if not player_name:
             result["missing_slots"].append(base_slot)
+            result["messages"].append(f"{slot_label} is empty.")
+            result["ok"] = False
             continue
         if player_name in used_players:
             result["duplicate_players"].append(player_name)
@@ -469,28 +464,6 @@ def validate_weekly_lineup(
             result["ineligible_slots"].append({"slot": base_slot, "player": player_name})
             result["messages"].append(f"{player_name} is not eligible for {slot_label}.")
             result["ok"] = False
-
-    # An empty slot only blocks saving when an unused rostered player could fill it.
-    # A roster that genuinely lacks the position may save; the slot scores nothing.
-    if result["missing_slots"]:
-        try:
-            from fantasy_lineup_fill import unfilled_slots
-
-            unused = [position_tokens_from_row(row) for name, row in roster_lookup.items() if name not in used_players]
-            unfillable = unfilled_slots(unused, list(result["missing_slots"]))
-        except ImportError:
-            unfillable = []
-        fillable = list(result["missing_slots"])
-        for slot in unfillable:
-            fillable.remove(slot)
-        result["unfillable_slots"] = list(unfillable)
-        for base_slot in fillable:
-            result["messages"].append(f"{slot_display_name(base_slot)} is empty.")
-            result["ok"] = False
-        for base_slot in unfillable:
-            result["messages"].append(
-                f"{slot_display_name(base_slot)} stays empty: no eligible player on the roster (it scores nothing)."
-            )
 
     for slot in slots:
         base = str(slot or "").strip().upper()
@@ -603,69 +576,6 @@ def _player_id_from_row(row: pd.Series | dict[str, Any]) -> str:
     return ""
 
 
-def lineup_actor(session: dict[str, Any], context: dict[str, Any], team: str) -> tuple[dict[str, Any], bool]:
-    """(actor record, is_commissioner) for a lineup write on ``team``."""
-    try:
-        from fantasy_team_control import resolve_team_control
-
-        control = resolve_team_control(session, context, team)
-        return control.actor_record(), control.is_commissioner
-    except ImportError:
-        pass
-    try:
-        from fantasy_league_lineup_format import is_lineup_format_commissioner
-
-        is_commissioner = bool(is_lineup_format_commissioner(session, context))
-    except ImportError:
-        is_commissioner = False
-    try:
-        from suite_user import get_account_user_id
-
-        uid = str(get_account_user_id() or "")
-    except Exception:
-        uid = ""
-    return {"user_id": uid, "acting_as": "owner", "team": str(team or "")}, is_commissioner
-
-
-def _record_period_lineup_snapshot(
-    session: dict[str, Any],
-    context: dict[str, Any],
-    *,
-    week: int,
-    team: str,
-    slots: list[str],
-    slot_map: dict[str, str],
-    roster_df: pd.DataFrame,
-) -> str | None:
-    """Store the period snapshot. None = league has no calendar (legacy), "" = stored, else error."""
-    try:
-        from fantasy_season_ledger import build_lineup_snapshot, ledger_initialized, save_period_lineup
-    except ImportError:
-        return None
-    if not ledger_initialized(context):
-        return None
-    from fantasy_league_context import build_ownership_map, normalize_player_key
-
-    # Rebuilt from league_rosters so a drop or trade since the page loaded is seen.
-    owner_of = {
-        str(k): str((v or {}).get("owner_team") or "")
-        for k, v in build_ownership_map(context).items()
-        if isinstance(v, dict)
-    }
-    if (context.get("league_rosters") or {}).get(team):
-        for name in (n for n in slot_map.values() if str(n or "").strip()):
-            if owner_of.get(normalize_player_key(name), "").strip().lower() != str(team).strip().lower():
-                return f"{name} is no longer on {team}'s roster (dropped or traded). Rebuild the lineup from the current roster."
-    snapshot = build_lineup_snapshot(
-        team=team, slots=slots, slot_assignments=slot_map, roster_df=roster_df, owner_of=owner_of
-    )
-    actor, is_commissioner = lineup_actor(session, context, team)
-    ok, err = save_period_lineup(
-        context, number=int(week), team=team, snapshot=snapshot, actor=actor, is_commissioner=is_commissioner
-    )
-    return "" if ok else (err or "Could not save the lineup for this period.")
-
-
 def save_weekly_lineup(
     session: dict[str, Any],
     *,
@@ -720,17 +630,6 @@ def save_weekly_lineup(
         "status": LINEUP_STATUS_LOCKED,
     }
 
-    # Season ledger: the period's lineup snapshot is what official scoring uses. When the
-    # league has a calendar, the period's lock rules decide whether this save is allowed.
-    ledger_err = _record_period_lineup_snapshot(
-        session, context, week=int(week), team=team_name, slots=slots, slot_map=slot_map, roster_df=roster_df
-    )
-    if ledger_err:
-        result["errors"].append(ledger_err)
-        return result
-    if ledger_err is not None:
-        payload["season_ledger_period"] = f"P{int(week)}"
-
     try:
         from fantasy_weekly_hitter_scoring import (
             create_weekly_baseline_on_lock,
@@ -777,22 +676,6 @@ def save_weekly_lineup(
     store[team_week_lineup_key(team_name, week)] = payload
     drafts = _weekly_lineup_drafts_store(context)
     drafts.pop(team_week_lineup_key(team_name, week), None)
-    if ledger_err is not None:
-        # Shared leagues: the commissioner finalizes from everyone's period snapshots.
-        try:
-            from fantasy_shared_league_store import push_season_ledger_to_shared
-
-            push_season_ledger_to_shared(session, context)
-        except Exception:
-            pass
-    try:
-        from fantasy_team_control import record_league_action, resolve_team_control
-
-        control = resolve_team_control(session, context, team_name)
-        payload["saved_by"] = control.actor_record()
-        record_league_action(context, control=control, action="lineup_saved", detail={"week": int(week)})
-    except ImportError:
-        pass
     context = upsert_league_context(session, context)
 
     try:
@@ -846,66 +729,3 @@ def save_weekly_lineup(
     except Exception:
         pass
     return result
-
-
-def lineup_week_state(
-    context: dict[str, Any] | None,
-    week: int,
-    *,
-    team: str,
-    session: dict[str, Any] | None = None,
-    is_commissioner: bool = False,
-) -> dict[str, Any]:
-    """The Lineup page's record state for one team and week: the saved record (locked, else
-    draft), whether the lineup is locked, and the page's editability line. Read-only.
-
-    Leagues with a season calendar use the ledger's rule (``period_editability``); legacy
-    leagues lock past and future weeks (``week_editability_message``)."""
-    from fantasy_season_ledger_ui import period_editability, period_week_options
-
-    saved = get_saved_weekly_lineup(context, int(week), team=team, session=session)
-    locked = is_lineup_locked(context, int(week), team=team, session=session)
-    ledger_weeks = period_week_options(context)
-    if ledger_weeks:
-        locked, edit_message = period_editability(context, int(week), lineup_locked=locked, is_commissioner=is_commissioner)
-    else:
-        from fantasy_weekly_hitter_scoring import week_editability_message
-
-        edit_state, edit_message = week_editability_message(context, int(week))
-        if edit_state in ("future", "past"):
-            locked = True
-    return {"saved": saved, "locked": bool(locked), "edit_message": str(edit_message or ""),
-            "ledger_weeks": ledger_weeks}
-
-
-def lineup_status_answer(
-    *,
-    team: str,
-    week_text: str,
-    slots: list[str],
-    assignments: dict[str, str],
-    team_roster: pd.DataFrame,
-    locked: bool,
-    record_status: str,
-    edit_message: str,
-    proxy: bool = False,
-) -> dict[str, Any]:
-    """``u3_answers.lineup_answer`` for these assignments, with the validation Save Lineup
-    enforces and the bench count, exactly as the Lineup page builds it."""
-    from fantasy_lineup_ui import build_slot_key_labels, slot_key_labels_as_tuples
-    from u3_answers import lineup_answer
-
-    slot_labels = build_slot_key_labels(list(slots))
-    slot_map_now = {label.key: str(assignments.get(label.key) or "").strip() for label in slot_labels}
-    return lineup_answer(
-        team=team,
-        week_text=week_text,
-        slots=slot_key_labels_as_tuples(slot_labels),
-        assignments=assignments,
-        validation=validate_weekly_lineup(list(slots), assignments, team_roster),
-        bench_count=len(not_starting_players(team_roster, slot_map_now)),
-        locked=bool(locked),
-        record_status=str(record_status or ""),
-        edit_message=str(edit_message or ""),
-        proxy=bool(proxy),
-    )

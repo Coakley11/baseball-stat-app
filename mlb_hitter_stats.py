@@ -84,13 +84,4 @@ def fetch_mlb_api_hitter_stats(season: int = 2026) -> pd.DataFrame:
             }
         ).fillna("DH")
 
-    # Multi-position eligibility from games actually played (current season via the MLB
-    # fielding feed, prior season via Lahman). Failures leave primary positions only.
-    try:
-        from fantasy_position_eligibility import attach_eligible_positions, eligibility_for_season
-
-        df = attach_eligible_positions(df, eligibility_for_season(int(season)))
-    except Exception:
-        pass
-
     return df

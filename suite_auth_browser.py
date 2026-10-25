@@ -16,7 +16,6 @@ from typing import Any, Literal
 SESSION_QUERY_PARAM = "suite_sid"
 SESSION_STATE_SID_KEY = "_suite_browser_session_id"
 BROWSER_LOAD_REASON_KEY = "_suite_browser_auth_load_reason"
-BROWSER_PERSIST_RESULT_KEY = "_suite_browser_auth_persistence_result"
 AUTH_USER_ID_SESSION_KEY = "_suite_auth_user_id"
 
 InitState = Literal["ready"]
@@ -137,37 +136,13 @@ def _emit_save_browser_auth_checkpoint(st: Any, *, extra: dict[str, Any]) -> Non
         pass
 
 
-def _browser_persistence_result(extra: dict[str, Any]) -> dict[str, Any]:
-    """Return only non-secret persistence facts suitable for callers and diagnostics."""
-    return {
-        "persistence_attempted": bool(extra.get("persistence_attempted")),
-        "persistence_succeeded": bool(extra.get("persistence_succeeded")),
-        "write_committed": bool(extra.get("write_committed")),
-        "bridge_record_complete": bool(extra.get("bridge_record_complete")),
-        "owner_verified": bool(extra.get("owner_verified")),
-        "token_identity_verified": bool(extra.get("token_identity_verified")),
-        "generation_verified": bool(extra.get("generation_verified")),
-        "failure_reason": str(extra.get("failure_reason") or "")[:120],
-        "handoff_phase": str(extra.get("handoff_phase") or "")[:32],
-    }
-
-
-def _finish_browser_persistence(st: Any, extra: dict[str, Any]) -> dict[str, Any]:
-    result = _browser_persistence_result(extra)
-    try:
-        st.session_state[BROWSER_PERSIST_RESULT_KEY] = dict(result)
-    except Exception:
-        pass
-    return result
-
-
 def save_browser_auth_tokens(
     st: Any,
     tokens: dict[str, Any],
     *,
     auth_user_id: str = "",
     handoff_phase: str = "",
-) -> dict[str, Any]:
+) -> None:
     """Write tokens to Supabase and mirror opaque id in URL query params."""
     from suite_auth_bridge_handoff import (
         PHASE_FINAL,
@@ -199,14 +174,14 @@ def save_browser_auth_tokens(
             base_extra["persistence_attempted"] = False
             base_extra["failure_reason"] = "handoff_frozen_skip_intermediate"
             _emit_save_browser_auth_checkpoint(st, extra=base_extra)
-            return _finish_browser_persistence(st, base_extra)
+            return
     except Exception:
         pass
     if not access or not refresh:
         base_extra["failure_reason"] = "tokens_incomplete"
         base_extra["persistence_attempted"] = False
         _emit_save_browser_auth_checkpoint(st, extra=base_extra)
-        return _finish_browser_persistence(st, base_extra)
+        return
     uid = str(auth_user_id or "").strip()
     if not uid:
         try:
@@ -217,7 +192,7 @@ def save_browser_auth_tokens(
     if not uid:
         base_extra["failure_reason"] = "auth_user_id_missing"
         _emit_save_browser_auth_checkpoint(st, extra=base_extra)
-        return _finish_browser_persistence(st, base_extra)
+        return
     if not sid:
         sid = str(uuid.uuid4())
     try:
@@ -234,59 +209,17 @@ def save_browser_auth_tokens(
     except Exception as exc:
         base_extra["failure_reason"] = f"save_error:{type(exc).__name__}"
         _emit_save_browser_auth_checkpoint(st, extra=base_extra)
-        return _finish_browser_persistence(st, base_extra)
+        return
     _set_session_id(st, sid)
-    try:
-        readback = readback_after_browser_auth_save(
-            sid,
-            expected_user_id=uid,
-            expected_access_fp=token_fingerprint(access),
-            expected_refresh_fp=token_fingerprint(refresh),
-            expected_generation=int(base_extra.get("token_generation") or 0),
-            save_reported_success=bool(base_extra.get("write_committed")),
-        )
-    except Exception as exc:
-        base_extra["failure_reason"] = f"readback_error:{type(exc).__name__}"
-        _emit_save_browser_auth_checkpoint(st, extra=base_extra)
-        return _finish_browser_persistence(st, base_extra)
-    owner_verified = readback.get("owner_match") is True
-    token_identity_verified = readback.get("token_identity_match") is True
-    generation_verified = readback.get("generation_match") is True
-    unambiguous = readback.get("record_unambiguous") is True
-    base_extra["owner_verified"] = owner_verified
-    base_extra["token_identity_verified"] = token_identity_verified
-    base_extra["generation_verified"] = generation_verified
-    complete = bool(
-        readback.get("readback_record_complete")
-        and owner_verified
-        and token_identity_verified
-        and generation_verified
-        and unambiguous
+    readback = readback_after_browser_auth_save(
+        sid,
+        expected_user_id=uid,
+        save_reported_success=bool(base_extra.get("write_committed")),
     )
+    complete = bool(readback.get("readback_record_complete"))
     base_extra["bridge_record_complete"] = complete
-    base_extra["persistence_succeeded"] = bool(
-        base_extra.get("write_committed")
-        and complete
-        and readback.get("readback_row_found")
-    )
-    if not base_extra.get("write_committed"):
-        base_extra["failure_reason"] = "write_not_committed"
-    elif not readback.get("readback_row_found"):
-        base_extra["failure_reason"] = str(readback.get("failure_reason") or "token_record_missing")
-    elif not unambiguous:
-        base_extra["failure_reason"] = "token_record_ambiguous"
-    elif not owner_verified:
-        base_extra["failure_reason"] = "owner_mismatch"
-    elif not token_identity_verified:
-        base_extra["failure_reason"] = "token_identity_mismatch"
-    elif not generation_verified:
-        base_extra["failure_reason"] = "token_generation_mismatch"
-    elif not complete:
-        base_extra["failure_reason"] = str(readback.get("failure_reason") or "readback_incomplete")
-    else:
-        base_extra["failure_reason"] = str(
-            readback.get("failure_reason") or ("ok" if complete else "readback_failed")
-        )
+    base_extra["persistence_succeeded"] = complete and bool(readback.get("readback_row_found"))
+    base_extra["failure_reason"] = str(readback.get("failure_reason") or ("ok" if complete else "readback_failed"))
     base_extra["readback_row_id_prefix"] = str(readback.get("matching_row_id") or "")[:8]
     _emit_save_browser_auth_checkpoint(st, extra=base_extra)
     emit_bridge_storage_checkpoint(
@@ -295,7 +228,6 @@ def save_browser_auth_tokens(
         st=st,
         extra={**readback, "handoff_phase": phase},
     )
-    return _finish_browser_persistence(st, base_extra)
 
 
 def clear_browser_auth_tokens(
@@ -345,11 +277,11 @@ def browser_auth_storage_status(st: Any) -> dict[str, Any]:
     out: dict[str, Any] = {
         "storage": "supabase_query_param",
         "session_id_present": bool(sid),
+        "session_id_prefix": sid[:8] if sid else "",
         "query_param_present": bool(qp_raw),
         "cloud_payload_present": False,
         "cloud_payload_bytes": 0,
         "last_load_reason": str(st.session_state.get(BROWSER_LOAD_REASON_KEY) or ""),
-        "last_persistence": dict(st.session_state.get(BROWSER_PERSIST_RESULT_KEY) or {}),
     }
     if sid:
         try:
@@ -362,7 +294,7 @@ def browser_auth_storage_status(st: Any) -> dict[str, Any]:
                     str(payload.get("refresh_token") or "")
                 )
         except Exception as exc:
-            out["cloud_error_type"] = type(exc).__name__
+            out["cloud_error"] = str(exc)[:120]
     return out
 
 

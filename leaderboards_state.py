@@ -21,7 +21,6 @@ LEADERBOARDS_FILTER_KEYS = (
     "leaders_year_range_filter",
     "leaders_top_n_filter",
     "leaders_sort_stat_filter",
-    "leaders_ab_qualification_mode",
 )
 
 LEADERBOARDS_STAT_MIN_KEYS = tuple(f"leaders_{col}_min" for col in LEADERBOARDS_STAT_COLUMNS)

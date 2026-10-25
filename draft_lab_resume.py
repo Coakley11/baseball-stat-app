@@ -383,18 +383,9 @@ def schedule_draft_lab_resume_navigation(st: Any, *, page: str, room_id: str = "
 
 
 def _push_analysis_to_session(room: dict[str, Any]) -> bool:
-    # Never `import streamlit_app` here: inside the running app (``__main__``) that executes a second copy of the
-    # whole script in the same run, which registers the sidebar page radio twice (StreamlitDuplicateElementKey on
-    # the first Draft Lab Continue after a server start).
-    import sys
+    from streamlit_app import live_draft_push_analysis_to_session
 
-    push = getattr(sys.modules.get("__main__"), "live_draft_push_analysis_to_session", None)
-    if callable(push):
-        return bool(push(room))
-    import streamlit as st
-    from draft_lab_handoff import push_completed_live_draft_to_lab, resolve_lab_yearly_df
-
-    return bool(push_completed_live_draft_to_lab(st.session_state, room, yearly_df=resolve_lab_yearly_df(st.session_state)))
+    return bool(live_draft_push_analysis_to_session(room))
 
 
 def apply_draft_lab_resume(st: Any) -> dict[str, Any]:

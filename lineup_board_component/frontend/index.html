@@ -54,12 +54,6 @@ body {
   transform: scale(1.06);
 }
 .fl-circle-drop.ineligible { opacity: 0.35; }
-.fl-circle-drop.open { border-color: #d08a1e; background: #fff8ec; }
-.fl-open-text { font-size: 0.7rem; font-weight: 800; color: #9a5b00; letter-spacing: 0.04em; text-transform: uppercase; }
-.fl-slot-hint { font-size: 0.64rem; color: #8a5300; margin-top: 5px; max-width: 92px; line-height: 1.2; }
-.fl-count { font-weight: 600; color: #64748b; font-size: 0.85rem; margin-left: 6px; }
-.fl-pos-badges { display: flex; gap: 3px; justify-content: center; flex-wrap: wrap; margin-top: 2px; max-width: 92px; }
-.fl-pos-badge { font-size: 0.6rem; font-weight: 700; padding: 0 4px; border-radius: 3px; background: #eef3f8; color: #28507a; }
 .fl-face {
   width: 72px; height: 72px;
   border-radius: 50%;
@@ -203,64 +197,36 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
     return (slot.eligible || []).indexOf(player) >= 0;
   }
 
-  function benchPositions(name) {
-    const row = (PAYLOAD.bench || []).find(function(b) { return b.name === name; });
-    return row && row.positions ? String(row.positions).split("/").filter(Boolean) : [];
-  }
-
   function render() {
     const root = document.getElementById("fl-board-root");
-    const slots = PAYLOAD.slots || [];
-    const bench = benchPlayers();
-    const filledCount = slots.filter(function(s) { return !!assignments[s.key]; }).length;
-    let html = '<div class="fl-board-title">Starting Lineup<span class="fl-count">' + filledCount + '/' + slots.length + '</span></div><div class="fl-circle-grid">';
-    slots.forEach(function(slot) {
+    let html = '<div class="fl-board-title">Starting Lineup</div><div class="fl-circle-grid">';
+    (PAYLOAD.slots || []).forEach(function(slot) {
       const player = assignments[slot.key] || "";
       const filled = !!player;
       html += '<div class="fl-circle-slot">';
       html += '<div class="fl-slot-label">' + slot.label + '</div>';
-      html += '<div class="fl-circle-drop' + (filled ? ' filled' : ' open') + '" data-slot-key="' + slot.key + '" data-base-slot="' + slot.base_slot + '">';
+      html += '<div class="fl-circle-drop' + (filled ? ' filled' : '') + '" data-slot-key="' + slot.key + '" data-base-slot="' + slot.base_slot + '">';
       if (filled) {
         html += '<div class="fl-face" data-player="' + player + '" data-origin="' + slot.key + '">' + faceHtml(player) + '</div>';
-      } else {
-        html += '<span class="fl-open-text">Open</span>';
       }
       html += '</div>';
       if (filled) {
         html += '<div class="fl-slot-player-name">' + player + '</div>';
-      } else {
-        // Eligibility cue: how many bench players could fill this spot (same eligibility list the drop uses).
-        const options = bench.filter(function(name) { return (slot.eligible || []).indexOf(name) >= 0; }).length;
-        html += '<div class="fl-slot-hint">' + (options ? options + ' on bench can play here' : 'No one eligible') + '</div>';
       }
       html += '</div>';
     });
-    html += '</div><div class="fl-board-title">Bench<span class="fl-count">' + bench.length + '</span></div>';
+    html += '</div><div class="fl-board-title">Bench</div>';
     html += '<div class="fl-bench-zone" data-zone="bench"><div class="fl-bench-faces">';
-    bench.forEach(function(name) {
+    benchPlayers().forEach(function(name) {
       html += '<div class="fl-bench-face-wrap">';
       html += '<div class="fl-face" data-player="' + name + '" data-origin="bench">' + faceHtml(name) + '</div>';
-      html += '<div class="fl-bench-name">' + name + '</div>';
-      const pos = benchPositions(name);
-      if (pos.length) {
-        html += '<div class="fl-pos-badges">' + pos.map(function(p) { return '<span class="fl-pos-badge">' + p + '</span>'; }).join("") + '</div>';
-      }
-      html += '</div>';
+      html += '<div class="fl-bench-name">' + name + '</div></div>';
     });
     html += '</div></div>';
     root.innerHTML = html;
     bindFaces();
-    fitFrame();
+    setFrameHeight(boardHeight());
   }
-
-  // Size the iframe to what was actually drawn: the grid fits 9+ spots per row on desktop and
-  // 3 on phones, so a fixed rows-of-4 estimate left a large empty gap under the bench.
-  function fitFrame() {
-    const root = document.getElementById("fl-board-root");
-    const measured = root ? Math.ceil(root.getBoundingClientRect().height) + 12 : 0;
-    setFrameHeight(measured > 40 ? measured : boardHeight());
-  }
-  window.addEventListener("resize", function() { if (!drag) fitFrame(); });
 
   function sendDrop(player, target) {
     const out = Object.assign({}, assignments);

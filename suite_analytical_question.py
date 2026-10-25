@@ -477,12 +477,11 @@ def _select_best_blob_payload(
     return best
 
 
-def _store_question_context_blob(payload: dict[str, Any]) -> bool:
-    """Persist full context server-side keyed by question_id (survives URL truncation).
-    Returns whether every copy was written."""
+def _store_question_context_blob(payload: dict[str, Any]) -> None:
+    """Persist full context server-side keyed by question_id (survives URL truncation)."""
     qid = str(payload.get("question_id") or "").strip()
     if not qid:
-        return False
+        return
     ctx = dict(payload.get("context") or {})
     hof_case = _is_hof_case_submission(str(payload.get("quant_area") or ""), ctx)
     blob = {
@@ -540,10 +539,9 @@ def _store_question_context_blob(payload: dict[str, Any]) -> bool:
                 title=str(payload.get("question") or "Applied Math question")[:200],
                 payload=blob,
             )
-        return True
+        return
     except Exception as exc:
         log.warning("remember_saved_item failed for analytical context: %s", exc)
-        return False
 
 
 def persist_question_context_blob(payload: dict[str, Any]) -> None:
@@ -1281,13 +1279,12 @@ def _upsert_applied_intelligence_resume(
     payload: dict[str, Any],
     *,
     action_url: str,
-) -> bool:
-    """Write the Command Center Continue card. Returns whether a store accepted it."""
+) -> None:
     title, _, _ = analytical_question_continue_copy(payload)
     subtitle = analytical_question_storage_subtitle(payload)
     resume_key = str(payload.get("resume_key") or "").strip()
     if not resume_key:
-        return False
+        return
     try:
         from suite_storage_supabase import upsert_resume_item
 
@@ -1298,7 +1295,7 @@ def _upsert_applied_intelligence_resume(
             subtitle=subtitle,
             action_url=action_url,
         )
-        return True
+        return
     except Exception as exc:
         log.warning("suite_storage_supabase upsert_resume_item failed: %s", exc)
     try:
@@ -1311,10 +1308,8 @@ def _upsert_applied_intelligence_resume(
             subtitle=subtitle,
             action_url=action_url,
         )
-        return True
     except Exception as exc:
         log.warning("suite_storage upsert_resume_item failed: %s", exc)
-        return False
 
 
 def build_question_payload(
@@ -1529,21 +1524,26 @@ def submit_analytical_question(
         dict(payload.get("context") or {}),
     )
     record_activity_for_send = (not duplicate) or (not hof_case and source_app_norm == "baseball")
-    # The local Command Center store is put on sys.path only by _load_storage_module (normally inside
-    # record_activity). The saves below run before any activity, so load it here or the first send in a fresh
-    # process cannot reach it. Isolated runs without a private store still get None (fail closed). Only without
-    # Supabase: with it every write goes there, and an importable local store would take the context blob
-    # (remember_saved_item prefers it) while the Continue card went to Supabase.
-    try:
-        from suite_activity_client import _load_storage_module
-        from suite_storage_config import cloud_storage_enabled
+    if record_activity_for_send:
+        metrics = metrics_for_applied_math_resume(payload)
+        metrics["source_app"] = source_app_norm
+        if not hof_case:
+            if metrics["source_app"] == "music":
+                summary = f"Asked Music Coach: {payload['question'][:80]}"
+            else:
+                summary = f"Asked Applied Math: {payload['question'][:80]}"
+            try:
+                from suite_activity_client import record_activity
 
-        if not cloud_storage_enabled():
-            _load_storage_module()
-    except Exception as exc:
-        log.warning("loading the local Command Center store failed: %s", exc)
-    # Durable first: the Continue card (or HOF blob) must be accepted before anything announces the send,
-    # so a failed save leaves no partial activity and no dedup marker, and the user can retry.
+                record_activity(
+                    payload["source_app"],
+                    "analytical_question",
+                    page=payload["source_page"],
+                    metrics=metrics,
+                    summary=summary,
+                )
+            except Exception as exc:
+                log.warning("record_activity failed for analytical_question: %s", exc)
     if hof_case:
         player = _hof_case_player_name(payload)
         hof_payload = {
@@ -1551,8 +1551,8 @@ def submit_analytical_question(
             "action_url": action_url,
             "app_context_type": "baseball_hof_case",
         }
-        save_ok = _store_question_context_blob(hof_payload)
-        if save_ok and not duplicate:
+        _store_question_context_blob(hof_payload)
+        if not duplicate:
             metrics = metrics_for_applied_math_resume(hof_payload)
             metrics["source_app"] = normalize_source_app_id(
                 str(hof_payload.get("source_app") or ""),
@@ -1581,37 +1581,18 @@ def submit_analytical_question(
             except Exception as exc:
                 log.warning("record_activity failed for HOF case analysis: %s", exc)
     else:
-        save_ok = _upsert_applied_intelligence_resume(payload, action_url=action_url)
+        _upsert_applied_intelligence_resume(payload, action_url=action_url)
     ss = payload.get("source_state")
     refresh_blob = not duplicate or (
         str(payload.get("source_app") or "").strip().lower() == "investment"
         and isinstance(ss, dict)
         and bool(ss.get("entity_params"))
     )
-    if save_ok and refresh_blob and not hof_case and not defer_blob_save:
-        save_ok = _store_question_context_blob(payload)
-    if save_ok and record_activity_for_send and not hof_case:
-        metrics = metrics_for_applied_math_resume(payload)
-        metrics["source_app"] = source_app_norm
-        if metrics["source_app"] == "music":
-            summary = f"Asked Music Coach: {payload['question'][:80]}"
-        else:
-            summary = f"Asked Applied Math: {payload['question'][:80]}"
-        try:
-            from suite_activity_client import record_activity
-
-            record_activity(
-                payload["source_app"],
-                "analytical_question",
-                page=payload["source_page"],
-                metrics=metrics,
-                summary=summary,
-            )
-        except Exception as exc:
-            log.warning("record_activity failed for analytical_question: %s", exc)
-    if save_ok and defer_blob_save and session_state is not None and not duplicate and not hof_case:
+    if refresh_blob and not hof_case and not defer_blob_save:
+        _store_question_context_blob(payload)
+    if defer_blob_save and session_state is not None and not duplicate and not hof_case:
         session_state["_ami_pending_blob_save"] = dict(payload)
-    if session_state is not None and save_ok:
+    if session_state is not None:
         session_state["_ami_last_send"] = {
             "question_id": payload["question_id"],
             "question": payload["question"],
@@ -1625,7 +1606,6 @@ def submit_analytical_question(
         "continue_title": card_title,
         "continue_subtitle": card_subtitle,
         "duplicate": duplicate,
-        "save_failed": not save_ok,
         "submitted_at": utc_now_iso(),
     }
 

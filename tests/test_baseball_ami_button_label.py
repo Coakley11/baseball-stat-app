@@ -125,11 +125,8 @@ class BaseballAmiButtonLabelTests(unittest.TestCase):
     def test_streamlit_entrypoint_uses_baseball_ami_sidebar(self) -> None:
         root = Path(__file__).resolve().parents[1]
         text = (root / "streamlit_app.py").read_text(encoding="utf-8")
-        # U5: Ask AMI is the one question box; its Get full analysis sends through this module's
-        # submit_baseball_insight (the Baseball Insight button's own submit). The box itself isn't rendered.
-        self.assertIn("from baseball_ami_sidebar import submit_baseball_insight", text)
-        self.assertIn("return submit_baseball_insight(", text)
-        self.assertNotIn("render_baseball_insight_sidebar(", text)
+        self.assertIn("from baseball_ami_sidebar import render_baseball_insight_sidebar", text)
+        self.assertIn("render_baseball_insight_sidebar(", text)
         self.assertNotIn('render_applied_math_sidebar_entry(\n    st,\n    source_app="baseball"', text)
 
     def test_applied_math_entry_redirects_baseball(self) -> None:

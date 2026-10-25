@@ -18,13 +18,6 @@ class Plan(str, Enum):
     FREE = "free"
     PRO = "pro"
 
-
-class EntitlementLevel(str, Enum):
-    FREE = "free"
-    PRO_ACTIVE = "pro_active"
-    PRO_INACTIVE = "pro_inactive"
-
-
 class SubscriptionStatus(str, Enum):
     ANONYMOUS="anonymous"
     AUTHENTICATED_FREE="authenticated_free"
@@ -32,8 +25,6 @@ class SubscriptionStatus(str, Enum):
     ACTIVE="active"
     CANCELED_PERIOD_END="canceled_period_end"
     PAST_DUE="past_due"
-    INACTIVE="inactive"
-    CANCELED="canceled"
     EXPIRED="expired"
     UNKNOWN="unknown"
     DEVELOPMENT="development"
@@ -63,7 +54,6 @@ class EntitlementSnapshot:
     status: SubscriptionStatus = SubscriptionStatus.ANONYMOUS
     user_id: str = ""
     current_period_end: str = ""
-    has_stripe_customer: bool = False
 
     @property
     def grants_pro(self) -> bool:
@@ -71,14 +61,6 @@ class EntitlementSnapshot:
             SubscriptionStatus.TRIALING, SubscriptionStatus.ACTIVE,
             SubscriptionStatus.CANCELED_PERIOD_END, SubscriptionStatus.DEVELOPMENT,
         }
-
-    @property
-    def entitlement(self) -> EntitlementLevel:
-        if self.grants_pro:
-            return EntitlementLevel.PRO_ACTIVE
-        if self.plan is Plan.PRO:
-            return EntitlementLevel.PRO_INACTIVE
-        return EntitlementLevel.FREE
 
 
 FEATURE_REGISTRY: Mapping[FeatureId, FeatureDefinition] = MappingProxyType(
@@ -123,27 +105,6 @@ PAGE_FEATURES: Mapping[str, FeatureId] = MappingProxyType(
     }
 )
 
-# The reusable candidates stay registered, but no product page is enforced during
-# billing acceptance. The Free-vs-Pro product split will be selected separately.
-ENFORCED_PAGE_FEATURES: Mapping[str, FeatureId] = MappingProxyType({})
-
-# Features enforced wherever they appear (not tied to one page), e.g. advanced draft
-# intelligence inside the Draft Assistant and any assistant tool that serves it. Empty: nothing
-# is enforced during billing acceptance. The UI and assistant tools read the same set.
-ENFORCED_FEATURES: frozenset[FeatureId] = frozenset()
-
-# Which shared capabilities belong to a plan feature, so every surface that serves one (page,
-# assistant tool, API) can apply the same gate. Capabilities not listed are free.
-CAPABILITY_FEATURES: Mapping[str, FeatureId] = MappingProxyType(
-    {
-        "draft_recommendations": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
-        "draft_recommendation_explanation": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
-        "draft_team_needs": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
-        "draft_lab_simulation": FeatureId.DRAFT_LAB,
-        "ml_predictions": FeatureId.ML_PREDICTIONS,
-    }
-)
-
 DEV_CONTROLS_ENV = "BASEBALL_ENTITLEMENT_DEV_CONTROLS"
 DEV_RUNTIME_ENV = "BASEBALL_ENTITLEMENT_RUNTIME"
 
@@ -179,26 +140,8 @@ def can_use_feature(snapshot: EntitlementSnapshot, feature_id: FeatureId) -> boo
 
 
 def entitlement_for_page(snapshot: EntitlementSnapshot, page: str) -> bool:
-    feature_id = ENFORCED_PAGE_FEATURES.get(str(page))
+    feature_id = PAGE_FEATURES.get(str(page))
     return True if feature_id is None else can_use_feature(snapshot, feature_id)
-
-
-def enforced_features() -> frozenset[FeatureId]:
-    """Every feature the app enforces right now: page features plus feature-level ones."""
-    return frozenset(ENFORCED_PAGE_FEATURES.values()) | ENFORCED_FEATURES
-
-
-def feature_for_capability(capability: str) -> FeatureId | None:
-    return CAPABILITY_FEATURES.get(str(capability or ""))
-
-
-def entitlement_for_capability(snapshot: EntitlementSnapshot, capability: str) -> bool:
-    """The gate for one shared capability: free or not enforced → allowed; otherwise the same
-    ``can_use_feature`` the page gate uses (fails closed while the snapshot isn't ready)."""
-    feature_id = feature_for_capability(capability)
-    if feature_id is None or feature_id not in enforced_features():
-        return True
-    return can_use_feature(snapshot, feature_id)
 
 
 def default_entitlement() -> EntitlementSnapshot:
@@ -216,13 +159,10 @@ def development_entitlement(plan: Plan | str) -> EntitlementSnapshot:
 def authenticated_subject(session: Mapping) -> tuple[str,bool,str]:
     """Return only Supabase-validated identity; workspace/email are never authority."""
     try:
-        from suite_auth import AUTH_TOKENS_KEY, AUTH_USER_ID_KEY, auth_session_complete, is_auth_enabled
-        if is_auth_enabled() and auth_session_complete(dict(session)):
+        from suite_auth import AUTH_TOKENS_KEY, AUTH_USER_ID_KEY, is_auth_enabled, is_authenticated
+        if is_auth_enabled() and is_authenticated(dict(session)):
             tokens=session.get(AUTH_TOKENS_KEY) or {}
-            user_id = str(session.get(AUTH_USER_ID_KEY) or "").strip()
-            token = str(tokens.get("access_token") or "").strip() if isinstance(tokens,Mapping) else ""
-            if user_id and token:
-                return user_id, True, token
+            return str(session.get(AUTH_USER_ID_KEY) or "").strip(), True, str(tokens.get("access_token") or "") if isinstance(tokens,Mapping) else ""
     except Exception: pass
     return "",False,""
 
@@ -233,8 +173,8 @@ def resolve_trusted_entitlement(session: Mapping, *, provider=None, environ: Map
     if not authenticated:
         return EntitlementSnapshot(status=SubscriptionStatus.ANONYMOUS)
     try:
-        from baseball_billing_config import RolloutMode, load_client_billing_config
-        config=load_client_billing_config(environ if environ is not None else None)
+        from baseball_billing_config import BillingConfig, RolloutMode
+        config=BillingConfig.from_environ(env)
         if config.rollout in {RolloutMode.OFF,RolloutMode.PREVIEW}:
             return EntitlementSnapshot(status=SubscriptionStatus.AUTHENTICATED_FREE,user_id=user_id,source="billing_disabled")
         if provider is None:

@@ -244,8 +244,7 @@ class TestImportedLeagueTradeActivation(unittest.TestCase):
         self.assertFalse(enabled)
         self.assertEqual(msg, TRADES_MOCK_SIM_DISABLED_MESSAGE)
 
-    def test_one_claimed_team_only_the_commissioner_may_trade(self) -> None:
-        # Phase D: the commissioner may act for unclaimed teams (explicit proxy); nobody else.
+    def test_one_claimed_team_blocks_trades(self) -> None:
         _entry, context = self._save_imported_two_team_league()
         league_context_id = str(context.get("league_context_id") or "")
         loaded = get_league_context(self.session, league_context_id) or context
@@ -254,9 +253,6 @@ class TestImportedLeagueTradeActivation(unittest.TestCase):
         )
         upsert_league_context(self.session, loaded)
         with _as_user("user:donny"):
-            enabled, _msg = trades_enabled(loaded, self.session)
-        self.assertTrue(enabled)
-        with _as_user("user:not-commissioner"):
             enabled, msg = trades_enabled(loaded, self.session)
         self.assertFalse(enabled)
         self.assertEqual(msg, TRADES_AWAITING_CLAIMS_MESSAGE)

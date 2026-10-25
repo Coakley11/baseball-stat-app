@@ -97,13 +97,8 @@ class LiveDraftCoreInteractionContractTests(unittest.TestCase):
             'ldr_section(st.session_state, "room_controls_timer"', 1
         )[0]
         self.assertIn("render_live_manual_draft_panel", block)
-        # The panel owns its heading and the "not limited to cards" copy, so the
-        # early path no longer paints an orphan heading above the cards.
-        panel_src = (_REPO / "draft_ui.py").read_text(encoding="utf-8")
-        panel = panel_src.split("def render_live_manual_draft_panel", 1)[1].split("\ndef ", 1)[0]
-        self.assertIn('st.subheader("Manual Draft")', panel)
-        self.assertIn("not limited to the recommendation cards", panel)
-        self.assertNotIn('st.subheader("Manual Draft")', block)
+        self.assertIn("Manual Draft", block)
+        self.assertIn("not limited to the recommendation cards", block)
 
     def test_horizontal_rec_cards_use_three_column_rows(self) -> None:
         src = (_REPO / "live_draft_room_ui.py").read_text(encoding="utf-8")

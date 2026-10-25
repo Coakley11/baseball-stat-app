@@ -187,29 +187,6 @@ def _roster_df_from_players(players: list[dict[str, Any]] | None) -> pd.DataFram
     return pd.DataFrame(normalized)
 
 
-def missing_positions_for_roster(roster_df: pd.DataFrame | None, required_counts: dict[str, Any]) -> list[str] | None:
-    """Required starting positions this roster cannot fill, one player per slot.
-
-    Uses each player's data-driven eligibility (fantasy_position_eligibility); UTIL/DH
-    takes any spare hitter. None when the shared helpers are unavailable.
-    """
-    try:
-        from fantasy_lineup_fill import unfilled_slots
-        from fantasy_position_eligibility import eligible_positions_from_row
-    except ImportError:
-        return None
-    slots = [
-        normalize_position_code(code)
-        for code, count in (required_counts or {}).items()
-        if normalize_position_code(code) != "BN"
-        for _ in range(max(0, int(count or 0)))
-    ]
-    players: list[list[str]] = []
-    if roster_df is not None and not getattr(roster_df, "empty", True):
-        players = [sorted(eligible_positions_from_row(row)) for _, row in roster_df.iterrows()]
-    return [normalize_position_code(s) for s in unfilled_slots(players, slots)]
-
-
 def evaluate_team_roster(
     *,
     roster_df: pd.DataFrame | None = None,
@@ -255,15 +232,11 @@ def evaluate_team_roster(
     required_counts = get_required_position_counts(slot_config)
     required_total = count_required_starting_positions(required_counts)
     assignment = assign_roster_to_slot_instances(df, slot_config)
-    shared = missing_positions_for_roster(df, required_counts)
-    if shared is not None:
-        missing_codes = shared
-    else:
-        missing_codes = [
-            normalize_position_code(g)
-            for g in (get_remaining_position_needs(df, slot_config) or [])
-            if normalize_position_code(g) != "BN"
-        ]
+    missing_codes = [
+        normalize_position_code(g)
+        for g in (get_remaining_position_needs(df, slot_config) or [])
+        if normalize_position_code(g) != "BN"
+    ]
     # Preserve order, unique for UI buttons.
     missing_unique: list[str] = list(dict.fromkeys(missing_codes))
 

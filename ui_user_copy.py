@@ -31,10 +31,6 @@ SIGN_IN_PROMPT = (
 )
 
 SESSION_RESTORED_BANNER = "Welcome back — we restored your last settings."
-CLOUD_READ_FAILED_WARNING = (
-    "We couldn't reach your saved data, so it isn't loaded yet and nothing you change now will be saved "
-    "to your account. We'll keep trying — reload the page in a minute."
-)
 
 SETTINGS_SAVED_TOAST = "Settings saved"
 

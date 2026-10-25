@@ -479,10 +479,10 @@ def ensure_ready_pool_warm(session: dict[str, Any], room: dict[str, Any] | None 
 
         # 4) Pinned unified builder last (cold miss is slow).
         try:
-            from running_app import running_app_module
+            import importlib
             from datetime import datetime
 
-            app_mod = running_app_module()
+            app_mod = importlib.import_module("streamlit_app")
             get_pool = getattr(app_mod, "get_cached_unified_projection_pool", None)
             pool = None
             pin_errs: list[str] = []

@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import sys
 
 import pytest
-
-# Subprocesses that tests start inherit this, so none of them can reach a real sibling Command Center store.
-os.environ["SUITE_STORAGE_ISOLATED"] = "1"
 
 
 @pytest.fixture(autouse=True)

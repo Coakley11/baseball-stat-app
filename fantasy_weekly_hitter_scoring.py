@@ -325,14 +325,6 @@ def resolve_canonical_league_id(context: dict[str, Any]) -> str:
 
 
 def canonical_team_identity(context: dict[str, Any], team_name: str) -> str:
-    """The team a weekly record belongs to: the team asked for, else the account's team.
-
-    Returning the account's own team whenever it owned one made every team's record
-    resolve to that team, so other teams' locks were silently skipped.
-    """
-    team = str(team_name or "").strip()
-    if team:
-        return team
     try:
         from fantasy_league_team_ownership import owned_team_for_user
 
@@ -341,7 +333,7 @@ def canonical_team_identity(context: dict[str, Any], team_name: str) -> str:
             return owned
     except ImportError:
         pass
-    return str(context.get("my_team_name") or "").strip()
+    return str(team_name or context.get("my_team_name") or "").strip()
 
 
 def weekly_team_record_key(league_id: str, team_identity: str, week: int) -> str:

@@ -210,12 +210,7 @@ def multiparty_may_run_autopick(session: dict[str, Any]) -> bool:
         code = str(session.get(ACTIVE_SHARED_ROOM_CODE_KEY) or "").strip().upper()
         document = load_shared_room_document(session, code) if code else None
         if viewer_holds_authority(session, document):
-            # Renew at the heartbeat cadence, not on every call: the once-a-second timer
-            # tick re-read and rewrote the whole room document each time. A lease renewed
-            # within the heartbeat interval still has most of its 8s left.
-            held = authority_from_document(document) or {}
-            if _utc_now() - float(held.get("heartbeat_at") or 0) >= TIMER_AUTHORITY_HEARTBEAT_SEC:
-                try_acquire_timer_authority(session)  # renew
+            try_acquire_timer_authority(session)  # renew
             return True
         auth = authority_from_document(document)
         if authority_is_active(auth):

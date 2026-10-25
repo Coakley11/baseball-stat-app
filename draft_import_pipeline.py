@@ -873,17 +873,6 @@ def apply_validated_import_to_board(
         st.rerun()
 
 
-def imported_league_saved_flash(league_name: str, my_team: str, *, saved_count: int, persisted: bool) -> str:
-    """Sidebar note after saving an imported league to the Draft Library."""
-    where = "to your Draft Library" if persisted else "in this session"
-    # The library makes a lone saved draft the Active League automatically.
-    if saved_count == 1:
-        activation = "It is your only saved draft, so it is now your **Active League**."
-    else:
-        activation = "Use **Set Active** in Saved Draft Library to make it your Active League."
-    return f"Saved **{league_name}** {where}. Claimed **{my_team}** on the saved league. {activation}"
-
-
 def render_shared_league_creation_panel(
     st: Any,
     session: dict[str, Any],
@@ -989,22 +978,21 @@ def render_shared_league_creation_panel(
                             session=session,
                         )
                         record_draft_library_readback(session, readback)
-                        if str(readback.get("error") or "") != "cloud_storage_disabled":
-                            # Cloud is configured: the save counts once it reads back.
-                            persist_ok = bool(readback.get("ok"))
+                        persist_ok = bool(readback.get("ok"))
                 except ImportError:
                     pass
                 league_id = str((context.get("metadata") or {}).get("league_id") or "").strip()
-                try:
-                    from draft_archive_state import DRAFT_ARCHIVE_KEY
-
-                    saved_count = len([a for a in (session.get(DRAFT_ARCHIVE_KEY) or []) if isinstance(a, dict)])
-                except ImportError:
-                    saved_count = 0
-                session["workflow_sidebar_flash"] = imported_league_saved_flash(
-                    league_name, my_team, saved_count=saved_count, persisted=persist_ok
-                )
-                if not persist_ok:
+                if persist_ok:
+                    session["workflow_sidebar_flash"] = (
+                        f"Saved **{league_name}** to your Draft Library (not active). "
+                        f"Claimed **{my_team}** on the saved league. "
+                        "Use **Set Active** in Saved Draft Library when ready."
+                    )
+                else:
+                    session["workflow_sidebar_flash"] = (
+                        f"Saved **{league_name}** in this session (not active). "
+                        f"Claimed **{my_team}** on the saved league."
+                    )
                     st.warning(
                         "Imported league is in this session only — save did not verify. "
                         "Open **Saved Draft Library** and save again before testing invites or trades."

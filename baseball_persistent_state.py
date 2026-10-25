@@ -445,20 +445,6 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
             pg_state.save_page_state(ss, str(active), store)
         except Exception:
             pass
-    try:
-        from live_draft_state import (
-            LIVE_DRAFT_STATE_KEY,
-            copy_page_store_for_save,
-            copy_room_without_pool,
-            shared_room_pool_is_rebuildable,
-        )
-
-        _drop_room_pool = shared_room_pool_is_rebuildable(ss)
-    except ImportError:
-        LIVE_DRAFT_STATE_KEY = "live_draft_state"
-        copy_page_store_for_save = None  # type: ignore[assignment]
-        copy_room_without_pool = None  # type: ignore[assignment]
-        _drop_room_pool = False
     state: dict[str, Any] = {}
     for key in _GLOBAL_KEYS:
         if key in ss:
@@ -469,18 +455,11 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
                 state[key] = val
     store = ss.get("page_filter_state")
     if isinstance(store, dict) and store:
-        if copy_page_store_for_save is not None:
-            state["page_filter_state"] = copy_page_store_for_save(store, drop_room_pool=_drop_room_pool)
-        else:
-            state["page_filter_state"] = copy.deepcopy(store)
+        state["page_filter_state"] = copy.deepcopy(store)
     for key in _INSIGHT_KEYS + _HOF_HANDOFF_KEYS + _WORKSPACE_KEYS:
         if key in ss:
             try:
-                if key == LIVE_DRAFT_STATE_KEY and _drop_room_pool and copy_room_without_pool is not None:
-                    # Shared rooms rebuild their pool; do not copy or save it.
-                    state[key] = copy_room_without_pool(ss[key])
-                else:
-                    state[key] = copy.deepcopy(ss[key])
+                state[key] = copy.deepcopy(ss[key])
             except Exception:
                 state[key] = ss[key]
     for key in _WORKFLOW_KEYS:
@@ -540,12 +519,10 @@ def build_baseball_disk_state(st: Any) -> dict[str, Any]:
         from draft_room_state import enrich_save_payload_with_draft_room, sanitize_state_dict_for_json as sanitize_draft_room
         from live_draft_state import enrich_save_payload_with_live_draft, sanitize_state_dict_for_json
 
-        # ``state`` is this function's own deep copy of session keys, replaced at each
-        # step — so each step may reuse it instead of deep-copying it again.
-        state, _ = enrich_save_payload_with_draft_room(ss, state, copy_input=False)
-        state, _ = enrich_save_payload_with_live_draft(ss, state, copy_input=False)
-        state = sanitize_state_dict_for_json(state, copy_input=False)
-        state = sanitize_draft_room(state, copy_input=False)
+        state, _ = enrich_save_payload_with_draft_room(ss, state)
+        state, _ = enrich_save_payload_with_live_draft(ss, state)
+        state = sanitize_state_dict_for_json(state)
+        state = sanitize_draft_room(state)
     except ImportError:
         pass
     try:
@@ -1604,8 +1581,6 @@ def prepare_baseball_workspace(st: Any) -> bool:
             or ss.get("_suite_workspace_refresh_needed")
             or ss.get("_suite_auth_just_signed_in")
             or ss.get("_suite_auth_just_logged_in")
-            # An unresolved cloud read failure keeps cloud saves paused; run the sync so it retries.
-            or ss.get("_suite_cloud_read_failed")
         )
         fp = warm_startup_fingerprint(ss)
         prev_fp = str(ss.get("_baseball_warm_startup_fp") or "")

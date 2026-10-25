@@ -463,9 +463,7 @@ def default_live_draft_setup_settings() -> dict[str, Any]:
         "live_draft_setup_mode": "solo",
         "live_draft_team_count": 2,
         "live_draft_num_teams": 2,
-        # Default roster is 9 starters + 5 bench. Fewer picks than starters fails
-        # Start validation, so a brand-new user could not start on defaults.
-        "live_draft_picks_per_team": 14,
+        "live_draft_picks_per_team": 4,
         "live_draft_timer": "30 seconds",
         "live_draft_type": "Snake",
         "live_draft_scoring": "Points",

@@ -7,11 +7,10 @@ from unittest.mock import patch
 
 
 class TestInstantInsightSubmit(unittest.TestCase):
-    @patch("suite_analytical_question._upsert_applied_intelligence_resume", return_value=True)  # the Continue card is accepted
     @patch("suite_analytical_question._store_question_context_blob")
     @patch("suite_activity_client.record_activity")
     def test_baseball_submit_defers_blob_when_requested(
-        self, record_mock, blob_mock, _upsert_mock
+        self, record_mock, blob_mock
     ) -> None:
         from suite_analytical_question import submit_analytical_question
 
@@ -65,12 +64,11 @@ class TestInstantInsightSubmit(unittest.TestCase):
         self.assertIn("full analysis", insight.conclusion.lower())
         self.assertTrue(insight.full_analysis_url)
 
-    @patch("suite_analytical_question._upsert_applied_intelligence_resume", return_value=True)  # the Continue card is accepted
     @patch("suite_analytical_question._recent_duplicate_send", return_value=True)
     @patch("suite_analytical_question._store_question_context_blob")
     @patch("suite_activity_client.record_activity")
     def test_baseball_duplicate_still_records_activity(
-        self, record_mock, blob_mock, dup_mock, _upsert_mock
+        self, record_mock, blob_mock, dup_mock
     ) -> None:
         from suite_analytical_question import submit_analytical_question
 

@@ -22,9 +22,6 @@ CONFIG_SOURCE_UPLOADED = "uploaded_draft_lineup_setup"
 
 LINEUP_FORMAT_KEY = "lineup_format"
 
-# Suggested starting lineup, prefilled in commissioner setup (never one position repeated).
-STANDARD_LINEUP_TEMPLATE: tuple[str, ...] = ("C", "1B", "2B", "3B", "SS", "OF", "OF", "OF", "UTIL")
-
 PICKABLE_POSITIONS: tuple[tuple[str, str], ...] = (
     ("C", "Catcher"),
     ("1B", "First Base"),
@@ -255,19 +252,15 @@ def detect_roster_size_hint(
 
 
 def expand_position_picks(picks: list[str], *, of_count: int = 0) -> list[str]:
-    """Turn commissioner picks into ordered starter slot tokens — one slot per pick.
-
-    ``of_count`` only applies to the shorthand of a single "OF" pick meaning that many
-    outfield slots; when every outfield slot is picked separately it is ignored (it used
-    to expand the first OF to the full count and then add the rest again).
-    """
+    """Turn commissioner picks into ordered starter slot tokens."""
     slots: list[str] = []
-    of_picks = sum(1 for p in picks if str(p or "").strip().upper() == "OF")
+    of_remaining = max(0, int(of_count))
     for pick in picks:
         token = str(pick or "").strip().upper()
         if token == "OF":
-            n = max(1, int(of_count)) if of_picks == 1 else 1
+            n = of_remaining if of_remaining > 0 else 1
             slots.extend(["OF"] * n)
+            of_remaining = 0
         elif token == "UTIL":
             slots.append("UTIL")
         elif token in ("C", "1B", "2B", "3B", "SS"):
@@ -281,14 +274,11 @@ def roster_capacity_from_format(context: dict[str, Any] | None) -> int | None:
         return max(1, int(block["roster_capacity"]))
     if context_has_roster_slots(context):
         try:
-            from fantasy_league_context import resolve_context_bench_slot_count, resolve_context_lineup_slots
+            from fantasy_league_context import resolve_context_lineup_slots
 
             slots = resolve_context_lineup_slots(context) or []
             if slots:
-                # Starters plus bench: a Live Draft league drafted 9 starters + 3 BN has
-                # 12-player rosters; counting starters only put every team "over capacity"
-                # and blocked all waiver adds.
-                return len(slots) + int(resolve_context_bench_slot_count(context) or 0)
+                return len(slots)
         except ImportError:
             pass
     return None
@@ -307,8 +297,7 @@ def apply_lineup_format_to_context(
     slots = [str(s or "").strip().upper() for s in lineup_slots if str(s or "").strip()]
     counts: dict[str, int] = {}
     for token in slots:
-        code = "DH" if token == "UTIL" else token  # slot configs store Utility as DH
-        counts[code] = counts.get(code, 0) + 1
+        counts[token] = counts.get(token, 0) + 1
 
     try:
         from live_draft_roster_slots import freeze_slot_instances_on_config

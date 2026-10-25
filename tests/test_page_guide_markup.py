@@ -32,10 +32,12 @@ class PageGuideMarkupTests(unittest.TestCase):
         self.assertEqual(card_html.count("<details"), card_html.count("</details"))
         self.assertIn(html.escape("Compare players"), card_html)
 
-    def test_quick_guide_card_is_closed_by_default_at_every_width(self) -> None:
-        """U1: no `open` attribute and no desktop rule forcing it open — the guide is a
-        one-line toggle above the page instead of ~130 px of always-visible text."""
-        from page_quick_guide import _QUICK_GUIDE_CSS, render_quick_guide_card
+    def test_quick_guide_card_collapses_on_phones_not_desktop(self) -> None:
+        """The disclosure has no `open` attribute (closed by default — the phone
+        behavior) and desktop is forced back to always-visible via CSS, matching
+        pre-M2 presentation exactly at >640px."""
+        from mobile_foundation import PHONE_MAX_PX
+        from page_quick_guide import render_quick_guide_card
 
         st = mock.MagicMock()
         render_quick_guide_card(
@@ -43,9 +45,8 @@ class PageGuideMarkupTests(unittest.TestCase):
         )
         card_html = st.markdown.call_args[0][0]
         self.assertNotIn("<details open", card_html)
-        self.assertNotIn("display: block !important", _QUICK_GUIDE_CSS)
-        self.assertNotIn("::details-content", _QUICK_GUIDE_CSS)
-        self.assertIn("<summary", card_html)
+        self.assertIn(f"min-width: {PHONE_MAX_PX + 1}px", card_html)
+        self.assertIn("display: block !important", card_html)
 
     def test_render_page_guide_uses_quick_guide_card(self) -> None:
         from pathlib import Path
@@ -55,6 +56,20 @@ class PageGuideMarkupTests(unittest.TestCase):
         block = source[start : start + 1200]
         self.assertIn("render_quick_guide_card", block)
         self.assertIn("page_quick_guide", block)
+
+    def test_desktop_reopens_chromium_details_content_slot(self) -> None:
+        """M3 regression (caught live at 1280): current Chromium hides closed details
+        content via ::details-content, so the display override alone left desktop
+        showing only the header. The slot rule must be its own rule, desktop-scoped."""
+        from mobile_foundation import PHONE_MAX_PX
+        from page_quick_guide import _QUICK_GUIDE_CSS
+
+        idx = _QUICK_GUIDE_CSS.index(".page-guide::details-content")
+        media = _QUICK_GUIDE_CSS.rfind("@media", 0, idx)
+        self.assertIn(f"min-width: {PHONE_MAX_PX + 1}px", _QUICK_GUIDE_CSS[media:idx])
+        line = _QUICK_GUIDE_CSS[idx:].split("{", 1)[0]
+        self.assertNotIn(",", line)  # not part of a selector list
+        self.assertIn("content-visibility: visible", _QUICK_GUIDE_CSS[idx: idx + 200])
 
 
 if __name__ == "__main__":

@@ -412,9 +412,9 @@ def maybe_build_deferred_full_pool(session: dict[str, Any], *, force: bool = Fal
     t0 = _mono()
     note_start_stage(session, "deferred_full_pool_start", force=bool(force))
     try:
-        from running_app import running_app_module
+        import importlib
 
-        app_mod = running_app_module()
+        app_mod = importlib.import_module("streamlit_app")
         pool = app_mod.get_cached_unified_projection_pool(
             int(pending.get("lahman_max_year") or 0),
             int(pending.get("draft_window") or 3),
@@ -548,9 +548,9 @@ def ensure_solo_player_pool_for_recs(session: dict[str, Any], room: dict[str, An
 
     # Cold restore / stripped pool: attach a fast market pool so cards can paint.
     try:
-        from running_app import running_app_module
+        import importlib
 
-        app_mod = running_app_module()
+        app_mod = importlib.import_module("streamlit_app")
         market_df = app_mod.load_fantasypros_market_data()
     except Exception as exc:
         session["_solo_pool_ensure_error"] = f"market:{type(exc).__name__}:{exc}"[:200]

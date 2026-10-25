@@ -182,10 +182,6 @@ def live_draft_mobile_css() -> str:
        LAYOUT only — <style> rules still apply and the marker stays in the DOM. */
     {_LD_PAGE} {_EC}:has(> [data-testid="stMarkdown"] {_MDC} > style:first-child):not(:has(> [data-testid="stMarkdown"] {_MDC} > :not(style))),
     {_LD_PAGE} {_EC}:has(#solo-deploy-build) {{ display: none !important; }}
-    /* The Solo wake carrier is a 0px declared component whose wrapper still takes
-       ~26px plus a gap. It delivers the expiry wake, so it is taken out of flow
-       rather than hidden — the component keeps running. */
-    {_LD_PAGE} {_EC}[class*="st-key-solo_countdown_wake_"] {{ position: absolute !important; height: 0 !important; margin: 0 !important; }}
 
     /* 1. On the Clock — OUTER container only (adapted for the declared component).
        The stabilized Live Draft renders the Solo clock as a declared Streamlit

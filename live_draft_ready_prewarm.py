@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -52,10 +51,7 @@ def _team_for_pick1(session: dict[str, Any], room: dict[str, Any]) -> str:
 
 
 def pick1_snapshot_is_ready(session: dict[str, Any] | None, room: dict[str, Any] | None = None) -> bool:
-    # Mapping, not dict: ``st.session_state`` is a SessionStateProxy. A dict-only
-    # guard reported "not ready" on every production run, so Ready rebuilt the
-    # snapshot and called ``st.rerun()`` forever.
-    if not isinstance(session, Mapping):
+    if not isinstance(session, dict):
         return False
     snap = session.get(PICK1_SNAPSHOT_KEY)
     flag = bool(session.get(PICK1_READY_FLAG))

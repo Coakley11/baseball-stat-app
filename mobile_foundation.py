@@ -198,30 +198,12 @@ def mobile_foundation_css() -> str:
       iframes, several in Live Draft) is itself 0px tall, but its element-container
       still costs one flex `gap` — on a phone, with many such carriers stacked, that
       adds up to real wasted vertical space. Collapse only the genuinely zero-height
-      case; anything with real height (may render content later) is left untouched.
-      Streamlit 1.59 puts the testid on the <iframe> itself and marks the container
-      height="0px" — the last selector matches that markup. */
+      case; anything with real height (may render content later) is left untouched. */
 {media_phone()} {{
-    {_MAIN} [data-testid="stElementContainer"][height="0px"]:has(> iframe[data-testid="stIFrame"]),
     {_MAIN} [data-testid="stElementContainer"]:has(> [data-testid="stIFrame"] > iframe[height="0"]),
     {_MAIN} [data-testid="stElementContainer"]:has(> [data-testid="stIFrame"][style*="height: 0px"]),
     {_MAIN} [data-testid="stElementContainer"]:has(> [data-testid="stIFrame"] > iframe[style*="height: 0px"]) {{
         display: none;
-    }}
-    /* 8b. Two more invisible carriers between the phone page picker and the page title
-          (~60px of the gap there): the URL-sync component's container (26px tall around a
-          0px iframe) and style-only markdown blocks. They are taken out of the flex flow,
-          not hidden, so the URL-sync iframe keeps running and the styles keep applying.
-          Two rules: :has() can't nest, and one bad selector would void a shared rule. */
-    {_MAIN} .st-key-_url_page_sync_event {{
-        position: absolute !important;
-        width: 0 !important;
-        height: 0 !important;
-    }}
-    {_MAIN} [data-testid="stElementContainer"]:has(> [data-testid="stMarkdown"] [data-testid="stMarkdownContainer"] > style:only-child) {{
-        position: absolute !important;
-        width: 0 !important;
-        height: 0 !important;
     }}
 }}
 """

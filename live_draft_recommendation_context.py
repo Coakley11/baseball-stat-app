@@ -40,22 +40,7 @@ def _player_names(roster: list[dict[str, Any]]) -> list[str]:
 
 
 def _open_and_filled_slots(target_counts: dict[str, int], roster_df: pd.DataFrame) -> tuple[list[str], list[str]]:
-    if roster_df is None or roster_df.empty:
-        open_slots = [pos for pos, count in target_counts.items() if int(count or 0) > 0]
-        return open_slots, []
-    try:
-        from live_draft_roster_slots import assign_roster_to_slot_instances
-
-        cfg = {"slots": dict(target_counts)}
-        result = assign_roster_to_slot_instances(roster_df, cfg)
-        gaps = [g for g in (result.get("gaps") or []) if str(g or "").upper() not in ("BN", "BENCH")]
-        open_positions = sorted(set(gaps))
-        all_active = {pos for pos, n in target_counts.items() if int(n or 0) > 0 and pos not in ("BN", "BENCH")}
-        filled_positions = sorted(all_active - set(open_positions))
-        return open_positions, filled_positions
-    except ImportError:
-        pass
-    if "Primary Position" not in roster_df.columns:
+    if roster_df is None or roster_df.empty or "Primary Position" not in roster_df.columns:
         open_slots = [pos for pos, count in target_counts.items() if int(count or 0) > 0]
         return open_slots, []
     counts = roster_df["Primary Position"].fillna("DH").astype(str).value_counts().to_dict()

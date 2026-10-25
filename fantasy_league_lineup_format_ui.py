@@ -6,7 +6,6 @@ from typing import Any
 
 from fantasy_league_lineup_format import (
     PICKABLE_POSITIONS,
-    STANDARD_LINEUP_TEMPLATE,
     clear_saved_lineup_assignments_for_format_change,
     configuration_source_for_context,
     detect_roster_size_hint,
@@ -73,11 +72,8 @@ def render_lineup_format_setup(
 
     pick_labels = [label for _code, label in PICKABLE_POSITIONS]
     pick_codes = {label: code for code, label in PICKABLE_POSITIONS}
-    code_labels = {code: label for code, label in PICKABLE_POSITIONS}
 
-    # Start from a standard lineup (C, 1B, 2B, 3B, SS, 3×OF, UTIL), never more starters than
-    # drafted roster spots; the commissioner adjusts it to the league's rules.
-    default_count = max(1, min(len(STANDARD_LINEUP_TEMPLATE), int(suggested)))
+    default_count = max(1, min(int(suggested), int(suggested)))
     slot_count = st.number_input(
         "Number of starting positions",
         min_value=1,
@@ -86,36 +82,26 @@ def render_lineup_format_setup(
         step=1,
         key="lineup_format_slot_count",
     )
-    st.caption(
-        "Starts from a standard lineup — change any position to match your league. "
-        "Drafted players beyond the starting positions sit on the bench."
-    )
 
-    include_util = st.checkbox(
-        "Include Utility",
-        value="UTIL" in STANDARD_LINEUP_TEMPLATE[: int(slot_count)],
-        key="lineup_format_include_util",
-    )
+    include_util = st.checkbox("Include Utility", value=False, key="lineup_format_include_util")
 
     selected_labels: list[str] = []
+    of_qty = 0
     for idx in range(int(slot_count)):
         options = list(pick_labels)
         if not include_util:
             options = [o for o in options if o != "Utility"]
-        suggested_code = STANDARD_LINEUP_TEMPLATE[idx] if idx < len(STANDARD_LINEUP_TEMPLATE) else "OF"
-        suggested_label = code_labels.get(suggested_code, "Outfield")
-        if suggested_label not in options:
-            suggested_label = "Outfield"
         choice = st.selectbox(
             f"Position {idx + 1}",
             options,
-            index=options.index(suggested_label),
             key=f"lineup_format_pick_{idx}",
         )
         selected_labels.append(choice)
+        if choice == "Outfield":
+            of_qty = max(of_qty, sum(1 for x in selected_labels if x == "Outfield"))
 
     picks = [pick_codes[label] for label in selected_labels]
-    lineup_slots = expand_position_picks(picks)
+    lineup_slots = expand_position_picks(picks, of_count=of_qty)
 
     st.markdown("**Preview**")
     inject_lineup_board_styles(st)

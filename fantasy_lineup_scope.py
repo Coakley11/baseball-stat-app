@@ -93,15 +93,6 @@ def resolve_lineup_scope(
         return None
 
     uid, _external, owned_ws, email, _local = session_account_identity(session)
-    if not uid:
-        # Sign-in disabled (local install): use the existing local account identity that
-        # league claims already record, instead of demanding a sign-in that cannot happen.
-        try:
-            from fantasy_team_control import current_user_id
-
-            uid = current_user_id(session)
-        except ImportError:
-            pass
     active_ws = str(session.get("_suite_active_workspace_id") or owned_ws or "").strip()
     league_id = str(resolve_canonical_league_id(merged) or "").strip()
     owned_team = ""

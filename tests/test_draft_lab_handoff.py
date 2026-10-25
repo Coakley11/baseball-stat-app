@@ -44,7 +44,7 @@ class DraftLabHandoffTests(unittest.TestCase):
         apply_pending_draft_lab_widget_keys(session)
         self.assertEqual(session["draft_lab_window"], 3)
         self.assertEqual(session["draft_lab_scoring_type"], "5x5 Roto")
-        self.assertEqual(session["draft_lab_projection_style"], "Aggressive / Upside")
+        self.assertEqual(session["draft_lab_projection_style"], "Aggressive")
         self.assertEqual(session["draft_lab_picks_per_team"], 4)
         self.assertEqual(session["draft_lab_team_count"], 2)
         self.assertEqual(meta["team_count"], 2)

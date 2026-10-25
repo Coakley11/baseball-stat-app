@@ -227,10 +227,6 @@ def render_p2a_fn_entry(
     *,
     decline: str = "",
 ) -> None:
-    # Trace-only, like render_p2a_decline: on normal pages this put a hidden JSON
-    # marker (up to 3.5KB) on every Solo run, logged to session, and cost a layout gap.
-    if not p2a_trace_requested(st, session):
-        return
     snap = collect_p2a_readiness(
         st,
         session,

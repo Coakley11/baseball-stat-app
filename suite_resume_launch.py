@@ -57,85 +57,25 @@ def apply_suite_resume_launch(st: Any, app_key: str) -> bool:
     Returns True when resume query params were applied.
     """
     try:
-        from suite_workspace import bootstrap_suite_workspace
+        from suite_workspace import init_suite_workspace
 
-        bootstrap_suite_workspace(st)
+        init_suite_workspace(st)
     except ImportError:
         pass
 
     flag = f"_suite_resume_launch_{app_key}"
-    key = str(app_key or "").strip()
-    if key == "math":
-        key = "applied_intelligence"
+    if st.session_state.get(flag):
+        return False
+
     resume = _qp_get(st, "suite_resume")
     page = _qp_get(st, "suite_page")
     ami_insight = _qp_get(st, "suite_ami_insight")
-    draft_room = _qp_get(st, "suite_draft_room")
-    if key == "baseball":
-        try:
-            from draft_lab_resume import pending_resume_query
-
-            pending = pending_resume_query(st)
-            resume = resume or str(pending.get("suite_resume") or "")
-            page = page or str(pending.get("suite_page") or "")
-            draft_room = draft_room or str(pending.get("suite_draft_room") or "")
-        except ImportError:
-            pending = {}
-    else:
-        pending = {}
-    live_resume_qp = bool(resume or page or ami_insight or draft_room)
-    pending_resume_qp = bool(
-        isinstance(pending, dict)
-        and (
-            pending.get("suite_resume")
-            or pending.get("suite_page")
-            or pending.get("suite_draft_room")
-            or pending.get("suite_draft_section")
-            or pending.get("suite_hof_target")
-            or pending.get("suite_hof_case")
-            or pending.get("suite_ai_question_id")
-        )
-    )
-    if key == "baseball":
-        try:
-            from draft_lab_resume import draft_lab_resume_consumed
-            from hof_case_resume import hof_case_resume_consumed
-
-            if draft_lab_resume_consumed(st.session_state) or hof_case_resume_consumed(st.session_state):
-                live_resume_qp = bool(
-                    _qp_get(st, "suite_resume")
-                    or _qp_get(st, "suite_page")
-                    or _qp_get(st, "suite_draft_room")
-                    or _qp_get(st, "suite_draft_section")
-                    or _qp_get(st, "suite_hof_target")
-                    or _qp_get(st, "suite_hof_case")
-                    or _qp_get(st, "suite_ai_question_id")
-                    or pending_resume_qp
-                )
-        except ImportError:
-            pass
-    if st.session_state.get(flag) and not live_resume_qp:
+    if not resume and not page and not ami_insight:
         return False
 
-    if not live_resume_qp:
-        return False
-
-    if st.session_state.get(flag):
-        if key == "baseball":
-            try:
-                from draft_lab_resume import draft_lab_resume_consumed, reapply_pending_baseball_resume
-                from hof_case_resume import reapply_pending_hof_case_resume
-
-                if draft_lab_resume_consumed(st.session_state) and not pending_resume_qp:
-                    if not reapply_pending_hof_case_resume(st):
-                        reapply_pending_baseball_resume(st)
-                elif pending_resume_qp:
-                    if not reapply_pending_hof_case_resume(st):
-                        reapply_pending_baseball_resume(st)
-            except ImportError:
-                pass
-        # Launch handlers are one-shot; hydration continues via apply_draft_lab_resume.
-        return False
+    key = str(app_key or "").strip()
+    if key == "math":
+        key = "applied_intelligence"
 
     if key == "music":
         _apply_music(st, resume, page)
@@ -246,12 +186,6 @@ def _apply_music(st: Any, resume: str, page: str) -> None:
 
 
 def _apply_baseball(st: Any, resume: str, page: str) -> None:
-    try:
-        from draft_lab_resume import capture_pending_resume_query, schedule_draft_lab_resume_navigation
-
-        capture_pending_resume_query(st, "baseball")
-    except ImportError:
-        pass
     pa = _qp_get(st, "suite_player_a")
     pb = _qp_get(st, "suite_player_b")
     if not pa and resume.startswith("compare:"):
@@ -273,46 +207,7 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
     if not target_page and resume.startswith("bb:live_draft:"):
         target_page = "Live Draft Room"
     if not target_page and resume.startswith("bb:draft_lab:"):
-        target_page = "Draft Lab / Simulation"
-    if not target_page and resume.startswith("bb:hof_case:"):
-        target_page = "Career Totals"
-    if not target_page and resume.startswith("bb:saved_draft:"):
-        target_page = "Saved Draft Library"
-    if not target_page and resume.startswith("historical:"):
-        target_page = "Historical Explorer"
-    if not target_page and resume.startswith("bb:standings:"):
-        target_page = "Fantasy Standings Tracker"
-    if not target_page and resume.startswith("bb:draft_assistant"):
-        target_page = "Draft Assistant Simulator"
-    if not target_page and resume.startswith("bb:simulator_draft"):
-        target_page = "Draft Room Simulator"
-    hof_target = _qp_get(st, "suite_hof_target")
-    if not hof_target and resume.startswith("bb:hof_case:"):
-        slug = resume.split(":", 2)[-1].strip()
-        try:
-            from hall_of_fame_data import resolve_hof_case_target_slug
-
-            hof_target = resolve_hof_case_target_slug(slug)
-        except ImportError:
-            hof_target = slug.replace("-", " ").title()
-    if hof_target:
-        st.session_state["_pending_hof_case_target"] = hof_target
-        try:
-            from hall_of_fame_data import CAREER_HOF_CASE_TARGET_KEY
-
-            st.session_state[CAREER_HOF_CASE_TARGET_KEY] = hof_target
-        except ImportError:
-            st.session_state["career_hof_case_target_player"] = hof_target
-    if resume.startswith("bb:hof_case:") or _qp_get(st, "suite_hof_case"):
-        try:
-            from hall_of_fame_data import CAREER_HOF_CASE_MODE_KEY
-
-            st.session_state[CAREER_HOF_CASE_MODE_KEY] = True
-        except ImportError:
-            st.session_state["career_hof_case_mode"] = True
-    hof_question_id = _qp_get(st, "suite_ai_question_id")
-    if hof_question_id:
-        st.session_state["_pending_hof_case_question_id"] = hof_question_id
+        target_page = "Draft Simulation Test Mode"
     draft_room = _qp_get(st, "suite_draft_room")
     if not draft_room and resume.startswith("bb:live_draft:"):
         draft_room = resume.split(":", 2)[-1].strip()
@@ -334,25 +229,6 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
         proposal_id = resume.split(":", 2)[-1].strip()
     if proposal_id:
         st.session_state["_suite_resume_trade_proposal"] = proposal_id
-        try:
-            from fantasy_trade_proposals import set_trade_proposal_handoff
-
-            set_trade_proposal_handoff(st.session_state, proposal_id=proposal_id, view_as_team="")
-            st.session_state["_lineup_focus_trade_offers"] = True
-        except ImportError:
-            pass
-    my_team = _qp_get(st, "suite_my_team")
-    if my_team:
-        st.session_state["_suite_resume_my_team"] = my_team
-    league_context = _qp_get(st, "suite_league_context")
-    if league_context:
-        st.session_state["_suite_resume_league_context"] = league_context
-        try:
-            from fantasy_league_context import schedule_league_context_activation
-
-            schedule_league_context_activation(st.session_state, league_context)
-        except ImportError:
-            pass
     league_id = _qp_get(st, "suite_league")
     if not league_id and resume.startswith("bb:library:"):
         league_id = resume.split(":", 2)[-1].strip()
@@ -363,16 +239,12 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
         invite_id = resume.split(":", 2)[-1].strip()
     if invite_id:
         st.session_state["_suite_resume_invite_id"] = invite_id
-        st.session_state["_saved_draft_library_focus_invite_id"] = invite_id
     lineup_week = _qp_get(st, "suite_lineup_week")
-    if not lineup_week and resume.startswith("bb:lineup:") and ":w" in resume:
-        lineup_week = resume.rsplit(":w", 1)[-1].strip()
+    if not lineup_week and resume.startswith("bb:lineup:"):
+        if ":w" in resume:
+            lineup_week = resume.rsplit(":w", 1)[-1].strip()
     if lineup_week:
         st.session_state["_suite_resume_lineup_week"] = lineup_week
-        try:
-            st.session_state["fantasy_lineup_week"] = int(lineup_week)
-        except (TypeError, ValueError):
-            st.session_state["fantasy_lineup_week"] = lineup_week
     waiver_tx = _qp_get(st, "suite_waiver_tx")
     if not waiver_tx and resume.startswith("bb:waiver:"):
         waiver_tx = resume.split(":", 2)[-1].strip()
@@ -387,35 +259,9 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
     if not target_page and (
         resume.startswith("bb:library")
         or resume.startswith("bb:invite:")
+        or resume.startswith("bb:saved_draft:")
     ):
         target_page = "Saved Draft Library"
-    saved_draft = _qp_get(st, "suite_saved_draft")
-    if not saved_draft and resume.startswith("bb:saved_draft:"):
-        saved_draft = resume.split(":", 2)[-1].strip()
-    if saved_draft:
-        try:
-            from draft_archive_state import activate_draft_archive
-
-            activate_draft_archive(st.session_state, saved_draft)
-        except ImportError:
-            st.session_state["_suite_resume_saved_draft_id"] = saved_draft
-    hist_stat = _qp_get(st, "suite_historical_stat")
-    if not hist_stat and resume.startswith("historical:"):
-        parts = resume.split(":", 2)
-        if len(parts) >= 2:
-            hist_stat = parts[1].strip()
-    if hist_stat:
-        st.session_state["_pending_historical_stat"] = hist_stat
-    hist_ys = _qp_get(st, "suite_historical_year_start")
-    hist_ye = _qp_get(st, "suite_historical_year_end")
-    if not hist_ys and resume.startswith("historical:"):
-        parts = resume.split(":", 2)
-        if len(parts) >= 3 and "-" in parts[2]:
-            hist_ys, hist_ye = parts[2].split("-", 1)
-    if hist_ys:
-        st.session_state["_pending_historical_year_start"] = hist_ys
-    if hist_ye:
-        st.session_state["_pending_historical_year_end"] = hist_ye
     trend_player = _qp_get(st, "suite_trend_player")
     if not trend_player and resume.startswith("trend:"):
         trend_player = resume.split(":", 1)[-1].strip()
@@ -431,61 +277,14 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
             st.session_state["trend_players_multi"] = labels[:3]
     if target_page:
         try:
-            if resume.startswith("bb:hof_case:"):
-                from hof_case_resume import schedule_hof_case_resume_navigation
+            from applied_math_return_insight import _should_apply_ami_return_navigation
 
-                schedule_hof_case_resume_navigation(
-                    st,
-                    page=target_page,
-                    target_player=str(st.session_state.get("_pending_hof_case_target") or ""),
-                    question_id=str(st.session_state.get("_pending_hof_case_question_id") or ""),
-                )
-            elif resume.startswith("bb:live_draft:") or resume.startswith("bb:draft_lab:"):
-                from draft_lab_resume import schedule_draft_lab_resume_navigation
-
-                schedule_draft_lab_resume_navigation(
-                    st,
-                    page=target_page,
-                    room_id=str(st.session_state.get("_suite_resume_draft_room") or ""),
-                    section=str(st.session_state.get("_suite_resume_draft_section") or ""),
-                )
-            else:
-                try:
-                    from nav_page_trace import assign_nav_key
-
-                    assign_nav_key(
-                        st.session_state,
-                        "_navigate_to_page",
-                        target_page,
-                        function="suite_resume_launch._apply_baseball",
-                        reason=f"resume={resume or page}",
-                        st=st,
-                    )
-                    assign_nav_key(
-                        st.session_state,
-                        "_skip_page_restore_for",
-                        target_page,
-                        function="suite_resume_launch._apply_baseball",
-                        reason=f"resume={resume or page}",
-                        st=st,
-                    )
-                    assign_nav_key(
-                        st.session_state,
-                        "active_page",
-                        target_page,
-                        function="suite_resume_launch._apply_baseball",
-                        reason=f"resume={resume or page}",
-                        st=st,
-                    )
-                except ImportError:
-                    st.session_state["_navigate_to_page"] = target_page
-                    st.session_state["_skip_page_restore_for"] = target_page
-                    st.session_state["active_page"] = target_page
-                st.session_state["_suite_page_user_nav"] = True
-        except ImportError:
+            if _should_apply_ami_return_navigation(st, "baseball", target_page):
+                st.session_state["_navigate_to_page"] = target_page
+                st.session_state["ami_return_forced_page"] = target_page
+                st.session_state["active_page_source"] = "suite_resume_launch"
+        except Exception:
             st.session_state["_navigate_to_page"] = target_page
-            st.session_state["_suite_page_user_nav"] = True
-            st.session_state["_skip_page_restore_for"] = target_page
 
 
 def _apply_nba(st: Any, resume: str, page: str) -> None:

@@ -70,7 +70,7 @@ class RoomHeaderTests(unittest.TestCase):
         )
         joined = " ".join(str(c) for c in st.markdown.call_args_list)
         self.assertIn("Solo Draft", joined)
-        self.assertIn("You draft for", joined)
+        self.assertIn("You control all teams", joined)
         st.code.assert_not_called()
 
     def test_shared_header_shows_code_role_team(self) -> None:

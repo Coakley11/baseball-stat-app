@@ -10,10 +10,9 @@ import copy
 import json
 import random
 import string
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from live_draft_state import (
     LIVE_DRAFT_ROOM_KEY,
@@ -722,7 +721,7 @@ class LocalFileSharedRoomStore:
                 "room_code_queried": code,
             }
         try:
-            raw = json.loads(_read_text_retry(path))
+            raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             return {
                 "found": False,
@@ -755,7 +754,7 @@ class LocalFileSharedRoomStore:
         if not path.is_file():
             return None
         try:
-            raw = json.loads(_read_text_retry(path))
+            raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
         if not isinstance(raw, dict):
@@ -803,23 +802,18 @@ class LocalFileSharedRoomStore:
         code = str(document.get("room_code") or "").strip().upper()
         if not code:
             raise ValueError("shared room document missing room_code")
-        with _room_write_lock(self._path(code)):
-            return self._save_unlocked(document)
-
-    def _save_unlocked(self, document: dict[str, Any]) -> dict[str, Any]:
-        code = str(document.get("room_code") or "").strip().upper()
         existing = None
         path = self._path(code)
         if path.is_file():
             try:
-                raw = json.loads(_read_text_retry(path))
+                raw = json.loads(path.read_text(encoding="utf-8"))
                 existing = raw if isinstance(raw, dict) else None
             except (OSError, json.JSONDecodeError):
                 existing = None
         payload = sanitize_shared_room_document(preserve_shared_room_sidecars(document, existing))
         payload["_storage_backend"] = "local_file"
         self.root.mkdir(parents=True, exist_ok=True)
-        _atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True))
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         return payload
 
     def save_if_revision(
@@ -828,102 +822,17 @@ class LocalFileSharedRoomStore:
         *,
         expected_revision: int | None,
     ) -> tuple[bool, dict[str, Any] | None]:
-        """Optimistic concurrency — refuse stale writes.
-
-        The check and the write happen under one cross-process lock. Host and guest
-        run in separate server processes; without it a timer-lease renewal could pass
-        its check, a pick could land, and the renewal's older room then replaced it.
-        """
+        """Optimistic concurrency — refuse stale writes."""
         code = str(document.get("room_code") or "").strip().upper()
-        if not code:
-            raise ValueError("shared room document missing room_code")
-        with _room_write_lock(self._path(code)):
-            current = self.load(code)
-            if current is None:
-                return True, self._save_unlocked(document)
-            current_rev = int(current.get("revision") or 0)
-            if expected_revision is not None and current_rev != int(expected_revision):
-                return False, current
-            return True, self._save_unlocked(preserve_shared_room_sidecars(document, current))
-
-
-@contextmanager
-def _room_write_lock(path: Path, *, timeout: float = 10.0, stale_after: float = 15.0) -> Iterator[None]:
-    """Exclusive lock file beside a room file, shared by every process and thread.
-
-    Created with O_EXCL so only one writer holds it. A lock older than
-    ``stale_after`` (a writer that died mid-save) is broken. If the lock cannot be
-    taken within ``timeout`` the write proceeds rather than stalling the draft.
-    """
-    import os
-    import time
-
-    lock = path.with_name(path.name + ".lock")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = None
-    deadline = time.time() + timeout
-    while fd is None:
-        try:
-            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except (FileExistsError, PermissionError):
-            # Windows reports a lock another process is still deleting as PermissionError.
-            try:
-                if time.time() - lock.stat().st_mtime > stale_after:
-                    lock.unlink()
-                    continue
-            except OSError:
-                pass
-            if time.time() >= deadline:
-                break
-            time.sleep(0.005)
-        except OSError:
-            break
-    try:
-        yield
-    finally:
-        if fd is not None:
-            os.close(fd)
-            try:
-                lock.unlink()
-            except OSError:
-                pass
-
-
-def _read_text_retry(path: Path) -> str:
-    """Read a room file, retrying Windows' transient sharing violation while a
-    writer swaps the file in; a failed read was reported as "room not found"."""
-    import time
-
-    for attempt in range(5):
-        try:
-            return path.read_text(encoding="utf-8")
-        except PermissionError:
-            time.sleep(0.02 * (attempt + 1))
-    return path.read_text(encoding="utf-8")
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    """Write via a per-writer temp file + ``os.replace``.
-
-    ``write_text`` truncates then writes in place, so two writers (host and guest
-    servers, or two sessions in one process) interleaved bytes and left trailing
-    JSON. Every later load then failed to parse and the shared room stopped
-    advancing.
-    """
-    import os
-    import threading
-    import time
-
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    for attempt in range(20):
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError:
-            # Windows refuses to replace a file another process has open for reading.
-            time.sleep(0.02 * (attempt + 1))
-    os.replace(tmp, path)
+        current = self.load(code)
+        if current is None:
+            saved = self.save(document)
+            return True, saved
+        current_rev = int(current.get("revision") or 0)
+        if expected_revision is not None and current_rev != int(expected_revision):
+            return False, current
+        saved = self.save(preserve_shared_room_sidecars(document, current))
+        return True, saved
 
 
 _DEFAULT_STORE: SharedRoomStore | None = None

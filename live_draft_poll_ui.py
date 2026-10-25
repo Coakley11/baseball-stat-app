@@ -8,17 +8,6 @@ from typing import Any
 
 
 LIVE_DRAFT_POLL_DIAG_KEY = "_live_draft_poll_diag"
-# Room position (status|pick index) the last full ScriptRun painted, and the position a
-# self-commit repaint was already requested for (one request per pick).
-FULL_PAINT_PICK_KEY = "_live_draft_full_paint_pick"
-SELF_COMMIT_REPAINT_KEY = "_live_draft_self_commit_repaint_for"
-
-
-def _room_paint_key(session: dict[str, Any]) -> str:
-    room = session.get("live_draft_room")
-    if not isinstance(room, dict):
-        return ""
-    return f"{room.get('status') or ''}|{int(room.get('current_pick_index') or 0)}"
 
 
 def _poll_suppressed_reason(session: dict[str, Any]) -> str:
@@ -153,8 +142,6 @@ def render_live_draft_poll_fragment(st: Any, session: dict[str, Any]) -> None:
         return
     # Suppress the duplicate page-level poll while this fragment owns the loop.
     session["_live_draft_poll_fragment_active"] = True
-    # This outer function runs only on full ScriptRuns (fragment reruns call _poll_tick).
-    session[FULL_PAINT_PICK_KEY] = _room_paint_key(session)
     try:
         from live_draft_start_progress import should_skip_live_draft_poll
 
@@ -255,21 +242,6 @@ def render_live_draft_poll_fragment(st: Any, session: dict[str, Any]) -> None:
                 ldr_rerun(session, "poll_fragment", reason="fragment_poll_changed", st=st)
             except ImportError:
                 pass
-            _rerun_after_poll(st, session)
-            return
-        # The timer-authority holder (normally the host) commits expirations locally, so
-        # its own poll never sees a *remote* change and its page kept painting the old
-        # pick (banner, board, recommendations) for minutes. Repaint once per pick when
-        # the session room has moved past what the last full run painted.
-        current_key = _room_paint_key(session)
-        painted_key = str(session.get(FULL_PAINT_PICK_KEY) or "")
-        if (
-            painted_key
-            and current_key
-            and current_key != painted_key
-            and session.get(SELF_COMMIT_REPAINT_KEY) != current_key
-        ):
-            session[SELF_COMMIT_REPAINT_KEY] = current_key
             _rerun_after_poll(st, session)
             return
         # Shared wire omits pool. Local rebuild can become ready without a revision

@@ -28,8 +28,6 @@ from fantasy_trade_builder_state import (
     resolve_effective_partner,
     save_logical_state_from_widgets,
     scope_fingerprint_changed,
-    trade_scope_fingerprint,
-    trade_scope_state_key,
 )
 from fantasy_trade_player_index import (
     format_player_option_label,
@@ -64,7 +62,7 @@ def _persist_trade_plan(session: dict[str, Any], st: Any, *, reason: str) -> Non
 
 
 def _trade_scope_state_key(scope_fingerprint: str) -> str:
-    return trade_scope_state_key(scope_fingerprint)
+    return f"trade_center_state|{scope_fingerprint}"
 
 
 def _resolve_trade_scope(session: dict[str, Any], *, page_lineup_team: str) -> dict[str, str]:
@@ -98,7 +96,7 @@ def _resolve_trade_scope(session: dict[str, Any], *, page_lineup_team: str) -> d
                 my_team = str(page_lineup_team or "").strip()
 
         league_context_id = str((context or {}).get("league_context_id") or "").strip()
-        fingerprint = trade_scope_fingerprint(my_team, canonical_league_id or league_context_id)
+        fingerprint = f"trade|{my_team}|{canonical_league_id or league_context_id}"
         return {
             "my_team": my_team,
             "league_context_id": league_context_id,
@@ -235,15 +233,25 @@ def _inject_trade_center_styles(st: Any) -> None:
 
 
 def _render_trade_center_hero(st: Any, *, league_name: str, my_team: str, pending_offers: int) -> None:
-    """U4: a compact heading (the page title already says Lineup & Trades), not a banner."""
-    import ui_hierarchy as ui
-
-    ui.inject_css(st)
-    ui.section_label(st, "Trade Center · build a trade, see who it favors, send an offer")
-    items = [(f"League: {league_name or '—'}", ""), (f"Your team: {my_team or '—'}", "")]
-    if pending_offers:
-        items.append((f"{pending_offers} pending offer{'s' if pending_offers != 1 else ''}", "warn"))
-    ui.chips(st, items)
+    pending = f" · {pending_offers} pending offer{'s' if pending_offers != 1 else ''}" if pending_offers else ""
+    st.markdown(
+        f"""
+<div class="tc-hero">
+  <svg class="tc-hero-icon" viewBox="0 0 64 64" aria-hidden="true">
+    <circle cx="20" cy="32" r="14" fill="rgba(255,255,255,0.15)" stroke="#fff" stroke-width="2"/>
+    <circle cx="44" cy="32" r="14" fill="rgba(255,255,255,0.15)" stroke="#fff" stroke-width="2"/>
+    <path d="M26 28 L38 36 M38 28 L26 36" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M10 18 L18 26 M54 18 L46 26" stroke="rgba(255,255,255,0.5)" stroke-width="2" stroke-linecap="round"/>
+  </svg>
+  <div>
+    <h2>Trade Center</h2>
+    <p>Build, analyze, propose, and manage trades</p>
+    <div class="tc-meta">League: {html_lib.escape(league_name or '—')} · Your team: {html_lib.escape(my_team or '—')}{html_lib.escape(pending)}</div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
 
 def _load_shared_trade_state(session: dict[str, Any], scope_key: str) -> dict[str, Any]:
@@ -305,43 +313,9 @@ def _render_player_lines(st: Any, roster_stats: pd.DataFrame, names: list[str], 
         st.caption(stats)
 
 
-def _render_analysis_panel(
-    st: Any,
-    analysis: dict[str, Any],
-    roster_stats: pd.DataFrame,
-    *,
-    my_team: str = "",
-    partner: str = "",
-    roster_issues: list[dict[str, Any]] | None = None,
-) -> None:
-    """U3 verdict card: You give ⇄ You receive, the trade engine's own verdict in plain words,
-    value difference, positions, your roster check and category impact. The full calculation
-    is unchanged under "Detailed calculation"."""
-    import ui_hierarchy as ui
-    from u3_answers import trade_verdict
-
+def _render_analysis_panel(st: Any, analysis: dict[str, Any], roster_stats: pd.DataFrame) -> None:
     title = str(analysis.get("title") or "Trade analysis")
-    card = trade_verdict(
-        analysis,
-        my_team=my_team,
-        partner=partner,
-        roster_issues=roster_issues or [],
-        format_change=lambda cat, value: format_trade_category_value(cat, value, is_change=True),
-    )
-    ui.inject_css(st)
-    ui.trade_sides(st, card["give"], card["receive"])
-    ui.answer_card(st, card["headline"], card["body"], kicker=title, tone=card["tone"])
-    ui.metric_tiles(st, card["tiles"])
-    ui.chips(st, card["chips"])
-    for message in card["my_issues"]:
-        st.warning(message)
-    for message in card["other_notes"]:
-        st.info(message)
-    with st.expander("Detailed calculation", expanded=False):
-        _render_analysis_details(st, analysis)
-
-
-def _render_analysis_details(st: Any, analysis: dict[str, Any]) -> None:
+    st.markdown(f"### {html_lib.escape(title)}")
     st.markdown(
         f"""<div class="tc-analysis">
 <b>Verdict:</b> {html_lib.escape(str(analysis.get('verdict') or '—'))}<br/>
@@ -421,60 +395,6 @@ def _queue_idea_builder_update(
     session[TRADE_CENTER_INTERNAL_TAB_KEY] = "Build & Analyze"
 
 
-def render_trade_roster_warnings(
-    st: Any,
-    session: dict[str, Any],
-    *,
-    proposer_team: str,
-    recipient_team: str,
-    proposer_gives: list[str],
-    proposer_receives: list[str],
-) -> list[str]:
-    """Show what the trade does to each roster's required lineup and roster size."""
-    try:
-        from fantasy_league_context import get_active_league_context
-        from fantasy_trade_legality import trade_roster_warnings
-
-        warnings = trade_roster_warnings(
-            get_active_league_context(session),
-            proposer_team=proposer_team,
-            recipient_team=recipient_team,
-            proposer_gives=proposer_gives,
-            proposer_receives=proposer_receives,
-            stats_pool=session.get("_fantasy_current_hitter_stats"),
-        )
-    except Exception:
-        return []
-    for message in warnings:
-        st.warning(message)
-    return warnings
-
-
-def _trade_roster_issues(
-    session: dict[str, Any],
-    *,
-    proposer_team: str,
-    recipient_team: str,
-    proposer_gives: list[str],
-    proposer_receives: list[str],
-) -> list[dict[str, Any]]:
-    """The same roster checks as ``render_trade_roster_warnings``, as records (team, kind, message)."""
-    try:
-        from fantasy_league_context import get_active_league_context
-        from fantasy_trade_legality import trade_roster_issues
-
-        return trade_roster_issues(
-            get_active_league_context(session),
-            proposer_team=proposer_team,
-            recipient_team=recipient_team,
-            proposer_gives=proposer_gives,
-            proposer_receives=proposer_receives,
-            stats_pool=session.get("_fantasy_current_hitter_stats"),
-        )
-    except Exception:
-        return []
-
-
 def _render_idea_card(
     st: Any,
     idea: dict[str, Any],
@@ -488,38 +408,29 @@ def _render_idea_card(
     receive_names = _split_player_names(str(idea.get("Receive") or ""))
     other = str(idea.get("Other Team") or "")
     recommendation, fit, value_match, tone = _format_idea_badges(idea)
-    value_note = str(idea.get("Value Explanation") or "").strip()
-    gains = str(idea.get("Category Gains") or "").strip()
-    losses = str(idea.get("Category Losses") or idea.get("Hurts") or "").strip()
-    risk = str(idea.get("Main Risk") or "").strip()
-
-    import ui_hierarchy as ui
-
-    def rows(names: list[str]) -> list[dict[str, str]]:
-        return [{"player": n, "position": format_position_label(roster_stats, n),
-                 "stats_line": format_player_stat_line(roster_stats, n)} for n in names]
+    badge_style = _badge_style(tone)
+    helps = str(idea.get("Category Gains") or idea.get("Why It Helps") or "—")
+    hurts = str(idea.get("Category Losses") or idea.get("Hurts") or "—")
+    risk = str(idea.get("Main Risk") or "—")
 
     with st.container(border=True):
-        # U4: what you give and get first, then the idea generator's own reasons, in plain words.
-        st.markdown(f"**Trade with {html_lib.escape(other)}**")
-        ui.chips(st, [(f"{recommendation} value", "good" if tone == "green" else ("warn" if tone == "red" else "")),
-                      (f"Team fit {fit}", ""), (f"Value match {value_match}", "")])
-        ui.trade_sides(st, rows(give_names), rows(receive_names))
-        # "Why it's suggested" uses only the idea generator's own fields: its value note (fairness)
-        # and the categories it helps. Its "Why It Helps" text mixes in weaknesses, shown below.
-        reasons = [f"{value_note} (value match {value_match})"] if value_note else []
-        if gains and gains != "—":
-            reasons.append(f"helps {gains}")
-        lines = [f"**Why it's suggested:** {'; '.join(reasons)}"] if reasons else []
-        if gains and gains != "—":
-            lines.append(f"**You gain:** {gains}")
-        if losses and losses != "—":
-            lines.append(f"**You give up:** {losses}")
-        if risk and risk != "—":
-            lines.append(f"**Risk:** {risk}")
-        if lines:
-            st.markdown("  \n".join(lines))
+        st.markdown(f"**TRADE WITH {other.upper()}**")
+        st.markdown(
+            f'<span class="tc-badge" style="{badge_style}">{html_lib.escape(recommendation)} value</span>'
+            f' <span class="tc-badge" style="{_badge_style("amber")}">Team Fit {html_lib.escape(fit)}</span>'
+            f' <span class="tc-badge">Value Match {html_lib.escape(value_match)}</span>',
+            unsafe_allow_html=True,
+        )
+        left, right = st.columns(2)
+        with left:
+            _render_player_lines(st, roster_stats, give_names, heading="YOU GIVE")
+        with right:
+            _render_player_lines(st, roster_stats, receive_names, heading="YOU RECEIVE")
         st.caption(stats_updated_caption(session))
+        st.markdown(f"Helps: {helps}")
+        if hurts and hurts != "—":
+            st.markdown(f"Hurts: {hurts}")
+        st.markdown(f"Risk: {risk}")
         c1, c2, c3 = st.columns(3)
         if c1.button("Use This Idea", key=f"tc_use_{idx}"):
             _queue_idea_builder_update(
@@ -724,7 +635,7 @@ def _render_build_analyze(
     st.markdown('<div class="tc-builder">', unsafe_allow_html=True)
     left, mid, right = st.columns([5, 1, 5])
     with left:
-        st.markdown(f'<div class="tc-side"><h4>YOU GIVE · {html_lib.escape(my_team)}</h4></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="tc-side"><h4>MY TEAM — {html_lib.escape(my_team)}</h4></div>', unsafe_allow_html=True)
         give_players = st.multiselect(
             "Players I Give",
             my_players,
@@ -736,7 +647,7 @@ def _render_build_analyze(
     with mid:
         st.markdown('<div class="tc-exchange">⇄</div>', unsafe_allow_html=True)
     with right:
-        st.markdown('<div class="tc-side"><h4>YOU RECEIVE</h4></div>', unsafe_allow_html=True)
+        st.markdown('<div class="tc-side"><h4>PLAYERS I RECEIVE</h4></div>', unsafe_allow_html=True)
         receive_players = st.multiselect(
             "Players I Receive",
             receive_options,
@@ -801,22 +712,6 @@ def _render_build_analyze(
     persisted_analysis = shared.get("analysis") if isinstance(shared.get("analysis"), dict) else None
     verdict = str((persisted_analysis or {}).get("verdict") or "")
     analysis_rendered = False
-    # Roster checks for this exact trade, computed once: shown in the verdict card after an
-    # analysis, or as plain warnings before one.
-    roster_issues: list[dict[str, Any]] = []
-    partner_name = other_team if other_team and other_team != ANY_TRADE_PARTNER else ""
-    if give_players and receive_players and partner_name:
-        roster_issues = _trade_roster_issues(
-            session,
-            proposer_team=my_team,
-            recipient_team=partner_name,
-            proposer_gives=list(give_players),
-            proposer_receives=list(receive_players),
-        )
-    # U3: one place for the verdict card, above the action buttons, also on the run where
-    # Analyze is clicked (st.empty: a new analysis replaces the restored one).
-    analysis_slot = st.empty()
-    card_kwargs = {"my_team": my_team, "partner": partner_name, "roster_issues": roster_issues}
     if auto_analyze and give_players and receive_players:
         package = build_trade_analysis_package(
             give_players=give_players,
@@ -830,9 +725,8 @@ def _render_build_analyze(
             source_offer_id=str(shared.get("source_offer_id") or ""),
             source_idea_id=str(shared.get("source_idea_id") or ""),
         )
-        with analysis_slot.container():
-            _render_analysis_panel(st, package, roster_stats, **card_kwargs)
-            st.success("Analysis complete.")
+        _render_analysis_panel(st, package, roster_stats)
+        st.success("Analysis complete.")
         shared["analysis"] = package
         verdict = str(package.get("verdict") or "")
         analysis_rendered = True
@@ -841,11 +735,9 @@ def _render_build_analyze(
             "source_offer_id": shared.get("source_offer_id"),
         }
     elif analysis_matches_selection(persisted_analysis, give=give_players, receive=receive_players):
-        with analysis_slot.container():
-            _render_analysis_panel(st, persisted_analysis, roster_stats, **card_kwargs)
+        _render_analysis_panel(st, persisted_analysis, roster_stats)
         verdict = str(persisted_analysis.get("verdict") or "")
         analysis_rendered = True
-    warnings_slot = st.container()
 
     try:
         from fantasy_mobile_layout import phone_wrap_row
@@ -891,9 +783,8 @@ def _render_build_analyze(
             source_offer_id=str(shared.get("source_offer_id") or ""),
             source_idea_id=str(shared.get("source_idea_id") or ""),
         )
-        with analysis_slot.container():
-            _render_analysis_panel(st, package, roster_stats, **card_kwargs)
-            st.success("Analysis complete.")
+        _render_analysis_panel(st, package, roster_stats)
+        st.success("Analysis complete.")
         shared["analysis"] = package
         verdict = str(package.get("verdict") or "")
         analysis_rendered = True
@@ -901,10 +792,6 @@ def _render_build_analyze(
             "button_action": "analyze",
             "source_offer_id": shared.get("source_offer_id"),
         }
-    if roster_issues and not analysis_rendered:
-        with warnings_slot:  # before an analysis: the roster checks on their own, as before
-            for issue in roster_issues:
-                st.warning(issue["message"])
 
     collapse_ideas = analysis_rendered and bool(persisted_analysis or shared.get("analysis"))
     if find_ideas:
@@ -1190,74 +1077,8 @@ def render_trade_center_tab(
             summarize_team_category_needs_fn=summarize_team_category_needs_fn,
             developer_mode_enabled_fn=developer_mode_enabled_fn,
         )
-        render_commissioner_trade_panel(st, session)
     elif internal_tab == "Offers & Activity":
         _render_offers_activity_section(st, session, ws=ws, scope_key=scope_key, league_id=canonical_league_id)
-
-
-def render_commissioner_trade_panel(st: Any, session: dict[str, Any]) -> None:
-    """Commissioner completes a trade that involves an unclaimed team (explicit proxy)."""
-    try:
-        from fantasy_league_context import get_active_league_context
-        from fantasy_team_control import manageable_teams
-        from fantasy_trade_proposals import execute_commissioner_trade
-    except ImportError:
-        return
-    context = get_active_league_context(session) or {}
-    controls = manageable_teams(session, context)
-    if not any(c.is_proxy for c in controls):
-        return
-    flash = session.pop("tc_commissioner_trade_flash", None)
-    if flash:
-        st.success(str(flash))
-    import ui_hierarchy as ui
-
-    with ui.commissioner_panel(st):
-        st.markdown("**Trade involving an unclaimed team**")
-        st.caption(
-            "Unclaimed teams have no manager yet, so as commissioner you act for them. "
-            "Teams with a manager are never changed here — send them a normal proposal."
-        )
-        rosters = context.get("league_rosters") or {}
-        names = [c.team for c in controls]
-        team_a = st.selectbox("Team sending players", names, key="tc_comm_team_a")
-        others = [c.team for c in controls if c.team != team_a]
-        if not others:
-            st.caption("No other team you can act for.")
-            return
-        team_b = st.selectbox("Team receiving them", others, key="tc_comm_team_b")
-        proxy_teams = [c.team for c in controls if c.is_proxy and c.team in (team_a, team_b)]
-
-        def players(team: str) -> list[str]:
-            return [str(p.get("player_name") or "") for p in ((rosters.get(team) or {}).get("players") or []) if isinstance(p, dict)]
-
-        a_gives = st.multiselect(f"{team_a} gives", players(team_a), key="tc_comm_a_gives", max_selections=3)
-        b_gives = st.multiselect(f"{team_b} gives", players(team_b), key="tc_comm_b_gives", max_selections=3)
-        if a_gives and b_gives:
-            render_trade_roster_warnings(
-                st, session, proposer_team=team_a, recipient_team=team_b, proposer_gives=a_gives, proposer_receives=b_gives
-            )
-        if not proxy_teams:
-            st.info("Both teams have managers. Use a normal trade proposal.")
-            return
-        confirmed = st.checkbox(
-            f"I am acting as commissioner for {' and '.join(proxy_teams)}",
-            key="tc_comm_confirm",
-        )
-        if st.button("Execute commissioner trade", key="tc_comm_execute", type="primary", disabled=not (a_gives and b_gives)):
-            done, err = execute_commissioner_trade(
-                session, team_a=team_a, team_b=team_b, team_a_gives=a_gives, team_b_gives=b_gives, confirmed=bool(confirmed)
-            )
-            if err:
-                st.error(err)
-            else:
-                session["tc_commissioner_trade_flash"] = (
-                    f"Trade complete: {team_a} sent {', '.join(a_gives)}; {team_b} sent {', '.join(b_gives)}. "
-                    f"Logged as commissioner acting for {' and '.join(proxy_teams)}."
-                )
-                for key in ("tc_comm_a_gives", "tc_comm_b_gives", "tc_comm_confirm"):
-                    session.pop(key, None)
-                st.rerun()
 
 
 def _render_offers_activity_section(

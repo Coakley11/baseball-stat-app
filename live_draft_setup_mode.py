@@ -22,7 +22,7 @@ LEGACY_MODE_RADIO_LABEL_KEY = "_live_draft_mode_radio_label"
 
 SETUP_MODE_OPTIONS = (SETUP_MODE_SOLO, SETUP_MODE_SHARED)
 SETUP_MODE_LABELS = {
-    SETUP_MODE_SOLO: "Solo Draft — you draft for your team; the other teams auto-pick (no room code)",
+    SETUP_MODE_SOLO: "Solo Draft — you control all teams (no room code)",
     SETUP_MODE_SHARED: "Shared Multiplayer Draft Room — room code, other users join",
 }
 

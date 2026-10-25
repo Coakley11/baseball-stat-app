@@ -81,7 +81,7 @@ def format_player_stat_line(roster_stats: pd.DataFrame | None, player_name: str)
             parts.append(f"AVG {_format_rate(num)}")
         else:
             any_stat = True
-            parts.append(f"{cat} {int(round(float(num)))}")  # counting stat: 0 SB is "0", not ".000"
+            parts.append(f"{cat} {_format_rate(num)}")
     pa = pd.to_numeric(row.get("PA"), errors="coerce")
     if pd.notna(pa):
         any_stat = True

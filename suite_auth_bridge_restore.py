@@ -15,22 +15,7 @@ RESTORE_LOADED_GEN_KEY = "_suite_auth_bridge_loaded_generation"
 RESTORE_LOADED_REFRESH_FP_KEY = "_suite_auth_bridge_loaded_refresh_fp"
 RESTORE_RETRY_ONCE_KEY = "_suite_auth_bridge_restore_retry_once_used"
 
-_RESTORE_LIFECYCLE_KEYS: tuple[str, ...] = (
-    RESTORE_INFLIGHT_KEY,
-    RESTORE_FINAL_3B_KEY,
-    RESTORE_APPLIED_GEN_KEY,
-    RESTORE_LOADED_GEN_KEY,
-    RESTORE_LOADED_REFRESH_FP_KEY,
-    RESTORE_RETRY_ONCE_KEY,
-)
-
 INFLIGHT_TTL_S = 45.0
-
-
-def reset_bridge_restore_after_explicit_logout(session_state: dict[str, Any]) -> None:
-    """Clear restore state that must not cross an explicit sign-out boundary."""
-    for key in _RESTORE_LIFECYCLE_KEYS:
-        session_state.pop(key, None)
 
 
 def _streamlit_session_id(st: Any | None) -> str:

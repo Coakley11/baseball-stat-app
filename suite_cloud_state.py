@@ -17,32 +17,6 @@ FULL_SESSION_KEY = "full_session"
 
 PickSource = Literal["cloud", "disk", "none"]
 
-# Cloud read outcomes. "error" must never be treated like "no saved data".
-CLOUD_READ_OK = "ok"  # store answered and returned a saved session
-CLOUD_READ_NOT_FOUND = "not_found"  # store answered: no row, or no saved session in it
-CLOUD_READ_ERROR = "error"  # store did not answer (network, timeout, permissions, bad payload)
-CLOUD_READ_DISABLED = "disabled"  # cloud storage is not configured (local install)
-
-# Set when any cloud read fails. While set, save_cloud_full_session refuses to write, for every
-# save reason, because this session may not hold the user's real saved data. Only the workspace
-# sync clears it, after a successful read has reconciled the session with the cloud copy.
-CLOUD_READ_FAILED_KEY = "_suite_cloud_read_failed"
-CLOUD_RECONCILED_KEY = "_suite_cloud_reconciled"
-CLOUD_WRITE_BLOCKED_KEY = "_suite_cloud_write_blocked"
-
-
-@dataclass(frozen=True)
-class CloudRead:
-    state: dict[str, Any]
-    updated_at: str | None
-    status: str
-    error: str = ""
-
-    @property
-    def answered(self) -> bool:
-        """The store answered (ok or confirmed empty)."""
-        return self.status in (CLOUD_READ_OK, CLOUD_READ_NOT_FOUND)
-
 
 @dataclass(frozen=True)
 class RestorePickResult:
@@ -410,31 +384,20 @@ def invalidate_cloud_full_session_cache(app_id: str) -> None:
 
 
 def load_cloud_full_session(app_id: str, *, force: bool = False) -> tuple[dict[str, Any], str | None]:
-    """Return ``(session_dict, updated_at_iso)`` from cloud, or empty dict.
-
-    An empty dict does not say whether the store answered; use
-    ``load_cloud_full_session_status`` when that matters. A failed read is recorded on the
-    session either way (``CLOUD_READ_FAILED_KEY``), which pauses cloud writes.
-    """
-    read = load_cloud_full_session_status(app_id, force=force)
-    return read.state, read.updated_at
-
-
-def load_cloud_full_session_status(app_id: str, *, force: bool = False) -> CloudRead:
-    """Read the cloud ``full_session`` and say how the read went (see ``CLOUD_READ_*``)."""
+    """Return ``(session_dict, updated_at_iso)`` from cloud, or empty dict."""
     try:
         from suite_storage_config import cloud_storage_enabled
     except ImportError:
-        return CloudRead({}, None, CLOUD_READ_DISABLED)
+        return {}, None
     if not cloud_storage_enabled():
-        return CloudRead({}, None, CLOUD_READ_DISABLED)
-    ss = _streamlit_session()
+        return {}, None
     try:
         storage, _ = _import_storage()
 
         app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
         meta_fn = getattr(storage, "load_current_state_meta_for_app", None)
         row_fn = getattr(storage, "load_current_state_for_app", None)
+        ss = _streamlit_session()
         ts_key, blob_key = _full_session_cache_keys(app_key)
 
         updated_at: str | None = None
@@ -444,14 +407,14 @@ def load_cloud_full_session_status(app_id: str, *, force: bool = False) -> Cloud
             if not force and ss is not None and ss.get(ts_key) == updated_at:
                 cached = ss.get(blob_key)
                 if isinstance(cached, dict):
-                    return CloudRead(copy.deepcopy(cached), updated_at, CLOUD_READ_OK if cached else CLOUD_READ_NOT_FOUND)
+                    return copy.deepcopy(cached), updated_at
 
         if row_fn:
             row = row_fn(app_id) or {}
         else:
             row = storage.load_current_states(include_metrics=True).get(app_key) or {}
         if not isinstance(row, dict):
-            raise TypeError(f"unexpected cloud row type {type(row).__name__}")
+            return {}, None
         updated_at = str(row.get("updated_at") or "") or updated_at
         metrics = row.get("metrics")
         if not isinstance(metrics, dict):
@@ -463,49 +426,9 @@ def load_cloud_full_session_status(app_id: str, *, force: bool = False) -> Cloud
         if ss is not None:
             ss[blob_key] = copy.deepcopy(session_out)
             ss[ts_key] = updated_at
-        return CloudRead(session_out, updated_at, CLOUD_READ_OK if session_out else CLOUD_READ_NOT_FOUND)
-    except Exception as exc:
-        _record_cloud_read_failure(ss, app_id, exc)
-        return CloudRead({}, None, CLOUD_READ_ERROR, f"{type(exc).__name__}: {exc}"[:300])
-
-
-def _record_cloud_read_failure(ss: Any, app_id: str, exc: BaseException) -> None:
-    if ss is None:
-        return
-    try:
-        prev = ss.get(CLOUD_READ_FAILED_KEY)
-        count = int(prev.get("count") or 0) + 1 if isinstance(prev, dict) else 1
-        ss[CLOUD_READ_FAILED_KEY] = {
-            "app_id": app_id,
-            "error": type(exc).__name__,
-            "count": count,
-            "at": datetime.now(timezone.utc).timestamp(),
-        }
+        return session_out, updated_at
     except Exception:
-        pass
-
-
-def cloud_read_failure(ss: Any = None) -> dict[str, Any] | None:
-    """The unresolved cloud read failure for this session, if any."""
-    ss = ss if ss is not None else _streamlit_session()
-    try:
-        value = ss.get(CLOUD_READ_FAILED_KEY) if ss is not None else None
-    except Exception:
-        return None
-    return value if isinstance(value, dict) else None
-
-
-def mark_cloud_reconciled(ss: Any = None) -> None:
-    """The session now holds (or was confirmed to match) the cloud copy: writes may resume."""
-    ss = ss if ss is not None else _streamlit_session()
-    if ss is None:
-        return
-    try:
-        ss[CLOUD_RECONCILED_KEY] = True
-        ss.pop(CLOUD_READ_FAILED_KEY, None)
-        ss.pop(CLOUD_WRITE_BLOCKED_KEY, None)
-    except Exception:
-        pass
+        return {}, None
 
 
 def save_cloud_full_session(
@@ -516,11 +439,7 @@ def save_cloud_full_session(
     summary: str = "",
     skip_metrics_merge_read: bool = False,
 ) -> bool:
-    """Persist full_session to Supabase. Returns True when cloud write succeeds.
-
-    Refuses (returns False) while a cloud read failure is unresolved: the session may not hold
-    the user's saved data, and writing it could replace newer data with stale or empty state.
-    """
+    """Persist full_session to Supabase. Returns True when cloud write succeeds."""
     if not state:
         return False
     try:
@@ -528,15 +447,6 @@ def save_cloud_full_session(
     except ImportError:
         return False
     if not cloud_storage_enabled():
-        return False
-    failure = cloud_read_failure()
-    if failure is not None:
-        ss = _streamlit_session()
-        try:
-            if ss is not None:
-                ss[CLOUD_WRITE_BLOCKED_KEY] = {"reason": "cloud_read_failed", "since": failure.get("at")}
-        except Exception:
-            pass
         return False
     try:
         storage, _ = _import_storage()

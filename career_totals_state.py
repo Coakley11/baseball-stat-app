@@ -23,7 +23,6 @@ CAREER_FILTER_KEYS = (
     "career_position_filter",
     "career_team_filter",
     "career_by_team_toggle_filter",
-    "career_ab_qualification_mode",
 )
 
 # HOF player-scope is Case Mode only — not part of canonical career filter sync.

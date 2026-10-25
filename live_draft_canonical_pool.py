@@ -79,9 +79,9 @@ def load_canonical_unified_pool(session: dict[str, Any] | None = None) -> pd.Dat
             )
 
     try:
-        from running_app import running_app_module
+        import importlib
 
-        app_mod = running_app_module()
+        app_mod = importlib.import_module("streamlit_app")
         # Prefer explicit cached builder first — the live wrapper can return a
         # session-tainted non-projection frame under Ready / bare imports.
         room = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else {}

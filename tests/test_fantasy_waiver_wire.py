@@ -737,8 +737,8 @@ class WaiverWireUiRenderTests(unittest.TestCase):
         )
         save_simulator_league_context(session, board, my_team_name="Daniel")
         st = self._mock_st()
-        with patch("fantasy_waiver_wire.recommend_adds_current", return_value=pd.DataFrame()), patch(
-            "fantasy_waiver_wire.recommend_drops_current", return_value=pd.DataFrame()
+        with patch("fantasy_waiver_wire_ui.recommend_adds_current", return_value=pd.DataFrame()), patch(
+            "fantasy_waiver_wire_ui.recommend_drops_current", return_value=pd.DataFrame()
         ):
             render_waiver_wire_page(st, session, current_stats_pool=self._stats_pool())
         badge = active_league_context_badge_text(session)
@@ -761,8 +761,8 @@ class WaiverWireUiRenderTests(unittest.TestCase):
         store["contexts"][ctx_id] = context
         self.assertTrue(context_has_roster_slots(context))
         st = self._mock_st()
-        with patch("fantasy_waiver_wire.recommend_adds_current", return_value=pd.DataFrame()), patch(
-            "fantasy_waiver_wire.recommend_drops_current", return_value=pd.DataFrame()
+        with patch("fantasy_waiver_wire_ui.recommend_adds_current", return_value=pd.DataFrame()), patch(
+            "fantasy_waiver_wire_ui.recommend_drops_current", return_value=pd.DataFrame()
         ):
             render_waiver_wire_page(st, session, current_stats_pool=self._stats_pool())
 

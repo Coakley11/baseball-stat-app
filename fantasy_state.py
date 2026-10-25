@@ -166,14 +166,6 @@ def is_fantasy_lineup_state_key(key: str) -> bool:
     k = str(key or "")
     if _is_ephemeral_lineup_widget_key(k):
         return False
-    try:
-        from page_state import _PAGE_STATE_SKIP_KEYS
-
-        # One-time notices/modes (e.g. the "format saved" flash) must not be restored.
-        if k in _PAGE_STATE_SKIP_KEYS:
-            return False
-    except ImportError:
-        pass
     if k in LINEUP_FILTER_KEYS:
         return True
     return k.startswith("lineup_") and not k.startswith("lineup_context_")

@@ -213,7 +213,7 @@ class TwoPhaseReplayTests(unittest.TestCase):
         set_session_calls: list[str] = []
         refresh_session_calls: list[str] = []
 
-        def fake_save(st: Any, tokens: dict[str, Any], *, auth_user_id: str = "", handoff_phase: str = "") -> dict[str, Any]:
+        def fake_save(st: Any, tokens: dict[str, Any], *, auth_user_id: str = "", handoff_phase: str = "") -> None:
             access = str(tokens.get("access_token") or "")
             refresh = str(tokens.get("refresh_token") or "")
             store["gen"] += 1
@@ -237,7 +237,6 @@ class TwoPhaseReplayTests(unittest.TestCase):
                 "expires_at": payload["expires_at"],
                 "payload": payload,
             }
-            return {"persistence_succeeded": True, "failure_reason": "ok"}
 
         def fake_load(sid: str):
             self.assertEqual(sid, SID)

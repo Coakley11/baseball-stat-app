@@ -324,20 +324,13 @@ def _candidate_still_valid(
         return False
     if not pid and not name:
         return False
-    if gaps and (
-        str(cand.get("Primary Position") or "").strip() or str(cand.get("Eligible Positions") or "").strip()
-    ):
-        # Same eligibility rule as the recommendation filter. Matching gap codes as
-        # text required a literal "DH" position for a DH gap, so once a team's only
-        # open starter slot was DH/UTIL every candidate was rejected and the draft
-        # stalled on that pick ("No eligible recommendation for auto-pick").
-        try:
-            from live_draft_roster_slots import _player_position_tokens, player_fills_open_needs
-
-            if not player_fills_open_needs(_player_position_tokens(pd.Series(cand)), list(gaps)):
+    if gaps:
+        pos = str(cand.get("Primary Position") or cand.get("Pos") or "").strip().upper()
+        elig = str(cand.get("Eligible Positions") or cand.get("Positions") or "").upper()
+        gap_u = [str(g).strip().upper() for g in gaps if str(g).strip()]
+        if gap_u and pos and pos not in gap_u and not any(g in elig for g in gap_u):
+            if "Primary Position" in cand or "Eligible Positions" in cand:
                 return False
-        except ImportError:
-            pass
     return True
 
 
@@ -996,28 +989,6 @@ def live_draft_auto_pick(
                         i_before = idx_before
                         is_complete = str(room.get("status") or "").strip() == "complete"
 
-                        def _room_still_live() -> bool:
-                            """False once End/Delete (or a new draft) replaced this room.
-
-                            The deferred write re-read and rewrote the whole workspace;
-                            when End/Delete landed first, it wrote the deleted draft back
-                            and the next load restored it, still auto-picking.
-                            """
-                            rid_now = str(room_ref.get("draft_room_id") or "").strip()
-                            try:
-                                from live_draft_completion import is_live_draft_ended_tombstoned
-
-                                if rid_now and is_live_draft_ended_tombstoned(
-                                    sess_ref, draft_room_id=rid_now
-                                ):
-                                    return False
-                            except Exception:
-                                pass
-                            current = sess_ref.get("live_draft_room")
-                            return isinstance(current, dict) and (
-                                str(current.get("draft_room_id") or "").strip() == rid_now
-                            )
-
                         def _persist_bg() -> None:
                             try:
                                 from pathlib import Path
@@ -1045,8 +1016,6 @@ def live_draft_auto_pick(
                                     )
                             except Exception:
                                 pass
-                            if not _room_still_live():
-                                return
                             try:
                                 from live_draft_state import (
                                     room_to_persist_dict,
@@ -1061,7 +1030,7 @@ def live_draft_auto_pick(
                                 )
                                 blob = room_to_persist_dict(room_ref, compact_pool=True)
                                 rid = str(room_ref.get("draft_room_id") or "").strip()
-                                if rid and blob and _room_still_live():
+                                if rid and blob:
                                     from pathlib import Path
                                     import json as _json
 
@@ -1101,8 +1070,6 @@ def live_draft_auto_pick(
                                     if not isinstance(state, dict):
                                         state = {}
                                         payload = {"state": state}
-                                    if not _room_still_live():
-                                        return
                                     state["live_draft_room"] = blob
                                     state["live_draft_state"] = blob
                                     pfs = state.get("page_filter_state")
@@ -1114,7 +1081,7 @@ def live_draft_auto_pick(
                                         block = {}
                                         pfs["Live Draft Room"] = block
                                     block["live_draft_room"] = blob
-                                    block.pop("live_draft_state", None)  # never read back
+                                    block["live_draft_state"] = blob
                                     try:
                                         save_user_state("baseball", state, workspace_id=ws_id)
                                     except Exception:

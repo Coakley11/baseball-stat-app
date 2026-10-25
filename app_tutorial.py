@@ -127,7 +127,7 @@ def get_tutorial_steps() -> tuple[dict[str, Any], ...]:
             "steps": [
                 "Open **Historical Explorer** and set years, team, or position.",
                 "Sort by the stat that wins your argument — HR, OPS, SB, and more.",
-                "Jump to **Compare Players** when you want two or three players side by side.",
+                "Jump to **Comparison Tool** when you want two or three players side by side.",
                 "Use **Career Totals** when one season is not enough — you want the full run.",
                 "Turn on **Hall of Fame Case Mode** when you are building (or busting) a Cooperstown case.",
             ],
@@ -151,7 +151,7 @@ def get_tutorial_steps() -> tuple[dict[str, Any], ...]:
             "steps": [
                 "Run mock drafts in **Draft Lab / Simulation** and **Draft Room Simulator**.",
                 "Open **Draft Assistant Simulator** while you draft — see who fits your roster right now.",
-                "Check **Sleepers & Busts**, **Trend Value**, and rankings for upside and landmines.",
+                "Check **Fantasy Sleepers & Busts**, **Trend Value**, and rankings for upside and landmines.",
                 "Use player comparisons when two similar names are available at the same pick.",
                 "Import or upload drafts from fantasy sites into your **Saved Draft Library**, then keep analyzing.",
             ],
@@ -195,10 +195,10 @@ def get_tutorial_steps() -> tuple[dict[str, Any], ...]:
                 "The draft is only opening day. These tools help you manage a fantasy team through the whole season."
             ),
             "steps": [
-                "**League Standings** — see which categories you are winning and losing.",
-                "**Lineup & Trades** — set your weekly starters with help on positional needs.",
+                "**Fantasy Standings Tracker** — see which categories you are winning and losing.",
+                "**Fantasy Lineup Assistant** — set your weekly starters with help on positional needs.",
                 "**Trade Center** — propose and evaluate trades, then keep the roster balanced.",
-                "**Waiver Wire** — find free agents who actually fit what your team needs.",
+                "**Waiver Wire / Add-Drop Center** — find free agents who actually fit what your team needs.",
                 "Use weekly lineup management as a habit — small edges stack over a season.",
             ],
             "tries": [

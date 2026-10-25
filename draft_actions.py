@@ -1399,11 +1399,6 @@ def _draft_live(
         result["message"] = "Live draft commit path unavailable."
         return result
 
-    # Solo applies locally and persists later. In a shared room the room document
-    # is the authority: a deferred commit lost the race with the next poll, which
-    # replaced the local board, so the participant's pick vanished and the timer
-    # auto-picked instead. Commit shared picks now (CAS; rolls back on conflict).
-    optimistic = not mp
     try:
         from live_draft_perf import PHASE_PICK_COMMIT, live_draft_perf_action
 
@@ -1414,7 +1409,7 @@ def _draft_live(
                 player_row,
                 source=source,
                 verdict=f"Draft ({source})",
-                optimistic=optimistic,
+                optimistic=True,
             )
     except ImportError:
         commit = commit_manual_live_pick(
@@ -1423,7 +1418,7 @@ def _draft_live(
             player_row,
             source=source,
             verdict=f"Draft ({source})",
-            optimistic=optimistic,
+            optimistic=True,
         )
     try:
         from live_draft_state import check_manual_commit_overwrite, is_live_draft_locally_dirty, record_manual_pick_snapshot

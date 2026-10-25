@@ -30,21 +30,6 @@ NONCONSUMING_FINALIZE_ENTERED_KEY = "_suite_auth_bridge_nonconsuming_finalize_en
 NONCONSUMING_SET_SESSION_COUNT_KEY = "_suite_auth_bridge_nonconsuming_set_session_count"
 NONCONSUMING_REFRESH_SESSION_COUNT_KEY = "_suite_auth_bridge_nonconsuming_refresh_session_count"
 
-_HANDOFF_LIFECYCLE_KEYS: tuple[str, ...] = (
-    HANDOFF_FREEZE_KEY,
-    HANDOFF_FINAL_REFRESH_FP_KEY,
-    HANDOFF_FINAL_ACCESS_FP_KEY,
-    HANDOFF_FINAL_GENERATION_KEY,
-    HANDOFF_NO_REFRESH_AFTER_KEY,
-    HANDOFF_SNAPSHOT_REFRESH_FP_KEY,
-    HANDOFF_SNAPSHOT_ACCESS_FP_KEY,
-    HANDOFF_SNAPSHOT_EVENT_INDEX_KEY,
-    HANDOFF_NO_CONSUMPTION_SINCE_SNAPSHOT_KEY,
-    NONCONSUMING_FINALIZE_ENTERED_KEY,
-    NONCONSUMING_SET_SESSION_COUNT_KEY,
-    NONCONSUMING_REFRESH_SESSION_COUNT_KEY,
-)
-
 CHECKPOINT_FINAL_PERSIST = "bridge_final_handoff_persist"
 CHECKPOINT_FINAL_READBACK = "bridge_final_handoff_readback"
 CHECKPOINT_FINAL_INVARIANT = "bridge_final_handoff_invariant"
@@ -60,12 +45,6 @@ CAPTURE_FAIL_CONSUMPTION_SINCE_SNAPSHOT = "bridge_auth_consumption_since_final_t
 
 def is_handoff_frozen(session_state: dict[str, Any] | None) -> bool:
     return bool(session_state and session_state.get(HANDOFF_FREEZE_KEY))
-
-
-def reset_handoff_after_explicit_logout(session_state: dict[str, Any]) -> None:
-    """End one authenticated handoff lifecycle after explicit sign-out only."""
-    for key in _HANDOFF_LIFECYCLE_KEYS:
-        session_state.pop(key, None)
 
 
 def pair_fingerprints(tokens: dict[str, Any] | None) -> dict[str, str]:
@@ -202,10 +181,7 @@ def perform_final_bridge_handoff(
         _emit(session_state, CHECKPOINT_FINAL_PERSIST, st=st, extra=dict(out))
         return out
 
-    # ``suite_saved_items.user_id`` is owned by the suite_users row.  Prefer the
-    # authenticated account mapping established by _sync_auth_account_identity;
-    # the Supabase auth UUID remains the fallback when no suite row is available.
-    uid = str(session_state.get("_suite_cloud_user_id") or auth_user_id or "").strip()
+    uid = str(auth_user_id or "").strip()
     if not uid:
         try:
             uid = str(session_state.get("_suite_auth_user_id") or "").strip()
@@ -240,7 +216,7 @@ def perform_final_bridge_handoff(
     try:
         from suite_auth_browser import save_browser_auth_tokens
 
-        save_result = save_browser_auth_tokens(
+        save_browser_auth_tokens(
             st,
             tokens,
             auth_user_id=uid,
@@ -248,10 +224,6 @@ def perform_final_bridge_handoff(
         )
     except Exception as exc:
         out["failure_reason"] = f"save_error:{type(exc).__name__}"
-        _emit(session_state, CHECKPOINT_FINAL_PERSIST, st=st, extra=dict(out))
-        return out
-    if not bool((save_result or {}).get("persistence_succeeded")):
-        out["failure_reason"] = str((save_result or {}).get("failure_reason") or "save_not_verified")[:120]
         _emit(session_state, CHECKPOINT_FINAL_PERSIST, st=st, extra=dict(out))
         return out
 
@@ -272,11 +244,6 @@ def perform_final_bridge_handoff(
 
     if not rec:
         out["failure_reason"] = "readback_missing"
-        _emit(session_state, CHECKPOINT_FINAL_READBACK, st=st, extra=dict(out))
-        return out
-
-    if str(rec.get("user_id") or "").strip() != uid:
-        out["failure_reason"] = "owner_mismatch"
         _emit(session_state, CHECKPOINT_FINAL_READBACK, st=st, extra=dict(out))
         return out
 

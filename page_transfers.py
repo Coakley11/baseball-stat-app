@@ -651,8 +651,6 @@ def _sanitize_value(key: str, value):
     """Coerce transfer payload values; return None to skip applying."""
     if value is None:
         return None
-    if key.endswith("_ab_qualification_mode"):
-        return value if value in ("auto", "manual") else None
     if key.endswith("_year_range_filter") or key in ("hist_year", "career_year", "leaders_year", "compare_year_range"):
         yr = year_tuple(value)
         return yr
@@ -754,17 +752,10 @@ def sanitize_session_keys(keys, allowed_keys):
 
 def copy_prefix_stat_mins(session, from_prefix: str, to_prefix: str, keys_out: dict, cols=None):
     stat_cols = cols or _TRANSFER_STAT_COLS
-    # An automatic rate-stat Min AB belongs to its page's ranking (rate_stat_qualification);
-    # only a Min AB the user set carries over, and it stays user-set on the target.
-    ab_mode = session.get(f"{from_prefix}_ab_qualification_mode")
     for col in stat_cols:
         fk = f"{from_prefix}_{col}_min"
         if fk not in session:
             continue
-        if col == "AB" and ab_mode == "auto":
-            continue
-        if col == "AB" and ab_mode == "manual":
-            keys_out[f"{to_prefix}_ab_qualification_mode"] = "manual"
         val = session[fk]
         try:
             num = float(val)
