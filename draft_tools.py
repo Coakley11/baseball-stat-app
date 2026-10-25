@@ -51,7 +51,19 @@ def render_draft_tool_nav(st: Any, current_page: str, navigate: Callable[[str], 
     from ui_hierarchy import inject_css
 
     inject_css(st)  # draft pages keep their own header, so the U1 styles may not be on the page yet
-    st.markdown('<div class="u1-label">Other draft tools</div>', unsafe_allow_html=True)
+    # Tertiary buttons read as plain text, so these are drawn as outlined pills in the Draft
+    # family colour: clearly something to tap, still lighter than the page's main actions.
+    try:
+        from feature_identity import family
+
+        fam = family("draft")
+        pill = (f'<style>[class*="st-key-u3dt_"] button {{ border: 1px solid {fam.border} !important; '
+                f"background: {fam.tint} !important; border-radius: 999px !important; padding: 2px 12px !important; }}"
+                f'[class*="st-key-u3dt_"] button p {{ color: {fam.color} !important; font-weight: 600; }}'
+                f'[class*="st-key-u3dt_"] button:hover {{ border-color: {fam.color} !important; }}</style>')
+    except ImportError:
+        pill = ""
+    st.markdown(pill + '<div class="u1-label">Other draft tools</div>', unsafe_allow_html=True)
     try:
         from mobile_foundation import mobile_wrap_row
 

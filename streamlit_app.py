@@ -1511,6 +1511,13 @@ def _u1_nav_cb(page):
     return lambda: navigate_to_page(page, from_callback=True)
 
 
+def _u1_act(page, text):
+    """Next-step button label: the destination page's icon, then what the button does."""
+    from feature_identity import action_label
+
+    return action_label(page, text)
+
+
 def _u1_player_action_cb(action, player):
     """Button callback: the same player action the Player Actions menu runs (send to
     Comparison / Trend), then go to that page. Never drafts, trades or saves a move."""
@@ -1550,10 +1557,10 @@ def _render_u1_season_answer(rows, sort_stat, year_range, *, ascending, team_col
     player = answer["player"]
     last = u1a.last_name(player)
     u1.action_row(st, [
-        (f"Compare {last}", _u1_player_action_cb("Send to Comparison Tool", player)),
-        (f"{last}'s trend", _u1_player_action_cb("Send to Trend Page", player)),
-        ("Career Totals", _u1_nav_cb("Career Totals")),
-        ("Leaderboards", _u1_nav_cb("Leaderboards")),
+        (_u1_act("Comparison Tool", f"Compare {last}"), _u1_player_action_cb("Send to Comparison Tool", player)),
+        (_u1_act("Trend Value", f"View {last}'s trend"), _u1_player_action_cb("Send to Trend Page", player)),
+        (_u1_act("Career Totals", "Career Totals"), _u1_nav_cb("Career Totals")),
+        (_u1_act("Leaderboards", "Leaderboards"), _u1_nav_cb("Leaderboards")),
     ], key="hist", primary=None)
 
 
@@ -1575,9 +1582,9 @@ def _render_u1_leaderboard_answer(rows, sort_stat, year_range, *, weights, quali
     player = answer["player"]
     last = u1a.last_name(player)
     u1.action_row(st, [
-        (f"Compare {last}", _u1_player_action_cb("Send to Comparison Tool", player)),
-        (f"{last}'s trend", _u1_player_action_cb("Send to Trend Page", player)),
-        ("Historical Explorer", _u1_nav_cb("Historical Explorer")),
+        (_u1_act("Comparison Tool", f"Compare {last}"), _u1_player_action_cb("Send to Comparison Tool", player)),
+        (_u1_act("Trend Value", f"View {last}'s trend"), _u1_player_action_cb("Send to Trend Page", player)),
+        (_u1_act("Historical Explorer", "Historical Explorer"), _u1_nav_cb("Historical Explorer")),
     ], key="leaders", primary=None)
 
 
@@ -1616,8 +1623,8 @@ def _render_u2_comparison_answer(compare, career, player_ids, axis_mode, year_ra
                        kicker=summary["context"])
         u1.metric_tiles(st, summary["tiles"])
         players = [summary["player"]]
-    actions = [(f"{u1a.last_name(p)}'s trend", _u1_player_action_cb("Send to Trend Page", p)) for p in players[:3]]
-    actions.append(("Career Totals", _u1_nav_cb("Career Totals")))
+    actions = [(_u1_act("Trend Value", f"View {u1a.last_name(p)}\'s trend"), _u1_player_action_cb("Send to Trend Page", p)) for p in players[:3]]
+    actions.append((_u1_act("Career Totals", "Career Totals"), _u1_nav_cb("Career Totals")))
     u1.action_row(st, actions, key="compare", primary=None)
 
 
@@ -1653,10 +1660,10 @@ def _render_u2_career_answer(rows, filtered_seasons, sort_stat, year_range, *, b
     player = answer["player"]
     last = u1a.last_name(player)
     u1.action_row(st, [
-        (f"Compare {last}", _u1_player_action_cb("Send to Comparison Tool", player)),
-        (f"{last}'s trend", _u1_player_action_cb("Send to Trend Page", player)),
-        ("Historical Explorer", _u1_nav_cb("Historical Explorer")),
-        ("Leaderboards", _u1_nav_cb("Leaderboards")),
+        (_u1_act("Comparison Tool", f"Compare {last}"), _u1_player_action_cb("Send to Comparison Tool", player)),
+        (_u1_act("Trend Value", f"View {last}'s trend"), _u1_player_action_cb("Send to Trend Page", player)),
+        (_u1_act("Historical Explorer", "Historical Explorer"), _u1_nav_cb("Historical Explorer")),
+        (_u1_act("Leaderboards", "Leaderboards"), _u1_nav_cb("Leaderboards")),
     ], key="career", primary=None)
 
 
@@ -1732,13 +1739,15 @@ def _render_u2_trend_answer(rows, seasons, stat, years):
         u1.answer_card(st, "No hitters match these filters",
                        "Lower Minimum Games or widen Fantasy Position under Explore more.", tone="warn")
         return
-    u1.answer_card(st, answer["headline"], answer["body"], kicker=answer["kicker"])
+    u1.answer_card(st, answer["headline"], answer.get("body_short") or answer["body"], kicker=answer["kicker"])
+    if answer.get("tiles"):
+        u1.metric_tiles(st, answer["tiles"])
     _u2_season_line_chart(seasons, answer["chart_names"], stat)
     pair = answer["chart_names"][:2]
     actions = []
     if len(pair) == 2:
-        actions.append((f"Compare {u1a.last_name(pair[0])} & {u1a.last_name(pair[1])}", _u2_compare_pair_cb(pair)))
-    actions.append(("Valuation", _u1_nav_cb("Valuation")))
+        actions.append((_u1_act("Comparison Tool", f"Compare {u1a.last_name(pair[0])} & {u1a.last_name(pair[1])}"), _u2_compare_pair_cb(pair)))
+    actions.append((_u1_act("Valuation", "Valuation"), _u1_nav_cb("Valuation")))
     if focus:
         actions.append(("Show top risers", lambda: st.session_state.pop("_u2_trend_focus", None)))
     u1.action_row(st, actions, key="trend", primary=None)
@@ -1832,8 +1841,8 @@ def _render_u4_draft_assistant_answer(best_fit, best_value, summary, gaps, team)
     actions = []
     if answer["compare"]:
         a, b = answer["compare"]
-        actions.append((f"Compare {u1a.last_name(a)} & {u1a.last_name(b)}", _u2_compare_pair_cb([a, b])))
-    actions += [("Open Draft Board", _u1_nav_cb("Draft Room Simulator")), ("Live Draft Room", _u1_nav_cb("Live Draft Room"))]
+        actions.append((_u1_act("Comparison Tool", f"Compare {u1a.last_name(a)} & {u1a.last_name(b)}"), _u2_compare_pair_cb([a, b])))
+    actions += [(_u1_act("Draft Room Simulator", "Open Draft Board"), _u1_nav_cb("Draft Room Simulator")), (_u1_act("Live Draft Room", "Live Draft Room"), _u1_nav_cb("Live Draft Room"))]
     u1.action_row(st, actions, key="draft-assistant", primary=None)
 
 
@@ -1853,7 +1862,7 @@ def _render_u4_draft_lab_answer(team_summary, pick_analysis, *, total_picks, fro
     u1.action_row(st, [
         ("Team Analysis", lambda: st.session_state.__setitem__("draft_lab_active_tab", "Team Analysis")),
         ("Best / Questionable Picks", lambda: st.session_state.__setitem__("draft_lab_active_tab", "Best / Questionable Picks")),
-        ("Draft Assistant", _u1_nav_cb("Draft Assistant Simulator")),
+        (_u1_act("Draft Assistant Simulator", "Draft Assistant"), _u1_nav_cb("Draft Assistant Simulator")),
     ], key="draft-lab", primary=None)
 
 
@@ -1881,10 +1890,10 @@ def _render_u2_valuation_answer(rows, model_rows, chart_rows, w_current, w_trend
     actions = []
     if len(answer["next"]) == 2:
         a, b = answer["next"]
-        actions.append((f"Compare {u1a.last_name(a)} & {u1a.last_name(b)}", _u2_compare_pair_cb([a, b])))
+        actions.append((_u1_act("Comparison Tool", f"Compare {u1a.last_name(a)} & {u1a.last_name(b)}"), _u2_compare_pair_cb([a, b])))
     actions += [
-        (f"{last}'s trend", _u1_player_action_cb("Send to Trend Page", player)),
-        ("Sleepers & Busts", _u1_nav_cb("Fantasy Sleepers & Busts")),
+        (_u1_act("Trend Value", f"View {last}'s trend"), _u1_player_action_cb("Send to Trend Page", player)),
+        (_u1_act("Fantasy Sleepers & Busts", "Sleepers & Busts"), _u1_nav_cb("Fantasy Sleepers & Busts")),
     ]
     if chosen:
         actions.append(("Show top player", lambda: st.session_state.pop("valuation_selected_player", None)))
@@ -1913,10 +1922,10 @@ def _render_u2_sleeper_answer(sleepers, busts, *, matched, fantasy_format):
     actions = []
     pair = answer["players"]
     if len(pair) == 2:
-        actions.append((f"Compare {u1a.last_name(pair[0])} & {u1a.last_name(pair[1])}", _u2_compare_pair_cb(pair)))
+        actions.append((_u1_act("Comparison Tool", f"Compare {u1a.last_name(pair[0])} & {u1a.last_name(pair[1])}"), _u2_compare_pair_cb(pair)))
     if pair:
-        actions.append((f"{u1a.last_name(pair[0])}'s trend", _u1_player_action_cb("Send to Trend Page", pair[0])))
-    actions.append(("Draft Assistant", _u1_nav_cb("Draft Assistant Simulator")))
+        actions.append((_u1_act("Trend Value", f"View {u1a.last_name(pair[0])}\'s trend"), _u1_player_action_cb("Send to Trend Page", pair[0])))
+    actions.append((_u1_act("Draft Assistant Simulator", "Draft Assistant"), _u1_nav_cb("Draft Assistant Simulator")))
     u1.action_row(st, actions, key="sleepers", primary=None)
 
 
@@ -1945,10 +1954,10 @@ def _render_u2_ml_answer(stored_df, position_filter, sort_by, models, status):
     actions = []
     pair = answer["players"]
     if len(pair) == 2:
-        actions.append((f"Compare {u1a.last_name(pair[0])} & {u1a.last_name(pair[1])}", _u2_compare_pair_cb(pair)))
+        actions.append((_u1_act("Comparison Tool", f"Compare {u1a.last_name(pair[0])} & {u1a.last_name(pair[1])}"), _u2_compare_pair_cb(pair)))
     if pair:
-        actions.append((f"{u1a.last_name(pair[0])}'s trend", _u1_player_action_cb("Send to Trend Page", pair[0])))
-    actions.append(("Sleepers & Busts", _u1_nav_cb("Fantasy Sleepers & Busts")))
+        actions.append((_u1_act("Trend Value", f"View {u1a.last_name(pair[0])}\'s trend"), _u1_player_action_cb("Send to Trend Page", pair[0])))
+    actions.append((_u1_act("Fantasy Sleepers & Busts", "Sleepers & Busts"), _u1_nav_cb("Fantasy Sleepers & Busts")))
     u1.action_row(st, actions, key="ml", primary=None)
 
 
@@ -2685,6 +2694,14 @@ def render_section_header(title, note, *, compact: bool = False):
         """, unsafe_allow_html=True)
 
 
+def render_draft_page_head(title, purpose):
+    """Draft tool header: the shared feature header (icon tile + Draft family), with the tool's
+    purpose line from draft_tools — the same words its switcher tooltip and Home card use."""
+    import ui_hierarchy as u1
+
+    u1.page_head(st, title, purpose, feature=active_page)
+
+
 from page_guides import PAGE_GUIDES  # Quick Guide copy, shared with the AMI assistant's help
 
 
@@ -3018,10 +3035,12 @@ def render_output_table(
             )
         except Exception:
             st.dataframe(styled_df, width="stretch", hide_index=True)
-    elif _pinned_cfg:
-        st.dataframe(display_df, width="stretch", hide_index=True, column_config=_pinned_cfg)
     else:
-        st.dataframe(display_df, width="stretch", hide_index=True)
+        _cfg = {**_rate_column_display_config(display_df), **_pinned_cfg}
+        if _cfg:
+            st.dataframe(display_df, width="stretch", hide_index=True, column_config=_cfg)
+        else:
+            st.dataframe(display_df, width="stretch", hide_index=True)
 
     st.download_button(
         "Export CSV for Excel",
@@ -3030,6 +3049,19 @@ def render_output_table(
         mime="text/csv",
         width="content",
     )
+
+
+_DISPLAY_RATE_COLUMNS = ("BA", "AVG", "OBP", "SLG", "OPS")
+
+
+def _rate_column_display_config(df):
+    """Show rate stats with three decimals everywhere (0.540, not 0.54). Display only: values
+    and the CSV export are unchanged; only numeric columns are given a number format."""
+    cfg = {}
+    for col in _DISPLAY_RATE_COLUMNS:
+        if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
+            cfg[col] = st.column_config.NumberColumn(col, format="%.3f")
+    return cfg
 
 
 def _numeric_plot_columns(df):
@@ -12291,6 +12323,13 @@ try:
 except ImportError:
     PAGE_OPTION_LABELS["Home"] = "🏠 Home"
 _PAGE_LABEL_TO_KEY.update({label: key for key, label in PAGE_OPTION_LABELS.items()})
+try:
+    from nav_groups import LEGACY_NAV_LABELS as _LEGACY_NAV_LABELS
+
+    for _legacy_label, _legacy_key in _LEGACY_NAV_LABELS.items():
+        _PAGE_LABEL_TO_KEY.setdefault(_legacy_label, _legacy_key)
+except ImportError:
+    pass
 
 
 def page_option_label(page_key: str) -> str:
@@ -15704,7 +15743,8 @@ elif active_page == "Historical Explorer":
 
     import ui_hierarchy as u1
 
-    u1.page_head(st, "🔎 Historical Explorer", "The best single seasons for any years and stat, back to 1871.")
+    u1.page_head(st, "🔎 Historical Explorer", "The best single seasons for any years and stat, back to 1871.",
+                 feature="Historical Explorer")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     try:
@@ -16089,7 +16129,8 @@ elif active_page == "Career Totals":
 
     import ui_hierarchy as u1
 
-    u1.page_head(st, "📚 Career Totals", "Who produced the most over a span of seasons, and that career in numbers.")
+    u1.page_head(st, "📚 Career Totals", "Who produced the most over a span of seasons, and that career in numbers.",
+                 feature="Career Totals")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
 
@@ -16321,7 +16362,7 @@ elif active_page == "Career Totals":
         _render_u2_career_answer(career_totals, filtered_career, sort_stat_career, range_career, by_team=show_career_by_team)
 
     c5, c6, c7 = st.columns(3)
-    c5.metric("Rows", len(career_totals))
+    c5.metric("Rows", f"{len(career_totals):,}")
     c6.metric("Top Player", career_totals.sort_values(sort_stat_career, ascending=False).iloc[0]["fullName"] if len(career_totals) and sort_stat_career in career_totals.columns else "N/A")
     top_career_value = pd.to_numeric(career_totals[sort_stat_career], errors="coerce").max() if len(career_totals) and sort_stat_career in career_totals.columns else 0
     c7.metric("Top Value", fmt_rate_3(top_career_value) if sort_stat_career in RATE_STATS else fmt_int(top_career_value))
@@ -16846,7 +16887,8 @@ elif active_page == "Leaderboards":
 
     import ui_hierarchy as u1
 
-    u1.page_head(st, "🏆 Leaderboards", "Who leads over a span of seasons — in one stat or a custom score.")
+    u1.page_head(st, "🏆 Leaderboards", "Who leads over a span of seasons — in one stat or a custom score.",
+                 feature="Leaderboards")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     leaders_sort_options = ["score", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
@@ -16997,7 +17039,8 @@ elif active_page == "Comparison Tool":
         pass
     import ui_hierarchy as u1
 
-    u1.page_head(st, "📈 Compare Players", "Two or three hitters side by side over the same seasons: who leads where.")
+    u1.page_head(st, "⚖️ Compare Players", "Two or three hitters side by side over the same seasons: who leads where.",
+                 feature="Comparison Tool")
     render_page_guide(active_page)
     try:
         from fantasy_context_ui import render_research_sync_badge
@@ -17808,7 +17851,7 @@ elif active_page == "Trend Value":
         pass
     import ui_hierarchy as u1
 
-    u1.page_head(st, "🔥 Trend Value", "Who is rising or falling in a stat over recent seasons.")
+    u1.page_head(st, "🔥 Trend Value", "Who is rising or falling in a stat over recent seasons.", feature="Trend Value")
     try:
         from baseball_event_trace import render_trend_value_deploy_banner
 
@@ -18578,7 +18621,8 @@ elif active_page == "Fantasy Sleepers & Busts":
 
     import ui_hierarchy as u1
 
-    u1.page_head(st, "💎 Sleepers & Busts", "Where our model and the draft market disagree, in both directions.")
+    u1.page_head(st, "💎 Sleepers & Busts", "Where our model and the draft market disagree, in both directions.",
+                 feature="Fantasy Sleepers & Busts")
     render_page_guide(active_page)
     try:
         from fantasy_context_ui import render_research_sync_badge
@@ -19514,7 +19558,7 @@ elif active_page == "Draft Assistant Simulator":
     pdemo.render_draft_demo_button(st, active_page)
     import draft_tools
 
-    render_section_header("🧩 Draft Assistant Simulator", draft_tools.purpose(active_page), compact=True)
+    render_draft_page_head("🧩 Draft Assistant Simulator", draft_tools.purpose(active_page))
     render_page_guide(active_page)
     draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
     da_answer_slot = st.container()  # U4: filled once the recommendations are ranked
@@ -20844,7 +20888,7 @@ elif active_page == "Draft Room Simulator":
     _page_perf_start(active_page)
     import draft_tools
 
-    render_section_header("🧾 Draft Room Simulator", draft_tools.purpose(active_page), compact=True)
+    render_draft_page_head("🧾 Draft Room Simulator", draft_tools.purpose(active_page))
     render_page_guide(active_page)
     draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
     room_answer_slot = st.container()  # U4: filled at the end, once the board is known
@@ -21637,7 +21681,7 @@ elif active_page == DRAFT_LAB_PAGE:
 
     import draft_tools
 
-    render_section_header("🧪 Draft Lab / Simulation", draft_tools.purpose(active_page), compact=True)
+    render_draft_page_head("🧪 Draft Lab / Simulation", draft_tools.purpose(active_page))
     render_page_guide(active_page)
     draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
     lab_answer_slot = st.container()  # U4: the result first, then Run, then the model controls
@@ -22681,7 +22725,7 @@ elif active_page == "Live Draft Room":
     if _show_ldr_guide:
         import draft_tools
 
-        render_section_header("📡 Live Draft Room", draft_tools.purpose(active_page), compact=True)
+        render_draft_page_head("📡 Live Draft Room", draft_tools.purpose(active_page))
         render_page_guide(active_page)
         # Intro only (no active draft): the room itself is unchanged.
         draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
@@ -29501,7 +29545,7 @@ elif active_page == "Saved Draft Library":
     _maybe_render_account_pref_sync(active_page)
     import draft_tools
 
-    render_section_header("📁 Saved Draft Library", draft_tools.purpose(active_page), compact=True)
+    render_draft_page_head("📁 Saved Draft Library", draft_tools.purpose(active_page))
     render_page_guide(active_page)
     draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
     apply_pending_page_transfer(active_page)
@@ -29539,7 +29583,8 @@ elif active_page == "Fantasy Standings Tracker":
 
     import ui_hierarchy as u1
 
-    u1.page_head(st, "📊 League Standings", "Where your team stands, what's working, and what to do next.")
+    u1.page_head(st, "📊 League Standings", "Where your team stands, what's working, and what to do next.",
+                 feature="Fantasy Standings Tracker")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     _prepare_and_show_draft_shared_settings(
@@ -30135,8 +30180,9 @@ elif active_page == "Fantasy Lineup Assistant":
     # U3: one plain title (sidebar label "Lineup & Trades"; the page key is unchanged).
     u1.page_head(
         st,
-        "🧠 Lineup & Trades",
+        "📋 Lineup & Trades",
         (f"{_lineup_team_hdr}: " if _lineup_team_hdr else "") + "set this week's starters, or build and check a trade.",
+        feature="Fantasy Lineup Assistant",
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
@@ -30425,7 +30471,7 @@ elif active_page == "Waiver Wire / Add-Drop Center":
     _maybe_render_account_pref_sync(active_page)
     import ui_hierarchy as u1
 
-    u1.page_head(st, "🔄 Waiver Wire", "Who to pick up for your team, and why.")
+    u1.page_head(st, "🔄 Waiver Wire", "Who to pick up for your team, and why.", feature="Waiver Wire / Add-Drop Center")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     _waiver_hitter_stats = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
@@ -30494,7 +30540,8 @@ elif active_page == "Valuation":
 
     import ui_hierarchy as u1
 
-    u1.page_head(st, "💰 Valuation", "One score per hitter: recent production blended with trend, then ranked.")
+    u1.page_head(st, "💰 Valuation", "One score per hitter: recent production blended with trend, then ranked.",
+                 feature="Valuation")
     render_page_guide(active_page)
     try:
         from fantasy_context_ui import render_research_sync_badge
@@ -30842,7 +30889,8 @@ elif active_page == "ML Predictions":
         )
     import ui_hierarchy as u1
 
-    u1.page_head(st, "🤖 ML Predictions", "Next-season projections for each hitter, from a model trained on past seasons.")
+    u1.page_head(st, "🤖 ML Predictions", "Next-season projections for each hitter, from a model trained on past seasons.",
+                 feature="ML Predictions")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
 

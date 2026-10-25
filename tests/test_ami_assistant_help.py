@@ -80,7 +80,14 @@ def _rendered_home_buttons(*, with_league: bool = False) -> set[str]:
         if case is not None:
             case.tearDown()
     assert not at.exception, at.exception
-    return {b.label for b in at.button}
+    # Compare the words AMI names: a leading feature icon is decoration (feature_identity), and the
+    # "Every tool" directory buttons are page names, which AMI's navigation help already covers.
+    return {_without_icon(b.label) for b in at.button if not str(b.key or "").startswith("u1_dir_home_")}
+
+
+def _without_icon(label: str) -> str:
+    head, _, rest = str(label).partition(" ")
+    return rest if rest and not any(ch.isalnum() for ch in head) else str(label)
 
 
 class PageHelpCoverageTests(unittest.TestCase):

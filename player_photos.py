@@ -497,6 +497,25 @@ def inject_player_photo_styles(st: Any) -> None:
             color: #334155;
             margin: 2px 0 4px 0;
         }
+        .ld-rec-stat-line.ld-stat-chips {
+            display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; margin: 4px 0 6px 0;
+        }
+        .ld-stat-kicker {
+            font-size: 0.68rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+            color: #64748b; margin-right: 2px;
+        }
+        .ld-stat-chip {
+            display: inline-flex; align-items: baseline; gap: 3px; padding: 1px 7px; border-radius: 6px;
+            background: #f1f5f9; color: #475569; font-size: 0.74rem; font-weight: 600; white-space: nowrap;
+        }
+        .ld-stat-chip b { color: #0b2540; font-size: 0.92rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+        .bb-facts {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 4px 10px;
+            margin-top: 6px; font-size: 0.84rem;
+        }
+        .bb-fact { display: flex; flex-direction: column; min-width: 0; }
+        .bb-fact-l { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #64748b; }
+        .bb-fact-v { font-size: 0.98rem; font-variant-numeric: tabular-nums; }
         .ld-rec-grade {
             font-weight: 700;
             color: #0b3d6e;
@@ -717,6 +736,46 @@ def compact_fantasy_stat_line(row: Any, *, prefix: str = "Proj:", require_projec
         return ""
     pref = str(prefix or "").strip()
     return f"{pref} {body}".strip() if pref else body
+
+
+_STAT_CHIP_NAMES = {
+    "AVG": "Batting average", "HR": "Home runs", "RBI": "Runs batted in", "R": "Runs", "SB": "Stolen bases",
+    "OBP": "On-base percentage", "W": "Wins", "SO": "Strikeouts", "SV": "Saves", "ERA": "Earned run average",
+    "WHIP": "Walks + hits per inning", "K/9": "Strikeouts per nine innings",
+}
+
+
+def stat_line_chips_html(line: str) -> str:
+    """A compact_fantasy_stat_line string ("Proj: 0.289 AVG · 48 HR · …") as stat chips: the
+    prefix as a small label, then one chip per stat with its value in bold. Same values, same
+    order; nothing is recomputed. Falls back to the escaped line if it does not parse."""
+    import html as _html
+
+    text = str(line or "").strip()
+    if not text:
+        return ""
+    prefix = ""
+    if ":" in text.split(" ", 1)[0]:
+        prefix, _, text = text.partition(" ")
+    chips = []
+    for part in [x.strip() for x in text.split(" · ") if x.strip()]:
+        bits = part.split(" ", 1)
+        if len(bits) != 2:
+            return f'<div class="ld-rec-stat-line">{_html.escape(str(line))}</div>'
+        a, b = bits
+        numeric = lambda t: t[:1].isdigit() or (t[:1] in ".-" and t[1:2].isdigit())  # noqa: E731
+        if not (numeric(a) or numeric(b)):
+            return f'<div class="ld-rec-stat-line">{_html.escape(str(line))}</div>'
+        value, label = (a, b) if numeric(a) else (b, a)
+        if label in ("AVG", "OBP", "SLG", "OPS") and value.startswith("0."):
+            value = value[1:]  # baseball convention: .289, as u1_answers.fmt_stat shows rates
+        name = _STAT_CHIP_NAMES.get(label)
+        title = f' title="{_html.escape(name)}"' if name else ""
+        chips.append(f'<span class="ld-stat-chip"{title}><b>{_html.escape(value)}</b> {_html.escape(label)}</span>')
+    if not chips:
+        return f'<div class="ld-rec-stat-line">{_html.escape(str(line))}</div>'
+    kicker = f'<span class="ld-stat-kicker">{_html.escape(prefix.rstrip(":"))}:</span>' if prefix else ""
+    return f'<div class="ld-rec-stat-line ld-stat-chips">{kicker}{"".join(chips)}</div>'
 
 
 def is_current_draft_pool_player(player_id: str, yearly_df: pd.DataFrame | None) -> bool:
@@ -947,9 +1006,12 @@ def build_draft_score_metrics_html(
     """Labeled draft metrics block for profile cards."""
 
     def _line(label: str, value: str) -> str:
+        # One fact per cell: a small label over its value (same words and values as before).
         if not value or value == "Not available":
-            return f'{label}: <span class="bb-profile-na">Not available</span>'
-        return f'{label}: <span class="ld-rec-grade">{value}</span>'
+            return (f'<div class="bb-fact"><span class="bb-fact-l">{label}</span>'
+                    f'<span class="bb-profile-na">Not available</span></div>')
+        return (f'<div class="bb-fact"><span class="bb-fact-l">{label}</span>'
+                f'<span class="ld-rec-grade bb-fact-v">{value}</span></div>')
 
     lines: list[str] = []
     if show_decision_score:
@@ -985,7 +1047,7 @@ def build_draft_score_metrics_html(
         lines.append(_line("Fantasy Edge", fantasy_edge_display(row)))
     if not lines:
         return ""
-    return '<div style="font-size:0.84rem;margin-top:4px;line-height:1.45;">' + "<br/>".join(lines) + "</div>"
+    return '<div class="bb-facts">' + "".join(lines) + "</div>"
 
 
 def valuation_score_display(row: Any) -> str:
@@ -1306,7 +1368,7 @@ def build_draft_profile_card_html(
     if show_projection:
         stats = compact_fantasy_stat_line(row)
         if stats:
-            detail_lines.append(f'<div class="ld-rec-stat-line">{stats}</div>')
+            detail_lines.append(stat_line_chips_html(stats))
         elif historical_note:
             detail_lines.append(f'<div class="bb-profile-na">{historical_note}</div>')
     elif historical_note:
@@ -1661,7 +1723,7 @@ def render_draft_pick_callout(
         show_market_rank=True,
         show_model_rank=True,
     )
-    stats_html = f'<div class="ld-rec-stat-line">{stats}</div>' if stats else ""
+    stats_html = stat_line_chips_html(stats) if stats else ""
     detail_html = f'<div style="font-size:0.88rem;margin-top:4px;">{detail}</div>' if detail else ""
     border = "#16a34a" if variant == "success" else "#2563eb"
     bg = "#f0fdf4" if variant == "success" else "#eff6ff"

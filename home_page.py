@@ -13,12 +13,25 @@ from typing import Any, Callable
 
 HOME_PAGE = "Home"
 
-# (icon, title, one line, button, page key)
+# (icon, title, one line, button, page key). Icons are the destination's feature icon
+# (feature_identity), so a card looks like the page it opens; the card takes that family's colour.
 TASKS: tuple[tuple[str, str, str, str, str], ...] = (
     ("🔎", "Explore Players", "Look up any player's seasons and careers, back to 1871.", "Find a player", "Historical Explorer"),
-    ("📈", "Compare Players", "Put two or three players side by side.", "Compare players", "Comparison Tool"),
+    ("⚖️", "Compare Players", "Put two or three players side by side.", "Compare players", "Comparison Tool"),
     ("📝", "Prepare for a Draft", "Draft live with your league, practice on your own, or review saved drafts.", "Start a mock draft", "Draft Assistant Simulator"),
-    ("🏆", "Manage My League", "Standings, lineups, waivers and trades.", "Open my league", "Fantasy Standings Tracker"),
+    ("🏟️", "Manage My League", "Standings, lineups, waivers and trades.", "Open my league", "Fantasy Standings Tracker"),
+)
+
+# "Every tool" on Home: each family with one plain line, then its pages (feature_identity names).
+TOOL_GROUPS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("players", "Look players up: best seasons, whole careers, head to head.",
+     ("Historical Explorer", "Career Totals", "Comparison Tool", "Leaderboards")),
+    ("insights", "Who is rising, what they are worth, and next season.",
+     ("Trend Value", "Valuation", "ML Predictions", "Fantasy Sleepers & Busts")),
+    ("draft", "Practice, run and review drafts.",
+     ("Live Draft Room", "Draft Room Simulator", "Draft Assistant Simulator", "Draft Lab / Simulation", "Saved Draft Library")),
+    ("league", "Run your fantasy league week to week.",
+     ("Fantasy Standings Tracker", "Fantasy Lineup Assistant", "Waiver Wire / Add-Drop Center")),
 )
 
 
@@ -132,7 +145,47 @@ def _render_draft_choices(st: Any, go: Callable[[str], Callable[[], None]]) -> N
         with wrap:
             cols = st.columns(2)
         for col, (label, page) in zip(cols, pair):
-            col.button(label, key=f"home_draft_{page}", on_click=go(page), use_container_width=True)
+            col.button(_with_icon(page, label), key=f"home_draft_{page}", on_click=go(page), use_container_width=True,
+                       help=_purpose(page))
+
+
+def _with_icon(page: str, text: str) -> str:
+    try:
+        from feature_identity import action_label
+
+        return action_label(page, text)
+    except ImportError:
+        return text
+
+
+def _purpose(page: str) -> str | None:
+    try:
+        from feature_identity import feature
+
+        feat = feature(page)
+        return feat.purpose if feat else None
+    except ImportError:
+        return None
+
+
+def _home_identity_css() -> str:
+    """Task cards carry their family's colour on the top edge and in a small family label;
+    the Ask card carries AMI's. Keyed containers, so nothing else on the page is restyled."""
+    try:
+        from feature_identity import AMI, family
+    except ImportError:
+        return ""
+    rules = []
+    for _icon, _title, _body, _button, page in TASKS:
+        fam = family(page)
+        rules.append(f'[class*="st-key-home-task-{fam.key}-"] {{ border-top: 4px solid {fam.color} !important; }}')
+        rules.append(f'[class*="st-key-home-task-{fam.key}-"] .u1-home-fam {{ color: {fam.color}; }}')
+    ami = family(AMI.family)
+    rules.append(f".u1-ami-slot {{ border-left: 4px solid {ami.color}; background: {ami.tint}; }}")
+    rules.append(f".u1-ami-slot .u1-card-title {{ color: {ami.color}; }}")
+    rules.append(".u1-home-fam { font-size: 0.68rem; font-weight: 800; letter-spacing: 0.08em; "
+                 "text-transform: uppercase; margin-bottom: 2px; }")
+    return "<style>" + " ".join(rules) + "</style>\n"
 
 
 def render_home(st: Any, session: Any, *, navigate: Callable[..., Any], render_tutorial_bar: Callable[[], None] | None = None) -> None:
@@ -144,22 +197,29 @@ def render_home(st: Any, session: Any, *, navigate: Callable[..., Any], render_t
     ui.page_head(st, "What would you like to do?",
                  "Look up players, spot who's rising, prepare for your draft and run your fantasy league.")
     # The phone-only style rides in the label's own markdown, so it adds no element (or gap) on desktop.
-    st.markdown(_compact_home_on_phones_css() + '<div class="u1-label u1-home-tasks">Start here</div>',
+    st.markdown(_compact_home_on_phones_css() + _home_identity_css() + '<div class="u1-label u1-home-tasks">Start here</div>',
                 unsafe_allow_html=True)
+    try:
+        from feature_identity import family
+    except ImportError:
+        family = None
     for row in (TASKS[:2], TASKS[2:]):
         cols = st.columns(2)
         for col, (icon, title, body, button, page) in zip(cols, row):
-            with col.container(border=True):
-                st.markdown(f'<div class="u1-card-title">{icon} {ui.esc(title)}</div>'
+            fam = family(page) if family else None
+            with col.container(border=True, key=f"home-task-{fam.key}-{TASKS.index((icon, title, body, button, page))}" if fam else None):
+                fam_html = f'<div class="u1-home-fam">{ui.esc(fam.name)}</div>' if fam else ""
+                st.markdown(f'{fam_html}<div class="u1-card-title">{icon} {ui.esc(title)}</div>'
                             f'<div class="u1-card-body">{ui.esc(body)}</div>', unsafe_allow_html=True)
                 if title == DRAFT_TASK:
                     _render_draft_choices(st, go)
                 else:
-                    st.button(button, key=f"home_task_{page}", on_click=go(page), use_container_width=True)
+                    st.button(_with_icon(page, button), key=f"home_task_{page}", on_click=go(page),
+                              use_container_width=True, help=_purpose(page))
 
     _render_league_block(st, session, go)
 
-    ui.section_label(st, "Ask a question")
+    ui.section_label(st, "Ask a question", feature="ami")
     st.markdown(
         '<div class="u1-card u1-ami-slot"><div class="u1-card-title">💬 Ask AMI</div>'
         '<div class="u1-card-body">Ask a baseball question in plain English: use <strong>Ask AMI</strong> in the '
@@ -168,6 +228,12 @@ def render_home(st: Any, session: Any, *, navigate: Callable[..., Any], render_t
         unsafe_allow_html=True,
     )
     _render_ask_ami_starters(st, session)
+
+    ui.section_label(st, "Every tool")
+    try:
+        ui.tool_directory(st, TOOL_GROUPS, key="home", open_page=go)
+    except ImportError:
+        pass
     if render_tutorial_bar is not None:
         render_tutorial_bar()
 
@@ -221,12 +287,12 @@ def _render_league_block(st: Any, session: Any, go: Callable[[str], Callable[[],
         context = get_active_league_context(session, respect_source_priority=False)
     except Exception:
         context = None
-    ui.section_label(st, "My league")
+    ui.section_label(st, "My league", feature="league")
     if not isinstance(context, dict):
         ui.answer_card(st, "You don't have a league yet",
                        "Draft one (mock or live) or import a draft board you already have.", kicker="My league")
-        ui.action_row(st, [("Start or import a draft", go("Draft Room Simulator")),
-                           ("Open saved drafts", go("Saved Draft Library"))], key="home_noleague")
+        ui.action_row(st, [(_with_icon("Draft Room Simulator", "Start or import a draft"), go("Draft Room Simulator")),
+                           (_with_icon("Saved Draft Library", "Open saved drafts"), go("Saved Draft Library"))], key="home_noleague")
         return
     team = _my_team(session, context)
     try:
@@ -238,7 +304,7 @@ def _render_league_block(st: Any, session: Any, go: Callable[[str], Callable[[],
     summary = league_summary(context, team, is_commissioner=is_comm)
     if summary is None:
         ui.answer_card(st, "Your league has no rosters yet", "Open your saved drafts to pick or finish a league.")
-        ui.action_row(st, [("Open saved drafts", go("Saved Draft Library"))], key="home_emptyleague")
+        ui.action_row(st, [(_with_icon("Saved Draft Library", "Open saved drafts"), go("Saved Draft Library"))], key="home_emptyleague")
         return
     if summary.place is not None:
         tie = "tied " if summary.tied else ""
@@ -250,6 +316,6 @@ def _render_league_block(st: Any, session: Any, go: Callable[[str], Callable[[],
         body = "No completed weeks yet, so there are no official standings."
     ui.answer_card(st, headline, body, kicker="My league")
     ui.chips(st, [(summary.week_text, ""), (summary.next_action, "warn" if summary.next_action.startswith(("Set", "Finalize")) else "")])
-    ui.action_row(st, [("League Standings", go("Fantasy Standings Tracker")),
-                       ("Set Lineup", go("Fantasy Lineup Assistant")),
-                       ("Waiver Wire", go("Waiver Wire / Add-Drop Center"))], key="home_league")
+    ui.action_row(st, [(_with_icon("Fantasy Standings Tracker", "League Standings"), go("Fantasy Standings Tracker")),
+                       (_with_icon("Fantasy Lineup Assistant", "Set Lineup"), go("Fantasy Lineup Assistant")),
+                       (_with_icon("Waiver Wire / Add-Drop Center", "Waiver Wire"), go("Waiver Wire / Add-Drop Center"))], key="home_league")

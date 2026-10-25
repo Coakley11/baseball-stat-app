@@ -241,11 +241,11 @@ class LineupPageOrderTests(unittest.TestCase):
     def test_page_head_label_and_compatibility(self):
         from nav_groups import NAV_LABELS
 
-        self.assertEqual(NAV_LABELS["Fantasy Lineup Assistant"], "🧠 Lineup & Trades")
+        self.assertEqual(NAV_LABELS["Fantasy Lineup Assistant"], "📋 Lineup & Trades")  # 🧠 read as AI
         self.assertIn('"Fantasy Lineup Assistant": "🧠 Fantasy Lineup Assistant"', APP, "old label still maps to the key")
         start = APP.index('elif active_page == "Fantasy Lineup Assistant":')
         body = APP[start:APP.index('elif active_page == "Waiver Wire', start)]
-        self.assertIn('"🧠 Lineup & Trades",', body)
+        self.assertIn('"📋 Lineup & Trades",', body)
         self.assertNotIn("render_section_header(", body)
         self.assertLess(body.index("render_lineup_management_page("), body.index("render_active_saved_draft_chip("),
                         "the active-league card sits below the page content")

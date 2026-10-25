@@ -82,6 +82,27 @@ U1_CSS = """<style>
 .u1-trade-player .u1-name { font-weight: 600; color: #0b2540; overflow-wrap: anywhere; }
 .u1-trade-player .u1-sub { font-size: 0.8rem; color: #5a6f82; }
 @media (max-width: 640px) { .u1-trade { grid-template-columns: minmax(0, 1fr); } .u1-trade-arrow { transform: rotate(90deg); } }
+/* Feature identity (feature_identity.py): --fam is the feature family's colour, --fam-tint its light fill. */
+.u1-page-head.u1-fam { display: flex; align-items: center; gap: 12px; padding: 2px 0 8px 0;
+  border-bottom: 2px solid var(--fam-border, #e3e9f0); margin-bottom: 0.55rem; }
+.u1-head-icon { flex: 0 0 auto; width: 46px; height: 46px; border-radius: 12px; display: flex; align-items: center;
+  justify-content: center; font-size: 1.55rem; line-height: 1; background: var(--fam-tint, #eef3f8);
+  border: 1px solid var(--fam-border, #dbe3ec); }
+.u1-head-text { min-width: 0; }
+.u1-family { font-size: 0.68rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--fam, #5a6f82); margin: 0 0 1px 0; }
+.u1-page-head.u1-fam .u1-title { font-size: 1.5rem; }
+@media (max-width: 640px) { .u1-head-icon { width: 40px; height: 40px; font-size: 1.3rem; border-radius: 10px; }
+  .u1-page-head.u1-fam .u1-title { font-size: 1.3rem; } }
+.u1-answer.u1-fam { border-left-color: var(--fam); }
+.u1-tiles.u1-fam .u1-tile { border-top: 3px solid var(--fam); }
+.u1-tile .u1-l abbr { text-decoration: none; cursor: help; }
+.u1-tile .u1-v { font-size: 1.35rem; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.u1-tile .u1-hint { font-size: 0.72rem; color: #6b7c8f; margin-top: 1px; }
+.u1-label.u1-fam { color: var(--fam); }
+.u1-dir-head { display: flex; align-items: baseline; gap: 6px; margin: 0 0 2px 0; color: var(--fam); font-weight: 800;
+  font-size: 0.8rem; letter-spacing: 0.06em; text-transform: uppercase; }
+.u1-dir-sub { font-size: 0.82rem; color: #5a6f82; margin: 0 0 4px 0; }
 </style>"""
 
 
@@ -89,42 +110,103 @@ def esc(text: Any) -> str:
     return html.escape(str(text if text is not None else ""), quote=True)
 
 
+# Plain-English names for the stat abbreviations a tile can show (tooltip + a small hint line),
+# so AVG / OPS / RBI are readable without baseball jargon.
+STAT_HINTS = {
+    "AVG": "Batting average", "BA": "Batting average", "OBP": "On-base percentage", "SLG": "Slugging percentage",
+    "OPS": "On-base + slugging", "HR": "Home runs", "RBI": "Runs batted in", "R": "Runs", "H": "Hits",
+    "2B": "Doubles", "3B": "Triples", "SB": "Stolen bases", "BB": "Walks", "AB": "At-bats", "SO": "Strikeouts",
+    "WAR": "Wins above replacement", "G": "Games", "PA": "Plate appearances",
+}
+
+
+def _page_feature(st: Any) -> str:
+    """The page being shown, when it is a real feature page other than Home (else "")."""
+    try:
+        from feature_identity import feature
+
+        page = str(st.session_state.get("active_page") or "")
+        feat = feature(page)
+        return page if feat is not None and feat.family != "home" else ""
+    except Exception:
+        return ""
+
+
+def _fam_style(feature: str) -> tuple[str, str]:
+    """(" u1-fam", ' style="--fam:…"') for a page key or family key, or ("", "") when none."""
+    if not feature:
+        return "", ""
+    try:
+        from feature_identity import family
+    except ImportError:
+        return "", ""
+    fam = family(feature)
+    return " u1-fam", f' style="--fam:{fam.color};--fam-tint:{fam.tint};--fam-border:{fam.border}"'
+
+
 def inject_css(st: Any) -> None:
     """Emit the U1 stylesheet (one small <style> block; pages call it once via page_head)."""
     st.markdown(U1_CSS, unsafe_allow_html=True)
 
 
-def page_head(st: Any, title: str, purpose: str = "") -> None:
-    """Short page identity: title + one plain-language line."""
+def page_head(st: Any, title: str, purpose: str = "", *, feature: str = "") -> None:
+    """Short page identity: title + one plain-language line.
+
+    With ``feature`` (a page key), the feature's icon sits in a tile in its family colour, with
+    the family name above the title, so every page says which part of the product it is in.
+    A title that starts with that icon is shown without repeating it."""
     inject_css(st)
     purpose_html = f'<p class="u1-purpose">{esc(purpose)}</p>' if purpose else ""
+    fam_cls, fam_style = _fam_style(feature)
+    if fam_cls:
+        from feature_identity import family, icon
+
+        ico = icon(feature)
+        text = title[len(ico):].strip() if ico and title.startswith(ico) else title
+        fam = family(feature)
+        st.markdown(
+            f'<div class="u1-page-head{fam_cls}"{fam_style}>'
+            f'<span class="u1-head-icon" aria-hidden="true">{esc(ico or fam.icon)}</span>'
+            f'<div class="u1-head-text"><p class="u1-family">{esc(fam.name)}</p>'
+            f'<p class="u1-title">{esc(text)}</p>{purpose_html}</div></div>',
+            unsafe_allow_html=True,
+        )
+        return
     st.markdown(f'<div class="u1-page-head"><p class="u1-title">{esc(title)}</p>{purpose_html}</div>',
                 unsafe_allow_html=True)
 
 
 def answer_card(st: Any, headline: str, body: str = "", *, kicker: str = "", tone: str = "",
-                body_html: bool = False) -> None:
-    """The first answer on the page. ``tone``: "" | "good" | "warn"."""
+                body_html: bool = False, feature: str = "") -> None:
+    """The first answer on the page. ``tone``: "" | "good" | "warn" (a tone wins over ``feature``,
+    whose family colour otherwise marks the card; it defaults to the page being shown)."""
     tone_cls = f" {tone}" if tone in ("good", "warn") else ""
+    fam_cls, fam_style = ("", "") if tone_cls else _fam_style(feature or _page_feature(st))
     kicker_html = f'<div class="u1-kicker">{esc(kicker)}</div>' if kicker else ""
     body_part = (body if body_html else esc(body)) if body else ""
     body_html_block = f'<p class="u1-body">{body_part}</p>' if body_part else ""
     st.markdown(
-        f'<div class="u1-answer{tone_cls}">{kicker_html}<div class="u1-headline">{esc(headline)}</div>{body_html_block}</div>',
+        f'<div class="u1-answer{tone_cls}{fam_cls}"{fam_style}>{kicker_html}<div class="u1-headline">{esc(headline)}</div>{body_html_block}</div>',
         unsafe_allow_html=True,
     )
 
 
-def metric_tiles(st: Any, tiles: Iterable[tuple[str, Any, str]]) -> None:
-    """Small metric tiles: (label, value, sub-line). Wraps on phones; never scrolls sideways."""
-    items = "".join(
-        f'<div class="u1-tile"><div class="u1-l">{esc(label)}</div><div class="u1-v">{esc(value)}</div>'
-        + (f'<div class="u1-s">{esc(sub)}</div>' if sub else "")
-        + "</div>"
-        for label, value, sub in tiles
-    )
+def _tile_html(label: Any, value: Any, sub: Any) -> str:
+    text = str(label if label is not None else "")
+    hint = STAT_HINTS.get(text.strip().upper())
+    label_html = f'<abbr title="{esc(hint)}">{esc(text)}</abbr>' if hint else esc(text)
+    # A sub-line the page supplied wins; otherwise a bare abbreviation gets its plain name.
+    under = f'<div class="u1-s">{esc(sub)}</div>' if sub else (f'<div class="u1-hint">{esc(hint)}</div>' if hint else "")
+    return f'<div class="u1-tile"><div class="u1-l">{label_html}</div><div class="u1-v">{esc(value)}</div>{under}</div>'
+
+
+def metric_tiles(st: Any, tiles: Iterable[tuple[str, Any, str]], *, feature: str = "") -> None:
+    """Small metric tiles: (label, value, sub-line). Wraps on phones; never scrolls sideways.
+    Stat abbreviations get their plain-English name; ``feature`` tints the tiles' top edge."""
+    items = "".join(_tile_html(label, value, sub) for label, value, sub in tiles)
     if items:
-        st.markdown(f'<div class="u1-tiles">{items}</div>', unsafe_allow_html=True)
+        fam_cls, fam_style = _fam_style(feature or _page_feature(st))
+        st.markdown(f'<div class="u1-tiles{fam_cls}"{fam_style}>{items}</div>', unsafe_allow_html=True)
 
 
 def ranked_list(st: Any, rows: Sequence[dict[str, Any]], *, start: int = 1) -> None:
@@ -156,8 +238,46 @@ def chips(st: Any, items: Iterable[tuple[str, str]]) -> None:
         st.markdown(f'<div class="u1-chips">{parts}</div>', unsafe_allow_html=True)
 
 
-def section_label(st: Any, text: str) -> None:
-    st.markdown(f'<div class="u1-label">{esc(text)}</div>', unsafe_allow_html=True)
+def section_label(st: Any, text: str, *, feature: str = "") -> None:
+    fam_cls, fam_style = _fam_style(feature)
+    st.markdown(f'<div class="u1-label{fam_cls}"{fam_style}>{esc(text)}</div>', unsafe_allow_html=True)
+
+
+def tool_directory(st: Any, groups: Sequence[tuple[str, str, Sequence[str]]], *, key: str,
+                   open_page: Callable[[str], Callable[[], None]], columns: int = 2) -> None:
+    """Every tool, grouped by family: [(family key, one line, [page keys])]. Each page is one
+    button (its icon and name, its purpose as the tooltip) that only schedules navigation.
+    Families sit ``columns`` to a row and stack on phones."""
+    from feature_identity import family, feature as feature_of
+
+    groups = [g for g in groups if g[2]]
+    for start in range(0, len(groups), columns):
+        row = groups[start:start + columns]
+        cols = st.columns(columns)
+        for col, (fam_key, line, pages) in zip(cols, row):
+            fam = family(fam_key)
+            _cls, style = _fam_style(fam_key)
+            with col.container(border=True, key=f"u1-dir-{key}-{fam.key}"):
+                st.markdown(
+                    f'<div class="u1-dir-head"{style}><span aria-hidden="true">{esc(fam.icon)}</span>{esc(fam.name)}</div>'
+                    f'<div class="u1-dir-sub">{esc(line)}</div>',
+                    unsafe_allow_html=True,
+                )
+                feats = [f for f in (feature_of(page) for page in pages) if f is not None]
+                # Two buttons per row, kept two-up on phones (mobile_wrap_row), so a family stays compact.
+                for pair_start in range(0, len(feats), 2):
+                    pair = feats[pair_start:pair_start + 2]
+                    try:
+                        from mobile_foundation import mobile_wrap_row
+
+                        wrap = mobile_wrap_row(st, f"u1-dir-row-{key}-{fam.key}-{pair_start}")
+                    except ImportError:
+                        wrap = st.container()
+                    with wrap:
+                        btn_cols = st.columns(2)
+                    for btn_col, feat in zip(btn_cols, pair):
+                        btn_col.button(f"{feat.icon} {feat.name}", key=f"u1_dir_{key}_{feat.page}", help=feat.purpose,
+                                       on_click=open_page(feat.page), use_container_width=True, type="secondary")
 
 
 def action_row(st: Any, actions: Sequence[tuple[str, Callable[[], None]]], *, key: str, primary: int | None = 0) -> None:

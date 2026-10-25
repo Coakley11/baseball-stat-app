@@ -160,7 +160,12 @@ def render_mobile_quick_nav(
         return page_option_label(page)
 
     def _format_section(group: str) -> str:
-        return "🏠 Home" if group == "Home" else group
+        try:
+            from nav_groups import section_display
+
+            return section_display(group)
+        except ImportError:
+            return "🏠 Home" if group == "Home" else group
 
     def _go(target: str) -> None:
         if not target or target == st.session_state.get(main_sidebar_page_key):

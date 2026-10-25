@@ -5,6 +5,11 @@ enableStaticServing = true
 [browser]
 gatherUsageStats = false
 
+# DCBE identity: primary buttons, the selected page, sliders and focus rings in the brand blue
+# (feature_identity "players" colour) instead of Streamlit's default red. Display only.
+[theme]
+primaryColor = "#1f5fa8"
+
 # Streamlit Cloud entrypoint MUST be streamlit_app.py (lowercase).
 # Do not use Streamlit_app.py — removed from dev branch; uppercase breaks Linux deploys.
 # App settings: repo Coakley11/baseball-stat-app · branch dev · not pinned to an old commit.

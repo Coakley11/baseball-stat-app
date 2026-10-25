@@ -275,11 +275,31 @@ def trend_answer(rows: pd.DataFrame, stat: str, years: Sequence[int], *, slope_c
         chart_names = [name(riser), name(faller)]
     body += f" {up:,} of {total:,} hitters shown {'is' if up == 1 else 'are'} trending up."
     if rate:
-        body += " Rate-stat trends weight seasons by playing time so small samples have less influence."
+        method = " Rate-stat trends weight seasons by playing time so small samples have less influence."
     else:
-        body += f" The trend is the per-season slope of each player's season {what}."
+        method = f" The trend is the per-season slope of each player's season {what}."
+    body += method
+
+    # The same numbers as tiles (U-polish): the lead player's change, start and end, and where they
+    # rank, so the sentence below only has to name the other movers. Nothing new is computed.
+    lead = focus_row if focus_row is not None else riser
+    lead_name = focus if focus_row is not None else name(riser)
+    tiles = [(f"{stat} per season", slope_text(stat, lead["_s"]), f"{lead_name.split(' ')[-1]} · {span}")]
+    pts = sorted((int(q[0]), q[1], _num(q[2]) if len(q) > 2 else None)
+                 for q in ((values or {}).get(lead_name) or []) if _num(q[1]) is not None)
+    if len(pts) >= 2:
+        for yr, val, ab in (pts[0], pts[-1]):
+            sub = f"{int(ab):,} AB" if rate and ab is not None else ""
+            tiles.append((f"{stat} in {yr}", fmt_stat(stat, val), sub))
+    if focus_row is not None:
+        tiles.append(("Trend rank", _ordinal(int(match.index[0]) + 1), f"of {total:,} hitters"))
+        short = f"Fastest riser: {line(riser)}. Biggest drop: {line(faller)}."
+    else:
+        tiles.append(("Trending up", f"{up:,}", f"of {total:,} hitters"))
+        short = f"Biggest drop: {line(faller)}." if focus == "" else body.split(" " + f"{up:,} of")[0]
     return {"headline": headline, "body": body, "kicker": kicker, "chart_names": chart_names,
-            "riser": name(riser), "faller": name(faller), "focus_found": focus_row is not None}
+            "riser": name(riser), "faller": name(faller), "focus_found": focus_row is not None,
+            "tiles": tiles, "body_short": short + method}
 
 
 def _rank_of(series: pd.Series, value: float) -> int:

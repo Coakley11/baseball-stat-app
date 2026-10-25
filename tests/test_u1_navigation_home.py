@@ -38,9 +38,14 @@ class NavGroupsTests(unittest.TestCase):
     def test_section_heading_css_is_well_formed(self):
         css = ng.sidebar_section_css("main_sidebar_page", list(ng.NAV_ORDER))
         self.assertEqual(css.count("{"), css.count("}"))
-        for section in ("PLAYERS", "INSIGHTS", "DRAFT", "MY LEAGUE", "ACCOUNT"):
-            self.assertIn(f'content: "{section}"', css)
-        self.assertNotIn('content: "HOME"', css)
+        import feature_identity as fi
+
+        for section in ("Players", "Insights", "Draft", "My League", "Account"):
+            fam = fi.family(section)
+            # Each heading: the family icon and name, in the family colour (feature_identity).
+            self.assertIn(f'content: "{fam.icon} {section.upper()}"', css)
+            self.assertIn(f"color: {fam.color}", css)
+        self.assertNotIn('HOME"', css)
         self.assertIn(".st-key-main_sidebar_page", css)
 
     def test_unregistered_page_is_appended_not_lost(self):

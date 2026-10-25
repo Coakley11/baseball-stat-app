@@ -155,7 +155,7 @@ def _panel_body(st: Any, active_page: str, yearly_df: Any, entitlement: Any = No
     prefix = PHONE_PREFIX if surface == "phone" else ""
     ss = st.session_state
     if surface == "sidebar":
-        st.markdown("### 💬 Ask AMI")
+        st.markdown(_AMI_HEAD_HTML, unsafe_allow_html=True)
     st.caption("Ask about players, stats, your league or how to use a page. Quick answers come from this app's own "
                "data; AMI is read-only and never changes your drafts or teams.")
     ctx = build_ami_context(ss, active_page)
@@ -187,7 +187,8 @@ def _panel_body(st: Any, active_page: str, yearly_df: Any, entitlement: Any = No
             st.button(s, key=f"{prefix}ami_suggest_{i}", type="tertiary", on_click=_queue, args=(ss, s))
 
     if has_answer:
-        box = st.container(border=True)
+        box = st.container(border=True, key=f"{prefix}ami_answer_box")
+        box.markdown('<div class="ami-kicker">⚡ Quick answer</div>', unsafe_allow_html=True)
         box.markdown(f"**You asked:** {last['question']}")
         if last.get("error"):
             box.error(last["answer"])
@@ -201,6 +202,8 @@ def _panel_body(st: Any, active_page: str, yearly_df: Any, entitlement: Any = No
             done = ss.get(FULL_ANALYSIS_KEY)
             sent = isinstance(done, dict) and done.get("question") == last.get("question") and not done.get("failed")
             # on_click runs before the redraw, so the button is already spent when the panel draws again.
+            if not sent:
+                st.caption("Want more depth? Full analysis sends this question to Command Center for a longer write-up.")
             st.button("Full analysis requested" if sent else "Get full analysis", key=f"{prefix}ami_full_analysis",
                       width="stretch", help=FULL_ANALYSIS_HELP, disabled=sent,
                       on_click=_send_full_analysis, args=(st, full_analysis, dict(last)))
@@ -233,6 +236,27 @@ def _panel(active_page: str, yearly_df: Any, entitlement: Any = None, full_analy
         _streamlit.caption("AMI is unavailable right now.")
 
 
+# AMI's identity (feature_identity.AMI: violet). The suggested questions are buttons, so they get
+# a link colour and an arrow; plain captions stay grey.
+_AMI_COLOR = "#6d28d9"
+_AMI_HEAD_HTML = (
+    '<div class="ami-head"><span class="ami-head-icon" aria-hidden="true">💬</span>'
+    '<span class="ami-head-title">Ask AMI</span></div>'
+)
+_AMI_CSS = f"""
+.ami-head {{ display: flex; align-items: center; gap: 8px; margin: 0.2rem 0 0.35rem 0; }}
+.ami-head-icon {{ width: 32px; height: 32px; border-radius: 9px; display: flex; align-items: center;
+  justify-content: center; background: #f3effd; border: 1px solid #d9ccf6; font-size: 1.05rem; }}
+.ami-head-title {{ font-size: 1.2rem; font-weight: 800; color: {_AMI_COLOR}; }}
+.ami-kicker {{ font-size: 0.68rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase;
+  color: {_AMI_COLOR}; margin-bottom: -0.35rem; }}
+[class*="st-key-ami_suggest_"] button p, [class*="st-key-m_ami_suggest_"] button p {{
+  color: {_AMI_COLOR}; text-align: left; text-decoration: underline; text-underline-offset: 3px; }}
+[class*="st-key-ami_suggest_"] button p::before, [class*="st-key-m_ami_suggest_"] button p::before {{
+  content: "→ "; text-decoration: none; display: inline-block; margin-right: 2px; }}
+"""
+
+
 def _surface_css() -> str:
     """Exactly one Ask AMI per device: the phone bar below the phone breakpoint, the sidebar
     panel above it. (Both stay mounted so widget identity is stable across reruns.)"""
@@ -240,7 +264,7 @@ def _surface_css() -> str:
         from mobile_foundation import PHONE_MAX_PX
     except ImportError:
         PHONE_MAX_PX = 640
-    return f"""<style>
+    return f"""<style>{_AMI_CSS}
 @media (min-width: {PHONE_MAX_PX + 1}px) {{
     .st-key-{PHONE_ROOT_KEY},
     [data-testid="stLayoutWrapper"]:has(> .st-key-{PHONE_ROOT_KEY}) {{ display: none; }}

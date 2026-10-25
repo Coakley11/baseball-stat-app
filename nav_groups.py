@@ -32,9 +32,16 @@ NAV_LABELS: dict[str, str] = {
     HOME_PAGE: "🏠 Home",
     "Fantasy Standings Tracker": "📊 League Standings",
     "Waiver Wire / Add-Drop Center": "🔄 Waiver Wire",
-    "Comparison Tool": "📈 Compare Players",
+    "Comparison Tool": "⚖️ Compare Players",
     "Fantasy Sleepers & Busts": "💎 Sleepers & Busts",
-    "Fantasy Lineup Assistant": "🧠 Lineup & Trades",  # U3: the page also holds the Trade Center
+    "Fantasy Lineup Assistant": "📋 Lineup & Trades",  # U3: the page also holds the Trade Center
+}
+
+# Earlier sidebar labels, still resolvable to their page (icons are display only; the feature
+# icons live in feature_identity). 📈 read as "trend" and 🧠 as AI, so both moved.
+LEGACY_NAV_LABELS: dict[str, str] = {
+    "📈 Compare Players": "Comparison Tool",
+    "🧠 Lineup & Trades": "Fantasy Lineup Assistant",
 }
 
 
@@ -42,6 +49,27 @@ def ordered_pages(page_options) -> list[str]:
     """``page_options`` in section order; any page not registered here is appended (never lost)."""
     known = [p for p in NAV_ORDER if p in set(page_options)]
     return known + [p for p in page_options if p not in PAGE_SECTION]
+
+
+def _section_heading(section: str) -> tuple[str, str]:
+    """("⚾ PLAYERS", family colour) for a sidebar section heading; plain grey if unknown."""
+    try:
+        from feature_identity import family
+
+        fam = family(section)
+        return f"{fam.icon} {section.upper()}", fam.color
+    except ImportError:
+        return section.upper(), "#6b7c8f"
+
+
+def section_display(section: str) -> str:
+    """Section name with its family icon, for the phone section pills ("⚾ Players")."""
+    try:
+        from feature_identity import family
+
+        return f"{family(section).icon} {section}"
+    except ImportError:
+        return section
 
 
 def sidebar_section_css(radio_key: str, pages: list[str]) -> str:
@@ -60,10 +88,11 @@ def sidebar_section_css(radio_key: str, pages: list[str]) -> str:
         if section == "Home":
             continue  # Home sits alone at the top; a "HOME" heading over it adds nothing.
         sel = f'section[data-testid="stSidebar"] .st-key-{radio_key} [role="radiogroup"] > label:nth-of-type({idx})'
+        heading, color = _section_heading(section)
         rules.append(
             f"{sel} {{ margin-top: 1.55rem; position: relative; }}\n"
-            f'{sel}::before {{ content: "{section.upper()}"; position: absolute; left: 0; top: -1.3rem; '
-            "font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; color: #6b7c8f; "
+            f'{sel}::before {{ content: "{heading}"; position: absolute; left: 0; top: -1.3rem; '
+            f"font-size: 0.68rem; font-weight: 800; letter-spacing: 0.08em; color: {color}; "
             "pointer-events: none; white-space: nowrap; }"
         )
     return "<style>\n" + "\n".join(rules) + "\n</style>"

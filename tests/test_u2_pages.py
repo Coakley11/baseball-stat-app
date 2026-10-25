@@ -86,7 +86,7 @@ class U2PageWiringTests(unittest.TestCase):
     def test_renamed_labels_keep_page_keys(self):
         from nav_groups import NAV_LABELS
 
-        self.assertEqual(NAV_LABELS["Comparison Tool"], "📈 Compare Players")
+        self.assertEqual(NAV_LABELS["Comparison Tool"], "⚖️ Compare Players")  # 📈 read as "trend"
         self.assertEqual(NAV_LABELS["Fantasy Sleepers & Busts"], "💎 Sleepers & Busts")
         self.assertIn('"Comparison Tool": "📈 Comparison Tool"', APP, "old label still maps to the key for saved sessions")
         self.assertIn('"Fantasy Sleepers & Busts": "💎 Fantasy Sleepers & Busts"', APP)
