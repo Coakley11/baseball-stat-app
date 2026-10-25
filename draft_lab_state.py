@@ -446,20 +446,10 @@ def hydrate_draft_lab_results_state(session: dict[str, Any], state: dict[str, An
         if key not in session and val is not None:
             session[key] = val
     proj_snap = blob.get("projection_settings_snapshot")
-    if isinstance(proj_snap, dict) and any(proj_snap.get(k) is not None for k in ("lookback_window", "projection_style", "fantasy_format")):
-        try:
-            from shared_draft_context import write_canonical_draft_settings
-
-            write_canonical_draft_settings(
-                session,
-                lookback_window=proj_snap.get("lookback_window"),
-                projection_style=proj_snap.get("projection_style"),
-                fantasy_format=proj_snap.get("fantasy_format"),
-                source_page="Draft Lab / Restored Results",
-                reason="hydrate_completed_draft",
-            )
-        except ImportError:
-            pass
+    if isinstance(proj_snap, dict):
+        results = session.get("draft_lab_results")
+        if isinstance(results, dict):
+            results["projection_settings_snapshot"] = dict(proj_snap)
     active_tab = str(blob.get("active_tab") or blob.get("preferred_tab") or "").strip()
     if active_tab in DRAFT_LAB_RESULT_TABS:
         session["draft_lab_active_tab"] = active_tab

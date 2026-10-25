@@ -353,26 +353,26 @@ class TestHistoricalProjectionSnapshot(unittest.TestCase):
         self.assertEqual(snap["projection_style"], "Conservative")
         self.assertEqual(snap["fantasy_format"], "Points League")
 
-    def test_hydrate_restores_historical_settings_to_canonical(self):
+    def test_hydrate_preserves_global_settings_and_attaches_snapshot(self):
         from draft_lab_state import DRAFT_LAB_PERSISTED_STATE_KEY, hydrate_draft_lab_results_state
         from shared_draft_context import read_canonical_draft_settings, write_canonical_draft_settings
 
         session: dict = {}
         write_canonical_draft_settings(
             session,
-            lookback_window=3,
-            projection_style="Balanced",
+            lookback_window=5,
+            projection_style="Conservative",
             source_page="test",
             reason="test_current",
         )
-        self.assertEqual(read_canonical_draft_settings(session)["lookback_window"], 3)
+        self.assertEqual(read_canonical_draft_settings(session)["lookback_window"], 5)
 
         session[DRAFT_LAB_PERSISTED_STATE_KEY] = {
             "schema_version": 2,
             "draft_records": [{"playerID": "p1", "Fantasy Team": "A"}],
             "projection_settings_snapshot": {
-                "lookback_window": 5,
-                "projection_style": "Conservative",
+                "lookback_window": 3,
+                "projection_style": "Balanced",
                 "fantasy_format": "Points League",
             },
             "widget_settings": {},
@@ -380,8 +380,15 @@ class TestHistoricalProjectionSnapshot(unittest.TestCase):
         session.pop("draft_lab_results", None)
         hydrate_draft_lab_results_state(session)
         cur = read_canonical_draft_settings(session)
-        self.assertEqual(cur["lookback_window"], 5, "Historical snapshot must override current settings")
-        self.assertEqual(cur["projection_style"], "Conservative")
+        self.assertEqual(cur["lookback_window"], 5,
+                         "Viewing a completed draft must not change global preferences")
+        self.assertEqual(cur["projection_style"], "Conservative",
+                         "Viewing a completed draft must not change global preferences")
+        results = session.get("draft_lab_results")
+        snap = results.get("projection_settings_snapshot", {})
+        self.assertEqual(snap["lookback_window"], 3,
+                         "Historical snapshot must be accessible on results for display")
+        self.assertEqual(snap["projection_style"], "Balanced")
 
     def test_hydrate_without_snapshot_preserves_current_settings(self):
         from draft_lab_state import DRAFT_LAB_PERSISTED_STATE_KEY, hydrate_draft_lab_results_state
