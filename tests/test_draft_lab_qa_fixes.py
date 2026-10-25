@@ -317,5 +317,148 @@ class TestProjectionSettingsHandoff(unittest.TestCase):
         self.assertEqual(cur["projection_style"], "Conservative")
 
 
+class TestHistoricalProjectionSnapshot(unittest.TestCase):
+    """Issue 1 completion: completed drafts preserve the projection settings used."""
+
+    def test_sync_saves_projection_settings_snapshot(self):
+        from draft_lab_state import DRAFT_LAB_PERSISTED_STATE_KEY, sync_draft_lab_results_state
+        from shared_draft_context import write_canonical_draft_settings
+
+        session: dict = {}
+        write_canonical_draft_settings(
+            session,
+            lookback_window=5,
+            projection_style="Conservative",
+            fantasy_format="Points League",
+            source_page="test",
+            reason="test",
+        )
+        session["draft_lab_results"] = {
+            "draft": pd.DataFrame([{"playerID": "p1", "Fantasy Team": "A"}]),
+            "team_summary": pd.DataFrame(),
+            "strengths": pd.DataFrame(),
+            "pick_analysis": pd.DataFrame(),
+            "gaps": pd.DataFrame(),
+            "actual_summary": pd.DataFrame(),
+            "trades": pd.DataFrame(),
+            "analysis_context": {},
+            "handoff": {},
+            "source": "test",
+        }
+        sync_draft_lab_results_state(session)
+        blob = session[DRAFT_LAB_PERSISTED_STATE_KEY]
+        snap = blob.get("projection_settings_snapshot")
+        self.assertIsInstance(snap, dict)
+        self.assertEqual(snap["lookback_window"], 5)
+        self.assertEqual(snap["projection_style"], "Conservative")
+        self.assertEqual(snap["fantasy_format"], "Points League")
+
+    def test_hydrate_restores_historical_settings_to_canonical(self):
+        from draft_lab_state import DRAFT_LAB_PERSISTED_STATE_KEY, hydrate_draft_lab_results_state
+        from shared_draft_context import read_canonical_draft_settings, write_canonical_draft_settings
+
+        session: dict = {}
+        write_canonical_draft_settings(
+            session,
+            lookback_window=3,
+            projection_style="Balanced",
+            source_page="test",
+            reason="test_current",
+        )
+        self.assertEqual(read_canonical_draft_settings(session)["lookback_window"], 3)
+
+        session[DRAFT_LAB_PERSISTED_STATE_KEY] = {
+            "schema_version": 2,
+            "draft_records": [{"playerID": "p1", "Fantasy Team": "A"}],
+            "projection_settings_snapshot": {
+                "lookback_window": 5,
+                "projection_style": "Conservative",
+                "fantasy_format": "Points League",
+            },
+            "widget_settings": {},
+        }
+        session.pop("draft_lab_results", None)
+        hydrate_draft_lab_results_state(session)
+        cur = read_canonical_draft_settings(session)
+        self.assertEqual(cur["lookback_window"], 5, "Historical snapshot must override current settings")
+        self.assertEqual(cur["projection_style"], "Conservative")
+
+    def test_hydrate_without_snapshot_preserves_current_settings(self):
+        from draft_lab_state import DRAFT_LAB_PERSISTED_STATE_KEY, hydrate_draft_lab_results_state
+        from shared_draft_context import read_canonical_draft_settings, write_canonical_draft_settings
+
+        session: dict = {}
+        write_canonical_draft_settings(
+            session,
+            lookback_window=3,
+            projection_style="Balanced",
+            source_page="test",
+            reason="test",
+        )
+        session[DRAFT_LAB_PERSISTED_STATE_KEY] = {
+            "schema_version": 2,
+            "draft_records": [{"playerID": "p1", "Fantasy Team": "A"}],
+            "widget_settings": {},
+        }
+        session.pop("draft_lab_results", None)
+        hydrate_draft_lab_results_state(session)
+        cur = read_canonical_draft_settings(session)
+        self.assertEqual(cur["lookback_window"], 3, "No snapshot — current settings stay")
+
+
+class TestRecommendationCacheInvalidation(unittest.TestCase):
+    """Issue 4 supplement: rec cache is invalidated after a pick so recs rescore with updated roster."""
+
+    def test_cache_marked_stale_after_pick(self):
+        from live_draft_ui_cache import REC_CACHE_KEY, patch_live_draft_caches_after_pick
+
+        room = {
+            "draft_room_id": "test",
+            "current_pick_index": 1,
+            "draft_board": [{"playerID": "p1", "fullName": "1B Player", "Primary Position": "1B"}],
+            "config": {"slots": {"C": 1, "1B": 1}},
+            "teams": ["Team A"],
+            "rosters": {"Team A": [{"playerID": "p1", "fullName": "1B Player", "Primary Position": "1B"}]},
+        }
+        session: dict = {
+            REC_CACHE_KEY: {
+                "key": ("old",),
+                "top_rec": pd.DataFrame([
+                    {"playerID": "p2", "fullName": "1B Only", "Primary Position": "1B"},
+                    {"playerID": "p3", "fullName": "C Player", "Primary Position": "C"},
+                ]),
+            }
+        }
+        patch_live_draft_caches_after_pick(
+            session, room, player_id="p1", player_name="1B Player"
+        )
+        entry = session.get(REC_CACHE_KEY)
+        self.assertIsInstance(entry, dict)
+        self.assertTrue(entry.get("eligibility_pending"), "Cache must be marked eligibility_pending for rescore")
+
+    def test_eligibility_pending_cache_not_current(self):
+        from live_draft_rec_live_paint import _rec_cache_entry_current
+        from live_draft_ui_cache import REC_CACHE_KEY
+
+        room = {
+            "draft_room_id": "test",
+            "current_pick_index": 1,
+            "draft_board": [{"playerID": "p1"}],
+            "config": {},
+            "teams": ["Team A"],
+        }
+        session = {
+            REC_CACHE_KEY: {
+                "key": ("any",),
+                "top_rec": pd.DataFrame([{"playerID": "p2"}]),
+                "eligibility_pending": True,
+            }
+        }
+        self.assertFalse(
+            _rec_cache_entry_current(session, room),
+            "eligibility_pending entry must not be considered current"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
