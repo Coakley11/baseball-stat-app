@@ -857,7 +857,20 @@ except ImportError:
     DRAFT_LAB_PAGE = "Draft Lab / Simulation"
     DRAFT_LAB_PAGE_LEGACY = "Draft Simulation Test Mode"
 
-_PAGE_LEGACY_ALIASES = {DRAFT_LAB_PAGE_LEGACY: DRAFT_LAB_PAGE}
+_PAGE_LEGACY_ALIASES = {
+    DRAFT_LAB_PAGE_LEGACY: DRAFT_LAB_PAGE,
+    # Names that are not pages but were written into Command Center Continue links (the
+    # baseball_activity emitters and the suite_deep_links resume-key map). Unaliased, each
+    # fell through normalize_page_key to Historical Explorer: the hosted "Draft Lab Continue
+    # opens Historical Explorer" bug was ?suite_page=Draft Room from the Draft Lab
+    # simulation's roster_build item. Stored links keep these names, so they stay mapped.
+    "Draft Room": DRAFT_LAB_PAGE,
+    "Draft Simulation": DRAFT_LAB_PAGE,
+    "ML Projections": "ML Predictions",
+    "Fantasy Market": "Fantasy Sleepers & Busts",
+    # A Fantasy Lineup Assistant tab; the resume launcher opens it via _lineup_focus_trade_*.
+    "Trade Center": "Fantasy Lineup Assistant",
+}
 
 
 def _streamlit_script_run_ctx_active() -> bool:
@@ -12972,6 +12985,16 @@ def _consume_scheduled_navigation():
     scheduled = st.session_state.pop("_navigate_to_page", None)
     if scheduled is not None:
         target = get_sidebar_page_value(scheduled)
+        _scheduled_raw = str(scheduled or "").strip()
+        # __MONETIZATION_GATE__-style sentinels are internal, not links.
+        if _scheduled_raw and not _scheduled_raw.startswith("__") and not (
+            _scheduled_raw in _PAGE_OPTION_SET
+            or _scheduled_raw in _PAGE_LEGACY_ALIASES
+            or _scheduled_raw in _PAGE_LABEL_TO_KEY
+        ):
+            # A Continue link (?suite_page=) naming no page lands on the fallback page; say so
+            # instead of silently showing Historical Explorer.
+            st.session_state[BAD_PAGE_LINK_NOTICE_KEY] = target
     if target is None:
         legacy = st.session_state.pop("_pending_active_page", None)
         if legacy is not None:
@@ -13001,11 +13024,14 @@ def _consume_scheduled_navigation():
         # PAGE_OPTIONS[0], so a sentinel compared equal to "Historical Explorer" and
         # the gate's "Back to Historical Explorer" was dropped here as a redundant
         # schedule. Raw membership is checked for exactly that reason.
-        _current_is_real_page = (
-            _current_raw in _PAGE_OPTION_SET
-            or _current_raw in _PAGE_LABEL_TO_KEY
-            or _current_raw in _PAGE_LEGACY_ALIASES
-        )
+        #
+        # And only the canonical page name: an alias or label in active_page is not the
+        # page yet. The Command Center resume launcher writes the raw ?suite_page= into
+        # active_page before scheduling it; for ?suite_page=Draft Room the schedule was
+        # dropped here, active_page kept "Draft Room", and the sidebar radio (which
+        # initializes from active_page on a fresh session) fell back to PAGE_OPTIONS[0],
+        # Historical Explorer. Applying the schedule canonicalizes both keys.
+        _current_is_real_page = _current_raw in _PAGE_OPTION_SET
         if _current_raw and _current_is_real_page and target == current:
             try:
                 from nav_page_trace import log_nav_event
@@ -14501,10 +14527,12 @@ except Exception:
 
 # A genuinely new visit (no deep link, nothing restored, no page chosen yet) opens Home.
 # Deep links, restored sessions and explicit navigation have set active_page by now.
+# Canonicalized so a legacy alias there ("Draft Room") seeds its page, not PAGE_OPTIONS[0].
+_radio_seed_page = st.session_state.get("active_page", "Home")
 validate_state_option(
     MAIN_SIDEBAR_PAGE_KEY,
     PAGE_OPTIONS,
-    st.session_state.get("active_page", "Home"),
+    normalize_page_key(_radio_seed_page) if _radio_seed_page else _radio_seed_page,
 )
 try:
     from nav_groups import ordered_pages as _nav_ordered_pages, sidebar_section_css as _nav_section_css
