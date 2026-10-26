@@ -9,6 +9,17 @@ from __future__ import annotations
 
 from typing import Any
 
+# Baseball resume keys that always mean one page. Command Center 392ab9d rebuilds their
+# Continue links with the item's subtitle as ?suite_page= ("Team D", "Fantasy market",
+# "Trend & breakout lists"), which is not a page and opened Historical Explorer.
+_BASEBALL_FIXED_RESUME_PAGES: tuple[tuple[str, str], ...] = (
+    ("roster:", "Draft Lab / Simulation"),
+    ("baseball:roster", "Draft Lab / Simulation"),
+    ("baseball:sleepers", "Fantasy Sleepers & Busts"),
+    ("baseball:breakouts", "Trend Value"),
+    ("baseball:trends", "Trend Value"),
+)
+
 
 def _qp_get(st: Any, name: str) -> str:
     try:
@@ -266,6 +277,10 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
         st.session_state["pending_sig_player_a"] = pa
         st.session_state["pending_compare_players"] = [pa]
     target_page = page.strip()
+    for prefix, fixed_page in _BASEBALL_FIXED_RESUME_PAGES:
+        if resume.startswith(prefix):
+            target_page = fixed_page
+            break
     if not target_page and resume.startswith("compare:"):
         target_page = "Comparison Tool"
     if not target_page and resume.startswith("trend:"):

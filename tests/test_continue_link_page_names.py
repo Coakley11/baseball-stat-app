@@ -108,6 +108,39 @@ class ContinueLinkPageNameTests(unittest.TestCase):
         self.assertFalse(prep["resume_key"].startswith("bb:draft_lab:"))
 
 
+class CommandCenterSubtitlePageTests(unittest.TestCase):
+    """Command Center 392ab9d rebuilds these Continue links with the item's subtitle as
+    ?suite_page= (captured from its cards, 2026-10-25). The resume key decides the page."""
+
+    CASES = (
+        ("roster:Team D", "Team D", DRAFT_LAB),
+        ("baseball:roster", "Draft Lab", DRAFT_LAB),
+        ("baseball:sleepers", "Fantasy market", "Fantasy Sleepers & Busts"),
+        ("baseball:breakouts", "Trend & breakout lists", "Trend Value"),
+        ("baseball:trends", "Trend Value", "Trend Value"),
+    )
+
+    def _launch(self, resume: str, page: str) -> dict:
+        import suite_resume_launch
+
+        st = _FakeSt({})
+        st.query_params = {"suite_resume": resume, "suite_page": page}
+        suite_resume_launch._apply_baseball(st, resume, page)
+        return st.session_state
+
+    def test_fixed_resume_keys_open_their_page(self) -> None:
+        app = _app()
+        for resume, page, expected in self.CASES:
+            with self.subTest(resume=resume):
+                session = self._launch(resume, page)
+                self.assertEqual(session["_navigate_to_page"], expected)
+                self.assertIn(expected, app.PAGE_OPTIONS)
+
+    def test_other_keys_keep_the_link_page(self) -> None:
+        session = self._launch("historical:HR:2010-2025", "Historical Explorer")
+        self.assertEqual(session["_navigate_to_page"], "Historical Explorer")
+
+
 class ConsumeAliasScheduleTests(unittest.TestCase):
     """_consume_scheduled_navigation on the exact state the resume launcher leaves."""
 
