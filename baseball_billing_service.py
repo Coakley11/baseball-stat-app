@@ -16,7 +16,7 @@ class StripeHttpGateway:
         if not r.ok: raise BillingError(f"Stripe request failed ({r.status_code})")
         return r.json()
     def create_customer(self,*,app_user_id,email): return self._request("POST","customers",{"email":email,"metadata[app_user_id]":app_user_id},"baseball-customer-"+hashlib.sha256(app_user_id.encode()).hexdigest()).get("id")
-    def create_checkout(self,**k): return self._request("POST","checkout/sessions",{"mode":"subscription","customer":k["customer_id"],"line_items[0][price]":k["price_id"],"line_items[0][quantity]":"1","success_url":k["success_url"],"cancel_url":k["cancel_url"],"subscription_data[metadata][app_user_id]":k["app_user_id"]},k["idempotency_key"])
+    def create_checkout(self,**k): return self._request("POST","checkout/sessions",{"mode":"subscription","customer":k["customer_id"],"client_reference_id":k["app_user_id"],"metadata[app_user_id]":k["app_user_id"],"line_items[0][price]":k["price_id"],"line_items[0][quantity]":"1","success_url":k["success_url"],"cancel_url":k["cancel_url"],"subscription_data[metadata][app_user_id]":k["app_user_id"]},k["idempotency_key"])
     def create_portal(self,**k): return self._request("POST","billing_portal/sessions",{"customer":k["customer_id"],"return_url":k["return_url"]})
     def retrieve_subscription(self,s): return self._request("GET","subscriptions/"+s)
 

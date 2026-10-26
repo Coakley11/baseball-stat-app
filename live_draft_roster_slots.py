@@ -281,14 +281,23 @@ def _player_position_tokens(row: pd.Series) -> list[str]:
         return non_util
     return tokens or ["DH"]
 
+_PITCHER_TOKENS = ("P", "SP", "RP")
+
+
+def _util_eligible(pos_tokens: list[str]) -> bool:
+    """UTIL/DH takes any hitter. A pitcher token only disqualifies pitcher-only rows —
+    two-way players (``DH/UTIL/P``) are hitters too and must stay eligible."""
+    return not pos_tokens or any(p not in _PITCHER_TOKENS for p in pos_tokens)
+
+
 def _eligible_for_draft_slot(pos_tokens: list[str], position_code: str) -> bool:
     slot = "UTIL" if position_code == "DH" else position_code
     if slot == "BN":
         return True
     if slot == "P":
-        return any(p in ("P", "SP", "RP") for p in pos_tokens)
+        return any(p in _PITCHER_TOKENS for p in pos_tokens)
     if slot == "UTIL":
-        return not any(p in ("P", "SP", "RP") for p in pos_tokens)
+        return _util_eligible(pos_tokens)
     if slot == "OF":
         return any(p == "OF" for p in pos_tokens)
     if slot in ("C", "1B", "2B", "3B", "SS"):
@@ -318,9 +327,9 @@ def _eligible_for_open_need_recommendation(pos_tokens: list[str], position_code:
     if slot == "BN":
         return True
     if slot == "P":
-        return any(p in ("P", "SP", "RP") for p in pos_tokens)
+        return any(p in _PITCHER_TOKENS for p in pos_tokens)
     if slot == "UTIL":
-        return not any(p in ("P", "SP", "RP") for p in pos_tokens)
+        return _util_eligible(pos_tokens)
     if slot == "OF":
         return any(p == "OF" for p in pos_tokens)
     if slot in ("C", "1B", "2B", "3B", "SS"):
@@ -736,6 +745,33 @@ def filter_candidates_to_legal_roster_positions(
     return filtered
 
 
+def player_fills_open_needs(pos_tokens: list[str], gaps: list[str] | None) -> bool:
+    """Can a player with ``pos_tokens`` legally fill one of this team's open needs?
+
+    Single rule for recommendations and Auto Pick. While non-flex starters remain,
+    only those count (BN is not an escape hatch, and UTIL/DH is left out so a filled
+    position is not re-recommended via UTIL). Once only flex/bench remain, any
+    league-legal player fits — any hitter when only DH/UTIL is open.
+    """
+    try:
+        from draft_needs import normalize_position_needs_for_scoring
+    except ImportError:
+        return True
+    required = normalize_position_needs_for_scoring(gaps)
+    if not required:
+        open_codes = {str(g or "").strip().upper() for g in gaps or [] if str(g or "").strip()}
+        if open_codes and open_codes <= {"DH", "UTIL"}:
+            return _util_eligible(pos_tokens)
+        return True
+    if any(_eligible_for_open_need_recommendation(pos_tokens, pos) for pos in required):
+        return True
+    # A DH-only hitter (e.g. Ohtani, ``DH/UTIL/P``) can only ever fill the flex slot,
+    # so while it is open he is a genuine starter fill — not a duplicate.
+    flex_open = any(str(g or "").strip().upper() in ("DH", "UTIL") for g in gaps or [])
+    hitter_tokens = [t for t in pos_tokens if t not in _PITCHER_TOKENS]
+    return flex_open and bool(hitter_tokens) and all(t in ("DH", "UTIL") for t in hitter_tokens)
+
+
 def filter_candidates_to_team_open_positions(
     df: pd.DataFrame | None,
     roster_df: pd.DataFrame | None,
@@ -761,13 +797,11 @@ def filter_candidates_to_team_open_positions(
         return df.copy()
 
     gaps = get_remaining_position_needs(roster_df, cfg)
-    required = normalize_position_needs_for_scoring(gaps)
-    if not required:
+    if not normalize_position_needs_for_scoring(gaps):
         return df.copy()
 
     def _row_fills_required(row: pd.Series) -> bool:
-        tokens = _player_position_tokens(row)
-        return any(_eligible_for_open_need_recommendation(tokens, pos) for pos in required)
+        return player_fills_open_needs(_player_position_tokens(row), gaps)
 
     mask = df.apply(_row_fills_required, axis=1)
     filtered = df.loc[mask].copy()

@@ -1,0 +1,167 @@
+src/features/leaderboards/Leaderboards.api.test.tsx > Leaderboards on the real API (recorded, 5ca7a26) > shows the API's answer, the real top 3 with their at-bats, and the top-10 bars
+src/features/leaderboards/Leaderboards.api.test.tsx > Leaderboards on the real API (recorded, 5ca7a26) > draws the table from the API's column list, ending in Score
+src/features/leaderboards/Leaderboards.api.test.tsx > Leaderboards on the real API (recorded, 5ca7a26) > states the qualification chip and explanation from the API for rate stats
+src/features/leaderboards/Leaderboards.api.test.tsx > Leaderboards on the real API (recorded, 5ca7a26) > Top N: asks the API for that many players
+src/features/leaderboards/Leaderboards.api.test.tsx > Leaderboards on the real API (recorded, 5ca7a26) > custom weights: Apply sends them to the API, and the answer reflects the API's result
+src/features/leaderboards/Leaderboards.api.test.tsx > Leaderboards on the real API (recorded, 5ca7a26) > won't apply weights that are all zero or out of bounds
+src/features/leaderboards/Leaderboards.api.test.tsx > Leaderboards on the real API (recorded, 5ca7a26) > minimums: Apply writes them to the URL
+src/features/leaderboards/Leaderboards.api.test.tsx > Leaderboards on the real API (recorded, 5ca7a26) > minimums in the URL go to the API; its qualification line and ranked count are shown
+src/features/leaderboards/Leaderboards.api.test.tsx > Leaderboards on the real API (recorded, 5ca7a26) > links to the API's CSV for the Top N shown
+src/features/leaderboards/Leaderboards.api.test.tsx > Leaderboards on the real API (recorded, 5ca7a26) > offers next steps into Historical Explorer, including the leader's own seasons
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > shows the API's answer, context, tiles, qualification-free counting stat, chart and next step
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > states the qualification the API describes, and explains it under Explore more
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > draws the table from the API's column list: headers, order, formats and values
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > pages through the ranking with Previous / Next, using the API's offset
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > shows page two from its offset, continuing the ranks
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > a page past the end says so and offers the first page, instead of an empty table
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > applies filters through the API and says the answer is filtered
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > links to the API's CSV export for every ranked row, and builds no file itself
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > one player: the API's timeline with below-minimum seasons marked, unranked and noted in the table
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > one player with no chosen years uses the player's whole career, as the API reports it
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > one player: a chosen bound is kept and the other is still the career
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > all players keep the default range
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > choosing One player alone doesn't put the all-players range in the URL
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > the link from a player's seasons back to all players doesn't carry the career as a chosen range
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > minimums: Apply writes them to the URL; the API's own line says what applies
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > minimums in the URL go to the API and its qualification line is shown
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > 0 at-bats means no minimum, and Reset clears every minimum
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > several franchises: each checkbox adds to the URL list, and Clear empties it
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > several franchises in the URL: the API's union, with both checked
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > offers the one-player choice and a player search
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > shows the empty state for a real empty result
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > waits out the API's cold start without showing an error
+src/features/historical/HistoricalExplorer.api.test.tsx > Historical Explorer on the real API (recorded, 5ca7a26) > shows the error state with Retry when the API is down, and recovers
+src/features/leaderboards/Leaderboards.test.tsx > Leaderboards > leads with what is ranked, the top 3, and a top-10 visual
+src/features/leaderboards/Leaderboards.test.tsx > Leaderboards > states the qualification rule from the API for rate stats
+src/features/leaderboards/Leaderboards.test.tsx > Leaderboards > keeps the ranking table, in the API's column order, under Explore more
+src/features/leaderboards/Leaderboards.test.tsx > Leaderboards > offers next steps into Historical Explorer
+src/features/leaderboards/Leaderboards.test.tsx > Leaderboards > shows a loading state
+src/features/leaderboards/Leaderboards.test.tsx > Leaderboards > asks for a stat when the URL names one that doesn't exist
+src/features/leaderboards/Leaderboards.test.tsx > Leaderboards > summarises the question for the collapsed phone bar
+src/features/leaderboards/Leaderboards.test.tsx > Leaderboards > explains when no hitter qualifies
+src/features/leaderboards/Leaderboards.test.tsx > Leaderboards > shows an error with Retry when the data service is unavailable
+src/features/leaderboards/Leaderboards.test.tsx > Leaderboards > commits the seasons on Enter, not on every keystroke
+src/features/historical/HistoricalExplorer.test.tsx > Historical Explorer > answers first: headline, key metrics, default chart, next steps
+src/features/historical/HistoricalExplorer.test.tsx > Historical Explorer > states the qualification rule for rate stats
+src/features/historical/HistoricalExplorer.test.tsx > Historical Explorer > shows one player's seasons as a timeline with below-minimum seasons marked
+src/features/historical/HistoricalExplorer.test.tsx > Historical Explorer > puts every season in a table under Explore more
+src/features/historical/HistoricalExplorer.test.tsx > Historical Explorer > asks for a player when 'One player' has none yet
+src/features/historical/HistoricalExplorer.test.tsx > Historical Explorer > summarises the question for the collapsed phone bar
+src/features/historical/HistoricalExplorer.test.tsx > Historical Explorer > names the chosen player in the summary
+src/features/historical/HistoricalExplorer.test.tsx > Historical Explorer > finds and selects a player
+src/features/historical/HistoricalExplorer.test.tsx > Historical Explorer > shows a loading state while the answer is on its way
+src/features/historical/HistoricalExplorer.test.tsx > Historical Explorer > shows an error with Retry when the data service is unavailable
+src/features/historical/HistoricalExplorer.test.tsx > Historical Explorer > shows an empty state when nothing matches
+src/features/historical/HistoricalExplorer.test.tsx > Historical Explorer > says when a question isn't available rather than showing other numbers
+src/features/historical/HistoricalExplorer.test.tsx > Historical Explorer > catches an unknown stat in the URL without asking the API
+src/features/historical/HistoricalExplorer.test.tsx > Historical Explorer > changing the stat updates the URL
+src/components/shell/AppShell.test.tsx > AppShell navigation > groups pages under the U1 section headings
+src/components/shell/AppShell.test.tsx > AppShell navigation > marks the current page with aria-current
+src/components/shell/AppShell.test.tsx > AppShell navigation > links only to pages that exist
+src/components/shell/AppShell.test.tsx > AppShell navigation > opens and closes the phone menu with the current page called out
+src/components/shell/AppShell.test.tsx > AppShell navigation > offers a skip link to the main content
+src/features/home/HomeView.test.tsx > Home > leads with the four task cards
+src/features/home/HomeView.test.tsx > Home > sends Explore Players to the implemented pages
+src/features/home/HomeView.test.tsx > Home > marks Compare Players as coming later without a fake button
+src/features/home/HomeView.test.tsx > Home > marks Prepare for a Draft as coming later without a fake button
+src/features/home/HomeView.test.tsx > Home > marks Manage My League as coming later without a fake button
+src/features/home/HomeView.test.tsx > Home > links ready-made questions only to implemented pages
+src/features/home/HomeView.test.tsx > Home > reserves Ask AMI without an input or assistant
+src/features/shared/QuestionControls.test.tsx > QuestionBar (phone summary) > summarises the question and reveals the same controls on Change
+src/features/shared/QuestionControls.test.tsx > QuestionBar (phone summary) > stays open, with no toggle, when the user has to act
+src/components/ui/primitives.test.tsx > design-system primitives > AnswerCard exposes its headline as a heading
+src/components/ui/primitives.test.tsx > design-system primitives > MetricTiles pairs each label with its value
+src/components/ui/primitives.test.tsx > design-system primitives > PlayerCard prints the rank as text, not just a medal colour
+src/components/ui/primitives.test.tsx > design-system primitives > ExploreMore is a native disclosure, closed by default
+src/components/ui/primitives.test.tsx > design-system primitives > states announce themselves
+src/lib/api/mock/mockClient.test.ts > fixture adapter > serves the canned default Historical Explorer answer
+src/lib/api/mock/mockClient.test.ts > fixture adapter > keeps every chart and top-season id resolvable
+src/lib/api/mock/mockClient.test.ts > fixture adapter > rejects questions the sample data doesn't cover instead of showing other numbers
+src/lib/api/mock/mockClient.test.ts > fixture adapter > validates requests like the API
+src/lib/api/mock/mockClient.test.ts > fixture adapter > serves leaderboards with authoritative qualification text
+src/lib/api/mock/mockClient.test.ts > fixture adapter > covers the other page's default range so cross-page links land on an answer
+src/lib/api/mock/mockClient.test.ts > fixture adapter > searches player names ignoring case and accents
+src/lib/api/mock/mockClient.test.ts > fixture adapter > simulates outages and empty answers on request
+src/lib/api/mock/mockClient.test.ts > fixture adapter > stops when the request is aborted
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > is the real API, with every capability on
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > catalog > copies the API's lists, labels, plain names, columns and filters
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > catalog > defaults equal what the API applies when nothing is sent
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > catalog > is fetched once per client, and a failure isn't remembered
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > catalog > waits out the API's cold start (503 + Retry-After) before answering
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > Historical Explorer > shows the API's answer, tile list and rows without changing them
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > Historical Explorer > renders the table in the API's column order from each column's field path
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > Historical Explorer > qualification: the API's chip line and explanation; its Markdown caption is never used
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > Historical Explorer > pages by offset: the second page continues the ranking
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > Historical Explorer > sends filters as API parameters
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > Historical Explorer > one player: ranked seasons first, below-minimum seasons marked and unranked
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > Historical Explorer > maps a real empty result to no rows, no answer and an empty table
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > Leaderboards > copies the answer, ranking and score weights, with no invented fields
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > Leaderboards > renders the table in the API's column order from each column's field path
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > Leaderboards > sends Top N and custom weights as API parameters
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > Leaderboards > carries the span qualification for rate-stat leaderboards
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > players > uses the API's unique labels in search results
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > players > reads a player's summary, and treats an unknown id as no player
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > CSV export links > link to the API's CSV through the proxy, without building any file
+src/lib/api/http/httpClient.test.ts > HTTP adapter over recorded real API responses (5ca7a26) > maps API errors and transport failures to the page's error kinds
+src/lib/api/dataSource.test.ts > data source selection > defaults to the real Python API
+src/lib/api/dataSource.test.ts > data source selection > uses sample data only when explicitly enabled outside production
+src/lib/api/dataSource.test.ts > data source selection > aliases the sample data to a data-free stub in production builds
+src/lib/api/dataSource.test.ts > data source selection > never uses sample data in production, even if asked
+src/lib/api/dataSource.test.ts > data source selection > refuses a production build configured for sample data
+src/lib/api/http/careerMinimums.test.ts > one player's career (5ca7a26) > with no chosen bounds, leaves the years out so the API uses the player's career
+src/lib/api/http/careerMinimums.test.ts > one player's career (5ca7a26) > includes below-minimum career seasons, unranked
+src/lib/api/http/careerMinimums.test.ts > one player's career (5ca7a26) > sends only the bounds the user chose
+src/lib/api/http/careerMinimums.test.ts > one player's career (5ca7a26) > all players always send the range, whatever was marked as chosen
+src/lib/api/http/careerMinimums.test.ts > minimums the user sets (5ca7a26) > Historical Explorer: min_ab and stat minimums go to the API; its qualification and totals come back unchanged
+src/lib/api/http/careerMinimums.test.ts > minimums the user sets (5ca7a26) > 0 means no minimum: the API says so, and ranks more seasons than the default
+src/lib/api/http/careerMinimums.test.ts > minimums the user sets (5ca7a26) > no minimums set sends nothing extra, so the API keeps its automatic qualified minimum
+src/lib/api/http/careerMinimums.test.ts > minimums the user sets (5ca7a26) > Leaderboards minimums are API parameters too
+src/lib/api/http/careerMinimums.test.ts > minimums the user sets (5ca7a26) > a manual minimum on a counting stat filters, though the API words nothing about it
+src/lib/api/http/careerMinimums.test.ts > several franchises (5ca7a26) > are one API list: any of them, as the API unions them
+src/lib/api/http/careerMinimums.test.ts > several franchises (5ca7a26) > a league and a franchise together are a union (more than the league alone)
+src/lib/api/http/careerMinimums.test.ts > exports follow the question (5ca7a26) > carry the same minimums, filters and unchosen years as the table
+src/lib/api/proxy.test.ts > Baseball API proxy > forwards an allowed GET with its query to /api/v1 and returns the API's response untouched
+src/lib/api/proxy.test.ts > Baseball API proxy > passes API errors through with their status and envelope
+src/lib/api/proxy.test.ts > Baseball API proxy > refuses /api/baseball/openapi.json without calling the API
+src/lib/api/proxy.test.ts > Baseball API proxy > refuses /api/baseball/players/resolve?name=x without calling the API
+src/lib/api/proxy.test.ts > Baseball API proxy > refuses /api/baseball/players/judgeaa01/career without calling the API
+src/lib/api/proxy.test.ts > Baseball API proxy > refuses /api/baseball/../admin without calling the API
+src/lib/api/proxy.test.ts > Baseball API proxy > refuses /api/baseball/ without calling the API
+src/lib/api/proxy.test.ts > Baseball API proxy > allows /api/baseball/players/judgeaa01/seasons
+src/lib/api/proxy.test.ts > Baseball API proxy > allows /api/baseball/players/judgeaa01
+src/lib/api/proxy.test.ts > Baseball API proxy > allows /api/baseball/catalog
+src/lib/api/proxy.test.ts > Baseball API proxy > allows /api/baseball/players/search?q=judge&limit=8
+src/lib/api/proxy.test.ts > Baseball API proxy > passes a CSV download through unchanged: bytes, content type and the API's filename
+src/lib/api/proxy.test.ts > Baseball API proxy > passes the API's still-loading hint through so the client can wait as told
+src/lib/api/proxy.test.ts > Baseball API proxy > reports an unreachable API as 502 upstream_unavailable
+src/lib/api/proxy.test.ts > Baseball API proxy > refuses to guess an origin in production
+src/lib/navigation.test.ts > navigation map > keeps the accepted U1 section order
+src/lib/navigation.test.ts > navigation map > lists every current page exactly once
+src/lib/navigation.test.ts > navigation map > marks only the WEB-M1 pages as ready
+src/lib/navigation.test.ts > navigation map > finds the active page from the pathname
+src/features/historical/params.test.ts > Historical Explorer URL > uses the catalog defaults for a bare URL
+src/features/historical/params.test.ts > Historical Explorer URL > reads a full question
+src/features/historical/params.test.ts > Historical Explorer URL > reads filters and the table page, ignoring values the catalog doesn't offer
+src/features/historical/params.test.ts > Historical Explorer URL > round-trips filters through a link
+src/features/historical/params.test.ts > Historical Explorer URL > one player: only the bounds the user chose are explicit; the rest is the player's career
+src/features/historical/params.test.ts > Historical Explorer URL > all players keep the default range
+src/features/historical/params.test.ts > Historical Explorer URL > one player: a bad bound is still caught (outside the data), but a missing one is not an error
+src/features/historical/params.test.ts > Historical Explorer URL > reads minimums, ignoring stats the catalog doesn't list and negative values
+src/features/historical/params.test.ts > Historical Explorer URL > reads several franchises
+src/features/historical/params.test.ts > Historical Explorer URL > links carry only the bounds the user chose, plus filters and minimums
+src/features/historical/params.test.ts > Historical Explorer URL > knows when a player is still to be chosen
+src/features/historical/params.test.ts > Historical Explorer URL > flags unknown metrics and impossible seasons instead of guessing
+src/features/historical/params.test.ts > Historical Explorer URL > builds links that omit defaults
+src/features/leaderboards/params.test.ts > Leaderboards URL > uses the catalog defaults for a bare URL
+src/features/leaderboards/params.test.ts > Leaderboards URL > reads Top N within the catalog's bounds, otherwise the default
+src/features/leaderboards/params.test.ts > Leaderboards URL > reads custom weights, keeping only allowed stats and in-bounds positive values
+src/features/leaderboards/params.test.ts > Leaderboards URL > writes weights back in the same form
+src/features/leaderboards/params.test.ts > Leaderboards URL > reads minimums the user sets
+src/features/leaderboards/params.test.ts > Leaderboards URL > flags an unknown stat and impossible seasons without guessing
+src/lib/format.test.ts > display formatting > formats rates like the Streamlit pages
+src/lib/format.test.ts > display formatting > formats counts and scores
+src/lib/format.test.ts > display formatting > shows missing values as a dash, never zero
+src/lib/format.test.ts > display formatting > formats ranges and ordinals
+src/lib/api/http/mapping.test.ts > valueAtPath (how a table finds each cell from the API's column field) > follows dotted paths, including stat keys that start with a digit
+src/lib/api/http/mapping.test.ts > valueAtPath (how a table finds each cell from the API's column field) > returns null for anything missing, never a zero or an error
+src/lib/api/http/mapping.test.ts > valueAtPath (how a table finds each cell from the API's column field) > only returns text or numbers; objects are not cells

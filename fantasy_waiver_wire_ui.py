@@ -10,22 +10,25 @@ import pandas as pd
 from fantasy_league_context import (
     build_roster_stats_from_league_context,
     context_has_roster_slots,
-    filter_roster_stats_to_league_teams,
     get_active_league_context,
     has_full_league_rosters,
     league_context_coverage_badge,
     league_context_type_badge,
-    resolve_context_open_position_needs,
 )
 from fantasy_waiver_wire import (
     WAIVER_PLANNER_ADD_KEY,
     WAIVER_PLANNER_DROP_KEY,
+    WAIVER_POSITION_FILTER_OPTIONS,
     MAX_WAIVER_MOVE_PAIRS,
     add_pending_move_pair,
-    analyze_current_team_needs,
     apply_waiver_move_pairs,
+    apply_waiver_position_filter,
+    compute_waiver_recommendations,
+    loaded_waiver_stats_pool,
+    waiver_card_fields,
+    waiver_open_slots,
+    waiver_team_frames,
     build_category_standings_table,
-    build_waiver_pool,
     build_weakness_narrative,
     compute_add_drop_category_impact,
     compute_waiver_transaction_impact,
@@ -36,9 +39,6 @@ from fantasy_waiver_wire import (
     get_pending_move_pairs,
     my_team_roster_dataframe,
     pop_waiver_tx_flash,
-    recommend_adds_current,
-    recommend_adds_personalized,
-    recommend_drops_current,
     remove_pending_move_pair,
     set_waiver_tx_flash,
     sync_waiver_roster_views,
@@ -47,16 +47,6 @@ from fantasy_waiver_wire import (
 )
 
 WAIVER_POSITION_FILTER_KEY = "waiver_position_filter"
-WAIVER_POSITION_FILTER_OPTIONS: tuple[str, ...] = (
-    "All positions",
-    "C",
-    "1B",
-    "2B",
-    "3B",
-    "SS",
-    "OF",
-    "DH/UTIL",
-)
 
 
 def _import_streamlit_main_attr(attr_name: str):
@@ -71,18 +61,7 @@ def _import_streamlit_main_attr(attr_name: str):
     return _app_exports[attr_name]
 
 
-def _apply_waiver_position_filter(pool_df: pd.DataFrame, position_filter: str) -> pd.DataFrame:
-    choice = str(position_filter or "").strip()
-    if not choice or choice == "All positions":
-        return pool_df
-    try:
-        from streamlit_app import enrich_lineup_roster_positions, filter_players_by_fantasy_position
-    except ImportError:
-        return pool_df
-    if pool_df is None or pool_df.empty:
-        return pool_df
-    work = enrich_lineup_roster_positions(pool_df.copy())
-    return filter_players_by_fantasy_position(work, choice)
+_apply_waiver_position_filter = apply_waiver_position_filter  # shared with fantasy_read_api
 
 
 def _player_names(df: pd.DataFrame) -> list[str]:
@@ -204,6 +183,70 @@ def _render_add_player_card(
             )
 
 
+def _render_u1_waiver_answer(
+    st: Any,
+    *,
+    needs: dict[str, Any],
+    adds: pd.DataFrame,
+    my_roster: pd.DataFrame,
+    my_team: str,
+    position_filter: str,
+    open_slots: list[str],
+    league_name: str,
+    player_action_cb=None,
+) -> None:
+    """Your biggest needs, then the top three adds with why each helps. Buttons only plan or
+    compare — a move happens only through Confirm Waiver Move."""
+    import u1_answers as u1a
+    import ui_hierarchy as u1
+
+    where = "" if str(position_filter or "All positions") == "All positions" else f" at {position_filter}"
+    u1.answer_card(
+        st,
+        u1a.needs_headline(needs),
+        f"Best free agents for {my_team or 'your team'}{where}, picked for those needs from current-season stats.",
+        kicker=" · ".join(x for x in ("Waiver wire", league_name) if x),
+    )
+    if open_slots:
+        u1.chips(st, [(f"Open roster spot: {', '.join(str(s) for s in open_slots[:4])}", "warn")])
+    if adds is None or adds.empty:
+        st.info("No recommended adds for this filter. Try All positions under Explore more.")
+        return
+    for i, (_, row) in enumerate(adds.head(3).iterrows()):
+        card = waiver_card_fields(row, my_roster)  # the same fields fantasy_read_api returns
+        name, positions, team, why = card["player"], card["positions"], card["mlb_team"], card["why"]
+        line, comparison = card["stat_line"], card["comparison"]
+        # Not _card_key(): that prefix opts into the phone photo-card grid (48 px first column).
+        card_key = "u1-waiver-top-" + str(i) + "-" + "".join(ch if ch.isalnum() else "-" for ch in name)[:40]
+        with st.container(border=True, key=card_key):
+            pos_html = "".join(f'<span class="u1-pos">{u1.esc(p.strip())}</span>' for p in positions.split(",") if p.strip())
+            st.markdown(
+                f'<div class="u1-card-title">{i + 1}. {u1.esc(name)} {pos_html}</div>'
+                f'<div class="u1-muted">{u1.esc(team)}{" · " if team and line else ""}{u1.esc(line)}</div>'
+                + (f'<div class="u1-card-body"><strong>Why this helps:</strong> {u1.esc(why)}</div>' if why else "")
+                + (f'<div class="u1-muted">{u1.esc(comparison)}</div>' if comparison else ""),
+                unsafe_allow_html=True,
+            )
+            safe_key = "".join(ch if ch.isalnum() else "_" for ch in name)[:40]
+            # Full-width primary action, then two short secondary actions side by side (fits 360 px).
+            st.button("Consider add", key=f"u1_waiver_consider_{i}_{safe_key}", type="primary",
+                      use_container_width=True, on_click=_on_plan_add_click, args=(name,))
+            if player_action_cb:
+                try:
+                    from mobile_foundation import mobile_wrap_row
+
+                    row_ctx = mobile_wrap_row(st, f"u1-waiver-actions-{i}")
+                except ImportError:
+                    row_ctx = st.container()
+                with row_ctx:
+                    cols = st.columns(2)
+                cols[0].button("Compare", key=f"u1_waiver_compare_{i}_{safe_key}", use_container_width=True,
+                               on_click=player_action_cb("Send to Comparison Tool", name))
+                cols[1].button("See trend", key=f"u1_waiver_trend_{i}_{safe_key}", use_container_width=True,
+                               on_click=player_action_cb("Send to Trend Page", name))
+    st.caption("“Consider add” puts the player in the move planner below. Nothing changes until you confirm a move.")
+
+
 def _render_drop_player_card(
     st: Any,
     row: pd.Series,
@@ -275,23 +318,7 @@ def _resolve_normalize_name_fn():
 
 
 def _resolve_waiver_stats_pool(session: dict[str, Any]) -> pd.DataFrame:
-    hitters = session.get("_fantasy_current_hitter_stats", pd.DataFrame())
-    if not isinstance(hitters, pd.DataFrame):
-        hitters = pd.DataFrame()
-    try:
-        from fantasy_league_context import get_active_league_context
-        from fantasy_waiver_wire import fantasy_format_includes_pitching, merge_current_season_stats
-
-        ctx = get_active_league_context(session)
-        fmt = str((ctx or {}).get("fantasy_format") or "5x5 Roto")
-        if fantasy_format_includes_pitching(fmt, ctx):
-            pitchers = session.get("_fantasy_current_pitcher_stats", pd.DataFrame())
-            if not isinstance(pitchers, pd.DataFrame):
-                pitchers = pd.DataFrame()
-            return merge_current_season_stats(hitters, pitchers)
-    except ImportError:
-        pass
-    return hitters
+    return loaded_waiver_stats_pool(session)
 
 
 def _planner_add_pick(session: dict[str, Any]) -> str:
@@ -387,6 +414,52 @@ def _on_clear_planner_drop_click(*_args, **_kwargs) -> None:
     _on_planner_pick_changed()
 
 
+WAIVER_MANAGE_TEAM_KEY = "waiver_manage_team"
+
+
+def _managed_waiver_team(session: dict[str, Any], context: dict[str, Any] | None) -> str:
+    """The unclaimed team the commissioner chose to act for, or "" for your own team."""
+    chosen = str(session.get(WAIVER_MANAGE_TEAM_KEY) or "").strip()
+    if not chosen or not isinstance(context, dict):
+        return ""
+    try:
+        from fantasy_team_control import resolve_team_control
+
+        return chosen if resolve_team_control(session, context, chosen).is_proxy else ""
+    except ImportError:
+        return ""
+
+
+def _render_waiver_manage_team(st: Any, session: dict[str, Any], context: dict[str, Any], *, own_team: str) -> str:
+    """Commissioner picks an unclaimed team to run waivers for; returns it, or ""."""
+    try:
+        from fantasy_team_control import manageable_teams
+    except ImportError:
+        return ""
+    proxy = [c.team for c in manageable_teams(session, context) if c.is_proxy and c.team != own_team]
+    if not proxy:
+        session.pop(WAIVER_MANAGE_TEAM_KEY, None)
+        return ""
+    options = [own_team] + proxy if own_team else proxy
+    if session.get(WAIVER_MANAGE_TEAM_KEY) not in options:
+        session[WAIVER_MANAGE_TEAM_KEY] = options[0]
+    import ui_hierarchy as ui
+
+    # U3: commissioner controls sit in their own marked panel; the proxy notice stays visible.
+    with ui.commissioner_panel(st):
+        choice = st.selectbox(
+            "Manage team",
+            options,
+            key=WAIVER_MANAGE_TEAM_KEY,
+            format_func=lambda t: f"{t} (your team)" if t == own_team else f"{t} — unclaimed, commissioner",
+            help="As commissioner you can make waiver moves for teams no manager has claimed yet.",
+        )
+    if choice and choice != own_team:
+        ui.proxy_banner(st, f"Commissioner acting for {choice}", "Moves are logged as commissioner actions.")
+        return choice
+    return ""
+
+
 def _on_confirm_waiver_move_click(*_args, **_kwargs) -> None:
     import streamlit as st
 
@@ -401,7 +474,9 @@ def _on_confirm_waiver_move_click(*_args, **_kwargs) -> None:
         from fantasy_waiver_wire import waiver_roster_transaction_mode
 
         context = get_active_league_context(session)
-        my_roster = my_team_roster_dataframe(context) if context else pd.DataFrame()
+        managed = _managed_waiver_team(session, context)
+        roster_ctx = {**context, "my_team_name": managed} if (context and managed) else context
+        my_roster = my_team_roster_dataframe(roster_ctx) if context else pd.DataFrame()
         tx_mode = waiver_roster_transaction_mode(context, len(_player_names(my_roster)))
     except ImportError:
         tx_mode = "add_drop"
@@ -445,7 +520,13 @@ def _on_confirm_waiver_move_click(*_args, **_kwargs) -> None:
     else:
         pairs = [{"add_player": add_name, "drop_player": ""} for add_name in tx_adds]
     stats_pool = _resolve_waiver_stats_pool(session)
-    tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool)
+    try:
+        from fantasy_league_context import get_active_league_context as _active
+
+        managed = _managed_waiver_team(session, _active(session))
+    except ImportError:
+        managed = ""
+    tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool, team=managed)
     _apply_waiver_tx_result(session, tx_result, stats_pool=stats_pool)
 
 
@@ -497,7 +578,13 @@ def _on_confirm_pending_waiver_moves_click(*_args, **_kwargs) -> None:
         set_waiver_tx_flash(session, level="warning", message="No pending add/drop moves to confirm.")
         return
     stats_pool = _resolve_waiver_stats_pool(session)
-    tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool)
+    try:
+        from fantasy_league_context import get_active_league_context as _active
+
+        managed = _managed_waiver_team(session, _active(session))
+    except ImportError:
+        managed = ""
+    tx_result = apply_waiver_move_pairs(session, pairs, stats_pool=stats_pool, team=managed)
     _apply_waiver_tx_result(session, tx_result, stats_pool=stats_pool)
 
 
@@ -577,7 +664,10 @@ def render_waiver_wire_page(
     league_roster_stats: pd.DataFrame | None = None,
     normalize_name_fn=None,
     page_label_fn=None,
+    player_action_cb=None,
 ) -> None:
+    """``player_action_cb(action, player)`` (optional) returns a button callback that sends a
+    player to Comparison / Trend; the app passes its own so this module never imports it."""
     context = get_active_league_context(session)
     if not context:
         st.warning(
@@ -663,15 +753,10 @@ def render_waiver_wire_page(
     stats_pool = current_stats_pool.copy() if current_stats_pool is not None else pd.DataFrame()
     if stats_pool.empty:
         st.warning(
-            "**Current 2026 stats not loaded yet.** Open **Fantasy Standings Tracker**, "
+            "**Current 2026 stats not loaded yet.** Open **League Standings**, "
             "load MLB API or CSV current-season stats, then return here."
         )
         return
-
-    st.caption(
-        "Waiver analysis uses **current-season MLB stats** and your **Fantasy Source** — "
-        "not projections, ADP, Fantasy Edge, or draft-risk metrics."
-    )
 
     try:
         from fantasy_in_season_state import prepare_fantasy_in_season_hydration
@@ -701,16 +786,10 @@ def render_waiver_wire_page(
         my_team = str(context.get("my_team_name") or "").strip() or my_team
     if not my_team:
         my_team = str(context.get("my_team_name") or "").strip()
-    league_df = filter_roster_stats_to_league_teams(league_df, context)
-    if not league_df.empty and my_team and "Team" in league_df.columns:
-        my_roster = league_df[league_df["Team"].astype(str) == my_team].copy()
-    else:
-        my_roster = my_team_roster_dataframe(context)
-        if not my_roster.empty and not league_df.empty:
-            name_col = "Player" if "Player" in league_df.columns else None
-            if name_col:
-                names = set(my_roster.get("Player", my_roster.get("fullName", pd.Series())).astype(str))
-                my_roster = league_df[league_df[name_col].astype(str).isin(names)].copy()
+    proxy_team = _render_waiver_manage_team(st, session, context, own_team=my_team)
+    if proxy_team:
+        my_team = proxy_team
+    league_df, my_roster = waiver_team_frames(context, league_df, my_team)
 
     waiver_cats = waiver_categories_for_context(context)
     ctx_id = str(context.get("context_id") or context.get("draft_id") or context.get("display_name") or "")
@@ -751,18 +830,10 @@ def render_waiver_wire_page(
         drops_cached = cached_payload.get("drops")
         drops = drops_cached.copy() if isinstance(drops_cached, pd.DataFrame) else pd.DataFrame()
     else:
-        needs = analyze_current_team_needs(my_roster, league_df, categories=waiver_cats)
-        waiver_pool = build_waiver_pool(stats_pool, context)
-        adds = recommend_adds_personalized(
-            waiver_pool,
-            needs,
-            context=context,
-            my_roster=my_roster,
-            limit=15,
-        )
-        if adds is None or adds.empty:
-            adds = recommend_adds_current(waiver_pool, needs, limit=15)
-        drops = recommend_drops_current(my_roster, limit=15, categories=waiver_cats)
+        computed = compute_waiver_recommendations(context, my_roster=my_roster, league_df=league_df,
+                                                  stats_pool=stats_pool, categories=waiver_cats)
+        needs, waiver_pool, adds, drops = (computed["needs"], computed["waiver_pool"], computed["adds"],
+                                           computed["drops"])
         if cache_key is not None:
             try:
                 from fantasy_perf_cache import store_waiver_analysis
@@ -781,11 +852,19 @@ def render_waiver_wire_page(
                 pass
     try:
         _has_slots = context_has_roster_slots(context)
-        open_slots = resolve_context_open_position_needs(context, my_roster) if _has_slots else []
     except Exception:
         _has_slots = False
-        open_slots = []
+    open_slots = waiver_open_slots(context, my_roster)
 
+    import ui_hierarchy as u1
+
+    # U1: answer first — your needs and the top adds — filled in once the filter is applied.
+    answer_slot = st.container()
+    u1.section_label(st, "Explore more · position filter, all recommendations, player pool and moves")
+    st.caption(
+        "Recommendations use **current-season MLB stats** for players in your league — "
+        "not projections, draft rankings or draft-risk scores."
+    )
     st.markdown("##### Position filter")
     position_filter = st.selectbox(
         "Filter available players by position",
@@ -796,8 +875,14 @@ def render_waiver_wire_page(
     )
     filtered_pool = _apply_waiver_position_filter(waiver_pool, position_filter)
     adds = _apply_waiver_position_filter(adds, position_filter) if not adds.empty else adds
+    with answer_slot:
+        _render_u1_waiver_answer(
+            st, needs=needs, adds=adds, my_roster=my_roster, my_team=my_team, position_filter=position_filter,
+            open_slots=open_slots, league_name=str(context.get("league_name") or context.get("display_name") or ""),
+            player_action_cb=player_action_cb,
+        )
 
-    st.markdown("##### League snapshot")
+    st.markdown("##### Your category ranks")
     rank_lines = format_league_rank_lines(needs, categories=waiver_cats)
     if rank_lines:
         st.caption(" · ".join(rank_lines))
@@ -817,7 +902,7 @@ def render_waiver_wire_page(
     except ImportError:
         tx_mode = "add_drop"
 
-    st.markdown("##### Waiver Transaction")
+    st.markdown("##### Make a move (add / drop)")
     if tx_mode == "add_only":
         st.caption(
             "**Roster has open spots.** Select waiver players to add without a drop. "
@@ -930,14 +1015,14 @@ def render_waiver_wire_page(
     except ImportError:
         pass
 
-    st.markdown("##### 1. Top Recommended Adds")
+    st.markdown("##### All recommended adds")
     if adds.empty:
         st.info("No waiver recommendations yet — load current-season stats and check your league context.")
     else:
         for i, (_, row) in enumerate(adds.head(15).iterrows()):
             _render_add_player_card(st, row, key_prefix=f"waiver_rec_{i}")
 
-    st.markdown("##### 2. Recommended Drops")
+    st.markdown("##### Recommended drops")
     if drops.empty:
         st.info("No drop candidates on your roster yet.")
     else:
@@ -953,7 +1038,7 @@ def render_waiver_wire_page(
                 button_label=label,
             )
 
-    st.markdown("##### 3. Available Player Pool")
+    st.markdown("##### All available players")
     st.caption(
         f"{len(filtered_pool)} waiver-eligible players for **{position_filter}**. "
         "Search and sort in the table — use **Plan Add** cards above or the planner below."
@@ -992,7 +1077,7 @@ def render_waiver_wire_page(
             _pool_view_display, use_container_width=True, hide_index=True, column_config=_pool_pin_cfg or None
         )
 
-    st.markdown("##### 4. Manual Add / Drop Actions")
+    st.markdown("##### Plan an add / drop by hand")
     st.caption("Pick an add and a drop below, or use **Plan Add** / **Plan Drop** cards above.")
     manual_add_options = [""] + add_options
     manual_drop_options = [""] + drop_options

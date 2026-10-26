@@ -117,13 +117,15 @@ def log_player_comparison(
 
 
 def log_draft_prep(*, context: str = "", teams: str = "") -> None:
+    # Emitted by the Draft Lab simulation, so Continue reopens Draft Lab. It used to share
+    # bb:simulator_draft with log_simulator_board_session and opened Draft Room Simulator.
     _record(
         "draft_prep",
-        page="Draft Room Simulator",
+        page="Draft Lab / Simulation",
         metrics={"league": context, "team": teams},
         summary="Completed fantasy draft prep",
-        resume_key="bb:simulator_draft",
-        resume_title="Continue mock draft",
+        resume_key="bb:draft_lab",
+        resume_title="Continue Draft Lab",
         resume_subtitle=context or teams or "Draft board & rankings",
         workstream="baseball_draft",
     )
@@ -138,7 +140,7 @@ def log_projection_report(*, style: str = "", player_count: int | None = None) -
         metrics["player_count"] = int(player_count)
     _record(
         "projection_report",
-        page="ML Projections",
+        page="ML Predictions",
         metrics=metrics,
         summary="Generated player projection report"
         + (f" ({style})" if style else ""),
@@ -173,19 +175,21 @@ def log_trade_analysis(
 def log_roster_build(*, team: str = "") -> None:
     _record(
         "roster_build",
-        page="Draft Room",
+        # Emitted by the Draft Lab simulation. "Draft Room" is not a page: links carrying it
+        # opened Historical Explorer.
+        page="Draft Lab / Simulation",
         metrics={"team": team},
         summary=f"Built fantasy roster ({team})" if team else "Built fantasy roster",
         resume_key=f"roster:{team}" if team else "baseball:roster",
         resume_title="Continue roster building",
-        resume_subtitle=team or "Draft room",
+        resume_subtitle=team or "Draft Lab",
     )
 
 
 def log_sleeper_research(*, count: int | None = None) -> None:
     _record(
         "sleeper_research",
-        page="Fantasy Market",
+        page="Fantasy Sleepers & Busts",
         metrics={"count": count} if count is not None else {},
         summary="Reviewed sleeper candidates",
         resume_key="baseball:sleepers",

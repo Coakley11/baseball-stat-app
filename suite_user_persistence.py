@@ -26,6 +26,7 @@ _SESSION_RESTORED_PREFIX = "_suite_disk_state_restored::"
 _SESSION_BANNER_KEY = "_suite_persist_banner"
 _SESSION_SAVED_FLASH_KEY = "_suite_persist_saved_flash"
 SESSION_USER_OWNED_PAGE_KEY = "_suite_user_owned_page"
+AUTH_PAGE_PRESERVE_KEY = "_suite_auth_page_preserve"
 _SESSION_INVALID_WARN_KEY = "_suite_persist_invalid_warn"
 _SESSION_CLOUD_BANNER_KEY = "_suite_persist_cloud_banner"
 _LOCAL_DIRTY_PREFIX = "_suite_persist_local_dirty::"
@@ -34,6 +35,35 @@ _RESTORED_FP_PREFIX = "_suite_restored_state_fp::"
 _AUTOSAVE_BLOCK_PREFIX = "_suite_autosave_blocked::"
 _WORKSPACE_SYNCED_PREFIX = "_suite_workspace_synced::"
 _CLOUD_WORKSPACE_RESTORED = "_cloud_workspace_restored"
+
+
+def preserve_page_through_auth(session: dict[str, Any], *, app_id: str = "baseball") -> str:
+    """Keep the current page stable while sign-in switches account/workspace scope."""
+    active = str(session.get("active_page") or "").strip()
+    sidebar = str(session.get("main_sidebar_page") or "").strip()
+    page = sidebar or active
+    if not page:
+        return ""
+    session[AUTH_PAGE_PRESERVE_KEY] = page
+    session[SESSION_USER_OWNED_PAGE_KEY] = page
+    session["active_page"] = page
+    session["main_sidebar_page"] = page
+    session["_suite_last_persisted_page"] = page
+    session["_navigate_to_page"] = page
+    session["_skip_page_restore_for"] = page
+    session["requested_page"] = page
+    session["active_page_source"] = "auth_preserve"
+    session["_suite_workspace_force_sync"] = True
+    session.pop(_workspace_synced_key(app_id), None)
+    session.pop(f"{_SESSION_RESTORED_PREFIX}{app_id}", None)
+    session.pop(_applied_cloud_ts_key(app_id), None)
+    try:
+        from suite_cloud_state import invalidate_cloud_full_session_cache
+
+        invalidate_cloud_full_session_cache(app_id)
+    except Exception:
+        pass
+    return page
 
 
 def _utc_now_iso() -> str:
@@ -114,10 +144,10 @@ def _load_raw(
         return {}, "Saved settings were invalid; using defaults.", None
 
     saved_at = str(raw.get("saved_at") or "") or None
-    try:
-        return copy.deepcopy(state), None, saved_at
-    except Exception:
-        return {}, "Could not read saved settings; using defaults.", None
+    # ``state`` was just parsed from disk and nothing else holds it, so it is
+    # returned as-is. A deep copy here cost seconds per call on a Live Draft
+    # workspace (the blob carries the room's player pool) — on the Solo expiry path.
+    return state, None, saved_at
 
 
 def load_user_state(app_id: str) -> tuple[dict[str, Any], str | None]:
@@ -219,6 +249,25 @@ def _workspace_comparison_players(state: dict[str, Any]) -> list[str]:
     if isinstance(pf_players, list):
         return [str(p) for p in pf_players if p][:3]
     return []
+
+
+def _cloud_storage_disabled() -> bool:
+    try:
+        from suite_storage_config import cloud_storage_enabled
+
+        return not cloud_storage_enabled()
+    except ImportError:
+        return False
+
+
+def _cloud_read_retry_wait(failure: dict[str, Any], *, now: float | None = None) -> float:
+    """Seconds to wait before re-reading the cloud after ``failure`` (5 s, doubling, max 60 s)."""
+    import time as _time
+
+    count = max(1, int(failure.get("count") or 1))
+    backoff = min(60.0, 5.0 * (2 ** (count - 1)))
+    elapsed = (now if now is not None else _time.time()) - float(failure.get("at") or 0)
+    return max(0.0, backoff - elapsed)
 
 
 def _mark_workspace_sync_skipped(st: Any, app_id: str, reason: str) -> None:
@@ -662,10 +711,51 @@ def sync_workspace_protocol(
     dirty_key = _local_dirty_key(app_id)
     st.session_state.pop("_suite_workspace_sync_skipped_no_apply", None)
 
-    cloud_state, cloud_ts = load_cloud_full_session(app_id)
+    from suite_cloud_state import (
+        CLOUD_READ_ERROR,
+        CLOUD_RECONCILED_KEY,
+        cloud_read_failure,
+        load_cloud_full_session_status,
+        mark_cloud_reconciled,
+    )
+
+    failure = cloud_read_failure(st.session_state)
+    if failure is not None and _cloud_read_retry_wait(failure) > 0:
+        # Still inside the retry backoff after a failed read: keep the session as it is and keep
+        # cloud saves paused (save_cloud_full_session refuses while the failure is unresolved).
+        reason = "cloud read failed — waiting to retry; cloud saves paused"
+        st.session_state["_suite_persist_restore_skip_reason"] = reason
+        _mark_workspace_sync_skipped(st, app_id, reason)
+        return False
+
+    cloud_read = load_cloud_full_session_status(app_id)
+    cloud_state, cloud_ts = cloud_read.state, cloud_read.updated_at
     disk_state, disk_warn, disk_ts = _load_raw(app_id)
     if disk_warn:
         st.session_state[_SESSION_INVALID_WARN_KEY] = disk_warn
+
+    if cloud_read.status == CLOUD_READ_ERROR:
+        # The store did not answer. This is not "no saved data": applying the disk copy could show
+        # (and later save) stale state, so apply nothing and keep cloud saves paused until a retry
+        # succeeds. The user is told (show_persistence_messages).
+        reason = "cloud read failed — saved data not loaded; cloud saves paused"
+        st.session_state["_suite_persist_restore_skip_reason"] = reason
+        _mark_workspace_sync_skipped(st, app_id, reason)
+        _record_startup_restore_diagnostics(
+            st, app_id,
+            cloud_state={}, cloud_ts=None,
+            disk_state=disk_state, disk_ts=disk_ts,
+            picked_source="none", picked_reason=reason,
+            should_apply=False, apply_reason="", skip_reason=reason,
+        )
+        return False
+
+    if failure is not None and not st.session_state.get(CLOUD_RECONCILED_KEY):
+        # The store answered after a failure, but this session never loaded the saved data.
+        # Whatever it holds now (edits made during the outage included) must not reach the cloud:
+        # restore from the saved copy as a first sync.
+        st.session_state.pop(dirty_key, None)
+        st.session_state.pop(_workspace_synced_key(app_id), None)
 
     cloud_epoch = parse_persist_timestamp(cloud_ts)
     disk_epoch = parse_persist_timestamp(disk_ts)
@@ -674,6 +764,8 @@ def sync_workspace_protocol(
     if st.session_state.get(dirty_key) and not cloud_newer_than_disk:
         reason = "local unsaved edits — workspace sync skipped"
         st.session_state["_suite_persist_restore_skip_reason"] = reason
+        if st.session_state.get(CLOUD_RECONCILED_KEY):
+            mark_cloud_reconciled(st.session_state)
         _mark_workspace_sync_skipped(st, app_id, reason)
         _record_startup_restore_diagnostics(
             st, app_id,
@@ -692,6 +784,8 @@ def sync_workspace_protocol(
         # Complete rooms on disk but never restored into session (setup UI).
         if already_synced:
             reason = "user page navigation — workspace sync skipped"
+            if st.session_state.get(CLOUD_RECONCILED_KEY):
+                mark_cloud_reconciled(st.session_state)
             _mark_user_nav_sync_skipped(st, reason)
             _record_startup_restore_diagnostics(
                 st, app_id,
@@ -712,7 +806,16 @@ def sync_workspace_protocol(
             winner="none", reason="empty", applied=False,
         )
         st.session_state["_suite_persist_restore_skip_reason"] = reason
-        _mark_workspace_sync_skipped(st, app_id, reason)
+        if _cloud_storage_disabled():
+            # Local install: disk is the only store and it is empty — a new workspace with
+            # nothing to protect. Blocking autosave here meant its first league never saved.
+            # (With cloud storage a failed read also looks empty, so keep the guard there.)
+            st.session_state["_suite_workspace_sync_skipped_no_apply"] = True
+        else:
+            # The store answered and holds nothing: confirmed empty, so a later save cannot
+            # overwrite anything. (A failed read returned above and never reaches here.)
+            mark_cloud_reconciled(st.session_state)
+            _mark_workspace_sync_skipped(st, app_id, reason)
         _record_startup_restore_diagnostics(
             st, app_id,
             cloud_state={}, cloud_ts=cloud_ts, disk_state={}, disk_ts=disk_ts,
@@ -809,6 +912,9 @@ def sync_workspace_protocol(
     if not should_apply:
         skip_reason = f"workspace already synced ({apply_reason or 'no trigger'})"
         st.session_state["_suite_persist_restore_skip_reason"] = skip_reason
+        if st.session_state.get(CLOUD_RECONCILED_KEY):
+            # Synced earlier and the store answered now: a transient read failure is over.
+            mark_cloud_reconciled(st.session_state)
         _record_workspace_sync_trace(
             st, app_id, cloud_state=cloud_state, cloud_ts=cloud_ts,
             disk_state=disk_state, disk_ts=disk_ts, winner=picked.source,
@@ -837,6 +943,7 @@ def sync_workspace_protocol(
         return False
 
     _lock_fingerprint_after_restore(st, app_id, picked.state)
+    mark_cloud_reconciled(st.session_state)  # applied after a read the store answered
     st.session_state[synced_key] = True
     st.session_state[f"{_SESSION_RESTORED_PREFIX}{app_id}"] = True
     st.session_state[dirty_key] = False
@@ -1552,14 +1659,25 @@ def show_persistence_messages(st: Any) -> None:
     warn = st.session_state.pop(_SESSION_INVALID_WARN_KEY, None)
     if warn:
         st.warning(str(warn))
+    try:
+        from suite_cloud_state import cloud_read_failure
+
+        if cloud_read_failure(st.session_state) is not None:
+            from ui_user_copy import CLOUD_READ_FAILED_WARNING
+
+            st.warning(CLOUD_READ_FAILED_WARNING)
+    except ImportError:
+        pass
+    # Informational session notices are toasts, not banners pinned above every page (U1).
+    # Warnings and errors above stay as on-page alerts.
     if st.session_state.pop(_SESSION_CLOUD_BANNER_KEY, None):
         from ui_user_copy import SESSION_RESTORED_BANNER
 
-        st.success(SESSION_RESTORED_BANNER)
+        st.toast(SESSION_RESTORED_BANNER, icon="✅")
     else:
         banner = st.session_state.pop(_SESSION_BANNER_KEY, None)
         if banner:
-            st.success(str(banner))
+            st.toast(str(banner), icon="✅")
     if st.session_state.pop(_SESSION_SAVED_FLASH_KEY, False):
         from ui_user_copy import SETTINGS_SAVED_TOAST
 

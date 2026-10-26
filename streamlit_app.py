@@ -358,102 +358,23 @@ except Exception:
 # Daniel Cohen Baseball Explorer - Full Updated Version
 # ============================================================
 
-team_id_mapping = {
-    "SFN": "SFG", "SLN": "STL", "CHN": "CHC", "NYA": "NYY", "NYN": "NYM",
-    "FLO": "MIA", "LAN": "LAD", "BRO": "LAD", "SLA": "BAL",
-    "WS1": "MIN", "WS2": "TEX", "NY1": "SFG", "ML4": "MIL", "ML1": "ATL",
-    "TBA": "TBR", "SDN": "SDP", "CHA": "CWS", "KCA": "KCR",
-    "SE1": "MIL", "MON": "WAS", "CAL": "LAA", "ANA": "LAA",
-    "PHA": "OAK", "KC1": "OAK", "BSN": "ATL"
-}
-
-team_id_to_name = {
-    "ARI": "Arizona Diamondbacks", "ATL": "Atlanta Braves", "BAL": "Baltimore Orioles",
-    "BOS": "Boston Red Sox", "CHC": "Chicago Cubs", "CIN": "Cincinnati Reds",
-    "CLE": "Cleveland Guardians", "COL": "Colorado Rockies", "CWS": "Chicago White Sox",
-    "DET": "Detroit Tigers", "HOU": "Houston Astros", "KCR": "Kansas City Royals",
-    "LAA": "Los Angeles Angels", "LAD": "Los Angeles Dodgers", "MIA": "Miami Marlins",
-    "MIL": "Milwaukee Brewers", "MIN": "Minnesota Twins", "NYM": "New York Mets",
-    "NYY": "New York Yankees", "OAK": "Athletics", "ATH": "Athletics",
-    "PHI": "Philadelphia Phillies", "PIT": "Pittsburgh Pirates", "SDP": "San Diego Padres",
-    "SEA": "Seattle Mariners", "SFG": "San Francisco Giants", "STL": "St. Louis Cardinals",
-    "TBR": "Tampa Bay Rays", "TEX": "Texas Rangers", "TOR": "Toronto Blue Jays",
-    "WAS": "Washington Nationals"
-}
-
-team_id_to_historical_name = {
-    "ARI": "Arizona Diamondbacks", "ATL": "Atlanta Braves", "BAL": "Baltimore Orioles",
-    "BOS": "Boston Red Sox", "CHC": "Chicago Cubs", "CHN": "Chicago Cubs",
-    "CIN": "Cincinnati Reds", "CLE": "Cleveland Guardians", "COL": "Colorado Rockies",
-    "CWS": "Chicago White Sox", "CHA": "Chicago White Sox", "DET": "Detroit Tigers",
-    "HOU": "Houston Astros", "KCR": "Kansas City Royals", "KCA": "Kansas City Royals",
-    "LAA": "Los Angeles Angels", "CAL": "California Angels", "ANA": "Anaheim Angels",
-    "LAD": "Los Angeles Dodgers", "LAN": "Los Angeles Dodgers", "BRO": "Brooklyn Dodgers",
-    "MIA": "Miami Marlins", "FLO": "Florida Marlins", "MIL": "Milwaukee Brewers",
-    "ML4": "Milwaukee Brewers", "SE1": "Seattle Pilots", "MIN": "Minnesota Twins",
-    "WS1": "Washington Senators", "NYM": "New York Mets", "NYN": "New York Mets",
-    "NYY": "New York Yankees", "NYA": "New York Yankees", "OAK": "Athletics",
-    "PHA": "Philadelphia Athletics", "KC1": "Kansas City Athletics",
-    "PHI": "Philadelphia Phillies", "PIT": "Pittsburgh Pirates", "SDP": "San Diego Padres",
-    "SDN": "San Diego Padres", "SEA": "Seattle Mariners", "SFG": "San Francisco Giants",
-    "SFN": "San Francisco Giants", "NY1": "New York Giants", "STL": "St. Louis Cardinals",
-    "SLN": "St. Louis Cardinals", "SLA": "St. Louis Browns", "TBR": "Tampa Bay Rays",
-    "TBA": "Tampa Bay Rays", "TEX": "Texas Rangers", "WS2": "Washington Senators",
-    "TOR": "Toronto Blue Jays", "WAS": "Washington Nationals", "MON": "Montreal Expos",
-    "ML1": "Milwaukee Braves", "BSN": "Boston Braves"
-}
-
-
-# Lightweight team/league context features for ML and filters. Historical exceptions are handled by year:
-# Houston was NL through 2012 and AL starting 2013; Milwaukee/Seattle was AL through 1997 and NL starting 1998.
-AL_TEAMS = {"BAL", "BOS", "NYY", "TBR", "TOR", "CWS", "CLE", "DET", "KCR", "MIN", "HOU", "LAA", "OAK", "SEA", "TEX"}
-NL_TEAMS = {"ATL", "MIA", "NYM", "PHI", "WAS", "CHC", "CIN", "MIL", "PIT", "STL", "ARI", "COL", "LAD", "SDP", "SFG"}
-TEAM_PARK_FACTOR = {
-    "COL": 1.15, "BOS": 1.06, "CIN": 1.05, "NYY": 1.04, "PHI": 1.04, "BAL": 1.03,
-    "HOU": 1.02, "TEX": 1.02, "ATL": 1.01, "CHC": 1.01, "LAD": 1.00, "NYM": 1.00,
-    "TOR": 1.00, "STL": 0.99, "MIL": 0.99, "ARI": 0.99, "SDP": 0.98, "SFG": 0.97,
-    "SEA": 0.97, "DET": 0.97, "MIA": 0.96, "OAK": 0.95, "PIT": 0.98, "CLE": 0.99,
-    "KCR": 0.99, "MIN": 0.99, "CWS": 1.00, "TBR": 1.00, "WAS": 1.00, "LAA": 1.00
-}
-
-def normalize_team_id(team_id):
-    return team_id_mapping.get(str(team_id), str(team_id))
-
-def safe_int_year(year):
-    try:
-        if pd.isna(year):
-            return None
-        return int(year)
-    except Exception:
-        return None
-
-def team_league(team_id, year=None):
-    """Return AL/NL using historical league membership when a season year is available."""
-    tid = normalize_team_id(team_id)
-    yr = safe_int_year(year)
-    if tid == "HOU" and yr is not None:
-        return "NL" if yr <= 2012 else "AL"
-    if tid == "MIL" and yr is not None:
-        return "AL" if yr <= 1997 else "NL"
-    if tid in AL_TEAMS:
-        return "AL"
-    if tid in NL_TEAMS:
-        return "NL"
-    return "Unknown"
-
-def historical_team_name(team_id_original, year=None):
-    """Display the real historical team name for the season while preserving franchise filtering.
-
-    Cleveland is one franchise for filtering, but it should display as Indians through 2021
-    and Guardians starting in 2022. Other historical franchise names use Lahman team IDs
-    where available, such as BRO, FLO, MON, SLA, etc.
-    """
-    original = str(team_id_original)
-    tid = normalize_team_id(original)
-    yr = safe_int_year(year)
-    if tid == "CLE" and yr is not None:
-        return "Cleveland Indians" if yr <= 2021 else "Cleveland Guardians"
-    return team_id_to_historical_name.get(original, team_id_to_historical_name.get(tid, original))
+import baseball_history as _history  # noqa: E402  (WEB-PREP1: the historical stats layer, no Streamlit)
+from baseball_history import (  # noqa: E402,F401
+    AL_TEAMS,
+    NL_TEAMS,
+    TEAM_PARK_FACTOR,
+    add_missing_numeric_columns,
+    add_rate_stats,
+    build_clean_player_label_map,
+    historical_team_name,
+    normalize_team_id,
+    safe_int_year,
+    safe_round_rate_stats,
+    team_id_mapping,
+    team_id_to_historical_name,
+    team_id_to_name,
+    team_league,
+)
 
 def current_franchise_name(team_id_or_name):
     """Return the current MLB franchise name for draft/fantasy pages.
@@ -936,7 +857,20 @@ except ImportError:
     DRAFT_LAB_PAGE = "Draft Lab / Simulation"
     DRAFT_LAB_PAGE_LEGACY = "Draft Simulation Test Mode"
 
-_PAGE_LEGACY_ALIASES = {DRAFT_LAB_PAGE_LEGACY: DRAFT_LAB_PAGE}
+_PAGE_LEGACY_ALIASES = {
+    DRAFT_LAB_PAGE_LEGACY: DRAFT_LAB_PAGE,
+    # Names that are not pages but were written into Command Center Continue links (the
+    # baseball_activity emitters and the suite_deep_links resume-key map). Unaliased, each
+    # fell through normalize_page_key to Historical Explorer: the hosted "Draft Lab Continue
+    # opens Historical Explorer" bug was ?suite_page=Draft Room from the Draft Lab
+    # simulation's roster_build item. Stored links keep these names, so they stay mapped.
+    "Draft Room": DRAFT_LAB_PAGE,
+    "Draft Simulation": DRAFT_LAB_PAGE,
+    "ML Projections": "ML Predictions",
+    "Fantasy Market": "Fantasy Sleepers & Busts",
+    # A Fantasy Lineup Assistant tab; the resume launcher opens it via _lineup_focus_trade_*.
+    "Trade Center": "Fantasy Lineup Assistant",
+}
 
 
 def _streamlit_script_run_ctx_active() -> bool:
@@ -957,7 +891,7 @@ def render_global_app_chrome(active_page: str) -> None:
         render_mobile_quick_nav(
             st,
             active_page=active_page,
-            page_options=PAGE_OPTIONS,
+            page_options=PAGE_OPTIONS,  # grouped by mobile_nav_m2 via nav_groups
             page_option_label=page_option_label,
             main_sidebar_page_key=MAIN_SIDEBAR_PAGE_KEY,
             on_sidebar_page_change=_on_sidebar_page_change,
@@ -980,8 +914,13 @@ def render_global_app_chrome(active_page: str) -> None:
         # Active draft: do not spend the first viewport on the brand hero.
         with _ldr_m_hook("ldr-m-brand"):
             st.caption("⚾ Baseball Explorer · Live Draft")
+    elif active_page != "Home" and active_page not in DRAFT_FOCUS_PAGES:
+        # U1: no brand hero or tutorial prompt above page content. Pages open on their own
+        # title; the sidebar logo (and the header icon on phones) still carries the brand.
+        # Home shows the compact brand line and offers the tutorial at its foot.
+        pass
     else:
-        compact = active_page in DRAFT_FOCUS_PAGES
+        compact = active_page in DRAFT_FOCUS_PAGES or active_page == "Home"
         if compact:
             st.markdown("""
 <div class="title-box" style="padding:14px 18px;margin-bottom:12px;">
@@ -997,23 +936,14 @@ def render_global_app_chrome(active_page: str) -> None:
     </div>
 </div>
 """, unsafe_allow_html=True)
-    if not suppress_tutorial:
-        app_tutorial.render_tutorial_header_bar()
+    # U1: the "New here? Start Tutorial" prompt is rendered at the foot of Home (home_page).
 
-def fmt_int(x):
-    x = pd.to_numeric(x, errors="coerce")
-    if pd.isna(x): return ""
-    return f"{x:.0f}"
+from stat_helpers import fmt_int, fmt_rate_3, normalize_series, safe_numeric_series  # noqa: E402,F401  (shared with the fantasy modules)
 
 def fmt_count_1(x):
     x = pd.to_numeric(x, errors="coerce")
     if pd.isna(x): return ""
     return f"{x:.1f}"
-
-def fmt_rate_3(x):
-    x = pd.to_numeric(x, errors="coerce")
-    if pd.isna(x): return ""
-    return f"{x:.3f}"
 
 def fmt_rate_4(x):
     x = pd.to_numeric(x, errors="coerce")
@@ -1226,63 +1156,9 @@ def _draft_lab_styler_format(display_df):
     return fmt
 
 
-def normalize_series(series):
-    """Scale a numeric pandas Series to 0-1 safely.
-
-    Used by the fantasy and draft assistant pages so different stats
-    can be combined into one score without crashing on missing values,
-    all-equal values, or non-numeric data.
-    """
-    s = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan)
-    if s.notna().sum() == 0:
-        return pd.Series(0.0, index=series.index)
-    s = s.fillna(s.median())
-    min_val = s.min()
-    max_val = s.max()
-    if pd.isna(min_val) or pd.isna(max_val) or max_val == min_val:
-        return pd.Series(0.0, index=series.index)
-    return (s - min_val) / (max_val - min_val)
-
-
-def safe_numeric_series(df, col, default=0.0):
-    """Return a numeric Series for ``col`` with an index-aligned fallback."""
-    if col in df.columns:
-        return pd.to_numeric(df[col], errors="coerce").fillna(default)
-    return pd.Series(default, index=df.index, dtype="float64")
-
-
-def safe_round_rate_stats(df):
-    df = df.copy()
-    for col in ["BA", "OBP", "SLG", "OPS", "BA_roll", "OBP_roll", "SLG_roll", "OPS_roll"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").round(3)
-    return df
 
 
 
-def build_clean_player_label_map(df):
-    """Build clean player dropdown labels without Lahman/playerID text.
-
-    If names are duplicated, append a short career span rather than the internal ID.
-    """
-    base = (
-        df[["playerID", "fullName", "yearID"]]
-        .dropna(subset=["playerID", "fullName"])
-        .copy()
-    )
-    base["yearID"] = pd.to_numeric(base["yearID"], errors="coerce")
-    spans = base.groupby(["playerID", "fullName"], as_index=False)["yearID"].agg(["min", "max"]).reset_index()
-    name_counts = spans["fullName"].value_counts().to_dict()
-
-    label_map = {}
-    for _, row in spans.sort_values(["fullName", "min", "max"]).iterrows():
-        name = str(row["fullName"])
-        if name_counts.get(name, 0) > 1:
-            label = f"{name} ({int(row['min'])}-{int(row['max'])})"
-        else:
-            label = name
-        label_map[label] = row["playerID"]
-    return label_map
 
 
 def get_player_career_span(df, player_id):
@@ -1630,6 +1506,452 @@ def build_player_label_map(df):
 
 
 
+def _u1_nav_cb(page):
+    """Button callback: go to ``page`` through the normal scheduled-navigation path."""
+    return lambda: navigate_to_page(page, from_callback=True)
+
+
+def _u1_player_action_cb(action, player):
+    """Button callback: the same player action the Player Actions menu runs (send to
+    Comparison / Trend), then go to that page. Never drafts, trades or saves a move."""
+    def _cb():
+        label_map = get_clean_player_label_map_yearly(yearly_df)
+        msg, nav = dispatch_player_action(player, action, None, None, label_map)
+        st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = msg
+        if nav:
+            _schedule_player_action_page_nav(nav)
+    return _cb
+
+
+def _render_u1_season_answer(rows, sort_stat, year_range, *, ascending, team_col, qualification_prefix):
+    """Historical Explorer answer: top season, its numbers, the top-10 chart, next steps."""
+    import u1_answers as u1a
+    import ui_hierarchy as u1
+
+    qual = u1a.qualification_text(st.session_state, qualification_prefix, sort_stat, year_range, per_season=True)
+    answer = u1a.season_answer(rows, sort_stat, year_range, ascending=ascending, team_col=team_col, qualification=qual)
+    if answer is None:
+        u1.answer_card(st, "No seasons match these filters",
+                       "Widen the year range or relax the filters under Explore more.", tone="warn")
+        return
+    u1.answer_card(st, answer["headline"], answer["body"], kicker=answer["context"])
+    u1.metric_tiles(st, answer["tiles"])
+    if qual:
+        u1.chips(st, [(qual, "")])
+    chart_rows = rows
+    if "yearID" in rows.columns and "fullName" in rows.columns:
+        import u1_answers as _u1a
+
+        chart_rows = rows.assign(_season_label=[
+            f"{_u1a.short_name(n)} ({y})" for n, y in zip(rows["fullName"].astype(str), rows["yearID"].astype("Int64").astype(str))
+        ])
+    top_bar_chart(chart_rows, "fullName", sort_stat, f"Top 10 seasons by {sort_stat}", always_show=True,
+                  label_col="_season_label" if "_season_label" in chart_rows.columns else None)
+    player = answer["player"]
+    last = u1a.last_name(player)
+    u1.action_row(st, [
+        (f"Compare {last}", _u1_player_action_cb("Send to Comparison Tool", player)),
+        (f"{last}'s trend", _u1_player_action_cb("Send to Trend Page", player)),
+        ("Career Totals", _u1_nav_cb("Career Totals")),
+        ("Leaderboards", _u1_nav_cb("Leaderboards")),
+    ], key="hist", primary=None)
+
+
+def _render_u1_leaderboard_answer(rows, sort_stat, year_range, *, weights, qualification_prefix):
+    """Leaderboards answer: who leads, what is ranked, the qualification rule, top 3, chart, next steps."""
+    import u1_answers as u1a
+    import ui_hierarchy as u1
+
+    qual = u1a.qualification_text(st.session_state, qualification_prefix, sort_stat, year_range)
+    answer = u1a.leaderboard_answer(rows, sort_stat, year_range, weights=weights, qualification=qual)
+    if answer is None:
+        u1.answer_card(st, "No players match these filters",
+                       "Widen the year range or relax the minimums under Explore more.", tone="warn")
+        return
+    u1.answer_card(st, answer["headline"], answer["body"], kicker=f"Ranked by {u1a.stat_name(sort_stat)}")
+    if qual:
+        u1.chips(st, [(qual, "")])
+    top_bar_chart(rows, "fullName", sort_stat, f"Top 10 by {sort_stat}", always_show=True)
+    player = answer["player"]
+    last = u1a.last_name(player)
+    u1.action_row(st, [
+        (f"Compare {last}", _u1_player_action_cb("Send to Comparison Tool", player)),
+        (f"{last}'s trend", _u1_player_action_cb("Send to Trend Page", player)),
+        ("Historical Explorer", _u1_nav_cb("Historical Explorer")),
+    ], key="leaders", primary=None)
+
+
+def _render_u2_comparison_answer(compare, career, player_ids, axis_mode, year_range, age_range):
+    """Compare Players answer: who leads which metric over the same range, one head-to-head
+    visual, next steps. Built from the page's own Career Totals table (rates from totals)."""
+    import u1_answers as u1a
+    import u2_answers as u2a
+    import ui_hierarchy as u1
+
+    if compare.empty or career.empty:
+        u1.answer_card(st, "No seasons in this range", "Widen the season range above.", tone="warn")
+        return
+    if axis_mode == "Player Age":
+        span = f"ages {age_range[0]}–{age_range[1]}"
+    else:
+        span = str(year_range[0]) if year_range[0] == year_range[1] else f"{year_range[0]}–{year_range[1]}"
+    order = []
+    for pid in player_ids:
+        names = compare.loc[compare["playerID"] == pid, "fullName"].dropna()
+        if not names.empty and names.iloc[0] not in order:
+            order.append(names.iloc[0])
+    career = career.set_index("fullName").reindex([n for n in order if n in set(career["fullName"])]).reset_index()
+    seasons = compare.groupby("fullName")["yearID"].nunique().to_dict()
+    if len(career) >= 2:
+        answer = u2a.comparison_answer(career, seasons=seasons, span_text=span)
+        if answer is None:
+            u1.answer_card(st, "Not enough numbers to compare", "Widen the season range above.", tone="warn")
+            return
+        u1.answer_card(st, answer["headline"], answer["body"], kicker=f"Head to head · {span}")
+        u1.stat_bars(st, answer["bars"])
+        players = answer["players"]
+    else:
+        summary = u2a.single_player_summary(career.iloc[0], seasons=int(seasons.get(career.iloc[0]["fullName"], 0)), span_text=span)
+        u1.answer_card(st, summary["headline"], "Add a second player above to compare them side by side.",
+                       kicker=summary["context"])
+        u1.metric_tiles(st, summary["tiles"])
+        players = [summary["player"]]
+    actions = [(f"{u1a.last_name(p)}'s trend", _u1_player_action_cb("Send to Trend Page", p)) for p in players[:3]]
+    actions.append(("Career Totals", _u1_nav_cb("Career Totals")))
+    u1.action_row(st, actions, key="compare", primary=None)
+
+
+def _render_u2_career_answer(rows, filtered_seasons, sort_stat, year_range, *, by_team=False):
+    """Career Totals answer: the leader's career in numbers, the qualification rule, the top-10
+    chart, next steps."""
+    import u1_answers as u1a
+    import u2_answers as u2a
+    import ui_hierarchy as u1
+
+    qual = u1a.qualification_text(st.session_state, "career", sort_stat, year_range)
+    leader_seasons = None
+    ranked = rows.assign(_v=pd.to_numeric(rows[sort_stat], errors="coerce")).dropna(subset=["_v"]) if sort_stat in rows.columns else rows.iloc[0:0]
+    if not ranked.empty and "playerID" in ranked.columns:
+        top = ranked.sort_values("_v", ascending=False, kind="stable").iloc[0]
+        leader_seasons = filtered_seasons[filtered_seasons["playerID"] == top["playerID"]]
+        if by_team and "teamName" in top.index and "teamName" in leader_seasons.columns:
+            leader_seasons = leader_seasons[leader_seasons["teamName"] == top["teamName"]]
+    answer = u2a.career_answer(rows, sort_stat, year_range, seasons=leader_seasons, qualification=qual)
+    if answer is None:
+        u1.answer_card(st, "No careers match these filters",
+                       "Widen the year range or relax the filters and minimums under Explore more.", tone="warn")
+        return
+    u1.answer_card(st, answer["headline"], answer["body"], kicker=answer["context"])
+    u1.metric_tiles(st, answer["tiles"])
+    if qual:
+        u1.chips(st, [(qual, "")])
+    chart_rows, label_col = rows, None
+    if by_team and "displayTeam" in rows.columns:
+        chart_rows = rows.assign(_career_label=[f"{u1a.short_name(n)} ({t})" for n, t in zip(rows["fullName"].astype(str), rows["displayTeam"].astype(str))])
+        label_col = "_career_label"
+    top_bar_chart(chart_rows, "fullName", sort_stat, f"Top 10 Career Totals by {sort_stat}", always_show=True, label_col=label_col)
+    player = answer["player"]
+    last = u1a.last_name(player)
+    u1.action_row(st, [
+        (f"Compare {last}", _u1_player_action_cb("Send to Comparison Tool", player)),
+        (f"{last}'s trend", _u1_player_action_cb("Send to Trend Page", player)),
+        ("Historical Explorer", _u1_nav_cb("Historical Explorer")),
+        ("Leaderboards", _u1_nav_cb("Leaderboards")),
+    ], key="career", primary=None)
+
+
+def _u2_compare_pair_cb(names):
+    """Button callback: open Compare Players with exactly these players (replaces the
+    current selection). Never drafts, trades or saves a move."""
+    def _cb():
+        label_map = get_clean_player_label_map_yearly(yearly_df)
+        labels = []
+        for name in names:
+            lbl = resolve_fullname_to_clean_label(name, label_map)
+            if lbl and lbl not in labels:
+                labels.append(lbl)
+        if len(labels) < 2:
+            st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = "Could not match both players in the database."
+            return
+        from comparison_state import write_canonical_comparison_state
+
+        write_canonical_comparison_state(st.session_state, labels[:3], reason="u2_compare_pair")
+        record_workflow_comparison_pair(labels[0], labels[1])
+        st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = f"Comparing {' and '.join(names[:3])}."
+        _schedule_player_action_page_nav("Comparison Tool")
+    return _cb
+
+
+def _u2_season_line_chart(seasons, names, stat, *, height=220):
+    """One small line chart: ``stat`` by season for a few named players (values as the page
+    shows them; nothing recomputed). Colours follow the order of ``names``."""
+    import altair as alt
+    from ui_hierarchy import PLAYER_COLORS
+
+    if seasons is None or seasons.empty or stat not in seasons.columns:
+        return
+    data = seasons[seasons["fullName"].astype(str).isin(names)][["fullName", "yearID", stat]].copy()
+    data[stat] = pd.to_numeric(data[stat], errors="coerce")
+    data = data.dropna(subset=[stat]).drop_duplicates(["fullName", "yearID"], keep="last")
+    if data.empty:
+        return
+    data["Season"] = data["yearID"].astype(int).astype(str)
+    order = [n for n in names if n in set(data["fullName"])]
+    fmt = ".3f" if stat in RATE_STATS else ",.0f"
+    chart = (
+        alt.Chart(data)
+        .mark_line(point=True, strokeWidth=2.5)
+        .encode(
+            x=alt.X("Season:O", title=None, axis=alt.Axis(labelAngle=0)),
+            y=alt.Y(f"{stat}:Q", title=stat, scale=alt.Scale(zero=False), axis=alt.Axis(format=fmt)),
+            color=alt.Color("fullName:N", title=None, sort=order,
+                            scale=alt.Scale(domain=order, range=list(PLAYER_COLORS[:len(order)])),
+                            legend=alt.Legend(orient="bottom")),
+            tooltip=[alt.Tooltip("fullName:N", title="Player"), alt.Tooltip("Season:O"), alt.Tooltip(f"{stat}:Q", format=fmt)],
+        )
+        .properties(height=height)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_u2_trend_answer(rows, seasons, stat, years):
+    """Trend Value answer: fastest riser and biggest drop in the chosen stat (or the player
+    the user sent here), one season-by-season chart, next steps."""
+    import u1_answers as u1a
+    import u2_answers as u2a
+    import ui_hierarchy as u1
+
+    focus = str(st.session_state.get("_u2_trend_focus") or "").strip()
+    values = {}
+    if seasons is not None and not seasons.empty and stat in seasons.columns:
+        cols = ["fullName", "yearID", stat] + (["AB"] if "AB" in seasons.columns and stat != "AB" else [])
+        for name, grp in seasons[cols].groupby("fullName"):
+            values[str(name)] = list(zip(*(grp[c].tolist() for c in cols[1:])))
+    answer = u2a.trend_answer(rows, stat, years, values=values, focus=focus)
+    if answer is None:
+        u1.answer_card(st, "No hitters match these filters",
+                       "Lower Minimum Games or widen Fantasy Position under Explore more.", tone="warn")
+        return
+    u1.answer_card(st, answer["headline"], answer["body"], kicker=answer["kicker"])
+    _u2_season_line_chart(seasons, answer["chart_names"], stat)
+    pair = answer["chart_names"][:2]
+    actions = []
+    if len(pair) == 2:
+        actions.append((f"Compare {u1a.last_name(pair[0])} & {u1a.last_name(pair[1])}", _u2_compare_pair_cb(pair)))
+    actions.append(("Valuation", _u1_nav_cb("Valuation")))
+    if focus:
+        actions.append(("Show top risers", lambda: st.session_state.pop("_u2_trend_focus", None)))
+    u1.action_row(st, actions, key="trend", primary=None)
+
+
+def _u4_action_cols(key, n):
+    """A short row of next-step controls that wraps two-up on phones (same as ui.action_row)."""
+    try:
+        from mobile_foundation import mobile_wrap_row
+
+        wrap = mobile_wrap_row(st, f"u1-actions-{key}")
+    except ImportError:
+        wrap = st.container()
+    with wrap:
+        return st.columns(n)
+
+
+def _render_u4_draft_room_answer(board, *, room_df, your_team, team_names, team_count, rounds):
+    """Draft Room Simulator answer (U4): where the board stands, then Draft Player (the board's own
+    pick assignment, aimed at the next open pick), Import Draft, Save Draft, Open Saved Drafts."""
+    import u4_answers as u4a
+    import ui_hierarchy as u1
+    from draft_room_state import (
+        derive_draft_progress,
+        get_canonical_draft_meta,
+        is_draft_room_locally_dirty,
+        open_pick_row_options,
+        pick_label_row_map,
+        record_manual_save_button_click,
+        submit_board_pick_assignment,
+    )
+
+    progress = derive_draft_progress(board, draft_order=team_names, num_teams=team_count,
+                                     total_picks=len(board) if isinstance(board, pd.DataFrame) and len(board) else None,
+                                     owned_team=your_team)
+    answer = u4a.draft_room_answer(progress, your_team=your_team, rounds=rounds,
+                                   source=str(get_canonical_draft_meta(st.session_state).get("source") or ""),
+                                   unsaved=is_draft_room_locally_dirty(st.session_state),
+                                   on_clock_team=str(progress.get("on_clock_team") or ""))
+    u1.answer_card(st, answer["headline"], answer["body"], kicker="Draft board", tone=answer["tone"])
+    u1.metric_tiles(st, answer["tiles"])
+    flash = st.session_state.pop("_u4_dr_flash", None)
+    if flash:
+        st.success(flash)
+    open_picks = open_pick_row_options(board)
+    cols = _u4_action_cols("draft-room", 4)
+    with cols[0].popover("Draft Player", use_container_width=True, disabled=not open_picks):
+        if open_picks:
+            from draft_player_names import build_draft_player_name_index, draft_pool_display_names
+
+            label = open_picks[0][1]
+            drafted = set(board["Player"].astype(str).str.strip()) if "Player" in board.columns else set()
+            names = draft_pool_display_names(room_df)
+            choice = st.selectbox("Player", [n for n in names if n not in drafted], index=None,
+                                  placeholder="Type a name", key="u4_dr_draft_player")
+            if st.button(f"Set player on {label}", key="u4_dr_draft_player_btn", type="primary", disabled=not choice):
+                res = submit_board_pick_assignment(
+                    st.session_state, pick_label=label, player_match=str(choice or ""),
+                    pick_row_by_label=pick_label_row_map(board), name_index=build_draft_player_name_index(room_df),
+                    all_names=names, search_text=str(choice or ""),
+                )
+                if res.get("ok"):
+                    st.session_state["_u4_dr_flash"] = res.get("message") or f"{choice} set on {label}."
+                    st.rerun()
+                st.error(res.get("message") or res.get("error") or "Assignment failed.")
+    cols[1].button("Import Draft", key="u4_dr_import_btn", use_container_width=True,
+                   on_click=lambda: st.session_state.__setitem__("_u4_draft_import_open", True))
+    cols[2].button("Save Draft", key="u4_dr_save_btn", use_container_width=True,
+                   type="primary" if answer["tiles"][-1][1] == "Unsaved" else "secondary",
+                   help="Same as Save Draft Board Now on the Board tab.",
+                   on_click=lambda: record_manual_save_button_click(st.session_state))
+    cols[3].button("Open Saved Drafts", key="u4_dr_library_btn", use_container_width=True,
+                   on_click=_u1_nav_cb("Saved Draft Library"))
+
+
+def _render_u4_draft_assistant_answer(best_fit, best_value, summary, gaps, team):
+    """Draft Assistant answer (U4): the pick it already ranks first (Decision Score order) with
+    its own reason, pick timing and roster needs. Nothing is re-scored here."""
+    import u1_answers as u1a
+    import u4_answers as u4a
+    import ui_hierarchy as u1
+
+    def first(df):
+        return df.iloc[0].to_dict() if isinstance(df, pd.DataFrame) and not df.empty else None
+
+    answer = u4a.draft_assistant_answer(first(best_fit), best_value=first(best_value), summary=summary or {},
+                                        gaps=list(gaps or []), team=str(team or ""))
+    u1.answer_card(st, answer["headline"], answer["body"],
+                   kicker=f"Draft Assistant · {team}" if team else "Draft Assistant", tone=answer["tone"])
+    u1.metric_tiles(st, answer["tiles"])
+    actions = []
+    if answer["compare"]:
+        a, b = answer["compare"]
+        actions.append((f"Compare {u1a.last_name(a)} & {u1a.last_name(b)}", _u2_compare_pair_cb([a, b])))
+    actions += [("Open Draft Board", _u1_nav_cb("Draft Room Simulator")), ("Live Draft Room", _u1_nav_cb("Live Draft Room"))]
+    u1.action_row(st, actions, key="draft-assistant", primary=None)
+
+
+def _render_u4_draft_lab_answer(team_summary, pick_analysis, *, total_picks, from_live=False):
+    """Draft Lab answer (U4): the simulation's own projected best draft, its margin, that team's
+    Best Pick (with the analysis' reason) and its open positions."""
+    import u4_answers as u4a
+    import ui_hierarchy as u1
+
+    answer = u4a.draft_lab_answer(team_summary, pick_analysis, total_picks=total_picks)
+    if answer is None:
+        u1.answer_card(st, "No team ranking in these results", "Run the simulation again to rank the teams.", tone="warn")
+        return
+    kicker = "Your completed live draft" if from_live else "Draft Lab · simulated draft"
+    u1.answer_card(st, answer["headline"], answer["body"], kicker=kicker)
+    u1.metric_tiles(st, answer["tiles"])
+    u1.action_row(st, [
+        ("Team Analysis", lambda: st.session_state.__setitem__("draft_lab_active_tab", "Team Analysis")),
+        ("Best / Questionable Picks", lambda: st.session_state.__setitem__("draft_lab_active_tab", "Best / Questionable Picks")),
+        ("Draft Assistant", _u1_nav_cb("Draft Assistant Simulator")),
+    ], key="draft-lab", primary=None)
+
+
+def _render_u2_valuation_answer(rows, model_rows, chart_rows, w_current, w_trend, years):
+    """Valuation answer: the top hitter, production and trend components in the model's own
+    terms, the weights, the top-10 chart, next steps."""
+    import u1_answers as u1a
+    import u2_answers as u2a
+    import ui_hierarchy as u1
+
+    # U4: a player the user chose (or sent here) leads; otherwise the top-ranked hitter.
+    focus = str(st.session_state.get("valuation_selected_player") or "").strip()
+    answer = u2a.valuation_answer(rows, model_rows, w_current=w_current, w_trend=w_trend, years=years, focus=focus)
+    if answer is None:
+        u1.answer_card(st, "No hitters match these filters",
+                       "Lower Minimum Games or widen Fantasy Position.", tone="warn")
+        return
+    chosen = answer["focus_found"] and not answer["headline"].startswith("Top valuation")
+    u1.answer_card(st, answer["headline"], answer["body"],
+                   kicker="Your player · production + trend" if chosen else "Valuation · production + trend")
+    u1.metric_tiles(st, answer["tiles"])
+    top_bar_chart(chart_rows, "fullName", "Valuation_Score", "Top 10 Valuation Score", always_show=True)
+    player = answer["player"]
+    last = u1a.last_name(player)
+    actions = []
+    if len(answer["next"]) == 2:
+        a, b = answer["next"]
+        actions.append((f"Compare {u1a.last_name(a)} & {u1a.last_name(b)}", _u2_compare_pair_cb([a, b])))
+    actions += [
+        (f"{last}'s trend", _u1_player_action_cb("Send to Trend Page", player)),
+        ("Sleepers & Busts", _u1_nav_cb("Fantasy Sleepers & Busts")),
+    ]
+    if chosen:
+        actions.append(("Show top player", lambda: st.session_state.pop("valuation_selected_player", None)))
+    u1.action_row(st, actions, key="value", primary=None)
+
+
+def _render_u2_sleeper_answer(sleepers, busts, *, matched, fantasy_format):
+    """Sleepers & Busts answer: definitions, up to three sleeper and three bust-risk cards from
+    the page's own model/market ranks, next steps."""
+    import u1_answers as u1a
+    import u2_answers as u2a
+    import ui_hierarchy as u1
+
+    answer = u2a.sleeper_bust_answer(sleepers, busts, n=3, matched=matched, fantasy_format=fantasy_format)
+    if answer is None:
+        u1.answer_card(st, "No model–market gaps to show",
+                       "No player here has both a model rank and a market rank. Loosen the filters under Explore more.", tone="warn")
+        return
+    u1.answer_card(st, answer["headline"], answer["body"], kicker="Model rank vs market rank")
+    if answer["sleepers"]:
+        u1.section_label(st, "Sleepers · model likes them more than the market")
+        u1.info_cards(st, answer["sleepers"])
+    if answer["busts"]:
+        u1.section_label(st, "Bust risks · market likes them more than the model")
+        u1.info_cards(st, answer["busts"])
+    actions = []
+    pair = answer["players"]
+    if len(pair) == 2:
+        actions.append((f"Compare {u1a.last_name(pair[0])} & {u1a.last_name(pair[1])}", _u2_compare_pair_cb(pair)))
+    if pair:
+        actions.append((f"{u1a.last_name(pair[0])}'s trend", _u1_player_action_cb("Send to Trend Page", pair[0])))
+    actions.append(("Draft Assistant", _u1_nav_cb("Draft Assistant Simulator")))
+    u1.action_row(st, actions, key="sleepers", primary=None)
+
+
+def _render_u2_ml_answer(stored_df, position_filter, sort_by, models, status):
+    """ML Predictions answer: the top projected hitters for the chosen sort (display-only view
+    of the stored projections), the model's holdout accuracy for that stat, next steps."""
+    import u1_answers as u1a
+    import u2_answers as u2a
+    import ui_hierarchy as u1
+
+    if not st.session_state.get("ml_predictions_have_run", False) or not _ml_is_nonempty_dataframe(stored_df):
+        u1.answer_card(st, "Generate projections to see next season's leaders",
+                       "Click Generate / Refresh ML Predictions above. The model estimates next-season performance "
+                       "from recent seasons, aging curves and similar players; settings are under Explore more.",
+                       kicker="ML Predictions")
+        return
+    view = _ml_apply_display_view(stored_df, position_filter, sort_by)
+    answer = u2a.ml_answer(view, sort_by, models=models, player_count=int((status or {}).get("player_count") or len(stored_df)))
+    if answer is None:
+        u1.answer_card(st, "No projections match this position",
+                       "Clear Fantasy Position above, or regenerate with a wider scope under Explore more.", tone="warn")
+        return
+    kicker = f"Ranked by {answer['sorted_by']}" + (f" (table sorted by {sort_by})" if sort_by in ("Position", "Team") else "")
+    u1.answer_card(st, answer["headline"], answer["body"], kicker=kicker)
+    u1.ranked_list(st, answer["rows"])
+    actions = []
+    pair = answer["players"]
+    if len(pair) == 2:
+        actions.append((f"Compare {u1a.last_name(pair[0])} & {u1a.last_name(pair[1])}", _u2_compare_pair_cb(pair)))
+    if pair:
+        actions.append((f"{u1a.last_name(pair[0])}'s trend", _u1_player_action_cb("Send to Trend Page", pair[0])))
+    actions.append(("Sleepers & Busts", _u1_nav_cb("Fantasy Sleepers & Busts")))
+    u1.action_row(st, actions, key="ml", primary=None)
+
+
 def plot_player_stat_trends(ax, df, player_ids, stat_col, mode="Actual Values", smooth_window=3):
     """Plot one stat for multiple players using actual values or a moving-average smooth."""
     for pid in player_ids:
@@ -1884,15 +2206,10 @@ def format_advanced_trend_table(df):
 
 
 def compute_trend_slope(group, stat_col):
-    group = group.sort_values("yearID")
-    x = pd.to_numeric(group["yearID"], errors="coerce").values
-    y = pd.to_numeric(group[stat_col], errors="coerce").values
-    mask = ~pd.isna(y)
-    x = x[mask]
-    y = y[mask]
-    if len(x) < 2:
-        return np.nan
-    return np.polyfit(x, y, 1)[0]
+    """Season trend for one player's rows (see trend_slopes for the method)."""
+    from trend_slopes import reference_slope
+
+    return reference_slope(group, stat_col)
 
 
 @st.cache_data(show_spinner=False)
@@ -1902,19 +2219,12 @@ def compute_player_trend_table(recent_data, stats_tuple):
     cols = ["playerID"] + [f"{s}_trend" for s in stats]
     if recent_data is None or recent_data.empty or "playerID" not in recent_data.columns:
         return pd.DataFrame(columns=cols)
-    src = recent_data[["playerID", "yearID"] + stats].copy()
+    from trend_slopes import trend_slopes
 
-    def _slopes(g):
-        return pd.Series({f"{stat}_trend": compute_trend_slope(g, stat) for stat in stats})
-
-    grouped = src.groupby("playerID", group_keys=False)
-    try:
-        out = grouped.apply(_slopes, include_groups=False).reset_index()
-    except TypeError:
-        out = grouped.apply(_slopes).reset_index()
-    if out.columns.duplicated().any():
-        out = out.loc[:, ~out.columns.duplicated()]
-    return out
+    # One vectorized pass for every player (was a per-player np.polyfit, ~40 s cold).
+    # Plate-appearance inputs let rate-stat trends weight seasons by playing time.
+    pa_inputs = [c for c in ("AB", "BB", "HBP", "SF", "SH", "H", "2B", "3B", "HR") if c in recent_data.columns and c not in stats]
+    return trend_slopes(recent_data[["playerID", "yearID"] + stats + pa_inputs], stats)[cols]
 
 
 @st.cache_data(show_spinner=False)
@@ -1946,37 +2256,35 @@ def aggregate_recent_player_totals(recent_data, stat_cols_tuple):
     stat_cols = [c for c in (stat_cols_tuple or []) if c in recent_data.columns]
     if not group_cols or not stat_cols:
         return pd.DataFrame()
-    out = recent_data.groupby(group_cols, as_index=False)[stat_cols].sum()
+    out = recent_data.groupby(group_cols, as_index=False, dropna=False)[stat_cols].sum()
     return add_rate_stats(out)
 
-def add_missing_numeric_columns(df, cols):
-    df = df.copy()
-    for col in cols:
-        if col not in df.columns:
-            df[col] = 0
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-    return df
-
-def add_rate_stats(df):
-    df = df.copy()
-    needed_cols = ["AB", "H", "2B", "3B", "HR", "BB", "HBP", "SF"]
-    df = add_missing_numeric_columns(df, needed_cols)
-    df["1B"] = df["H"] - df["2B"] - df["3B"] - df["HR"]
-    ab_denom = df["AB"].replace(0, np.nan)
-    obp_denom = (df["AB"] + df["BB"] + df["HBP"] + df["SF"]).replace(0, np.nan)
-    df["BA"] = pd.to_numeric(df["H"] / ab_denom, errors="coerce")
-    df["OBP"] = pd.to_numeric((df["H"] + df["BB"] + df["HBP"]) / obp_denom, errors="coerce")
-    df["SLG"] = pd.to_numeric((df["1B"] + 2 * df["2B"] + 3 * df["3B"] + 4 * df["HR"]) / ab_denom, errors="coerce")
-    df["OPS"] = pd.to_numeric(df["OBP"] + df["SLG"], errors="coerce")
-    return df
-
-def apply_stat_min_filters(df, prefix, on_change=None):
+def apply_stat_min_filters(df, prefix, on_change=None, *, sort_stat=None, qualification=None):
+    """Stat minimum filters. ``qualification`` (from ``rate_stat_qualification.qualified_ab``)
+    turns on the default Min AB for rate-stat rankings; ``sort_stat`` is the ranking stat."""
     df = df.copy()
     stat_columns = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
     for col in stat_columns:
         if col not in df.columns:
             df[col] = 0
         df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    qual_state = None
+    ab_on_change = on_change
+    if qualification is not None:
+        import rate_stat_qualification as rsq
+
+        qual_state = rsq.resolve_ab_minimum(st.session_state, prefix, sort_stat, qualification["value"])
+
+        def ab_on_change(_prefix=prefix, _cb=on_change):
+            rsq.mark_manual(st.session_state, _prefix)
+            if _cb is not None:
+                _cb()
+
+        def ab_restore_auto(_prefix=prefix, _cb=on_change):
+            rsq.restore_auto(st.session_state, _prefix)
+            if _cb is not None:
+                _cb()
 
     with st.expander("Stat minimum filters", expanded=False):
         if prefix == "trend":
@@ -1993,18 +2301,26 @@ def apply_stat_min_filters(df, prefix, on_change=None):
             for i, stat in enumerate(count_filter_cols):
                 with cols[i % 4]:
                     label = f"Min total {stat} (window)" if prefix == "trend" else f"Min {stat}"
+                    _min_key = f"{prefix}_{stat}_min"
+                    _qualified_ab = qual_state is not None and stat == "AB"
+                    _kwargs = {} if (_qualified_ab and _min_key in st.session_state) else {"value": 0}
                     mins[stat] = st.number_input(
                         label,
                         min_value=0,
-                        value=0,
                         step=1,
-                        key=f"{prefix}_{stat}_min",
-                        on_change=on_change,
+                        key=_min_key,
+                        on_change=ab_on_change if _qualified_ab else on_change,
                         help=(
                             f"Minimum {stat} combined across selected lookback years."
                             if prefix == "trend"
-                            else None
+                            else (
+                                "Set automatically to a qualified minimum when ranking by BA, OBP, SLG "
+                                "or OPS. Any value you enter here (including 0) is kept."
+                                if _qualified_ab
+                                else None
+                            )
                         ),
+                        **_kwargs,
                     )
         with rate_tab:
             cols = st.columns(4)
@@ -2026,11 +2342,24 @@ def apply_stat_min_filters(df, prefix, on_change=None):
                         ),
                     )
 
-    mask = pd.Series(True, index=df.index)
-    for stat, min_val in mins.items():
-        if min_val:
-            mask &= df[stat].fillna(-np.inf) >= min_val
-    return df.loc[mask].copy()
+    if qual_state is not None and qual_state["rate"]:
+        caption = rsq.qualification_caption(qual_state, qualification, sort_stat)
+        if qual_state["mode"] == rsq.MODE_MANUAL and qual_state["value"] != qual_state["qualified"]:
+            cap_col, btn_col = st.columns([4, 1])
+            with cap_col:
+                st.caption(caption)
+            with btn_col:
+                st.button(
+                    f"Use qualified ({qual_state['qualified']:,} AB)",
+                    # Not prefixed with the page's state prefix: page_state would persist a button value.
+                    key=f"rate_qualification_restore_{prefix}",
+                    on_click=ab_restore_auto,
+                    width="stretch",
+                )
+        else:
+            st.caption(caption)
+
+    return _history.apply_stat_minimums(df, mins)
 
 def color_trend(val):
     try:
@@ -2212,6 +2541,7 @@ def format_fantasy_table(df):
         "Player Value Component", "Market Edge Component", "Roster Need Component",
         "Scarcity Component", "Category Fit Component", "Availability Urgency Component",
         "Risk Component", "ML Projection Score", "Blended Projection Score",
+        "Position Scarcity Score",
     ]
     edge_cols = ["Fantasy Edge"]
     rate_cols = ["BA", "OBP", "SLG", "OPS", "Projected BA", "Projected OBP", "Projected SLG", "Projected OPS"]
@@ -2355,95 +2685,7 @@ def render_section_header(title, note, *, compact: bool = False):
         """, unsafe_allow_html=True)
 
 
-PAGE_GUIDES = {
-    "Historical Explorer": {
-        "purpose": "Search Lahman seasons by year, position, and team.",
-        "when": "When you want season-by-season stats for many players at once.",
-        "outputs": "Sortable table, top-10 bar chart, and optional scatterplots for the filtered set.",
-    },
-    "Career Totals": {
-        "purpose": "Roll up career counting and rate stats across a year range.",
-        "when": "When you care about full-career production, not one season.",
-        "outputs": "Career table plus charts for the filtered group.",
-    },
-    "Leaderboards": {
-        "purpose": "Rank players on a single stat with quick filters.",
-        "when": "When you want a simple who-leads-in-HR/OPS view.",
-        "outputs": "Leaderboard table and top-10 chart for the chosen stat.",
-    },
-    "Comparison Tool": {
-        "purpose": "Compare up to three players side by side using stats, trends, and optional significance tests.",
-        "when": "When you are choosing between a few names and want the same view for each.",
-        "outputs": "Year-by-year table, career totals, trend charts, and category-style comparisons.",
-    },
-    "Trend Value": {
-        "purpose": "See who is improving or fading over recent seasons.",
-        "when": "During draft prep or when judging breakout vs decline risk.",
-        "outputs": "Trend table (change columns), breakout/decline lists, and single-player dashboards.",
-    },
-    "Valuation": {
-        "purpose": "Ranks hitters by mixing how good they have been lately with whether their stats are rising or falling.",
-        "when": "During draft prep or trade talks when you want one short list of names worth a closer look.",
-        "outputs": "A sortable table (Valuation Score, Current Score, Trend Score, stats) plus best/worst callouts at the bottom.",
-        "extra": [
-            "<strong>Valuation Score (0–100):</strong> Higher is better. 100.00 = top of your filtered list; 0.00 = bottom.",
-            "<strong>Current Score:</strong> How strong recent counting and rate stats are in the year window you chose.",
-            "<strong>Trend Score:</strong> Whether production is trending up or down (larger = more improvement).",
-            "<strong>Reading the table:</strong> Sort by Valuation Score, then check HR, RBI, OPS, and the two component scores.",
-            "<strong>For fantasy:</strong> Shortlist adds, draft targets, and trade candidates here, then confirm on Trend Value or Comparison.",
-        ],
-    },
-    "ML Predictions": {
-        "purpose": "Machine-learning style next-season stat projections.",
-        "when": "When you want model-based forecasts beyond simple trends.",
-        "outputs": "Ranked projection table; tune advanced blending in the expander.",
-    },
-    "Fantasy Sleepers & Busts": {
-        "purpose": "Find undervalued players, risky market picks, and names where your projections differ from ADP.",
-        "when": "During draft prep or on draft day when you want buy-low and avoid-overpay lists.",
-        "outputs": "Sleeper and bust tables, market-vs-model chart, and plain-language reasons.",
-    },
-    "Draft Room Simulator": {
-        "purpose": "Log picks, view rosters, and grade drafts.",
-        "when": "During a live or mock draft — this feeds the Draft Assistant.",
-        "outputs": "Pick board, roster views, and post-draft grades.",
-    },
-    "Draft Assistant Simulator": {
-        "purpose": "Recommend your next pick from needs, scarcity, and projections.",
-        "when": "While drafting, after picks are entered in Draft Room.",
-        "outputs": "Ranked available players with plain-language reasons.",
-    },
-    "Draft Lab / Simulation": {
-        "purpose": "Run a four-team mock draft with Draft Assistant-style pick logic and post-draft analysis.",
-        "when": "When you want to practice draft strategy or compare how different approaches build rosters.",
-        "outputs": "Draft board, team rosters, team rankings, best/questionable picks, position gaps, and exports.",
-    },
-    "Live Draft Room": {
-        "purpose": "Run a configurable live snake draft in your browser with timers, manual picks, and auto-pick rules.",
-        "when": "Mock drafts or testing draft-room flow before multi-user sync is added.",
-        "outputs": "Live draft board, team rosters, recommendations, exports, and optional handoff to Draft Simulation analysis.",
-    },
-    "Saved Draft Library": {
-        "purpose": "Browse, rename, duplicate, and activate saved draft teams from Live Draft and Simulator.",
-        "when": "After finishing a draft or when switching between real team, mock drafts, and practice rosters.",
-        "outputs": "Active saved draft for Standings Tracker and Lineup Assistant; multiple archives preserved.",
-    },
-    "Fantasy Standings Tracker": {
-        "purpose": "Score every fantasy team with current-season stats.",
-        "when": "In-season to see category standings and roster totals.",
-        "outputs": "Team ranks and category breakdowns (loads stats for Lineup Assistant too).",
-    },
-    "Fantasy Lineup Assistant": {
-        "purpose": "Start/sit guidance and position-valid recommended lineups.",
-        "when": "Each scoring period with current stats loaded from Standings Tracker.",
-        "outputs": "Starters by slot, bench list, and lineup diagnosis.",
-    },
-    "Waiver Wire / Add-Drop Center": {
-        "purpose": "Waiver pool, team needs, add/drop recommendations, and weekly transaction planner.",
-        "when": "In-season with an Active Draft from Saved Drafts.",
-        "outputs": "Waiver-eligible players, recommended adds/drops, pending moves, and league activity log.",
-    },
-}
+from page_guides import PAGE_GUIDES  # Quick Guide copy, shared with the AMI assistant's help
 
 
 def _guide_html_line(text: str) -> str:
@@ -2534,10 +2776,12 @@ def _maybe_render_account_pref_sync(page_key: str) -> None:
             pass
 
 
-def top_bar_chart(df, name_col, value_col, title, top_n=10):
+def top_bar_chart(df, name_col, value_col, title, top_n=10, *, always_show=False, label_col=None):
+    """Top-N bar chart. ``always_show`` (U1 answer-first pages) skips the "Show …" checkbox;
+    ``label_col`` is the row text when it should differ from the name (e.g. "Judge (2024)")."""
     if df.empty or value_col not in df.columns or name_col not in df.columns:
         return
-    show_chart = st.checkbox(
+    show_chart = always_show or st.checkbox(
         f"Show {title}",
         value=pp.chart_default_visible(st),
         key=f"bar_chart_{hashlib.md5(str(title).encode('utf-8')).hexdigest()[:10]}",
@@ -2546,7 +2790,8 @@ def top_bar_chart(df, name_col, value_col, title, top_n=10):
     if not show_chart:
         st.caption("Optional chart skipped for faster page load.")
         return
-    chart_df = df[[name_col, value_col]].copy()
+    _chart_cols = [name_col, value_col] + ([label_col] if label_col and label_col in df.columns else [])
+    chart_df = df[_chart_cols].copy()
     chart_df[value_col] = pd.to_numeric(chart_df[value_col], errors="coerce")
     chart_df = chart_df.dropna(subset=[value_col]).sort_values(value_col, ascending=False).head(top_n)
     if chart_df.empty:
@@ -2566,6 +2811,7 @@ def top_bar_chart(df, name_col, value_col, title, top_n=10):
             top_n=top_n,
             people_df=people_df,
             use_api=False,
+            label_col=label_col if label_col and label_col in chart_df.columns else None,
         )
         return
     except ImportError:
@@ -6351,48 +6597,14 @@ def make_ml_prediction_summary(row, sort_stat):
 
 @st.cache_data(show_spinner=False)
 def aggregate_player_year_team(df):
-    """One row per player-year-actual team. Used when Historical Explorer shows split seasons."""
-    if df.empty:
-        return df.copy()
-    group_cols = [
-        "playerID", "fullName", "bats", "throws", "birthYear", "birthMonth", "birthDay", "birthCountry",
-        "yearID", "teamID", "teamName", "teamHistoricalName", "teamLeague", "primaryPos", "careerPrimaryPos"
-    ]
-    group_cols = [c for c in group_cols if c in df.columns]
-    stat_cols = [c for c in ["G", "AB", "R", "H", "2B", "3B", "HR", "RBI", "SB", "CS", "BB", "SO", "IBB", "HBP", "SH", "SF", "GIDP"] if c in df.columns]
-    out = df.groupby(group_cols, as_index=False)[stat_cols].sum()
-    out = add_rate_stats(out)
-    return out
+    """One row per player-year-actual team (baseball_history; cached here)."""
+    return _history.aggregate_player_year_team(df)
 
 
 @st.cache_data(show_spinner=False)
 def aggregate_player_year_primary_team(df):
-    """One row per player-year, with stats combined and Team set to the primary team in the filtered data."""
-    if df.empty:
-        return df.copy()
-    team_basis = aggregate_player_year_team(df)
-    basis_col = "G" if "G" in team_basis.columns else "AB"
-    primary_team = (
-        team_basis.sort_values(["playerID", "yearID", basis_col, "AB"], ascending=[True, True, False, False])
-        .drop_duplicates(["playerID", "yearID"])
-        [["playerID", "yearID", "teamID", "teamName", "teamHistoricalName", "teamLeague"]]
-        .rename(columns={"teamID": "primaryTeamID", "teamName": "primaryTeamName", "teamHistoricalName": "primaryHistoricalTeamName", "teamLeague": "primaryLeague"})
-    )
-    group_cols = [
-        "playerID", "fullName", "bats", "throws", "birthYear", "birthMonth", "birthDay", "birthCountry", "careerPrimaryPos", "yearID"
-    ]
-    group_cols = [c for c in group_cols if c in df.columns]
-    stat_cols = [c for c in ["G", "AB", "R", "H", "2B", "3B", "HR", "RBI", "SB", "CS", "BB", "SO", "IBB", "HBP", "SH", "SF", "GIDP"] if c in df.columns]
-    out = df.groupby(group_cols, as_index=False)[stat_cols].sum()
-    out = add_rate_stats(out)
-    out = out.merge(primary_team, on=["playerID", "yearID"], how="left")
-    pos_basis = (
-        df.groupby(["playerID", "yearID", "primaryPos"], as_index=False)["G"].sum()
-        .sort_values(["playerID", "yearID", "G", "primaryPos"], ascending=[True, True, False, True])
-        .drop_duplicates(["playerID", "yearID"])[["playerID", "yearID", "primaryPos"]]
-    )
-    out = out.merge(pos_basis, on=["playerID", "yearID"], how="left")
-    return out
+    """One row per player-year with the primary team (baseball_history; cached here)."""
+    return _history.aggregate_player_year_primary_team(df)
 
 
 @st.cache_data(show_spinner=False)
@@ -6426,114 +6638,8 @@ def add_primary_team_for_career(grouped_df, source_df):
 
 @st.cache_data(show_spinner=False)
 def load_data(_hof_cache_key: float = 0.0):
-    people = read_required_csv("People.csv")
-    batting = read_required_csv("Batting.csv")
-    fielding = read_required_csv("Fielding.csv")
-
-    batting["teamID_original"] = batting["teamID"]
-    fielding["teamID_original"] = fielding["teamID"]
-    batting["teamHistoricalName"] = batting.apply(lambda r: historical_team_name(r["teamID_original"], r.get("yearID", None)), axis=1)
-    fielding["teamHistoricalName"] = fielding.apply(lambda r: historical_team_name(r["teamID_original"], r.get("yearID", None)), axis=1)
-
-    batting["teamID"] = batting["teamID"].replace(team_id_mapping)
-    fielding["teamID"] = fielding["teamID"].replace(team_id_mapping)
-
-    keep_people = ["playerID", "nameFirst", "nameLast", "birthYear", "birthMonth", "birthDay", "birthCountry", "bats", "throws"]
-    keep_people = [c for c in keep_people if c in people.columns]
-    people = people[keep_people].copy()
-    people["nameFirst"] = people["nameFirst"].fillna("").astype(str).str.strip()
-    people["nameLast"] = people["nameLast"].fillna("").astype(str).str.strip()
-    people["fullName"] = (people["nameFirst"] + " " + people["nameLast"]).str.strip()
-
-    batting_num_cols = ["yearID", "G", "AB", "R", "H", "2B", "3B", "HR", "RBI", "SB", "CS", "BB", "SO", "IBB", "HBP", "SH", "SF", "GIDP"]
-    for col in batting_num_cols:
-        if col in batting.columns:
-            batting[col] = pd.to_numeric(batting[col], errors="coerce").fillna(0)
-
-    if "yearID" in fielding.columns:
-        fielding["yearID"] = pd.to_numeric(fielding["yearID"], errors="coerce").fillna(0)
-    if "G" in fielding.columns:
-        fielding["G"] = pd.to_numeric(fielding["G"], errors="coerce").fillna(0)
-    else:
-        fielding["G"] = 0
-
-    # Group LF/CF/RF together so outfielders are classified as OF instead of splitting their games.
-    fielding["POS_grouped"] = fielding["POS"].replace({"LF": "OF", "CF": "OF", "RF": "OF"})
-    valid_primary_positions = ["C", "1B", "2B", "3B", "SS", "OF", "P", "DH"]
-    fielding_for_pos = fielding[fielding["POS_grouped"].isin(valid_primary_positions)].copy()
-
-    fielding_counts = (
-        fielding_for_pos
-        .groupby(["playerID", "yearID", "POS_grouped"], as_index=False)["G"]
-        .sum()
-        .rename(columns={"G": "games_at_pos"})
-    )
-    # Season primary position: most fielding games at a grouped position in that specific season.
-    primary_positions = (
-        fielding_counts.sort_values(["playerID", "yearID", "games_at_pos", "POS_grouped"], ascending=[True, True, False, True])
-        .drop_duplicates(subset=["playerID", "yearID"])
-        [["playerID", "yearID", "POS_grouped"]]
-        .rename(columns={"POS_grouped": "primaryPos"})
-    )
-
-    # Career primary position: most fielding games at a grouped position across the player's entire career.
-    # This is the correct career-page position definition: it is based on Fielding.csv games, not at-bats.
-    career_primary_positions = (
-        fielding_for_pos
-        .groupby(["playerID", "POS_grouped"], as_index=False)["G"]
-        .sum()
-        .rename(columns={"G": "career_games_at_pos"})
-        .sort_values(["playerID", "career_games_at_pos", "POS_grouped"], ascending=[True, False, True])
-        .drop_duplicates(subset=["playerID"])
-        [["playerID", "POS_grouped"]]
-        .rename(columns={"POS_grouped": "careerPrimaryPos"})
-    )
-
-    batting = batting.merge(people, on="playerID", how="left")
-    batting = batting.merge(primary_positions, on=["playerID", "yearID"], how="left")
-    batting = batting.merge(career_primary_positions, on="playerID", how="left")
-    batting["primaryPos"] = batting["primaryPos"].fillna("DH")
-    batting["careerPrimaryPos"] = batting["careerPrimaryPos"].fillna(batting["primaryPos"]).fillna("DH")
-    batting["teamName"] = batting["teamID"].map(team_id_to_name).fillna(batting["teamID"])
-    batting["teamLeague"] = batting.apply(lambda r: team_league(r["teamID"], r["yearID"]), axis=1)
-    batting = add_rate_stats(batting)
-
-    yearly = (
-        batting.groupby(["playerID", "fullName", "bats", "throws", "birthYear", "birthMonth", "birthDay", "birthCountry", "careerPrimaryPos", "yearID"], as_index=False)
-        [["G", "AB", "R", "H", "2B", "3B", "HR", "RBI", "SB", "CS", "BB", "SO", "IBB", "HBP", "SH", "SF", "GIDP"]]
-        .sum()
-    )
-    yearly = add_rate_stats(yearly)
-
-    year_team_totals = batting.groupby(["playerID", "yearID", "teamID", "teamHistoricalName", "teamLeague"], as_index=False).agg({"AB": "sum"})
-    primary_teams = (
-        year_team_totals.sort_values(["playerID", "yearID", "AB"], ascending=[True, True, False])
-        .drop_duplicates(subset=["playerID", "yearID"])
-        [["playerID", "yearID", "teamID", "teamHistoricalName", "teamLeague"]]
-        .rename(columns={"teamID": "primaryTeamID", "teamHistoricalName": "primaryHistoricalTeamName", "teamLeague": "primaryLeague"})
-    )
-    yearly = yearly.merge(primary_teams, on=["playerID", "yearID"], how="left")
-    yearly["primaryTeamName"] = yearly["primaryTeamID"].map(team_id_to_name).fillna(yearly["primaryTeamID"])
-    yearly["primaryHistoricalTeamName"] = yearly["primaryHistoricalTeamName"].fillna(yearly["primaryTeamName"])
-    yearly["primaryLeague"] = yearly["primaryLeague"].fillna(yearly.apply(lambda r: team_league(r["primaryTeamID"], r["yearID"]), axis=1))
-
-    yearly_pos = batting[["playerID", "yearID", "primaryPos"]].drop_duplicates(subset=["playerID", "yearID"])
-    yearly = yearly.merge(yearly_pos, on=["playerID", "yearID"], how="left")
-    yearly["primaryPos"] = yearly["primaryPos"].fillna("DH")
-    yearly["careerPrimaryPos"] = yearly["careerPrimaryPos"].fillna(yearly["primaryPos"]).fillna("DH")
-    yearly = yearly[~yearly["primaryPos"].isin(["PH", "PR"])]
-
-    try:
-        from hall_of_fame_data import attach_hof_flag, load_hall_of_fame_player_ids
-
-        hof_ids = load_hall_of_fame_player_ids(BASE_DIR)
-        people = attach_hof_flag(people, hof_ids)
-        batting = attach_hof_flag(batting, hof_ids)
-        yearly = attach_hof_flag(yearly, hof_ids)
-    except ImportError:
-        pass
-
-    return batting, yearly, people
+    """Lahman batting / yearly / people (baseball_history.load_history_frames; cached here)."""
+    return _history.load_history_frames(BASE_DIR, read_csv=read_required_csv)
 
 
 
@@ -7087,7 +7193,7 @@ def format_fantasy_standings_table(df):
     out = df.copy()
 
     # Four decimals for rate stats, remove trailing zeros.
-    for c in ["Average BA", "Average OPS", "BA", "OPS", "OBP", "SLG"]:
+    for c in ["Team BA", "Team OPS", "BA", "OPS", "OBP", "SLG"]:
         if c in out.columns:
             def _fmt_rate(v):
                 try:
@@ -7103,9 +7209,15 @@ def format_fantasy_standings_table(df):
                     return v
             out[c] = out[c].apply(_fmt_rate)
 
-    # Integer columns: totals, roto points, estimated points, league rank.
+    # Integer columns: totals, estimated points, league rank. Roto points stay as-is when a
+    # tie split them (3.5).
     for c in out.columns:
         c_text = str(c)
+        if c_text.endswith(" Points") and c_text != "Estimated Points":
+            vals = pd.to_numeric(out[c], errors="coerce")
+            if vals.notna().any() and (vals.dropna() % 1 != 0).any():
+                out[c] = vals.round(1)
+                continue
         if (
             c_text.startswith("Total ")
             or c_text.endswith(" Points")
@@ -7119,79 +7231,16 @@ def format_fantasy_standings_table(df):
     return out
 
 
+from fantasy_standings_snapshot import (  # noqa: E402
+    score_current_roster_standings as _score_current_roster_standings,
+    summarize_team_category_needs,
+)
+
+
 @st.cache_data(show_spinner=False)
 def score_fantasy_rosters_from_stats(roster_df, scoring_format="5x5 Roto"):
-    """Score drafted teams using uploaded/current stats."""
-    df = roster_df.copy()
-    for c in ["HR", "RBI", "R", "SB", "BA", "OPS", "OBP", "SLG"]:
-        if c not in df.columns:
-            df[c] = np.nan
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    team_rows = []
-    for team, g in df.groupby("Team"):
-        row = {
-            "Fantasy Team": team,
-            "Players": g["Player"].nunique(),
-            "Total HR": g["HR"].sum(),
-            "Total RBI": g["RBI"].sum(),
-            "Total R": g["R"].sum(),
-            "Total SB": g["SB"].sum(),
-            "Average BA": g["BA"].mean(),
-            "Average OPS": g["OPS"].mean(),
-        }
-        team_rows.append(row)
-
-    standings = pd.DataFrame(team_rows)
-    if standings.empty:
-        return standings
-
-    if scoring_format == "5x5 Roto":
-        categories = ["Total HR", "Total RBI", "Total R", "Total SB", "Average BA"]
-        for cat in categories:
-            standings[f"{cat} Points"] = standings[cat].rank(ascending=True, method="min")
-        standings["Total Roto Points"] = standings[[f"{c} Points" for c in categories]].sum(axis=1)
-        standings["League Rank"] = standings["Total Roto Points"].rank(ascending=False, method="min")
-        standings = standings.sort_values(["League Rank", "Fantasy Team"])
-    else:
-        standings["Estimated Points"] = (
-            standings["Total HR"] * 4 +
-            standings["Total RBI"] +
-            standings["Total R"] +
-            standings["Total SB"] * 2 +
-            standings["Average OPS"].fillna(0) * 25
-        )
-        standings["League Rank"] = standings["Estimated Points"].rank(ascending=False, method="min")
-        standings = standings.sort_values(["League Rank", "Fantasy Team"])
-
-    return standings
-
-
-def summarize_team_category_needs(standings, team_name):
-    if standings is None or standings.empty or team_name not in standings["Fantasy Team"].values:
-        return {}
-    row = standings[standings["Fantasy Team"] == team_name].iloc[0]
-    needs = {}
-    category_map = {
-        "HR": "Total HR",
-        "RBI": "Total RBI",
-        "R": "Total R",
-        "SB": "Total SB",
-        "BA": "Average BA",
-        "OPS": "Average OPS",
-    }
-    for label, col in category_map.items():
-        if col in standings.columns:
-            rank = standings[col].rank(ascending=False, method="min")[row.name]
-            if rank > max(1, len(standings) / 2):
-                needs[label] = True
-    return needs
-
-
-
-
-
-
+    """Cached page wrapper — the calculation is fantasy_standings_snapshot (current-roster snapshot)."""
+    return _score_current_roster_standings(roster_df, scoring_format)
 
 
 def plot_single_player_multi_stat_dashboard(player_df, player_name, stats, mode="Actual Values", smooth_window=3):
@@ -7306,203 +7355,29 @@ def render_player_trend_chart_section(source_df, label_map, label_options, *, ke
         st.info("Select one to three players to view the comparison chart.")
 
 
+from fantasy_lineup_scoring import build_lineup_assistant_scores as _build_lineup_assistant_scores  # noqa: E402
+
+
 @st.cache_data(show_spinner=False)
 def build_lineup_assistant_scores(roster_stats, scoring_format="5x5 Roto", custom_weights=None):
-    """Create start/sit style scores from current roster stats.
-
-    Uses current-season stat columns when available. If the Fantasy Standings Tracker
-    has already loaded MLB API/current stats, this page reuses that data.
-    """
-    df = roster_stats.copy()
-    if df.empty:
-        return df
-
-    for c in ["HR", "RBI", "R", "SB", "BA", "OBP", "SLG", "OPS", "AB", "H", "BB", "G"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    # Core current production signals.
-    if scoring_format == "Points League":
-        if custom_weights is None:
-            custom_weights = {"R": 1.0, "RBI": 1.0, "HR": 4.0, "SB": 2.0, "H": 1.0, "BB": 1.0, "OPS": 10.0}
-        raw_score = pd.Series(0.0, index=df.index)
-        for stat, weight in custom_weights.items():
-            if stat in df.columns:
-                raw_score += pd.to_numeric(df[stat], errors="coerce").fillna(0) * float(weight)
-        df["Current Fantasy Score"] = normalize_series(raw_score)
-    else:
-        parts = []
-        for c in ["R", "HR", "RBI", "SB", "BA", "OPS"]:
-            if c in df.columns:
-                parts.append(normalize_series(pd.to_numeric(df[c], errors="coerce")))
-        df["Current Fantasy Score"] = sum(parts) / len(parts) if parts else 0.0
-
-    # Momentum proxy: current rates + power/speed blend. This is a season-to-date proxy,
-    # not true last-7-day game logs unless such data is uploaded later.
-    momentum_parts = []
-    for c, w in [("OPS", 0.35), ("HR", 0.20), ("RBI", 0.15), ("R", 0.15), ("SB", 0.10), ("BA", 0.05)]:
-        if c in df.columns:
-            momentum_parts.append(normalize_series(pd.to_numeric(df[c], errors="coerce")) * w)
-    df["Momentum Score"] = sum(momentum_parts) if momentum_parts else df["Current Fantasy Score"]
-
-    # Consistency proxy: rate stability and playing-time volume.
-    volume = normalize_series(safe_numeric_series(df, "AB", 0)) if "AB" in df.columns else pd.Series(0.5, index=df.index)
-    rate_floor = normalize_series(safe_numeric_series(df, "OPS", np.nan).fillna(safe_numeric_series(df, "BA", 0)))
-    df["Consistency Score"] = normalize_series(volume * 0.55 + rate_floor * 0.45)
-
-    # Volatility proxy: power/speed profiles can win weeks but are less stable than contact/volume.
-    power_speed = pd.Series(0.0, index=df.index)
-    if "HR" in df.columns:
-        power_speed += normalize_series(df["HR"]) * 0.55
-    if "SB" in df.columns:
-        power_speed += normalize_series(df["SB"]) * 0.35
-    if "BA" in df.columns:
-        power_speed -= normalize_series(df["BA"]) * 0.10
-    df["Volatility Meter"] = normalize_series(power_speed)
-
-    df["Lineup Confidence"] = normalize_series(
-        df["Current Fantasy Score"] * 0.45 +
-        df["Momentum Score"] * 0.30 +
-        df["Consistency Score"] * 0.25
-    )
-
-    def classify_action(row):
-        conf = pd.to_numeric(row.get("Lineup Confidence", np.nan), errors="coerce")
-        mom = pd.to_numeric(row.get("Momentum Score", np.nan), errors="coerce")
-        vol = pd.to_numeric(row.get("Volatility Meter", np.nan), errors="coerce")
-        if pd.isna(conf):
-            return "Watch"
-        if conf >= 0.72:
-            return "Start"
-        if conf >= 0.55 and mom >= 0.55:
-            return "Lean Start"
-        if conf < 0.35 and vol >= 0.55:
-            return "Bench / Risk"
-        if conf < 0.40:
-            return "Sit"
-        return "Matchup Dependent"
-
-    def _confidence_label(conf_val: float | None) -> str:
-        if conf_val is None or pd.isna(conf_val):
-            return "Low"
-        if conf_val >= 0.72:
-            return "High"
-        if conf_val >= 0.55:
-            return "Medium"
-        return "Low"
-
-    def make_lineup_reason(row):
-        action = str(row.get("Start/Sit Recommendation") or "Watch")
-        conf = pd.to_numeric(row.get("Lineup Confidence", np.nan), errors="coerce")
-        mom = pd.to_numeric(row.get("Momentum Score", np.nan), errors="coerce")
-        consistency = pd.to_numeric(row.get("Consistency Score", np.nan), errors="coerce")
-        vol = pd.to_numeric(row.get("Volatility Meter", np.nan), errors="coerce")
-        current = pd.to_numeric(row.get("Current Fantasy Score", np.nan), errors="coerce")
-        conf_label = _confidence_label(conf if pd.notna(conf) else None)
-        reasons: list[str] = []
-
-        if action in ("Start", "Lean Start"):
-            if pd.notna(current) and current >= 0.70:
-                reasons.append("Strong current production trend")
-            if pd.notna(mom) and mom >= 0.65:
-                reasons.append("Positive momentum vs bench alternatives")
-            if pd.notna(consistency) and consistency >= 0.65:
-                reasons.append("Consistent playing time and rate support")
-            if "HR" in row and pd.to_numeric(row.get("HR"), errors="coerce") >= 10:
-                reasons.append(f"Above-average HR contribution ({fmt_int(row.get('HR'))} HR)")
-            if "RBI" in row and pd.to_numeric(row.get("RBI"), errors="coerce") >= 30:
-                reasons.append(f"Strong RBI category contribution ({fmt_int(row.get('RBI'))} RBI)")
-        elif action in ("Sit", "Bench / Risk"):
-            if pd.notna(current) and current < 0.45:
-                reasons.append("Current production below roster alternatives")
-            if pd.notna(mom) and mom < 0.45:
-                reasons.append("Production trend declining recently")
-            if pd.notna(consistency) and consistency < 0.45:
-                reasons.append("Limited playing time or unstable rates")
-            if pd.notna(vol) and vol >= 0.60:
-                reasons.append("Boom/bust profile adds risk this week")
-        else:
-            if pd.notna(vol) and vol >= 0.60:
-                reasons.append("Boom/bust profile — upside with inconsistency")
-            if pd.notna(mom) and mom >= 0.55:
-                reasons.append("Strong upside when hot, but streaky")
-            if pd.notna(consistency) and consistency < 0.55:
-                reasons.append("Depends on category needs and matchup this week")
-
-        if "OPS" in row and pd.to_numeric(row.get("OPS"), errors="coerce") >= 0.820 and len(reasons) < 4:
-            reasons.append(f"Strong OPS ({fmt_rate_3(row.get('OPS'))})")
-        if "SB" in row and pd.to_numeric(row.get("SB"), errors="coerce") >= 8 and len(reasons) < 4:
-            reasons.append(f"Useful speed contribution ({fmt_int(row.get('SB'))} SB)")
-        if not reasons:
-            reasons.append("Best available fit for this roster slot")
-
-        bullets = "\n".join(f"- {line}" for line in reasons[:4])
-        return f"Confidence: {conf_label}\nReason:\n{bullets}"
-
-    df["Start/Sit Recommendation"] = df.apply(classify_action, axis=1)
-    df["Lineup Reason"] = df.apply(make_lineup_reason, axis=1)
-
-    return df
+    """Cached page wrapper — the calculation is fantasy_lineup_scoring.build_lineup_assistant_scores."""
+    return _build_lineup_assistant_scores(roster_stats, scoring_format, custom_weights)
 
 
 # Standard fantasy hitting slots (OF x3). UTIL last — see build_position_aware_lineup.
-LINEUP_DEFAULT_HITTING_SLOTS = ("C", "1B", "2B", "3B", "SS", "OF", "OF", "OF", "UTIL")
-LINEUP_ALLOWED_SLOT_TOKENS = frozenset({"C", "1B", "2B", "3B", "SS", "OF", "UTIL"})
-
-
-def _normalize_pos_token(tok):
-    t = str(tok).strip().upper()
-    if t in ("LF", "CF", "RF"):
-        return "OF"
-    if t in ("TWP", "PH", "PR", "") or t == "NAN":
-        return "DH"
-    if t in ("SP", "RP", "P"):
-        return "P"
-    return t
-
-
-def _split_primary_positions(primary_val):
-    """Split Primary Position on / , + into normalized tokens (e.g. 1B/3B → 1B, 3B)."""
-    if primary_val is None or (isinstance(primary_val, float) and np.isnan(primary_val)):
-        return []
-    s = str(primary_val).upper().replace(" ", "")
-    parts = re.split(r"[,/\+]", s)
-    out = []
-    for p in parts:
-        p = p.strip()
-        if not p:
-            continue
-        out.append(_normalize_pos_token(p))
-    if not out:
-        out.append(_normalize_pos_token(primary_val))
-    return list(dict.fromkeys(out))
-
-
-FANTASY_POSITION_FILTER_OPTIONS = [
-    "All positions",
-    "C",
-    "1B",
-    "2B",
-    "3B",
-    "SS",
-    "OF",
-    "DH/UTIL",
-]
-
-
-def _fantasy_position_display_tokens(career_pos, season_pos=None):
-    """Fantasy-facing position label (LF/CF/RF → OF, DH → DH/UTIL) and normalized tokens."""
-    primary_raw = career_pos
-    if primary_raw is None or (isinstance(primary_raw, float) and np.isnan(primary_raw)) or not str(primary_raw).strip():
-        primary_raw = season_pos
-    tokens = _split_primary_positions(primary_raw)
-    if not tokens:
-        tokens = ["DH"]
-    display_parts = ["DH/UTIL" if t == "DH" else t for t in tokens]
-    display = "/".join(dict.fromkeys(display_parts))
-    return display, tokens
-
-
+from fantasy_slot_eligibility import (  # noqa: E402,F401
+    LINEUP_DEFAULT_HITTING_SLOTS,
+    LINEUP_ALLOWED_SLOT_TOKENS,
+    _normalize_pos_token,
+    _split_primary_positions,
+    FANTASY_POSITION_FILTER_OPTIONS,
+    _fantasy_position_display_tokens,
+    player_matches_fantasy_position_filter,
+    filter_players_by_fantasy_position,
+    _player_eligible_for_slot,
+    _parse_custom_lineup_slots,
+    enrich_lineup_roster_positions,
+)
 def _positions_played_in_recent_window(recent_source: pd.DataFrame, *, min_g: int = 20) -> dict:
     """playerID → deduped fantasy position tokens from seasons in the active window."""
     if recent_source is None or recent_source.empty or "playerID" not in recent_source.columns:
@@ -7551,743 +7426,17 @@ def attach_fantasy_position_columns(player_df: pd.DataFrame, recent_source: pd.D
     return out
 
 
-def player_matches_fantasy_position_filter(row, filter_choice: str | list | None) -> bool:
-    """True when player is eligible for the selected fantasy slot filter(s)."""
-    if isinstance(filter_choice, (list, tuple, set)):
-        choices = [str(c).strip() for c in filter_choice if str(c).strip()]
-        if not choices:
-            return True
-        return any(player_matches_fantasy_position_filter(row, c) for c in choices)
-    choice = str(filter_choice or "").strip()
-    if not choice or choice in ("All positions", "All"):
-        return True
-    getter = row.get if hasattr(row, "get") else lambda _k, _d=None: _d
-    tokens = getter("_position_tokens")
-    if tokens is None or (isinstance(tokens, float) and pd.isna(tokens)):
-        tokens = getter("_pos_tokens")
-    if tokens is None or (isinstance(tokens, float) and pd.isna(tokens)):
-        for col in ("Primary Position", "Position", "Eligibility", "Positions"):
-            raw = getter(col)
-            if raw not in (None, "", np.nan):
-                tokens = _split_primary_positions(raw)
-                break
-    if tokens is None or (isinstance(tokens, float) and pd.isna(tokens)):
-        tokens = _fantasy_position_display_tokens(getter("careerPrimaryPos"), getter("primaryPos"))[1]
-    elif isinstance(tokens, str):
-        tokens = _split_primary_positions(tokens)
-    if choice == "DH/UTIL":
-        return "DH" in tokens or _player_eligible_for_slot(tokens, "UTIL")
-    if choice == "OF":
-        return any(t == "OF" for t in tokens)
-    return _player_eligible_for_slot(tokens, choice)
-
-
-def filter_players_by_fantasy_position(df: pd.DataFrame, filter_choice: str | list | None) -> pd.DataFrame:
-    if df is None or df.empty:
-        return df
-    if isinstance(filter_choice, (list, tuple, set)):
-        choices = [str(c).strip() for c in filter_choice if str(c).strip()]
-        if not choices:
-            return df
-        mask = df.apply(lambda r: player_matches_fantasy_position_filter(r, choices), axis=1)
-        return df.loc[mask].copy()
-    choice = str(filter_choice or "").strip()
-    if not choice or choice in ("All positions", "All"):
-        return df
-    mask = df.apply(lambda r: player_matches_fantasy_position_filter(r, choice), axis=1)
-    return df.loc[mask].copy()
-
-
-def _player_eligible_for_slot(pos_tokens, slot):
-    """slot is C,1B,2B,3B,SS,OF, or UTIL (UTIL = any non-pitcher)."""
-    if slot == "UTIL":
-        for p in pos_tokens:
-            if p in ("P", "SP", "RP"):
-                return False
-        return True
-    if slot == "OF":
-        return any(p == "OF" for p in pos_tokens)
-    if slot in ("C", "1B", "2B", "3B", "SS"):
-        if pos_tokens == ["DH"] or (len(pos_tokens) == 1 and pos_tokens[0] == "DH"):
-            return False
-        if slot in pos_tokens:
-            return True
-        # Corner / middle infield flexibility when eligibility lists multiple IF spots.
-        if slot == "1B" and "3B" in pos_tokens:
-            return True
-        if slot == "3B" and "1B" in pos_tokens:
-            return True
-        if slot == "2B" and "SS" in pos_tokens:
-            return True
-        if slot == "SS" and "2B" in pos_tokens:
-            return True
-        return False
-    return False
-
-
-def _parse_custom_lineup_slots(text):
-    """Return ordered list of valid slot tokens, or None if empty."""
-    if not text or not str(text).strip():
-        return None
-    raw = [s.strip().upper() for s in str(text).split(",") if s.strip()]
-    cleaned = []
-    for s in raw:
-        if s in ("LF", "CF", "RF"):
-            s = "OF"
-        if s not in LINEUP_ALLOWED_SLOT_TOKENS:
-            continue
-        cleaned.append(s)
-    return cleaned if cleaned else None
-
-
-def enrich_lineup_roster_positions(roster_df: pd.DataFrame) -> pd.DataFrame:
-    """Attach merged position eligibility tokens for lineup slot assignment."""
-    if roster_df is None or roster_df.empty:
-        return roster_df
-    out = roster_df.copy()
-    tokens_list = []
-    for _, row in out.iterrows():
-        toks: list[str] = []
-        for col in ("Primary Position", "Position", "Eligibility", "Positions"):
-            if col in row.index and row.get(col) not in (None, "", np.nan):
-                toks.extend(_split_primary_positions(row.get(col)))
-        if isinstance(row.get("_position_tokens"), list):
-            toks = list(dict.fromkeys(toks + list(row.get("_position_tokens"))))
-        if isinstance(row.get("_pos_tokens"), list):
-            toks = list(dict.fromkeys(toks + list(row.get("_pos_tokens"))))
-        if not toks:
-            toks = ["DH"]
-        tokens_list.append(list(dict.fromkeys(toks)))
-    out["_pos_tokens"] = tokens_list
-    out["_position_tokens"] = tokens_list
-    return out
-
-
-def _top_category_contributors(df, cat: str, n: int = 3) -> list[str]:
-    """Top player names driving a counting category on this roster subset."""
-    if df is None or df.empty or cat not in df.columns or "Player" not in df.columns:
-        return []
-    sub = df[["Player", cat]].copy()
-    sub[cat] = pd.to_numeric(sub[cat], errors="coerce").fillna(0)
-    sub = sub[sub[cat] > 0].sort_values(cat, ascending=False).head(n)
-    return [f"**{r.Player}** ({fmt_int(r[cat])} {cat})" for _, r in sub.iterrows()]
-
-
-def _weak_category_explanation(df, cat: str, rate_col: str = "BA") -> str:
-    """Explain a weak category with roster context."""
-    if df is None or df.empty:
-        return ""
-    if cat in ("AVG", "OBP"):
-        src = "OBP" if cat == "OBP" and "OBP" in df.columns else "BA"
-        if src not in df.columns:
-            return f"Limited {cat} support on this roster."
-        vals = pd.to_numeric(df[src], errors="coerce")
-        low = df.loc[vals.nsmallest(2).index, "Player"].astype(str).tolist() if "Player" in df.columns else []
-        if low:
-            return f"Soft {cat} — power-heavy bats like {', '.join(low[:2])} pull the rate down."
-        return f"Soft {cat} relative to counting categories."
-    if cat not in df.columns:
-        return ""
-    totals = pd.to_numeric(df[cat], errors="coerce").fillna(0)
-    if cat == "SB" and totals.sum() < 20:
-        names = df.loc[totals.nlargest(3).index, "Player"].astype(str).tolist() if "Player" in df.columns else []
-        if names:
-            return f"Light on steals — top speed is {', '.join(names[:2])} ({fmt_int(totals.max())} SB max)."
-        return "Roster lacks high-volume base stealers."
-    if cat == "HR" and totals.sum() > 0:
-        top = _top_category_contributors(df, "HR", 3)
-        if top:
-            return f"Power comes from {', '.join(top)}."
-    contributors = _top_category_contributors(df, cat, 2)
-    if contributors:
-        return f"Top {cat}: {', '.join(contributors)}."
-    return ""
-
-
-def _slot_gap_trade_rows(missing_slots):
-    """One recommendation row per unfilled slot *type* (OF count rolled into copy)."""
-    if not missing_slots:
-        return []
-    rows = []
-    for slot, cnt in Counter(missing_slots).items():
-        if slot == "UTIL":
-            detail = (
-                "Your lineup has no eligible **UTIL** starter for the UTIL slot. "
-                "Add or trade for a versatile non-pitcher bat (multi-position eligibility helps)."
-            )
-        elif slot == "OF":
-            detail = (
-                f"Your lineup leaves **{cnt}** outfield starter slot(s) empty (no eligible OF/LF/CF/RF). "
-                "Add or trade for outfielders or bats with OF eligibility."
-            )
-        elif slot == "C":
-            detail = (
-                "Your lineup has no eligible **C** starter. "
-                "Target a catcher or a flexible bat with C eligibility."
-            )
-        elif slot == "SS":
-            detail = (
-                "Your lineup has no eligible **SS** starter. "
-                "Target a shortstop or middle-infield (2B/SS) profile."
-            )
-        elif slot == "2B":
-            detail = (
-                "Your lineup has no eligible **2B** starter. "
-                "Target a second baseman or middle-infield (2B/SS) profile."
-            )
-        elif slot == "3B":
-            detail = (
-                "Your lineup has no eligible **3B** starter. "
-                "Target a third baseman or corner infield (1B/3B) profile."
-            )
-        elif slot == "1B":
-            detail = (
-                "Your lineup has no eligible **1B** starter. "
-                "Target a first baseman or multi-position corner infielder (1B/3B)."
-            )
-        else:
-            detail = (
-                f"Your lineup has no eligible **{slot}** starter. "
-                f"Add or trade for a player with **{slot}** on the eligibility card."
-            )
-        rows.append({"Type": "Roster / slot", "Label": "Need", "Detail": detail})
-    return rows
-
-
-def build_position_aware_lineup(scored_df, *, slots=None, pos_col="Primary Position"):
-    """Assign each required slot to the best remaining eligible player by Lineup Confidence.
-
-    Returns dict: lineup_df (with Fantasy slot), slot_warnings, missing_slots, slots_used.
-    """
-    if slots is None:
-        slots = list(LINEUP_DEFAULT_HITTING_SLOTS)
-    else:
-        slots = list(slots)
-    out_empty = {
-        "lineup_df": pd.DataFrame(),
-        "slot_warnings": [],
-        "missing_slots": [],
-        "slots_used": slots,
-    }
-    if scored_df is None or scored_df.empty:
-        return out_empty
-
-    df = scored_df.sort_values("Lineup Confidence", ascending=False, na_position="last").copy()
-    if "_pos_tokens" in df.columns:
-        df["_pos_tokens"] = df["_pos_tokens"].apply(
-            lambda x: x if isinstance(x, list) and x else _split_primary_positions("")
-        )
-    elif pos_col in df.columns:
-        df["_pos_tokens"] = df[pos_col].apply(_split_primary_positions)
-    else:
-        df["_pos_tokens"] = [[] for _ in range(len(df))]
-
-    assigned_idx = set()
-    lineup_rows = []
-    slot_warnings = []
-    missing_slots = []
-    of_count = 0
-
-    for slot in slots:
-        display_slot = slot
-        if slot == "OF":
-            of_count += 1
-            display_slot = f"OF{of_count}"
-        elig_idx = []
-        for ix in df.index:
-            if ix in assigned_idx:
-                continue
-            toks = df.at[ix, "_pos_tokens"]
-            if not isinstance(toks, list):
-                toks = []
-            if _player_eligible_for_slot(toks, slot):
-                elig_idx.append(ix)
-        if not elig_idx:
-            if slot == "OF":
-                slot_warnings.append("No eligible OF available for this lineup slot.")
-            else:
-                slot_warnings.append(f"No eligible {slot} available for this lineup slot.")
-            missing_slots.append(slot)
-            continue
-        best_ix = max(
-            elig_idx,
-            key=lambda i: float(df.loc[i, "Lineup Confidence"]) if pd.notna(df.loc[i, "Lineup Confidence"]) else -1.0,
-        )
-        assigned_idx.add(best_ix)
-        row = df.loc[best_ix].copy()
-        row["Fantasy slot"] = display_slot
-        lineup_rows.append(row)
-
-    lineup_df = pd.DataFrame(lineup_rows) if lineup_rows else pd.DataFrame()
-    if not lineup_df.empty and "_pos_tokens" in lineup_df.columns:
-        lineup_df = lineup_df.drop(columns=["_pos_tokens"], errors="ignore")
-
-    return {
-        "lineup_df": lineup_df,
-        "slot_warnings": slot_warnings,
-        "missing_slots": missing_slots,
-        "slots_used": slots,
-    }
-
-
-_ROSTER_SLOT_DISPLAY_ORDER = ("C", "1B", "2B", "3B", "SS", "OF", "UTIL")
-
-
-def _roster_position_slot_list(roster_df: pd.DataFrame) -> list[str]:
-    """Slot list derived from the roster's own positions (no invented defaults).
-
-    Used for mock drafts saved without roster-slot rules: every rostered position
-    becomes a slot so the position-aware builder can seat players without ever
-    reporting a 'missing' slot the league never had.
-    """
-    if roster_df is None or roster_df.empty:
-        return []
-    pos_col = None
-    for candidate in ("Primary Position", "Position", "primaryPos"):
-        if candidate in roster_df.columns:
-            pos_col = candidate
-            break
-    counts: dict[str, int] = {}
-    if pos_col is not None:
-        for val in roster_df[pos_col].tolist():
-            tokens = _split_primary_positions(val)
-            token = tokens[0] if tokens else "DH"
-            slot = "UTIL" if token in ("DH", "P", "SP", "RP") else token
-            counts[slot] = counts.get(slot, 0) + 1
-    if not counts:
-        counts = {"UTIL": len(roster_df)}
-    slot_list: list[str] = []
-    for slot in _ROSTER_SLOT_DISPLAY_ORDER:
-        slot_list.extend([slot] * counts.get(slot, 0))
-    for slot, n in counts.items():
-        if slot not in _ROSTER_SLOT_DISPLAY_ORDER:
-            slot_list.extend([slot] * n)
-    return slot_list
-
-
-def _lineup_team_rate(st_df, rate_col):
-    """Combined rate for a subset (H/AB for BA; mean OBP if no PA weights)."""
-    if st_df is None or st_df.empty:
-        return np.nan
-    rate_col = str(rate_col).upper()
-    if rate_col == "BA" and "H" in st_df.columns and "AB" in st_df.columns:
-        h = pd.to_numeric(st_df["H"], errors="coerce").fillna(0).sum()
-        ab = pd.to_numeric(st_df["AB"], errors="coerce").fillna(0).sum()
-        return float(h / ab) if ab > 0 else np.nan
-    if rate_col == "OBP" and "OBP" in st_df.columns:
-        w = None
-        if "PA" in st_df.columns:
-            w = pd.to_numeric(st_df["PA"], errors="coerce").fillna(0)
-        elif "AB" in st_df.columns and "BB" in st_df.columns:
-            w = pd.to_numeric(st_df["AB"], errors="coerce").fillna(0) + pd.to_numeric(st_df["BB"], errors="coerce").fillna(0)
-        obp = pd.to_numeric(st_df["OBP"], errors="coerce")
-        if w is not None and w.sum() > 0:
-            return float((obp * w).sum() / w.sum())
-        return float(obp.mean()) if obp.notna().any() else np.nan
-    if rate_col == "BA" and "BA" in st_df.columns:
-        return float(pd.to_numeric(st_df["BA"], errors="coerce").mean())
-    return np.nan
-
-
-def _lineup_pitching_block(pdf):
-    """Return dict of pitching aggregates if roster has pitching columns."""
-    cols = {c.lower(): c for c in pdf.columns}
-    wcol = cols.get("w")
-    kcol = cols.get("so") or cols.get("k")
-    svcol = cols.get("sv")
-    eracol = cols.get("era")
-    whipcol = cols.get("whip")
-    if not any([wcol, kcol, svcol, eracol, whipcol]):
-        return None
-    out = {}
-    if wcol:
-        out["W"] = float(pd.to_numeric(pdf[wcol], errors="coerce").fillna(0).sum())
-    if kcol:
-        out["SO"] = float(pd.to_numeric(pdf[kcol], errors="coerce").fillna(0).sum())
-    if svcol:
-        out["SV"] = float(pd.to_numeric(pdf[svcol], errors="coerce").fillna(0).sum())
-    if eracol:
-        out["ERA"] = float(pd.to_numeric(pdf[eracol], errors="coerce").mean())
-    if whipcol:
-        out["WHIP"] = float(pd.to_numeric(pdf[whipcol], errors="coerce").mean())
-    return out if out else None
-
-
-def lineup_diagnosis_report(
-    starters_df,
-    full_team_df,
-    lineup_format,
-    rate_col="BA",
-    *,
-    missing_slots=None,
-    slot_warnings=None,
-    league_roster_df=None,
-):
-    """Build category strength summary and recommendation rows from current roster stats (no new formulas on raw MLB stats)."""
-    out = {
-        "hitting_table": pd.DataFrame(),
-        "pitching_table": pd.DataFrame(),
-        "archetype": "",
-        "strongest": [],
-        "weakest": [],
-        "strongest_detail": "",
-        "weakest_detail": "",
-        "balance_label": "",
-        "position_note": "",
-        "dragger_note": "",
-        "surplus_note": "",
-        "recommendations": [],
-        "slot_gaps": "",
-    }
-    missing_slots = list(missing_slots or [])
-    slot_warnings = list(slot_warnings or [])
-    ms_counts = Counter(missing_slots)
-    if ms_counts:
-        parts = []
-        for k in ("C", "1B", "2B", "3B", "SS", "OF", "UTIL"):
-            if k not in ms_counts:
-                continue
-            n = ms_counts[k]
-            parts.append(f"**{k}**" + (f" (×{n})" if n > 1 else ""))
-        out["slot_gaps"] = (
-            "**Roster is not yet complete.** Analysis is based on currently assigned players. "
-            "Open roster slots: "
-            + ", ".join(parts)
-            + "."
-        )
-
-    if full_team_df is None or full_team_df.empty:
-        out["archetype"] = "Add roster stats to run a lineup diagnosis."
-        warn_rows = [{"Type": "Slot", "Label": "Alert", "Detail": w} for w in dict.fromkeys(slot_warnings)]
-        out["recommendations"] = (warn_rows + _slot_gap_trade_rows(missing_slots))[:5]
-        return out
-
-    tm_df = full_team_df.copy()
-
-    if starters_df is None or starters_df.empty:
-        if ms_counts:
-            out["archetype"] = "**Incomplete lineup:** one or more required fantasy slots have no eligible starter on this roster."
-        else:
-            out["archetype"] = "No recommended starters to analyze — check roster and position columns."
-        pitch = _lineup_pitching_block(tm_df)
-        if pitch:
-            out["pitching_table"] = pd.DataFrame([{"Category": k, "Team total": v} for k, v in pitch.items()])
-        out["recommendations"] = (
-            [{"Type": "Slot", "Label": "Alert", "Detail": w} for w in dict.fromkeys(slot_warnings)]
-            + _slot_gap_trade_rows(missing_slots)
-        )[:5]
-        if out.get("slot_gaps"):
-            out["position_note"] = out["slot_gaps"]
-        return out
-
-    st_df = starters_df.copy()
-    rate_col = "OBP" if str(rate_col).upper() == "OBP" and "OBP" in st_df.columns else "BA"
-
-    cats_count = [c for c in ["HR", "RBI", "R", "SB"] if c in st_df.columns]
-    if not cats_count and rate_col not in st_df.columns and "H" not in st_df.columns:
-        out["archetype"] = "Not enough stat columns (HR/RBI/R/SB or rate) on this roster to diagnose."
-        out["recommendations"] = (
-            [{"Type": "Slot", "Label": "Alert", "Detail": w} for w in dict.fromkeys(slot_warnings)]
-            + _slot_gap_trade_rows(missing_slots)
-        )[:5]
-        if ms_counts and not out.get("position_note"):
-            out["position_note"] = out.get("slot_gaps", "")
-        return out
-
-    rows = []
-    for c in cats_count:
-        s_sum = pd.to_numeric(st_df[c], errors="coerce").fillna(0).sum()
-        t_sum = pd.to_numeric(tm_df[c], errors="coerce").fillna(0).sum()
-        pct = (s_sum / t_sum * 100.0) if t_sum > 0 else np.nan
-        rows.append({"Category": c, "Lineup total": s_sum, "% of team": pct})
-
-    r_line = _lineup_team_rate(st_df, rate_col)
-    r_team = _lineup_team_rate(tm_df, rate_col)
-    rate_label = "AVG" if rate_col == "BA" else "OBP"
-    pct_rate = (r_line / r_team * 100.0) if pd.notna(r_line) and pd.notna(r_team) and r_team > 0 else np.nan
-    rows.append(
-        {
-            "Category": rate_label,
-            "Lineup total": r_line,
-            "% of team": pct_rate,
-        }
-    )
-
-    hit_tbl = pd.DataFrame(rows)
-    hit_tbl["Rel. strength (0–100)"] = np.nan
-
-    strengths = {}
-    for _, r in hit_tbl.iterrows():
-        cat = r["Category"]
-        if cat in ("AVG", "OBP"):
-            v = float(r["Lineup total"]) if pd.notna(r["Lineup total"]) else np.nan
-            t_rt = _lineup_team_rate(tm_df, "OBP" if cat == "OBP" else "BA")
-            if pd.notna(v) and pd.notna(t_rt) and t_rt > 0:
-                strengths[cat] = float(np.clip(v / t_rt, 0.0, 1.5))
-            else:
-                strengths[cat] = 0.5
-        else:
-            s_sum = float(r["Lineup total"])
-            t_sum = float(pd.to_numeric(tm_df[cat], errors="coerce").fillna(0).sum()) if cat in tm_df.columns else 0.0
-            strengths[cat] = (s_sum / t_sum) if t_sum > 0 else 0.0
-
-    vals = list(strengths.values())
-    mn, mx = (min(vals), max(vals)) if vals else (0.0, 1.0)
-    rel_list = []
-    for _, r in hit_tbl.iterrows():
-        cat = r["Category"]
-        raw = strengths.get(cat, 0.5)
-        rel = 50.0 if mx <= mn else (raw - mn) / (mx - mn) * 100.0
-        rel_list.append(rel)
-    rel_std = float(np.std(rel_list)) if rel_list else 0.0
-    if mx <= mn or rel_std < 5.0:
-        hit_tbl["Rel. strength (0–100)"] = np.nan
-    else:
-        hit_tbl["Rel. strength (0–100)"] = np.round(rel_list, 1)
-
-    ranked = hit_tbl.sort_values("Rel. strength (0–100)", ascending=False).reset_index(drop=True)
-    out["strongest"] = ranked.head(2)["Category"].tolist()
-    out["weakest"] = ranked.tail(2)["Category"].tolist()
-    out["hitting_table"] = hit_tbl
-
-    strongest_cat = ranked.iloc[0]["Category"] if len(ranked) else None
-    weakest_cat = ranked.iloc[-1]["Category"] if len(ranked) else None
-
-    if strongest_cat:
-        if strongest_cat in ("AVG", "OBP"):
-            out["strongest_detail"] = _weak_category_explanation(st_df, strongest_cat, rate_col=rate_col)
-        else:
-            top = _top_category_contributors(st_df, strongest_cat if strongest_cat != "AVG" else "HR", 4)
-            if strongest_cat == "HR" and top:
-                out["strongest_detail"] = f"Strong **{strongest_cat}** — driven by {', '.join(top)}."
-            elif top:
-                out["strongest_detail"] = f"Strong **{strongest_cat}** — top contributors: {', '.join(top)}."
-    if weakest_cat:
-        rate_src_early = "OBP" if rate_col == "OBP" else "BA"
-        out["weakest_detail"] = _weak_category_explanation(
-            tm_df if weakest_cat == "SB" else st_df,
-            weakest_cat,
-            rate_col=rate_col,
-        )
-        if not out["weakest_detail"] and weakest_cat in st_df.columns:
-            sort_col = weakest_cat if weakest_cat not in ("AVG", "OBP") else rate_src_early
-            if sort_col in st_df.columns:
-                low = _top_category_contributors(
-                    st_df.sort_values(sort_col, ascending=True),
-                    sort_col,
-                    2,
-                )
-                if low:
-                    out["weakest_detail"] = f"Weak **{weakest_cat}** — thin production beyond {', '.join(low)}."
-
-    z_parts = []
-    if "HR" in strengths and "SB" in strengths:
-        hr_s, sb_s = strengths["HR"], strengths["SB"]
-        if hr_s > 0.65 and sb_s < 0.35:
-            z_parts.append("power-heavy")
-        elif sb_s > 0.65 and hr_s < 0.35:
-            z_parts.append("speed-focused")
-        elif hr_s > 0.55 and sb_s > 0.55:
-            z_parts.append("balanced power/speed")
-    rk_key = "OBP" if rate_label == "OBP" else "AVG"
-    if rk_key in strengths:
-        rk = strengths[rk_key]
-        if rk < 0.38:
-            z_parts.append("soft rate stats")
-        elif rk > 0.68:
-            z_parts.append("strong rate stats")
-    try:
-        from fantasy_actionable_recommendations import plain_lineup_archetype
-
-        out["archetype"] = plain_lineup_archetype(strengths, rate_label=rate_label)
-    except ImportError:
-        out["archetype"] = (
-            "This lineup: **" + "**, **".join(z_parts) + "** (shown starters vs full-team stat mix)."
-            if z_parts
-            else "No extreme skew across HR/R/RBI/SB/" + rate_label + " among these starters — profile is fairly mixed."
-        )
-
-    cv = float(hit_tbl["Rel. strength (0–100)"].std()) if len(hit_tbl) > 1 else 0.0
-    try:
-        from fantasy_actionable_recommendations import plain_balance_label
-
-        out["balance_label"] = plain_balance_label(cv)
-    except ImportError:
-        if cv >= 28:
-            out["balance_label"] = "**Unbalanced:** category spread is wide — big gaps between best and worst areas."
-        elif cv <= 12:
-            out["balance_label"] = "**Balanced:** strengths are spread across categories."
-        else:
-            out["balance_label"] = "**Moderately tilted:** clear strengths with identifiable soft categories."
-
-    if "Fantasy slot" in st_df.columns or "Primary Position" in st_df.columns:
-        grp_col = "Fantasy slot" if "Fantasy slot" in st_df.columns else "Primary Position"
-        agg = {}
-        for pos, g in st_df.groupby(grp_col, dropna=False):
-            tot = 0.0
-            for c in ["HR", "RBI", "R"]:
-                if c in g.columns:
-                    tot += pd.to_numeric(g[c], errors="coerce").fillna(0).sum()
-            agg[str(pos)] = tot
-        if agg:
-            worst_pos = min(agg, key=agg.get)
-            best_pos = max(agg, key=agg.get)
-            slot_benchmark = None
-            league_df = league_roster_df
-            if league_df is not None and not getattr(league_df, "empty", True):
-                league_grp = "Fantasy slot" if "Fantasy slot" in league_df.columns else (
-                    "Primary Position" if "Primary Position" in league_df.columns else None
-                )
-                if league_grp and "Team" in league_df.columns:
-                    slot_team_totals: list[float] = []
-                    for _, tdf in league_df.groupby(league_df["Team"].astype(str), sort=False):
-                        g = tdf[tdf[league_grp].astype(str) == str(worst_pos)]
-                        if g.empty:
-                            continue
-                        tot = 0.0
-                        for c in ["HR", "RBI", "R"]:
-                            if c in g.columns:
-                                tot += pd.to_numeric(g[c], errors="coerce").fillna(0).sum()
-                        slot_team_totals.append(tot)
-                    if slot_team_totals:
-                        slot_benchmark = float(sum(slot_team_totals) / len(slot_team_totals))
-            if agg.get(best_pos, 0) > 0 and agg[worst_pos] < 0.55 * agg[best_pos]:
-                out["weakest_pos"] = worst_pos
-                out["weakest_pos_val"] = agg[worst_pos]
-                out["weakest_pos_benchmark"] = slot_benchmark
-                try:
-                    from fantasy_actionable_recommendations import build_actionable_position_weakness_note
-
-                    worst_starters = st_df[st_df[grp_col].astype(str) == str(worst_pos)]
-                    out["position_note"] = build_actionable_position_weakness_note(
-                        worst_pos=worst_pos,
-                        worst_val=agg[worst_pos],
-                        starter_df=worst_starters,
-                        waiver_pool=out.get("_waiver_pool_preview"),
-                        needs=out.get("_needs_preview"),
-                        benchmark=slot_benchmark,
-                    )
-                except ImportError:
-                    try:
-                        from fantasy_actionable_recommendations import plain_position_weakness_note
-
-                        label = "Fantasy slot" if grp_col == "Fantasy slot" else "position"
-                        out["position_note"] = plain_position_weakness_note(
-                            worst_pos, agg[worst_pos], best_pos, agg[best_pos], grp_label=label,
-                            benchmark=slot_benchmark,
-                        )
-                    except ImportError:
-                        label = "Fantasy slot" if grp_col == "Fantasy slot" else "Primary Position"
-                        out["position_note"] = (
-                            f"**Position weakness ({label}):** **{worst_pos}** totals **{agg[worst_pos]:.0f}** HR+R+RBI among these starters "
-                            f"vs **{best_pos}** (**{agg[best_pos]:.0f}**). Consider upgrading that slot via add/drop or trade."
-                        )
-            else:
-                out["position_note"] = "**Position shape:** HR+R+RBI is fairly even across starter slots in this set."
-
-    rate_src = "OBP" if rate_col == "OBP" else "BA"
-    if rate_src in st_df.columns or (rate_src == "BA" and "H" in st_df.columns and "AB" in st_df.columns):
-        sort_col = rate_src if rate_src in st_df.columns else "BA"
-        if sort_col in st_df.columns:
-            low_rate_df = st_df.sort_values(sort_col, ascending=True, na_position="last").head(2)
-            low_rate_df = low_rate_df[pd.to_numeric(low_rate_df[sort_col], errors="coerce").notna()]
-        else:
-            low_rate_df = pd.DataFrame()
-        if len(low_rate_df) >= 1 and "Player" in low_rate_df.columns:
-            names = ", ".join(low_rate_df["Player"].astype(str).tolist()[:2])
-            team_rate = _lineup_team_rate(tm_df, rate_col)
-            line_rate = _lineup_team_rate(st_df, rate_col)
-            if names and pd.notna(team_rate) and pd.notna(line_rate) and line_rate < team_rate - 1e-6:
-                out["dragger_note"] = (
-                    f"**{rate_label} drag:** shown starters **{line_rate:.3f}** vs full team **{team_rate:.3f}** — "
-                    f"lowest **{rate_label}** marks: **{names}**."
-                )
-
-    if strongest_cat and weakest_cat and strongest_cat != weakest_cat:
-        top_pct = hit_tbl.loc[hit_tbl["Category"] == strongest_cat, "% of team"]
-        top_pct = float(top_pct.iloc[0]) if len(top_pct) else np.nan
-        if pd.notna(top_pct) and top_pct >= 82 and strongest_cat not in ("AVG", "OBP"):
-            out["surplus_note"] = (
-                f"**Trade From:** starters carry **~{top_pct:.0f}%** of team **{strongest_cat}** while **{weakest_cat}** is weakest — "
-                f"swap some **{strongest_cat}** for **{weakest_cat}**-shaped help."
-            )
-
-    recs = []
-    sb_tot = float(hit_tbl.loc[hit_tbl["Category"] == "SB", "Lineup total"].iloc[0]) if "SB" in hit_tbl["Category"].values else 0.0
-    hr_tot = float(hit_tbl.loc[hit_tbl["Category"] == "HR", "Lineup total"].iloc[0]) if "HR" in hit_tbl["Category"].values else 0.0
-    r_tot = float(hit_tbl.loc[hit_tbl["Category"] == "R", "Lineup total"].iloc[0]) if "R" in hit_tbl["Category"].values else 0.0
-
-    if weakest_cat == "SB" or (weakest_cat and "SB" in out["weakest"] and sb_tot < 15):
-        recs.append({
-            "Type": "Draft target",
-            "Label": "Need",
-            "Detail": f"You only have **{sb_tot:.0f}** SB from this starting group. Look for middle infielders or outfielders with steady steals and a playable {rate_label}.",
-        })
-    if weakest_cat in ("AVG", "OBP") or (weakest_cat and weakest_cat in out["weakest"] and weakest_cat in ("AVG", "OBP")):
-        tr = _lineup_team_rate(st_df, rate_col)
-        recs.append({
-            "Type": "Category repair",
-            "Label": "Need",
-            "Detail": f"Your starters’ {weakest_cat} is **{tr:.3f}**. Add contact hitters or bench the lowest-{rate_label} names in this lineup.",
-        })
-    if weakest_cat == "R" or (weakest_cat and "R" in out["weakest"] and r_tot < 40):
-        recs.append({
-            "Type": "Draft target",
-            "Label": "Target profile",
-            "Detail": f"Starters total only **{r_tot:.0f}** runs. Target table-setters and on-base bats who score, not only home-run hitters.",
-        })
-    if out.get("surplus_note"):
-        recs.append({
-            "Type": "Trade recommendation",
-            "Label": "Trade From → Target profile",
-            "Detail": f"Ship **{strongest_cat}** surplus for **{weakest_cat}** without emptying your best starters.",
-        })
-    elif strongest_cat and weakest_cat and strongest_cat not in ("AVG", "OBP") and weakest_cat not in ("AVG", "OBP"):
-        recs.append({
-            "Type": "Trade recommendation",
-            "Label": "Strength / Need",
-            "Detail": f"**Strength:** **{strongest_cat}**. **Need:** **{weakest_cat}** — explore 2-for-2 style swaps that move counting shape in that direction.",
-        })
-    if out.get("position_note") and "Position weakness" in out["position_note"]:
-        recs.append({
-            "Type": "Position upgrade",
-            "Label": "Need",
-            "Detail": "Upgrade the weakest starter slot (see position note) with HR+R+RBI that matches your best slot’s production tier, or trade for that shape.",
-        })
-
-    pitch = _lineup_pitching_block(tm_df)
-    if pitch:
-        p_rows = [{"Category": k, "Team total": v} for k, v in pitch.items()]
-        out["pitching_table"] = pd.DataFrame(p_rows)
-        sv = pitch.get("SV", 0) or 0
-        so = pitch.get("SO", 0) or 0
-        if sv < 8 and so > 150:
-            recs.append({
-                "Type": "Category repair",
-                "Label": "Need",
-                "Detail": f"Pitching snapshot: **{so:.0f}** SO but only **{sv:.0f}** SV on roster — target closers or vulture saves without dumping strikeouts.",
-            })
-
-    if lineup_format != "5x5 Roto" and len(recs) < 3:
-        recs.append({
-            "Type": "Note",
-            "Label": "Strength",
-            "Detail": "Category table still uses raw hitter stats from Standings Tracker; align adds with your points/H2H settings.",
-        })
-
-    slot_rows = _slot_gap_trade_rows(missing_slots)
-    warn_rows = [{"Type": "Slot", "Label": "Alert", "Detail": w} for w in dict.fromkeys(slot_warnings)]
-    recs = warn_rows + slot_rows + recs
-    out["recommendations"] = recs[:5]
-
-    if ms_counts:
-        gap = out.get("slot_gaps", "")
-        if gap:
-            if out.get("position_note"):
-                out["position_note"] = gap + " " + out["position_note"]
-            else:
-                out["position_note"] = gap
-    return out
+from fantasy_lineup_scoring import (  # noqa: E402,F401
+    _top_category_contributors,
+    _weak_category_explanation,
+    _slot_gap_trade_rows,
+    build_position_aware_lineup,
+    _ROSTER_SLOT_DISPLAY_ORDER,
+    _roster_position_slot_list,
+    _lineup_team_rate,
+    _lineup_pitching_block,
+    lineup_diagnosis_report,
+)
 
 
 def format_lineup_assistant_table(df):
@@ -8335,34 +7484,7 @@ def format_trade_eval_table(df):
     return out
 
 
-def evaluate_trade(my_give, my_get, my_roster, all_rosters, standings, my_team):
-    """Evaluate a proposed fantasy trade from the user's perspective."""
-    give_df = all_rosters[all_rosters["Player"].isin(my_give)].copy()
-    get_df = all_rosters[all_rosters["Player"].isin(my_get)].copy()
-
-    cats = ["HR", "RBI", "R", "SB", "BA", "OPS"]
-    rows = []
-    for cat in cats:
-        give_series = safe_numeric_series(give_df, cat, np.nan)
-        get_series = safe_numeric_series(get_df, cat, np.nan)
-        give_val = give_series.mean() if cat in ["BA", "OPS"] else give_series.sum()
-        get_val = get_series.mean() if cat in ["BA", "OPS"] else get_series.sum()
-        rows.append({"Category": cat, "Give Away": give_val, "Receive": get_val, "Net Gain": get_val - give_val})
-
-    trade_df = pd.DataFrame(rows)
-    needs = summarize_team_category_needs(standings, my_team)
-    weighted_gain = 0
-    for _, r in trade_df.iterrows():
-        weight = 1.5 if needs.get(r["Category"], False) else 1.0
-        weighted_gain += r["Net Gain"] * weight
-
-    verdict = "Neutral"
-    if weighted_gain > 2:
-        verdict = "Good for your team"
-    elif weighted_gain < -2:
-        verdict = "Bad for your team"
-
-    return trade_df, verdict, weighted_gain
+from fantasy_trade_evaluation import build_trade_verdict_text, evaluate_trade  # noqa: E402,F401
 
 
 def suggest_trade_targets(my_team, target_team, all_rosters, standings):
@@ -11385,12 +10507,20 @@ def _player_display_name(selected_player, label_map) -> str:
     return fullname_base_from_label(sp) or sp
 
 
+@st.cache_data(show_spinner=False)
+def _active_player_index(_yearly_df, cache_key):
+    return plr_act.build_active_player_index(_yearly_df)
+
+
 def is_active_current_player(player, source_df=None) -> bool:
     """Streamlit wrapper: default eligibility source is the loaded yearly table."""
     df = source_df
     if df is None or getattr(df, "empty", True):
         try:
-            df = yearly_df
+            # Indexed once per data load — action menus check many players per rerun.
+            return plr_act.is_active_current_player_indexed(
+                player, _active_player_index(yearly_df, HOF_CACHE_KEY)
+            )
         except NameError:
             df = pd.DataFrame()
     return plr_act.is_active_current_player(player, df)
@@ -12630,6 +11760,18 @@ AWARDS_PLAYERS_DF = _cached_awards_players_df(AWARDS_CACHE_KEY)
 
 _DATA_LOAD_START = time.perf_counter()
 batting_df, yearly_df, people_df = load_data(HOF_CACHE_KEY)
+# Games per season, for the default Min AB on rate-stat rankings (rate_stat_qualification).
+from rate_stat_qualification import qualified_ab as _qualified_ab
+
+
+@st.cache_data(show_spinner=False)
+def _season_game_counts(_yearly_df, cache_key):
+    from rate_stat_qualification import season_lengths
+
+    return season_lengths(_yearly_df)
+
+
+SEASON_GAME_COUNTS = _season_game_counts(yearly_df, HOF_CACHE_KEY)
 if load_hall_of_fame_player_ids is not None:
     HOF_PLAYER_IDS = _cached_hof_player_ids(HOF_CACHE_KEY)
 else:
@@ -12637,14 +11779,23 @@ else:
 st.session_state["_perf_data_load_sec"] = round(time.perf_counter() - _DATA_LOAD_START, 4)
 
 
+@st.cache_data(show_spinner=False)
+def _clean_player_label_map_cached(_yl_df, cache_key):
+    label_map = build_clean_player_label_map(_yl_df)
+    return label_map, sorted(label_map.keys())
+
+
 def get_clean_player_label_map_yearly(yl_df):
-    """Session cache for Lahman label map (same ``yearly_df`` ref from ``load_data`` across reruns)."""
-    vid = id(yl_df)
-    if st.session_state.get("_clean_label_map_vid") != vid:
-        st.session_state["_clean_label_map_vid"] = vid
-        st.session_state["_clean_label_map"] = build_clean_player_label_map(yl_df)
-        st.session_state["_clean_label_keys_sorted"] = sorted(st.session_state["_clean_label_map"].keys())
-    return st.session_state["_clean_label_map"]
+    """Lahman label map, built once per data load.
+
+    Keyed by the data load and row count, not ``id(yl_df)``: ``load_data`` is cached and hands
+    back a fresh copy each rerun, so an id key rebuilt the map (an ``iterrows`` over every
+    player) on every run.
+    """
+    label_map, keys_sorted = _clean_player_label_map_cached(yl_df, (HOF_CACHE_KEY, len(yl_df)))
+    st.session_state["_clean_label_map"] = label_map
+    st.session_state["_clean_label_keys_sorted"] = keys_sorted
+    return label_map
 
 
 def get_sorted_clean_player_label_keys(yl_df):
@@ -13101,6 +12252,9 @@ PAGE_OPTIONS = [
     "Fantasy Lineup Assistant",
     "Waiver Wire / Add-Drop Center",
     "Pricing & Upgrade",
+    # U1: appended (not first) so PAGE_OPTIONS[0] keeps its fallback role; the sidebar lists
+    # pages in nav_groups.NAV_ORDER, where Home comes first.
+    "Home",
 ]
 _PAGE_OPTION_SET = frozenset(PAGE_OPTIONS)
 
@@ -13129,7 +12283,14 @@ PAGE_OPTION_LABELS = {
     "Pricing & Upgrade": "💳 Pricing & Upgrade",
     "Trade Analyzer / Roster Move Assistant": "🔁 Trade Analyzer / Roster Move Assistant",
 }
-_PAGE_LABEL_TO_KEY = {label: key for key, label in PAGE_OPTION_LABELS.items()}
+_PAGE_LABEL_TO_KEY = {label: key for key, label in PAGE_OPTION_LABELS.items()}  # pre-U1 labels stay readable
+try:
+    from nav_groups import NAV_LABELS as _U1_NAV_LABELS
+
+    PAGE_OPTION_LABELS.update(_U1_NAV_LABELS)
+except ImportError:
+    PAGE_OPTION_LABELS["Home"] = "🏠 Home"
+_PAGE_LABEL_TO_KEY.update({label: key for key, label in PAGE_OPTION_LABELS.items()})
 
 
 def page_option_label(page_key: str) -> str:
@@ -13151,6 +12312,9 @@ def normalize_page_key(value) -> str:
     if key in _PAGE_OPTION_SET:
         return key
     return _PAGE_LABEL_TO_KEY.get(key, "Historical Explorer")
+
+
+BAD_PAGE_LINK_NOTICE_KEY = "_bad_page_link_notice"
 
 
 def get_sidebar_page_value(page_key: str) -> str:
@@ -13416,7 +12580,7 @@ def render_developer_mode_sidebar_toggle():
             mark_dev_mode_checkbox_materialized,
         )
 
-        if dev_mode_checkbox_materialized():
+        if dev_mode_checkbox_materialized(st.session_state):
             return
         if not claim_sidebar_render(st.session_state, GUARD_DEV_TOGGLE):
             return
@@ -13458,7 +12622,7 @@ def render_developer_mode_sidebar_toggle():
     try:
         from suite_sidebar_run import mark_dev_mode_checkbox_materialized
 
-        mark_dev_mode_checkbox_materialized()
+        mark_dev_mode_checkbox_materialized(st.session_state)
     except ImportError:
         pass
     try:
@@ -13821,6 +12985,16 @@ def _consume_scheduled_navigation():
     scheduled = st.session_state.pop("_navigate_to_page", None)
     if scheduled is not None:
         target = get_sidebar_page_value(scheduled)
+        _scheduled_raw = str(scheduled or "").strip()
+        # __MONETIZATION_GATE__-style sentinels are internal, not links.
+        if _scheduled_raw and not _scheduled_raw.startswith("__") and not (
+            _scheduled_raw in _PAGE_OPTION_SET
+            or _scheduled_raw in _PAGE_LEGACY_ALIASES
+            or _scheduled_raw in _PAGE_LABEL_TO_KEY
+        ):
+            # A Continue link (?suite_page=) naming no page lands on the fallback page; say so
+            # instead of silently showing Historical Explorer.
+            st.session_state[BAD_PAGE_LINK_NOTICE_KEY] = target
     if target is None:
         legacy = st.session_state.pop("_pending_active_page", None)
         if legacy is not None:
@@ -13850,11 +13024,14 @@ def _consume_scheduled_navigation():
         # PAGE_OPTIONS[0], so a sentinel compared equal to "Historical Explorer" and
         # the gate's "Back to Historical Explorer" was dropped here as a redundant
         # schedule. Raw membership is checked for exactly that reason.
-        _current_is_real_page = (
-            _current_raw in _PAGE_OPTION_SET
-            or _current_raw in _PAGE_LABEL_TO_KEY
-            or _current_raw in _PAGE_LEGACY_ALIASES
-        )
+        #
+        # And only the canonical page name: an alias or label in active_page is not the
+        # page yet. The Command Center resume launcher writes the raw ?suite_page= into
+        # active_page before scheduling it; for ?suite_page=Draft Room the schedule was
+        # dropped here, active_page kept "Draft Room", and the sidebar radio (which
+        # initializes from active_page on a fresh session) fell back to PAGE_OPTIONS[0],
+        # Historical Explorer. Applying the schedule canonicalizes both keys.
+        _current_is_real_page = _current_raw in _PAGE_OPTION_SET
         if _current_raw and _current_is_real_page and target == current:
             try:
                 from nav_page_trace import log_nav_event
@@ -14057,6 +13234,8 @@ def _transfer_stat_min_keys(*prefixes):
     keys = set()
     for prefix in prefixes:
         keys.update(f"{prefix}_{c}_min" for c in pg_xfer._TRANSFER_STAT_COLS)
+        if prefix in ("hist", "career", "leaders"):
+            keys.add(f"{prefix}_ab_qualification_mode")
     return keys
 
 
@@ -14632,23 +13811,16 @@ def _record_sidebar_nav_trace(phase: str, *, rerun_source: str = "", **kwargs: o
 
 def _render_baseball_sidebar_chrome(st_obj) -> None:
     """Single top-left Login / Account & Workspace control (Investment/Music pattern)."""
-    # Once per Streamlit script-run. Importing this file as `streamlit_app` while the
-    # entry script is already `__main__` re-executes module-level chrome and caused
-    # duplicate Build captions + StreamlitDuplicateElementKey on the Login expander.
     try:
-        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        from suite_sidebar_run import GUARD_ACCOUNT, claim_sidebar_render
 
-        _ctx = get_script_run_ctx()
-        _run_token = id(_ctx) if _ctx is not None else None
-    except Exception:
-        _run_token = None
-    if (
-        _run_token is not None
-        and st_obj.session_state.get("_baseball_sidebar_chrome_run_token") == _run_token
-    ):
-        return
-    if _run_token is not None:
-        st_obj.session_state["_baseball_sidebar_chrome_run_token"] = _run_token
+        # reset_sidebar_run_guards() runs at script startup. Unlike ScriptRunContext
+        # identity, this claim resets for every rerun while still blocking duplicate
+        # chrome within one execution.
+        if not claim_sidebar_render(st_obj.session_state, GUARD_ACCOUNT):
+            return
+    except ImportError:
+        pass
     head = "?"
     try:
         import subprocess
@@ -14835,6 +14007,13 @@ if not st.session_state.get("_qp_active_page_nav_consumed"):
             _qp_page_raw = ""
     if _qp_page_raw:
         _qp_target = get_sidebar_page_value(_qp_page_raw)
+        if not (
+            _qp_page_raw in _PAGE_OPTION_SET
+            or _qp_page_raw in _PAGE_LEGACY_ALIASES
+            or _qp_page_raw in _PAGE_LABEL_TO_KEY
+        ):
+            # Unknown page in the link: open the safe fallback and say so (shown once, pre-body).
+            st.session_state[BAD_PAGE_LINK_NOTICE_KEY] = _qp_target
         if _qp_target in _PAGE_OPTION_SET:
             st.session_state["_navigate_to_page"] = _qp_target
             st.session_state["_skip_page_restore_for"] = _qp_target
@@ -14860,6 +14039,35 @@ if not st.session_state.get("_qp_active_page_nav_consumed"):
                 except ImportError:
                     st.session_state.pop("_live_draft_browsing_away", None)
                 st.session_state["active_page"] = "Live Draft Room"
+# From here on the URL follows the page (url_page_sync), so ?active_page= is a deep link
+# only on a session's first run — never the page this session wrote there itself.
+st.session_state["_qp_active_page_nav_consumed"] = True
+# Browser Back/Forward: the address bar moved to another page (url_page_sync).
+try:
+    from url_page_sync import history_navigation_target
+
+    _history_nav_target = history_navigation_target(
+        st.session_state,
+        current_page=st.session_state.get("active_page"),
+        valid_pages=_PAGE_OPTION_SET,
+        normalize=normalize_page_key,
+    )
+    if _history_nav_target:
+        # Same precedence as a deep link: wins over saved-page restore this run.
+        st.session_state["_navigate_to_page"] = _history_nav_target
+        st.session_state["_skip_page_restore_for"] = _history_nav_target
+        from baseball_persistent_state import EXPLICIT_PAGE_NAV_KEY
+
+        st.session_state[EXPLICIT_PAGE_NAV_KEY] = _history_nav_target
+        if _history_nav_target == "Live Draft Room":
+            # Enter the live room body, not the "Return to Live Draft" card. Unlike the
+            # first-run deep link, leave active_page alone: the scheduled navigation must
+            # still move the sidebar radio, or alignment snaps back to the previous page.
+            from live_draft_navigation import BROWSING_AWAY_KEY
+
+            st.session_state.pop(BROWSING_AWAY_KEY, None)
+except ImportError:
+    pass
 _record_sidebar_nav_trace("run_start_before_consume")
 _consumed_nav_target = _consume_scheduled_navigation()
 try:
@@ -15317,14 +14525,25 @@ try:
 except Exception:
     pass
 
+# A genuinely new visit (no deep link, nothing restored, no page chosen yet) opens Home.
+# Deep links, restored sessions and explicit navigation have set active_page by now.
+# Canonicalized so a legacy alias there ("Draft Room") seeds its page, not PAGE_OPTIONS[0].
+_radio_seed_page = st.session_state.get("active_page", "Home")
 validate_state_option(
     MAIN_SIDEBAR_PAGE_KEY,
     PAGE_OPTIONS,
-    st.session_state.get("active_page", "Historical Explorer"),
+    normalize_page_key(_radio_seed_page) if _radio_seed_page else _radio_seed_page,
 )
+try:
+    from nav_groups import ordered_pages as _nav_ordered_pages, sidebar_section_css as _nav_section_css
+
+    _SIDEBAR_PAGE_ORDER = _nav_ordered_pages(PAGE_OPTIONS)
+    st.sidebar.markdown(_nav_section_css(MAIN_SIDEBAR_PAGE_KEY, _SIDEBAR_PAGE_ORDER), unsafe_allow_html=True)
+except ImportError:
+    _SIDEBAR_PAGE_ORDER = list(PAGE_OPTIONS)
 _selected_page = st.sidebar.radio(
     "Choose Page",
-    PAGE_OPTIONS,
+    _SIDEBAR_PAGE_ORDER,
     key=MAIN_SIDEBAR_PAGE_KEY,
     format_func=page_option_label,
     on_change=_on_sidebar_page_change,
@@ -15582,18 +14801,31 @@ try:
 except ImportError:
     pass
 
+# Address bar follows the requested page (before any entitlement/paywall stand-in), so
+# refresh stays here and Back/Forward walk the pages visited (url_page_sync).
+try:
+    from url_page_sync import sync_address_bar
+
+    if active_page in _PAGE_OPTION_SET:
+        sync_address_bar(st, active_page)
+except ImportError:
+    pass
+_bad_link_fallback = st.session_state.pop(BAD_PAGE_LINK_NOTICE_KEY, None)
+if _bad_link_fallback and _bad_link_fallback == active_page:
+    st.info(f"That page wasn't found. {active_page} has been opened instead.")
+
 # Immutable page snapshot for this run — exclusive body routing + fragment gates.
 _monetization_snapshot = None
 _monetization_gate_page = ""
 try:
-    from baseball_monetization import PAGE_FEATURES, entitlement_for_page
+    from baseball_monetization import ENFORCED_PAGE_FEATURES, entitlement_for_page
     from baseball_monetization_ui import current_entitlement, remember_paywall_context
 
     _monetization_snapshot = current_entitlement(
         st.session_state,
         developer_mode=developer_mode_enabled(),
     )
-    if active_page in PAGE_FEATURES and not _monetization_snapshot.ready:
+    if active_page in ENFORCED_PAGE_FEATURES and not _monetization_snapshot.ready:
         _monetization_gate_page = active_page
         active_page = "__ENTITLEMENT_LOADING__"
     elif not entitlement_for_page(_monetization_snapshot, active_page):
@@ -15610,7 +14842,7 @@ try:
 except ImportError:
     pass
 
-from baseball_ami_sidebar import render_baseball_insight_sidebar
+from baseball_ami_sidebar import submit_baseball_insight
 
 st.session_state["_suite_runtime_app_id"] = "baseball"
 
@@ -15626,22 +14858,36 @@ def _force_save_before_ami_return(active_page: str) -> None:
     st.session_state["_suite_defer_baseball_save_reason"] = f"ami_send:{active_page}"
 
 
-render_baseball_insight_sidebar(
-    st,
-    source_page=active_page,
-    session_state=st.session_state,
-    context_extra_builder=(
-        lambda: build_baseball_applied_math_context(active_page, st.session_state)
-        if build_baseball_applied_math_context
-        else None
-    ),
-    source_state_builder=(
-        lambda: build_source_state(active_page, st.session_state)
-        if build_source_state
-        else None
-    ),
-    on_after_send=lambda: _force_save_before_ami_return(active_page),
-)
+def _ami_full_analysis(question: str, page: str) -> dict:
+    """Ask AMI's "Get full analysis": the Command Center handoff the ⚾ Baseball Insight box used
+    (same page context, source state and save deferral). Runs only when the user presses it."""
+    return submit_baseball_insight(
+        st.session_state,
+        source_page=page,
+        question=question,
+        context_extra_builder=(
+            lambda: build_baseball_applied_math_context(page, st.session_state)
+            if build_baseball_applied_math_context
+            else None
+        ),
+        source_state_builder=(
+            lambda: build_source_state(page, st.session_state)
+            if build_source_state
+            else None
+        ),
+        on_after_send=lambda: _force_save_before_ami_return(page),
+    )
+
+
+# U5: Ask AMI is the app's one question box (sidebar on desktop, a bar at the top on phones).
+# Quick answers are read-only; Get full analysis hands the question to Command Center.
+try:
+    from ami_assistant.ui import render_ami_assistant_panel
+
+    render_ami_assistant_panel(st, active_page=active_page, yearly_df=yearly_df, entitlement=_monetization_snapshot,
+                               full_analysis=_ami_full_analysis)
+except ImportError:
+    pass
 
 # Save filters when leaving a page; restore when returning via left sidebar (not contextual transfer).
 pg_state.handle_sidebar_page_state(
@@ -15706,14 +14952,17 @@ if _submit_insight_run:
 
 # Drop restored ephemeral button keys (assigning them from snapshots crashes Streamlit).
 # Do NOT purge file_uploader keys here — live uploads need session values until staged.
-for _ephemeral_key in list(st.session_state.keys()):
-    if pg_state._is_file_uploader_widget_key(_ephemeral_key):
-        continue
-    if pg_state._is_ephemeral_widget_key(_ephemeral_key):
-        st.session_state.pop(_ephemeral_key, None)
+# Live button keys stay: popping one deletes its pending click before the button renders.
+pg_state.purge_restored_ephemeral_widget_keys(st.session_state)
 
 if not pp.is_screenshot_mode(st):
     st.sidebar.caption("Filters are remembered as you move between pages.")
+try:
+    from data_sources import render_data_attribution
+
+    render_data_attribution(st)
+except Exception:
+    pass
 if developer_mode_enabled():
     try:
         from baseball_persistent_state import render_cross_device_sync_debug
@@ -16315,32 +15564,6 @@ def _on_undo_last_simulator_pick_click() -> None:
         ss["_draft_room_action_trace"] = trace
 
 
-def build_trade_verdict_text(trade_eval, weighted_gain):
-    """Plain-English trade verdict for Fantasy Lineup Assistant."""
-    try:
-        wg = float(weighted_gain)
-    except Exception:
-        wg = 0.0
-
-    if wg >= 5:
-        verdict = "Strong accept"
-        reason = "The trade appears to improve your roster in important need areas."
-    elif wg >= 1:
-        verdict = "Slight accept"
-        reason = "The trade looks modestly helpful, especially if it addresses a weak category or roster need."
-    elif wg > -1:
-        verdict = "Fair / neutral"
-        reason = "The trade is close enough that team context, injury risk, and category needs should decide it."
-    elif wg > -5:
-        verdict = "Slight decline"
-        reason = "The trade appears slightly unfavorable unless it solves a specific roster problem."
-    else:
-        verdict = "Decline"
-        reason = "The trade appears to cost too much projected value or category balance."
-
-    return f"{verdict}: {reason} Team-need weighted score: {wg:.2f}."
-
-
 def filter_trade_suggestions_by_requested_players(suggestions, forced_give=None, forced_get=None):
     """Filter trade suggestions using optional user-desired give/acquire players."""
     if suggestions is None or suggestions.empty:
@@ -16423,6 +15646,13 @@ elif active_page == "Pricing & Upgrade":
     render_pricing_page(st, st.session_state, _monetization_snapshot)
 
 
+elif active_page == "Home":
+    from home_page import render_home
+
+    render_home(st, st.session_state, navigate=navigate_to_page,
+                render_tutorial_bar=app_tutorial.render_tutorial_header_bar)
+
+
 elif active_page == "Historical Explorer":
     try:
         from app_page_generation import note_page_renderer
@@ -16455,15 +15685,10 @@ elif active_page == "Historical Explorer":
     try:
         from hall_of_fame_data import CAREER_HOF_CASE_MODE_KEY
 
+        # U1: the checkbox itself renders under "Explore more"; its value is read here first.
         init_state_once(CAREER_HOF_CASE_MODE_KEY, False)
-        st.checkbox(
-            "Hall of Fame Case Mode",
-            key=CAREER_HOF_CASE_MODE_KEY,
-            help="Shared with Career Totals — enables Hall of Fame cohort tools and scatterplot Color By on both pages.",
-            on_change=historical_filter_changed,
-        )
     except ImportError:
-        pass
+        CAREER_HOF_CASE_MODE_KEY = None
 
     hof_case_mode = ensure_hof_case_scope_ui_state(st.session_state)
     hist_hof_filter = HOF_FILTER_ALL
@@ -16477,10 +15702,9 @@ elif active_page == "Historical Explorer":
             developer_mode=True,
         )
 
-    render_section_header(
-        "🔎 Historical Explorer",
-        "Find individual player seasons. Split-team seasons can stay as separate team rows or be combined into one primary-team season row."
-    )
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "🔎 Historical Explorer", "The best single seasons for any years and stat, back to 1871.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     try:
@@ -16491,7 +15715,7 @@ elif active_page == "Historical Explorer":
         pass
 
     with mobile_wrap_row(st, "historical-top-filters"):
-        hc1, hc2, hc3 = st.columns([2.2, 1.2, 1.2])
+        hc1, hc2 = st.columns([2.2, 1.2])
     sort_options_hist = [
         "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"
     ]
@@ -16523,12 +15747,14 @@ elif active_page == "Historical Explorer":
             key="historical_sort_stat_filter",
             on_change=historical_filter_changed,
         )
-    with hc3:
-        validate_state_option("historical_sort_order_filter", ["Descending", "Ascending"], "Descending")
-        hist_sort_order = st.selectbox(
-            "Order",
-            ["Descending", "Ascending"],
-            key="historical_sort_order_filter",
+    # U1: the answer (leader, summary, chart, next steps) is filled in here once the rows are known.
+    hist_answer_slot = st.container()
+    u1.section_label(st, "Explore more · filters, all seasons and charts")
+    if CAREER_HOF_CASE_MODE_KEY:
+        st.checkbox(
+            "Hall of Fame Case Mode",
+            key=CAREER_HOF_CASE_MODE_KEY,
+            help="Shared with Career Totals — enables Hall of Fame cohort tools and scatterplot Color By on both pages.",
             on_change=historical_filter_changed,
         )
 
@@ -16543,6 +15769,13 @@ elif active_page == "Historical Explorer":
             )
 
     with st.expander("Advanced filters", expanded=False):
+        validate_state_option("historical_sort_order_filter", ["Descending", "Ascending"], "Descending")
+        hist_sort_order = st.selectbox(
+            "Order",
+            ["Descending", "Ascending"],
+            key="historical_sort_order_filter",
+            on_change=historical_filter_changed,
+        )
         with mobile_wrap_row(st, "historical-advanced-filters"):
             c2, c_mode, c3, c4 = st.columns([1.0, 1.25, 1.0, 1.35])
         with c2:
@@ -16615,55 +15848,25 @@ elif active_page == "Historical Explorer":
 
     flush_historical_filter_edits(st.session_state, st, reason="historical_filter_flush")
 
-    hist_source = batting_df[(batting_df["yearID"] >= hist_year_range[0]) & (batting_df["yearID"] <= hist_year_range[1])].copy()
-    if hist_bats:
-        hist_source = hist_source[hist_source["bats"].isin(hist_bats)]
-    if hist_pos:
-        hist_source = hist_source[hist_source[hist_position_source_col].isin(hist_pos)]
+    hist, team_col_for_display, team_sort_col, hist_note = _history.historical_rows(
+        batting_df,
+        year_range=hist_year_range,
+        bats=hist_bats,
+        positions=hist_pos,
+        position_source_col=hist_position_source_col,
+        teams=hist_teams,
+        combine_split_seasons=combine_split_seasons,
+        aggregate_team=aggregate_player_year_team,
+        aggregate_primary=aggregate_player_year_primary_team,
+    )
 
-    hist_selected_all = (not hist_teams) or ("All Teams" in hist_teams)
-    hist_selected_franchises = [x for x in hist_teams if x not in ["All Teams", "American League", "National League"]]
-    hist_selected_leagues = []
-    if "American League" in hist_teams:
-        hist_selected_leagues.append("AL")
-    if "National League" in hist_teams:
-        hist_selected_leagues.append("NL")
-
-    # Split-team mode: apply league/franchise filter to each actual displayed team row.
-    if not combine_split_seasons and not hist_selected_all:
-        hist_team_mask = pd.Series(False, index=hist_source.index)
-        if hist_selected_franchises:
-            hist_team_mask = hist_team_mask | hist_source["teamName"].isin(hist_selected_franchises)
-        if hist_selected_leagues:
-            hist_team_mask = hist_team_mask | hist_source["teamLeague"].isin(hist_selected_leagues)
-        hist_source = hist_source[hist_team_mask]
-
-    if combine_split_seasons:
-        hist = aggregate_player_year_primary_team(hist_source)
-        team_col_for_display = "primaryHistoricalTeamName"
-        team_sort_col = "primaryTeamName"
-        hist_note = "Combined mode: one row per player-season. Team is the primary team for that season. League filters use that primary team."
-        if not hist_selected_all and not hist.empty:
-            hist_team_mask = pd.Series(False, index=hist.index)
-            if hist_selected_franchises:
-                hist_team_mask = hist_team_mask | hist["primaryTeamName"].isin(hist_selected_franchises)
-            if hist_selected_leagues and "primaryLeague" in hist.columns:
-                hist_team_mask = hist_team_mask | hist["primaryLeague"].isin(hist_selected_leagues)
-            hist = hist[hist_team_mask]
-    else:
-        hist = aggregate_player_year_team(hist_source)
-        team_col_for_display = "teamHistoricalName"
-        team_sort_col = "teamName"
-        hist_note = "Split mode: one row per player-season-team. Split seasons stay separate."
-
-    if hist_position_source_col in hist.columns:
-        hist["displayPosition"] = hist[hist_position_source_col]
-    elif "primaryPos" in hist.columns:
-        hist["displayPosition"] = hist["primaryPos"]
-    else:
-        hist["displayPosition"] = ""
-
-    hist = apply_stat_min_filters(hist, "hist", on_change=historical_filter_changed)
+    hist = apply_stat_min_filters(
+        hist,
+        "hist",
+        on_change=historical_filter_changed,
+        sort_stat=hist_sort_stat,
+        qualification=_qualified_ab(SEASON_GAME_COUNTS, hist_year_range, span=False),
+    )
     if hof_case_mode and merge_hof_flag is not None and "playerID" in hist.columns:
         hist = merge_hof_flag(hist, HOF_PLAYER_IDS)
         hist = apply_hof_membership_filter(hist, hist_hof_filter)
@@ -16686,7 +15889,15 @@ elif active_page == "Historical Explorer":
     if hist_sort_stat in hist_display_raw.columns:
         hist_display_raw = hist_display_raw.sort_values(by=hist_sort_stat, ascending=(hist_sort_order == "Ascending"), na_position="last")
 
-    top_bar_chart(hist_display_raw, "fullName", hist_sort_stat, f"Top 10 Seasons by {hist_sort_stat}")
+    with hist_answer_slot:
+        _render_u1_season_answer(
+            hist_display_raw,
+            hist_sort_stat,
+            hist_year_range,
+            ascending=(hist_sort_order == "Ascending"),
+            team_col=team_col_for_display,
+            qualification_prefix="hist",
+        )
 
     c7, c8, c9 = st.columns(3)
     c7.metric("Rows Returned", len(hist_display_raw))
@@ -16876,12 +16087,39 @@ elif active_page == "Career Totals":
     )
     build_hof_cohort_display_text = _resolve_build_hof_cohort_display_text()
 
-    render_section_header(
-        "📚 Career Totals",
-        "Aggregate career production with an independent display toggle: one primary-team career row or separate totals by each team.",
-    )
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "📚 Career Totals", "Who produced the most over a span of seasons, and that career in numbers.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
+
+    career_sort_options = ["HR", "RBI", "SB", "R", "H", "2B", "3B", "BB", "BA", "OBP", "SLG", "OPS", "AB"]
+    with mobile_wrap_row(st, "career-top-filters"):
+        cc1, cc2 = st.columns([2.5, 1.5])
+    with cc1:
+        prepare_career_year_range(
+            st.session_state,
+            year_min,
+            year_max,
+            (max(year_min, 2010), year_max),
+        )
+        range_career = st.slider(
+            "Select Year Range",
+            min_value=year_min,
+            max_value=year_max,
+            key="career_year_range_filter",
+            on_change=career_filter_changed,
+        )
+    with cc2:
+        validate_state_option("career_sort_stat_filter", career_sort_options, "HR")
+        sort_stat_career = st.selectbox(
+            "Sort by",
+            career_sort_options,
+            key="career_sort_stat_filter",
+            on_change=career_filter_changed,
+        )
+    career_answer_slot = st.container()
+    u1.section_label(st, "Explore more · Hall of Fame case, filters, minimums and the full table")
 
     career_player_options = hof_case_target_player_options(batting_df)
     init_state_once(CAREER_HOF_CASE_MODE_KEY, False)
@@ -16922,31 +16160,6 @@ elif active_page == "Career Totals":
         )
     else:
         career_hof_filter = HOF_FILTER_ALL
-    career_sort_options = ["HR", "RBI", "SB", "R", "H", "2B", "3B", "BB", "BA", "OBP", "SLG", "OPS", "AB"]
-    with mobile_wrap_row(st, "career-top-filters"):
-        cc1, cc2 = st.columns([2.5, 1.5])
-    with cc1:
-        prepare_career_year_range(
-            st.session_state,
-            year_min,
-            year_max,
-            (max(year_min, 2010), year_max),
-        )
-        range_career = st.slider(
-            "Select Year Range",
-            min_value=year_min,
-            max_value=year_max,
-            key="career_year_range_filter",
-            on_change=career_filter_changed,
-        )
-    with cc2:
-        validate_state_option("career_sort_stat_filter", career_sort_options, "HR")
-        sort_stat_career = st.selectbox(
-            "Sort by",
-            career_sort_options,
-            key="career_sort_stat_filter",
-            on_change=career_filter_changed,
-        )
 
     with st.expander("Advanced filters", expanded=False):
         with mobile_wrap_row(st, "career-advanced-filters"):
@@ -17066,7 +16279,7 @@ elif active_page == "Career Totals":
         career_mode_note = "By-team mode: each player/team row must pass stat minimum filters on its own. Franchise/league filters first limit the data included; position is based on Fielding.csv games."
     else:
         # Filter first, aggregate by player second, then apply stat minimum filters to the total row.
-        career_totals = filtered_career.groupby(["playerID", "fullName", "bats"], as_index=False)[stat_cols_career].sum()
+        career_totals = filtered_career.groupby(["playerID", "fullName", "bats"], as_index=False, dropna=False)[stat_cols_career].sum()
         career_totals = add_primary_team_for_career(career_totals, filtered_career)
         if position_filter_mode == "Career Primary Position":
             career_totals["displayPosition"] = career_totals["careerPrimaryPos"] if "careerPrimaryPos" in career_totals.columns else career_totals.get("primaryPos")
@@ -17076,7 +16289,13 @@ elif active_page == "Career Totals":
         career_mode_note = "Total-career mode: one row per player. Franchise/league filters first limit the data included, then Team becomes the primary team within that filtered data. Position is based on Fielding.csv games."
 
     career_totals = add_rate_stats(career_totals)
-    career_totals = apply_stat_min_filters(career_totals, "career", on_change=career_filter_changed)
+    career_totals = apply_stat_min_filters(
+        career_totals,
+        "career",
+        on_change=career_filter_changed,
+        sort_stat=sort_stat_career,
+        qualification=_qualified_ab(SEASON_GAME_COUNTS, range_career, span=True),
+    )
     if hof_case_mode and merge_hof_flag is not None and "playerID" in career_totals.columns:
         career_totals = merge_hof_flag(career_totals, HOF_PLAYER_IDS)
         career_totals = apply_hof_membership_filter(career_totals, career_hof_filter)
@@ -17098,7 +16317,8 @@ elif active_page == "Career Totals":
         if hof_target_player:
             hof_target_is_hof = target_player_is_hall_of_famer(hof_target_player, career_totals)
 
-    top_bar_chart(career_totals, "fullName", sort_stat_career, f"Top 10 Career Totals by {sort_stat_career}")
+    with career_answer_slot:
+        _render_u2_career_answer(career_totals, filtered_career, sort_stat_career, range_career, by_team=show_career_by_team)
 
     c5, c6, c7 = st.columns(3)
     c5.metric("Rows", len(career_totals))
@@ -17383,21 +16603,29 @@ elif active_page == "Career Totals":
                             if not store_ok
                             else "",
                         )
-                        st.session_state[HOF_INSIGHT_STAGED_KEY] = qid
-                        st.session_state["_ami_force_insight_render"] = True
-                        st.session_state["_ami_hydrated_insight_id"] = str(insight_dict.get("insight_id") or "")
-                        st.session_state["_ami_insight_return_preserve"] = True
-                        st.session_state["_skip_page_restore_for"] = "Career Totals"
-                        st.session_state["_suite_persist_insight_dirty"] = True
-                        record_hof_pipeline_step(
-                            st.session_state,
-                            "render_flags_set",
-                            ok=True,
-                            detail={
-                                "force_insight_render": True,
-                                "submit_render_this_run_pending": True,
-                            },
-                        )
+                        if store_ok:
+                            st.session_state[HOF_INSIGHT_STAGED_KEY] = qid
+                            st.session_state["_ami_force_insight_render"] = True
+                            st.session_state["_ami_hydrated_insight_id"] = str(insight_dict.get("insight_id") or "")
+                            st.session_state["_ami_insight_return_preserve"] = True
+                            st.session_state["_skip_page_restore_for"] = "Career Totals"
+                            st.session_state["_suite_persist_insight_dirty"] = True
+                            record_hof_pipeline_step(
+                                st.session_state,
+                                "render_flags_set",
+                                ok=True,
+                                detail={
+                                    "force_insight_render": True,
+                                    "submit_render_this_run_pending": True,
+                                },
+                            )
+                        else:
+                            record_hof_pipeline_step(
+                                st.session_state,
+                                "render_flags_set",
+                                ok=False,
+                                detail={"store_ok": False, "reason": "insight store failed"},
+                            )
                     except Exception as exc:
                         record_hof_pipeline_exception(st.session_state, "insight_stage_or_store", exc)
                         insight_dict = {}
@@ -17616,12 +16844,14 @@ elif active_page == "Leaderboards":
     prepare_leaderboards_page(st.session_state)
     prepare_leaderboards_filters(st.session_state)
 
-    render_section_header("🏆 Leaderboards", "Build custom offensive rankings with weighted stats, filters, summary cards, and charts.")
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "🏆 Leaderboards", "Who leads over a span of seasons — in one stat or a custom score.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     leaders_sort_options = ["score", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
     with mobile_wrap_row(st, "leaderboards-top-filters"):
-        c1, c2, c3 = st.columns([2, 1, 1])
+        c1, c3 = st.columns([2, 1])
     with c1:
         prepare_leaderboards_year_range(
             st.session_state,
@@ -17642,15 +16872,6 @@ elif active_page == "Leaderboards":
             key="leaders_year_range_filter",
             on_change=leaderboards_filter_changed,
         )
-    with c2:
-        init_state_once("leaders_top_n_filter", 25)
-        top_n_leaders = st.slider(
-            "Show Top N Players",
-            min_value=5,
-            max_value=100,
-            key="leaders_top_n_filter",
-            on_change=leaderboards_filter_changed,
-        )
     with c3:
         validate_state_option("leaders_sort_stat_filter", leaders_sort_options, "score")
         sort_stat_leaders = st.selectbox(
@@ -17659,6 +16880,18 @@ elif active_page == "Leaderboards":
             key="leaders_sort_stat_filter",
             on_change=leaderboards_filter_changed,
         )
+
+    # U1: the answer (leader, what is ranked, qualification, top 3, chart, next steps) goes here.
+    leaders_answer_slot = st.container()
+    u1.section_label(st, "Explore more · weights, minimums and the full ranking")
+    init_state_once("leaders_top_n_filter", 25)
+    top_n_leaders = st.slider(
+        "Show Top N Players",
+        min_value=5,
+        max_value=100,
+        key="leaders_top_n_filter",
+        on_change=leaderboards_filter_changed,
+    )
 
     weight_stats = ["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS"]
     _default_weights = {"HR": 1.0, "RBI": 1.0, "SB": 1.0}
@@ -17687,16 +16920,26 @@ elif active_page == "Leaderboards":
     leaderboard = aggregate_leaderboard_career_totals(filtered_leaders)
     st.session_state["_perf_leaderboard_agg_sec"] = round(time.perf_counter() - _lb_agg_start, 4)
     leaderboard = add_rate_stats(leaderboard)
-    leaderboard = apply_stat_min_filters(leaderboard, "leaders", on_change=leaderboards_filter_changed)
+    leaderboard = apply_stat_min_filters(
+        leaderboard,
+        "leaders",
+        on_change=leaderboards_filter_changed,
+        sort_stat=sort_stat_leaders,
+        qualification=_qualified_ab(SEASON_GAME_COUNTS, range_leaders, span=True),
+    )
     leaderboard = safe_round_rate_stats(leaderboard)
 
-    leaderboard["score"] = 0.0
-    for stat, weight in weight_values.items():
-        leaderboard["score"] += weight * (leaderboard[stat] * 100 if stat in RATE_STATS else leaderboard[stat])
-
-    top_bar_chart(leaderboard, "fullName", sort_stat_leaders, f"Top 10 by {sort_stat_leaders}")
+    leaderboard = _history.add_leaderboard_score(leaderboard, weight_values)
 
     leaderboard_sorted = leaderboard.sort_values(sort_stat_leaders, ascending=False, na_position="last")
+    with leaders_answer_slot:
+        _render_u1_leaderboard_answer(
+            leaderboard_sorted,
+            sort_stat_leaders,
+            range_leaders,
+            weights=weight_values,
+            qualification_prefix="leaders",
+        )
     leaderboard_display = leaderboard_sorted.head(top_n_leaders)[[
         "fullName", "bats", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "SLG", "OPS", "score"
     ]].rename(columns={"fullName": "Player", "bats": "Bats", "score": "Score"})
@@ -17752,7 +16995,9 @@ elif active_page == "Comparison Tool":
         prepare_canonical_scoring_context(st.session_state, active_page=active_page)
     except ImportError:
         pass
-    render_section_header("📈 Comparison Tool", "Compare up to three players across years with tables and trend charts.")
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "📈 Compare Players", "Two or three hitters side by side over the same seasons: who leads where.")
     render_page_guide(active_page)
     try:
         from fantasy_context_ui import render_research_sync_badge
@@ -17839,6 +17084,71 @@ elif active_page == "Comparison Tool":
         on_change=compare_top_changed,
     )
     selected_ids_compare = [clean_label_map_compare[label] for label in selected_labels_compare]
+
+    def _render_compare_range_control(span, axis_mode):
+        """Season-year or age range slider (same keys, labels and sanitising as before U2)."""
+        year_range, age_range = span, (16, 50)
+        if axis_mode == "Season Year":
+            from year_range_state import sanitize_year_range
+
+            _slider_min = int(span[0])
+            _slider_max = int(span[1])
+            _default_cmp_year_range = (_slider_min, _slider_max)
+            _raw_cmp_year_range = st.session_state.get("compare_year_range")
+            _sanitized_cmp_year_range = sanitize_year_range(
+                _raw_cmp_year_range,
+                _slider_min,
+                _slider_max,
+                _default_cmp_year_range,
+            )
+            st.session_state["_dev_compare_year_range_raw"] = _raw_cmp_year_range
+            st.session_state["_dev_compare_year_range_sanitized"] = _sanitized_cmp_year_range
+            if _slider_min >= _slider_max:
+                year_range = (_slider_min, _slider_max)
+                st.session_state["compare_year_range"] = year_range
+                st.caption(
+                    f"Season year range fixed to {_slider_min} "
+                    "(selected player data has a single season year)."
+                )
+            else:
+                st.session_state["compare_year_range"] = _sanitized_cmp_year_range
+                year_range = st.slider(
+                    "Season Year Range",
+                    min_value=_slider_min,
+                    max_value=_slider_max,
+                    key="compare_year_range",
+                    on_change=compare_settings_changed,
+                    help="Filters the comparison chart, year-by-year table, trend intelligence, and significance tests.",
+                )
+        else:
+            validate_slider_range("compare_age_range", 16, 50, (16, 50))
+            age_range = st.slider(
+                "Player Age Range",
+                min_value=16,
+                max_value=50,
+                key="compare_age_range",
+                on_change=compare_settings_changed,
+                help="Filters the comparison chart, year-by-year table, trend intelligence, and significance tests by season age.",
+            )
+        return year_range, age_range
+
+    compare_year_range = (year_min, year_max)
+    if selected_ids_compare:
+        _cmp_years = pd.to_numeric(
+            yearly_df.loc[yearly_df["playerID"].isin(selected_ids_compare), "yearID"],
+            errors="coerce",
+        ).dropna()
+        if not _cmp_years.empty:
+            compare_year_range = (int(_cmp_years.min()), int(_cmp_years.max()))
+    _compare_axis_options = ["Season Year", "Player Age"]
+    validate_state_option("compare_x_axis_mode", _compare_axis_options, "Season Year")
+    compare_x_axis_mode = st.session_state.get("compare_x_axis_mode", "Season Year")
+    compare_age_range = (16, 50)
+    if selected_ids_compare:
+        # U2: the range is part of the question, so it sits above the answer (Chart options keeps the rest).
+        compare_year_range, compare_age_range = _render_compare_range_control(compare_year_range, compare_x_axis_mode)
+    compare_answer_slot = st.container()
+    u1.section_label(st, "Explore more · profiles, chart options, season tables, trend statistics and significance tests")
     try:
         from global_fantasy_settings_state import get_active_fantasy_team
         from fantasy_context_source import fantasy_context_using_caption
@@ -17848,8 +17158,8 @@ elif active_page == "Comparison Tool":
     except ImportError:
         comparison_action_team = st.session_state.get("room_your_team")
     comparison_teams = get_draft_room_team_options()
-    if comparison_teams and comparison_action_team not in comparison_teams:
-        st.caption(f"Note: **{comparison_action_team or '—'}** is not on the Draft Room board yet.")
+    if comparison_action_team and comparison_teams and comparison_action_team not in comparison_teams:
+        st.caption(f"Note: **{comparison_action_team}** is not on the Draft Room board yet.")
     elif not comparison_teams:
         st.caption("Draft/trade actions require a Draft Room table with fantasy teams.")
 
@@ -17924,14 +17234,6 @@ elif active_page == "Comparison Tool":
                     projection_lookup_name_col="fullName",
                 )
 
-    compare_year_range = (year_min, year_max)
-    if selected_ids_compare:
-        _cmp_years = pd.to_numeric(
-            yearly_df.loc[yearly_df["playerID"].isin(selected_ids_compare), "yearID"],
-            errors="coerce",
-        ).dropna()
-        if not _cmp_years.empty:
-            compare_year_range = (int(_cmp_years.min()), int(_cmp_years.max()))
     with st.expander("Chart options", expanded=False):
         _compare_stat_options = ["R", "HR", "RBI", "SB", "H", "2B", "3B", "AB", "BA", "OBP", "SLG", "OPS", "BB"]
         validate_state_option("compare_stat", _compare_stat_options, "R")
@@ -17941,8 +17243,6 @@ elif active_page == "Comparison Tool":
             key="compare_stat",
             on_change=compare_settings_changed,
         )
-        _compare_axis_options = ["Season Year", "Player Age"]
-        validate_state_option("compare_x_axis_mode", _compare_axis_options, "Season Year")
         compare_x_axis_mode = st.radio(
             "Comparison X-Axis",
             _compare_axis_options,
@@ -17950,49 +17250,8 @@ elif active_page == "Comparison Tool":
             key="compare_x_axis_mode",
             on_change=compare_settings_changed,
         )
-        compare_age_range = (16, 50)
-        if compare_x_axis_mode == "Season Year":
-            from year_range_state import sanitize_year_range
-
-            _slider_min = int(compare_year_range[0])
-            _slider_max = int(compare_year_range[1])
-            _default_cmp_year_range = (_slider_min, _slider_max)
-            _raw_cmp_year_range = st.session_state.get("compare_year_range")
-            _sanitized_cmp_year_range = sanitize_year_range(
-                _raw_cmp_year_range,
-                _slider_min,
-                _slider_max,
-                _default_cmp_year_range,
-            )
-            st.session_state["_dev_compare_year_range_raw"] = _raw_cmp_year_range
-            st.session_state["_dev_compare_year_range_sanitized"] = _sanitized_cmp_year_range
-            if _slider_min >= _slider_max:
-                compare_year_range = (_slider_min, _slider_max)
-                st.session_state["compare_year_range"] = compare_year_range
-                st.caption(
-                    f"Season year range fixed to {_slider_min} "
-                    "(selected player data has a single season year)."
-                )
-            else:
-                st.session_state["compare_year_range"] = _sanitized_cmp_year_range
-                compare_year_range = st.slider(
-                    "Season Year Range",
-                    min_value=_slider_min,
-                    max_value=_slider_max,
-                    key="compare_year_range",
-                    on_change=compare_settings_changed,
-                    help="Filters the comparison chart, year-by-year table, trend intelligence, and significance tests.",
-                )
-        else:
-            validate_slider_range("compare_age_range", 16, 50, (16, 50))
-            compare_age_range = st.slider(
-                "Player Age Range",
-                min_value=16,
-                max_value=50,
-                key="compare_age_range",
-                on_change=compare_settings_changed,
-                help="Filters the comparison chart, year-by-year table, trend intelligence, and significance tests by season age.",
-            )
+        if not selected_ids_compare:
+            compare_year_range, compare_age_range = _render_compare_range_control(compare_year_range, compare_x_axis_mode)
         _compare_mode_options = ["Actual Values", "Smoothed Moving Average"]
         validate_state_option("compare_trend_mode", _compare_mode_options, "Actual Values")
         compare_trend_mode = st.radio(
@@ -18051,6 +17310,8 @@ elif active_page == "Comparison Tool":
         career_compare = compare.groupby(["fullName"], as_index=False)[["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"]].sum()
         career_compare = add_rate_stats(career_compare)
         career_compare = safe_round_rate_stats(career_compare)
+        with compare_answer_slot:
+            _render_u2_comparison_answer(compare, career_compare, selected_ids_compare, compare_x_axis_mode, compare_year_range, compare_age_range)
         career_compare_display = career_compare[["fullName", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BA", "OBP", "SLG", "OPS"]].sort_values("HR", ascending=False).rename(columns={"fullName": "Player"})
         career_compare_table = format_display_table(clean_ui_columns(career_compare_display), count_cols=["R", "AB", "H", "2B", "3B", "HR", "RBI", "SB"], rate_cols=["BA", "OBP", "SLG", "OPS"])
         render_output_table(career_compare_table, key="comparison_career", file_name="comparison_career_totals.csv", pin_columns=("Player",))
@@ -18186,6 +17447,12 @@ elif active_page == "Comparison Tool":
             )
 
 
+    else:
+        with compare_answer_slot:
+            u1.answer_card(st, "Pick two players to compare",
+                           "Choose two or three players in the box above to see who leads in HR, RBI, SB, OBP and OPS over the same seasons.",
+                           kicker="Compare Players")
+
     st.divider()
     if not pp.skip_heavy_work(st):
       with st.expander("Advanced: Statistical significance test", expanded=False):
@@ -18210,6 +17477,11 @@ elif active_page == "Comparison Tool":
         )
         st.markdown(f"**Comparison mode:** {_sig_axis_mode}")
         st.caption(_sig_sync_caption)
+        if len(selected_labels_compare) < 2:
+            st.info(
+                "Pick two different players — in **Select up to 3 players** above, or as Player A "
+                "and Player B below — to test whether their stats differ."
+            )
         with mobile_wrap_row(st, "comparison-sig-players"):
             sig_col1, sig_col2 = st.columns(2)
         clean_label_map_sig = clean_label_map_compare
@@ -18323,7 +17595,9 @@ elif active_page == "Comparison Tool":
         )
         alpha = st.selectbox("Significance Level", [0.10, 0.05, 0.01], index=1, key="sig_alpha")
 
-        if sig_player_a_label and sig_player_b_label and sig_stats:
+        if pid_a_preview == pid_b_preview:
+            st.info("Player A and Player B are the same player. Choose a different Player B to run the test.")
+        elif sig_player_a_label and sig_player_b_label and sig_stats:
             pid_a = clean_label_map_sig[sig_player_a_label]
             pid_b = clean_label_map_sig[sig_player_b_label]
             st.caption("Actions for significance-test players")
@@ -18532,7 +17806,9 @@ elif active_page == "Trend Value":
         prepare_canonical_scoring_context(st.session_state, active_page=active_page)
     except ImportError:
         pass
-    render_section_header("🔥 Trend Value", "Analyze trend direction, volatility, consistency, breakout momentum, decline risk, and fantasy relevance over recent seasons.")
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "🔥 Trend Value", "Who is rising or falling in a stat over recent seasons.")
     try:
         from baseball_event_trace import render_trend_value_deploy_banner
 
@@ -18547,6 +17823,9 @@ elif active_page == "Trend Value":
     except ImportError:
         pass
     apply_pending_page_transfer(active_page)
+    if st.session_state.get("pending_trend_player"):
+        # A player sent here from another page leads the answer (prepare_trend_value_page consumes the flag).
+        st.session_state["_u2_trend_focus"] = str(st.session_state["pending_trend_player"])
     try:
         from trend_state import prepare_trend_top_filters
 
@@ -18554,9 +17833,18 @@ elif active_page == "Trend Value":
     except Exception:
         pass
     _trend_lag_options = [3, 4, 5]
+    _trend_sort_options = ["R Δ", "H Δ", "2B Δ", "3B Δ", "HR Δ", "RBI Δ", "SB Δ", "BB Δ", "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ"]
     with mobile_wrap_row(st, "trend-top-filters"):
-        c1, c2, c3 = st.columns(3)
+        c1, c2 = st.columns(2)
     with c1:
+        validate_state_option("trend_sort_col", _trend_sort_options, "OPS Δ")
+        sort_col = st.selectbox(
+            "Sort By Trend Stat",
+            _trend_sort_options,
+            key="trend_sort_col",
+            on_change=trend_settings_changed,
+        )
+    with c2:
         validate_state_option("trend_lag", _trend_lag_options, 3)
         lag_trend = st.selectbox(
             "Trend Window (Years)",
@@ -18564,6 +17852,10 @@ elif active_page == "Trend Value":
             key="trend_lag",
             on_change=trend_settings_changed,
         )
+    trend_answer_slot = st.container()
+    u1.section_label(st, "Explore more · minimum games, positions, draft sync, the full trend table and player charts")
+    with mobile_wrap_row(st, "trend-explore-filters"):
+        c2, c3 = st.columns(2)
     with c2:
         validate_number_state("trend_min_g", 50, min_value=0, max_value=800)
         min_g_trend = st.number_input(
@@ -18700,18 +17992,12 @@ elif active_page == "Trend Value":
     ].copy()
     trend_display.columns = ["Player", "Position", "Bats", "R Δ", "H Δ", "2B Δ", "3B Δ", "HR Δ", "RBI Δ", "SB Δ", "BB Δ", "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ"]
 
-    _trend_sort_options = ["R Δ", "H Δ", "2B Δ", "3B Δ", "HR Δ", "RBI Δ", "SB Δ", "BB Δ", "BA Δ", "OBP Δ", "SLG Δ", "OPS Δ"]
-    validate_state_option("trend_sort_col", _trend_sort_options, "OPS Δ")
-    sort_col = st.selectbox(
-        "Sort By Trend Stat",
-        _trend_sort_options,
-        key="trend_sort_col",
-        on_change=trend_settings_changed,
-    )
     trend_label_to_column = {"R Δ": "R_trend", "H Δ": "H_trend", "2B Δ": "2B_trend", "3B Δ": "3B_trend", "HR Δ": "HR_trend", "RBI Δ": "RBI_trend", "SB Δ": "SB_trend", "BB Δ": "BB_trend", "BA Δ": "BA_trend", "OBP Δ": "OBP_trend", "SLG Δ": "SLG_trend", "OPS Δ": "OPS_trend"}
     selected_trend_col = trend_label_to_column[sort_col]
     selected_trend_name = sort_col.replace(" Δ", "")
     selected_values = pd.to_numeric(trend_value_df[selected_trend_col], errors="coerce")
+    with trend_answer_slot:
+        _render_u2_trend_answer(trend_value_df, recent_data_trend, selected_trend_name, recent_years_trend)
 
     c3m, c4m, c5m = st.columns(3)
     if selected_trend_name in RATE_STATS:
@@ -18738,7 +18024,8 @@ elif active_page == "Trend Value":
     pos_note = f" · **Position: {_trend_pos_label}**" if _trend_pos_label != "All positions" else ""
     st.caption(
         f"Top 250 rows{pos_note} · **Position** uses fantasy eligibility (OF = LF/CF/RF, DH/UTIL = DH or utility bats) · "
-        "**Green** = improving · **Red** = declining. Export includes all filtered rows."
+        "**Green** = improving · **Red** = declining. Export includes all filtered rows. "
+        "Rate-stat trends (BA, OBP, SLG, OPS) weight seasons by playing time so small samples have less influence."
     )
     trend_heat_cols = [c for c in TREND_COUNT_COLS + TREND_RATE_COLS if c in trend_sorted.columns]
     trend_sorted_display = trend_sorted.head(250).copy()
@@ -19289,10 +18576,9 @@ elif active_page == "Fantasy Sleepers & Busts":
     except ImportError:
         pass
 
-    render_section_header(
-        "💎 Fantasy Sleepers & Busts",
-        "Compare projections against FantasyPros rankings and ADP to find market sleepers and bust risks."
-    )
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "💎 Sleepers & Busts", "Where our model and the draft market disagree, in both directions.")
     render_page_guide(active_page)
     try:
         from fantasy_context_ui import render_research_sync_badge
@@ -19314,16 +18600,10 @@ elif active_page == "Fantasy Sleepers & Busts":
             "FantasyPros_2026_Hitter_MLB_ADP_Rankings.csv to the same folder/repository as streamlit_app.py."
         )
 
-    with st.expander("Column glossary", expanded=False):
-        st.markdown(
-            "**Fantasy Edge** = Market Rank − Model Rank (positive = sleeper, negative = bust risk). "
-            "**Player Grade** = projection score; **Current Production** = recent actual stats."
-        )
-
     _fantasy_window_options = [3, 4, 5]
     _fantasy_format_options = ["5x5 Roto", "Points League"]
     with mobile_wrap_row(st, "sleepers-top-filters"):
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2 = st.columns(2)
     with c1:
         validate_state_option("fantasy_market_window", _fantasy_window_options, 3)
         fantasy_window = st.selectbox("Projection Window (Years)", _fantasy_window_options, key="fantasy_market_window", on_change=fantasy_filter_changed)
@@ -19338,6 +18618,15 @@ elif active_page == "Fantasy Sleepers & Busts":
             fantasy_filter_changed()
             force_save_baseball_state(st, reason="global_settings_changed")
         fantasy_format = st.selectbox("Fantasy Format", _fantasy_format_options, key="fantasy_market_format", on_change=_fantasy_market_format_changed)
+    sleepers_answer_slot = st.container()
+    u1.section_label(st, "Explore more · glossary, minimums, scoring, filters, the edge map and full tables")
+    with st.expander("Column glossary", expanded=False):
+        st.markdown(
+            "**Fantasy Edge** = Market Rank − Model Rank (positive = sleeper, negative = bust risk). "
+            "**Player Grade** = projection score; **Current Production** = recent actual stats."
+        )
+    with mobile_wrap_row(st, "sleepers-explore-minimums"):
+        c3, c4 = st.columns(2)
     with c3:
         validate_number_state("fantasy_market_min_g", 50, min_value=0, max_value=800)
         fantasy_min_g = st.number_input(
@@ -19811,6 +19100,9 @@ elif active_page == "Fantasy Sleepers & Busts":
                 pass
 
     if fantasy_df.empty:
+        with sleepers_answer_slot:
+            u1.answer_card(st, "No players match these filters",
+                           "Lower Minimum Games / AB or loosen the rank cutoffs under Explore more.", tone="warn")
         st.warning("No players met the fantasy filters. Try lowering minimum AB/G, expanding age/position filters, or loosening the sleeper/bust relevance filters.")
     else:
         top_sleeper = fantasy_df.sort_values("Fantasy Edge", ascending=False).iloc[0]
@@ -20040,6 +19332,9 @@ elif active_page == "Fantasy Sleepers & Busts":
         busts = fantasy_output_pool.sort_values("Fantasy Edge", ascending=True).head(fantasy_top_n).copy()
         sleepers["Reason"] = sleepers.apply(lambda r: make_fantasy_market_reason(r, "sleeper"), axis=1)
         busts["Reason"] = busts.apply(lambda r: make_fantasy_market_reason(r, "bust"), axis=1)
+        with sleepers_answer_slot:
+            _render_u2_sleeper_answer(sleepers, busts, matched=int(fantasy_df["Market Rank"].notna().sum()) if "Market Rank" in fantasy_df.columns else 0,
+                                      fantasy_format=str(fantasy_format))
 
         display_cols = [
             "fullName", "Team", "Primary Position", "Age", "Market Rank", "Model Rank", "Fantasy Edge",
@@ -20217,12 +19512,13 @@ elif active_page == "Draft Assistant Simulator":
             "Rankings driven by team needs, positional scarcity, market value, and ML-enhanced projections.",
         )
     pdemo.render_draft_demo_button(st, active_page)
-    render_section_header(
-        "🧩 Draft Assistant Simulator",
-        "Decision engine: next-pick rankings, team needs, scarcity, and plain-language explanations—fed by your Draft Room board.",
-        compact=True,
-    )
+    import draft_tools
+
+    render_section_header("🧩 Draft Assistant Simulator", draft_tools.purpose(active_page), compact=True)
     render_page_guide(active_page)
+    draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
+    da_answer_slot = st.container()  # U4: filled once the recommendations are ranked
+    _da_answer_done = False
     try:
         from fantasy_context_ui import render_research_sync_badge
 
@@ -21109,6 +20405,18 @@ elif active_page == "Draft Assistant Simulator":
         best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
         best_fit = recs_ranked.head(1).copy() if not recs_ranked.empty else pd.DataFrame()
         featured_ids = collect_featured_player_ids(best_fit, best_value)
+        with da_answer_slot:
+            try:
+                _render_u4_draft_assistant_answer(
+                    best_fit, best_value, globals().get("draft_summary") or {}, globals().get("_gaps") or [],
+                    str(globals().get("assistant_my_team_name") or ""),
+                )
+            except Exception as _da_answer_exc:  # the summary must never take the page down
+                st.caption(f"Pick summary unavailable: {type(_da_answer_exc).__name__}")
+            import ui_hierarchy as _u1
+
+            _u1.section_label(st, "Explore more · settings, team needs, full recommendations, scarcity and roster heatmap")
+        _da_answer_done = True
         recs = recs_ranked.head(int(draft_top_n)).copy()
         recs = ensure_top_raw_value_in_recommendations(
             recs,
@@ -21519,6 +20827,12 @@ elif active_page == "Draft Assistant Simulator":
         maybe_flush_deferred_draft_assistant_autosave(st, st.session_state)
     except ImportError:
         pass
+    if not _da_answer_done:
+        import ui_hierarchy as _u1
+
+        with da_answer_slot:
+            _u1.answer_card(st, "No recommendations yet",
+                            "Rankings need market data and your draft settings. See the messages below.", tone="warn")
     _render_consolidated_page_diagnostics(active_page)
     _page_perf_end(active_page)
     save_page_state(active_page)
@@ -21528,12 +20842,12 @@ elif active_page == "Draft Assistant Simulator":
 elif active_page == "Draft Room Simulator":
     _maybe_render_account_pref_sync(active_page)
     _page_perf_start(active_page)
-    render_section_header(
-        "🧾 Draft Room Simulator",
-        "Live draft control center: enter picks, track rosters, attach model scores, view team lineups, and grade each roster after the draft.",
-        compact=True,
-    )
+    import draft_tools
+
+    render_section_header("🧾 Draft Room Simulator", draft_tools.purpose(active_page), compact=True)
     render_page_guide(active_page)
+    draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
+    room_answer_slot = st.container()  # U4: filled at the end, once the board is known
     apply_pending_page_transfer(active_page)
     _prepare_and_show_draft_shared_settings(
         active_page,
@@ -21566,20 +20880,34 @@ elif active_page == "Draft Room Simulator":
     render_shared_scoring_consistency_check(yearly_df, market_df, key_suffix="draft_room")
 
     try:
-        from draft_import_pipeline import render_draft_room_import_block, render_import_pending_banner
+        from draft_import_pipeline import (
+            ENTRY_DRAFT_ROOM,
+            draft_room_import_widget_key,
+            has_active_draft_import_upload,
+            render_draft_room_import_block,
+            render_import_pending_banner,
+        )
 
         render_import_pending_banner(st, st.session_state)
-        render_draft_room_import_block(
-            st,
-            st.session_state,
-            read_table_fn=read_uploaded_table_cached,
-            pool_fn=_draft_room_pool_for_import_validation,
-            remove_drafted_from_queue_fn=_auto_remove_drafted_from_queue,
-            render_preview_table_fn=lambda df, **kw: render_output_table(
-                clean_ui_columns(df),
-                **kw,
-            ),
+        # U4: the import sits in its own section above the tabs (never inside a tab, which
+        # resets on rerun). It opens while an upload is under review, or from Import Draft.
+        _import_pending = has_active_draft_import_upload(
+            st.session_state, entry_point=ENTRY_DRAFT_ROOM, widget_key=draft_room_import_widget_key(st.session_state)
         )
+        if _import_pending:
+            st.session_state.pop("_u4_draft_import_open", None)
+        with st.expander("Import existing draft", expanded=bool(_import_pending or st.session_state.get("_u4_draft_import_open"))):
+            render_draft_room_import_block(
+                st,
+                st.session_state,
+                read_table_fn=read_uploaded_table_cached,
+                pool_fn=_draft_room_pool_for_import_validation,
+                remove_drafted_from_queue_fn=_auto_remove_drafted_from_queue,
+                render_preview_table_fn=lambda df, **kw: render_output_table(
+                    clean_ui_columns(df),
+                    **kw,
+                ),
+            )
     except Exception as _import_block_exc:
         st.error(f"Draft import section failed to load: {_import_block_exc}")
 
@@ -21794,7 +21122,7 @@ elif active_page == "Draft Room Simulator":
     edited_draft = _session_draft_board_df()
 
     with dr_tab_board:
-        st.subheader("Live draft board")
+        st.subheader("Draft board")
         st.caption(
             "Use **Assign player to pick** below (searchable player list). "
             "Then click **Save Draft Board Now**. Live Draft Room picks sync here automatically."
@@ -22001,11 +21329,16 @@ elif active_page == "Draft Room Simulator":
                 record_manual_save_button_click(st.session_state)
 
             st.markdown("**Save draft board**")
+            st.caption(
+                "**Save Draft Board Now** keeps this working board (including an applied import) "
+                "through refreshes. Standings, Lineup and Waivers use a **Saved Draft**: add this board "
+                "with **Set Active Draft** on the *Rosters & grades* tab."
+            )
             save_clicked = st.button(
                 "Save Draft Board Now",
                 key=MANUAL_SAVE_BUTTON_KEY,
                 type="primary",
-                help="Write the current board to disk and cloud.",
+                help="Save the working board shown above. It does not add it to your Saved Draft Library.",
                 on_click=_on_manual_save_click,
             )
             if save_clicked:
@@ -22055,7 +21388,7 @@ elif active_page == "Draft Room Simulator":
                 "Removed drafted player(s) from Draft Queue: " + ", ".join(str(x) for x in removed_after_edit[:3])
             )
             st.rerun()
-        st.caption("Same board is used by **Fantasy Standings Tracker** when you score this league.")
+        st.caption("Same board is used by **League Standings** when you score this league.")
 
         _dr_pool_xfer = room_df.copy()
         if not _dr_pool_xfer.empty and "fullName" in _dr_pool_xfer.columns:
@@ -22271,6 +21604,18 @@ elif active_page == "Draft Room Simulator":
                     f"(compared with other teams in this draft room)."
                 )
 
+    with room_answer_slot:
+        try:
+            _render_u4_draft_room_answer(
+                _session_draft_board_df(), room_df=room_df, your_team=str(your_team or ""),
+                team_names=room_team_names, team_count=room_team_count, rounds=room_rounds,
+            )
+        except Exception as _room_answer_exc:  # the summary must never take the board down
+            st.caption(f"Draft summary unavailable: {type(_room_answer_exc).__name__}")
+        import ui_hierarchy as _u1
+
+        _u1.section_label(st, "Explore more · import, board, queue, rosters, grades and league setup")
+
     if developer_mode_enabled():
         try:
             from page_diagnostics import inline_diagnostics_enabled
@@ -22290,12 +21635,15 @@ elif active_page == "Draft Room Simulator":
 elif active_page == DRAFT_LAB_PAGE:
     _page_perf_start(active_page)
 
-    render_section_header(
-        "🧪 Draft Lab / Simulation",
-        "Four-team snake mock draft with Draft Assistant-style decisions, post-draft analysis, and exports.",
-        compact=True,
-    )
+    import draft_tools
+
+    render_section_header("🧪 Draft Lab / Simulation", draft_tools.purpose(active_page), compact=True)
     render_page_guide(active_page)
+    draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
+    lab_answer_slot = st.container()  # U4: the result first, then Run, then the model controls
+    lab_run_slot = st.container()
+    with lab_run_slot:
+        import ui_hierarchy as _u1_lab
     apply_pending_page_transfer(active_page)
     _prepare_and_show_draft_shared_settings(
         active_page,
@@ -22319,6 +21667,7 @@ elif active_page == DRAFT_LAB_PAGE:
             pass
     except ImportError:
         pass
+    _u1_lab.section_label(st, "Explore more · simulation settings, how the model works, full results and exports")
     st.markdown(
         """
         <div class="section-card">
@@ -22342,55 +21691,56 @@ elif active_page == DRAFT_LAB_PAGE:
         prepare_draft_lab_page_widgets(st.session_state)
     except ImportError:
         pass
-    with mobile_wrap_row(st, "draft-lab-top-filters"):
-        lc1, lc2, lc3, lc4 = st.columns(4)
-    with lc1:
-        def _draft_sim_setting_changed():
-            try:
-                from draft_lab_state import ensure_draft_lab_widget_keys
+    with st.expander("Simulation settings", expanded=not bool(st.session_state.get("draft_lab_results"))):
+        with mobile_wrap_row(st, "draft-lab-top-filters"):
+            lc1, lc2, lc3, lc4 = st.columns(4)
+        with lc1:
+            def _draft_sim_setting_changed():
+                try:
+                    from draft_lab_state import ensure_draft_lab_widget_keys
 
-                ensure_draft_lab_widget_keys(st.session_state)
-            except ImportError:
-                pass
-            try:
-                from shared_draft_context import on_draft_settings_changed
+                    ensure_draft_lab_widget_keys(st.session_state)
+                except ImportError:
+                    pass
+                try:
+                    from shared_draft_context import on_draft_settings_changed
 
-                on_draft_settings_changed(
-                    st.session_state,
-                    source_page=DRAFT_LAB_PAGE,
-                    lookback_key="draft_lab_window",
-                    style_key="draft_lab_projection_style",
-                    format_key="draft_lab_scoring_type",
-                )
-            except ImportError:
-                pass
-            save_page_state("Draft Lab / Simulation")
-            force_save_baseball_state(st, reason="draft_sim_settings_changed")
-            _record_settings_onchange("Draft Lab / Simulation", "_draft_sim_setting_changed", "draft_sim_settings_changed")
+                    on_draft_settings_changed(
+                        st.session_state,
+                        source_page=DRAFT_LAB_PAGE,
+                        lookback_key="draft_lab_window",
+                        style_key="draft_lab_projection_style",
+                        format_key="draft_lab_scoring_type",
+                    )
+                except ImportError:
+                    pass
+                save_page_state("Draft Lab / Simulation")
+                force_save_baseball_state(st, reason="draft_sim_settings_changed")
+                _record_settings_onchange("Draft Lab / Simulation", "_draft_sim_setting_changed", "draft_sim_settings_changed")
 
-        validate_state_option("draft_lab_window", _lab_window_options, 3)
-        lab_window = st.selectbox("Projection Window", _lab_window_options, key="draft_lab_window",
-                                  on_change=_draft_sim_setting_changed)
-    with lc2:
-        validate_state_option("draft_lab_scoring_type", _lab_format_options, "5x5 Roto")
-        lab_format = st.selectbox("Fantasy Format", _lab_format_options, key="draft_lab_scoring_type",
-                                  on_change=_draft_sim_setting_changed)
-    with lc3:
-        validate_state_option("draft_lab_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
-        lab_projection_style = st.selectbox("Projection Style", list(PROJECTION_STYLE_OPTIONS),
-                                            key="draft_lab_projection_style",
-                                            on_change=_draft_sim_setting_changed)
-    with lc4:
-        _lab_picks_default = int(st.session_state.get("draft_lab_picks_per_team") or 15)
-        validate_number_state("draft_lab_picks_per_team", _lab_picks_default, min_value=1, max_value=25)
-        lab_picks_per_team = st.number_input(
-            "Picks per Team",
-            min_value=1,
-            max_value=25,
-            step=1,
-            key="draft_lab_picks_per_team",
-            on_change=_draft_sim_setting_changed,
-        )
+            validate_state_option("draft_lab_window", _lab_window_options, 3)
+            lab_window = st.selectbox("Projection Window", _lab_window_options, key="draft_lab_window",
+                                      on_change=_draft_sim_setting_changed)
+        with lc2:
+            validate_state_option("draft_lab_scoring_type", _lab_format_options, "5x5 Roto")
+            lab_format = st.selectbox("Fantasy Format", _lab_format_options, key="draft_lab_scoring_type",
+                                      on_change=_draft_sim_setting_changed)
+        with lc3:
+            validate_state_option("draft_lab_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
+            lab_projection_style = st.selectbox("Projection Style", list(PROJECTION_STYLE_OPTIONS),
+                                                key="draft_lab_projection_style",
+                                                on_change=_draft_sim_setting_changed)
+        with lc4:
+            _lab_picks_default = int(st.session_state.get("draft_lab_picks_per_team") or 15)
+            validate_number_state("draft_lab_picks_per_team", _lab_picks_default, min_value=1, max_value=25)
+            lab_picks_per_team = st.number_input(
+                "Picks per Team",
+                min_value=1,
+                max_value=25,
+                step=1,
+                key="draft_lab_picks_per_team",
+                on_change=_draft_sim_setting_changed,
+            )
 
     with st.expander("How the Draft Model Works", expanded=False):
         st.markdown(
@@ -22419,7 +21769,8 @@ elif active_page == DRAFT_LAB_PAGE:
 
     render_shared_scoring_consistency_check(yearly_df, lab_market_df, key_suffix="draft_lab")
 
-    run_lab = st.button("Run 4-Team Draft Simulation", type="primary", key="run_draft_lab_simulation")
+    with lab_run_slot:
+        run_lab = st.button("Run 4-Team Draft Simulation", type="primary", key="run_draft_lab_simulation")
     if run_lab:
         try:
             from page_perf import perf_end, perf_timer
@@ -22542,7 +21893,10 @@ elif active_page == DRAFT_LAB_PAGE:
                 pass
 
     if is_dataframe_empty(lab_draft):
-        st.info("Click **Run 4-Team Draft Simulation** to generate the draft lab, or analyze a completed live draft from **Live Draft Room**.")
+        with lab_answer_slot:
+            _u1_lab.answer_card(st, "No simulation yet",
+                                "Run 4-Team Draft Simulation to see which draft strategy builds the strongest roster, "
+                                "or analyze a completed draft from Live Draft Room.", kicker="Draft Lab")
     else:
         rank_col = "Projected Team Rank"
         team_col = "Fantasy Team"
@@ -22555,24 +21909,12 @@ elif active_page == DRAFT_LAB_PAGE:
             picks_per_team = lab_handoff.get("picks_per_team")
             if picks_per_team is None:
                 picks_per_team = st.session_state.get("draft_lab_picks_per_team")
-            w1, w2, w3, w4, w5 = st.columns(5)
-            w1.metric("Projected Best Draft", winner[team_col])
-            if "Average Expected Fantasy Value" in sorted_summary.columns:
-                _avg_grade = pd.to_numeric(winner.get("Average Expected Fantasy Value"), errors="coerce")
-                if pd.notna(_avg_grade):
-                    _avg_display = float(_avg_grade) * 100.0 if float(_avg_grade) <= 1.5 else float(_avg_grade)
-                    w2.metric("Average Player Grade", fmt_score_2(_avg_display))
-                else:
-                    w2.metric("Average Player Grade", "—")
-            elif "Total Projected Fantasy Value" in sorted_summary.columns:
-                _team_score = pd.to_numeric(winner.get("Total Projected Fantasy Value"), errors="coerce")
-                if pd.notna(_team_score):
-                    w2.metric("Draft Lab Team Score", fmt_score_2(float(_team_score)))
-                else:
-                    w2.metric("Draft Lab Team Score", "—")
-            w3.metric("Total Picks", f"{len(lab_draft):,}")
-            w4.metric("Teams", str(team_count) if team_count is not None else "—")
-            w5.metric("Picks / Team", str(picks_per_team) if picks_per_team is not None else "—")
+            with lab_answer_slot:
+                try:
+                    _render_u4_draft_lab_answer(sorted_summary, lab_pick_analysis, total_picks=len(lab_draft),
+                                                from_live=lab_source == "Live Draft Room")
+                except Exception as _lab_answer_exc:  # the summary must never take the results down
+                    st.caption(f"Result summary unavailable: {type(_lab_answer_exc).__name__}")
         else:
             st.info("Run the draft simulation to generate team rankings.")
 
@@ -23337,12 +22679,12 @@ elif active_page == "Live Draft Room":
     except ImportError:
         _show_ldr_guide = True
     if _show_ldr_guide:
-        render_section_header(
-            "📡 Live Draft Room",
-            "Run a live snake draft with timers, auto-pick rules, and exports. Your board saves automatically as you draft.",
-            compact=True,
-        )
+        import draft_tools
+
+        render_section_header("📡 Live Draft Room", draft_tools.purpose(active_page), compact=True)
         render_page_guide(active_page)
+        # Intro only (no active draft): the room itself is unchanged.
+        draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
     else:
         # Active draft: keep a compact title only — Quick Guide pushes cards below the fold.
         with _ldr_m_hook("ldr-m-active-title"):
@@ -24240,7 +23582,7 @@ elif active_page == "Live Draft Room":
                         live_draft_setup_number_default(st.session_state, "live_draft_team_count", 2)
                     )
                     live_picks_per_team = int(
-                        live_draft_setup_number_default(st.session_state, "live_draft_picks_per_team", 4)
+                        live_draft_setup_number_default(st.session_state, "live_draft_picks_per_team", 14)
                     )
                 except ImportError:
                     def _num(key: str, default: int) -> int:
@@ -24254,7 +23596,7 @@ elif active_page == "Live Draft Room":
 
                     live_proj_window = _num("live_draft_proj_window", 3)
                     live_num_teams = _num("live_draft_team_count", 2)
-                    live_picks_per_team = _num("live_draft_picks_per_team", 4)
+                    live_picks_per_team = _num("live_draft_picks_per_team", 14)
                 live_league_name = str(st.session_state.get("live_draft_league_name") or "My Fantasy League")
                 default_teams = _live_draft_default_teams(live_num_teams)
                 team_names = [
@@ -24987,7 +24329,7 @@ elif active_page == "Live Draft Room":
                                 )
                             elif _arm_clock_now:
                                 st.session_state["_live_draft_start_feedback"] = (
-                                    f"Solo live draft started — you control all teams. "
+                                    f"Solo live draft started — you draft for your team; the other teams auto-pick. "
                                     f"Room ID **{new_room['draft_room_id']}**."
                                 )
                             else:
@@ -25676,11 +25018,11 @@ elif active_page == "Live Draft Room":
                     st.session_state, "live_draft_team_count", 2
                 )
                 _picks_default = live_draft_setup_number_default(
-                    st.session_state, "live_draft_picks_per_team", 4
+                    st.session_state, "live_draft_picks_per_team", 14
                 )
             except ImportError:
                 _team_default = 2
-                _picks_default = 4
+                _picks_default = 14
             ensure_number_state(
                 "live_draft_team_count",
                 _team_default,
@@ -26235,6 +25577,10 @@ elif active_page == "Live Draft Room":
             except ImportError:
                 _snap_is_solo = False
             _snap_status = str(_snap.get("room_status") or "").strip().lower()
+            # Natural completion ("complete") keeps the room, as Solo does, so Draft
+            # Complete renders. Popping it while the shared code stayed bound reloaded
+            # the room on the next run → pop → st.rerun() again: an endless loop on a
+            # bare "This shared draft has ended." page for host and guest.
             if (
                 not _snap_is_solo
                 and _snap.get("draft_complete")
@@ -26243,8 +25589,6 @@ elif active_page == "Live Draft Room":
                     "ended",
                     "closed",
                     "deleted",
-                    "complete",
-                    "completed",
                 )
             ):
                 try:
@@ -27179,6 +26523,7 @@ elif active_page == "Live Draft Room":
         )
         if not _solo_clock_latched:
             st.session_state.pop("_live_draft_solo_early_timer_painted", None)
+        st.session_state.pop("_live_draft_solo_early_paused_banner", None)
         _solo_recs_here = False
         try:
             from live_draft_solo_timer import is_solo_live_draft as _is_solo_fn_early
@@ -27369,6 +26714,27 @@ elif active_page == "Live Draft Room":
                 except Exception:
                     st.session_state.pop("_live_draft_solo_early_timer_painted", None)
                     _sp_mark("timer_banner_exc")
+            elif (
+                isinstance(slot, dict)
+                and not bool(_draft_is_complete)
+                and str(room.get("status") or "") == "paused"
+            ):
+                # Paused: keep the On the Clock card at the top (frozen time + paused
+                # note) instead of letting it fall to the board column below the cards.
+                # No timer sync — a paused room keeps its stored remaining time.
+                try:
+                    from live_draft_on_clock_ui import render_live_on_clock_banner
+
+                    render_live_on_clock_banner(
+                        st,
+                        st.session_state,
+                        room,
+                        slot,
+                        next_pick=live_draft_next_pick_for_team(room, user_team),
+                    )
+                    st.session_state["_live_draft_solo_early_paused_banner"] = True
+                except Exception:
+                    st.session_state.pop("_live_draft_solo_early_paused_banner", None)
             # While the Solo server clock owns the page, never run pool ensure on this
             # ScriptRun. Streamlit cannot tick ``st.fragment(run_every=…)`` until the
             # parent ScriptRun finishes — ``ensure_solo_player_pool_for_recs`` was
@@ -27491,15 +26857,9 @@ elif active_page == "Live Draft Room":
                 except Exception:
                     st.session_state.pop("_live_draft_team_needs_rendered", None)
                     _sp_mark("team_needs_exc")
-                # Guarantee Manual Draft copy is in the first paint HTML before heavy cards.
-                try:
-                    st.subheader("Manual Draft")
-                    st.caption(
-                        "Browse any available legal player — you are not limited to the recommendation cards."
-                    )
-                    st.session_state["_live_draft_manual_heading_early"] = True
-                except Exception:
-                    pass
+                # No early "Manual Draft" heading here: it painted an orphan heading with
+                # no controls above Recommended Players. The panel below owns its heading.
+                st.session_state["_live_draft_manual_heading_early"] = True
                 st.markdown("##### Recommended Players")
                 st.session_state.pop("_solo_minimal_clock_view", None)
                 # Keep heavy mid/late-page scoring on the cache path while the
@@ -27508,10 +26868,31 @@ elif active_page == "Live Draft Room":
                     st.session_state["_solo_recs_deferred_for_timer"] = True
                 else:
                     st.session_state.pop("_solo_recs_deferred_for_timer", None)
+                # Name the team the cards are scored for: they follow the team on the
+                # clock, which in Solo is often a CPU team rather than the user's team.
+                _rec_for_team = ""
+                try:
+                    from live_draft_recommendation_context import resolve_team_on_clock
+
+                    _rec_for_team = str(resolve_team_on_clock(room)[1] or "").strip()
+                except Exception:
+                    _rec_for_team = ""
+                if _rec_for_team and str(user_team or "").strip() and _rec_for_team != str(user_team).strip():
+                    st.caption(
+                        f"**{_rec_for_team}** is on the clock — these are {_rec_for_team}'s best options "
+                        "(what Auto Pick weighs). Add players to your Queue for your next pick."
+                    )
+                else:
+                    st.caption(
+                        "Compare the best options for your current pick based on player quality, "
+                        "your roster needs, and positional scarcity. Draft a player now or save "
+                        "one to your Queue for later."
+                        + (f" Scored for **{_rec_for_team}**." if _rec_for_team else "")
+                    )
                 st.caption(
-                    "Compare the best options for your current pick based on player quality, "
-                    "your roster needs, and positional scarcity. Draft a player now or save "
-                    "one to your Queue for later."
+                    "**Decision Score** (higher is better) ranks the cards: mostly Player Grade and "
+                    "model rank, adjusted for roster need, positional scarcity, and the risk the "
+                    "player is gone before the next pick. It is relative to this pick's pool."
                 )
                 if st.session_state.get("_solo_needs_projection_player_grades") and not _cache_only_recs:
                     st.caption(
@@ -27595,9 +26976,6 @@ elif active_page == "Live Draft Room":
                     # Heading owned by render_live_manual_draft_panel (avoid duplicate "Manual Draft").
                     # Phone CSS hook (M3): the primary draft action is raised under the clock.
                     with _ldr_m_hook("ldr-m-action-early"):
-                        st.caption(
-                            "Browse any available legal player — you are not limited to the recommendation cards."
-                        )
                         if render_live_manual_draft_panel(
                             st,
                             st.session_state,
@@ -27715,13 +27093,25 @@ elif active_page == "Live Draft Room":
                                             "MLB Team",
                                             "Decision Score",
                                             "Player Grade",
+                                            "Draft Fit Score",
+                                            "Position Scarcity Score",
                                             "Model Rank",
                                             "Market Rank",
                                         )
                                         if c in _frame.columns
                                     ]
+                                    # Same names and 0–100 scale as the cards and the
+                                    # post-Pick-1 tables (this path showed raw 0–1 and
+                                    # a "fullName" header).
+                                    _disp = (_frame[_show] if _show else _frame.head(12)).rename(
+                                        columns={"Primary Position": "Position"}
+                                    )
+                                    if "Team" in _disp.columns and "MLB Team" in _disp.columns:
+                                        _disp = _disp.drop(columns=["Team"])
+                                    elif "Team" in _disp.columns:
+                                        _disp = _disp.rename(columns={"Team": "MLB Team"})
                                     st.dataframe(
-                                        _frame[_show] if _show else _frame.head(12),
+                                        format_fantasy_table(clean_ui_columns(_disp)),
                                         hide_index=True,
                                         use_container_width=True,
                                     )
@@ -28071,7 +27461,9 @@ elif active_page == "Live Draft Room":
 
                 with ldr_step(st.session_state, "timer_note_page_load", st=st):
                     note_live_draft_page_load(st.session_state, room)
-                st.session_state["_live_draft_page_owns_expired"] = True
+                # A timestamp, so a run stopped before clearing it cannot silence the
+                # expired-pick recovery tick for good.
+                st.session_state["_live_draft_page_owns_expired"] = time.time()
                 with ldr_step(st.session_state, "timer_handle_expired_pick", st=st):
                     _expired_result = handle_expired_pick_on_page(
                         st.session_state, room, source="page_autopick"
@@ -28422,7 +27814,9 @@ elif active_page == "Live Draft Room":
                         from live_draft_on_clock_ui import render_live_on_clock_banner
 
                         # Avoid a second Solo timer when early viewport already painted one.
-                        if not bool(st.session_state.get("_live_draft_solo_early_timer_painted")):
+                        if not bool(
+                            st.session_state.get("_live_draft_solo_early_timer_painted")
+                        ) and not bool(st.session_state.get("_live_draft_solo_early_paused_banner")):
                             try:
                                 from live_draft_timer_ui import sync_live_draft_timer_state
 
@@ -28874,6 +28268,17 @@ elif active_page == "Live Draft Room":
                                 )
                                 if not _solo_early_recs_done:
                                     st.markdown("##### Recommendations")
+                                    # Name the team these cards were scored for (``_rec_team``, the team
+                                    # on the clock — as in Solo's early view), so a Shared viewer waiting
+                                    # on another team does not read them as scored for their own roster.
+                                    _scored_team = str(_rec_team or "").strip()
+                                    if _scored_team and _scored_team != str(user_team or "").strip():
+                                        st.caption(
+                                            f"**{_scored_team}** is on the clock — these are {_scored_team}'s "
+                                            "best options. Add players to your Queue for your next pick."
+                                        )
+                                    elif _scored_team:
+                                        st.caption(f"Scored for **{_scored_team}** — your pick.")
                                 _rec_err = str(st.session_state.pop("_live_draft_recommendations_error", "") or "").strip()
                                 _rec_diag = dict(st.session_state.get("_recommendation_schema_diag") or {})
                                 if _rec_err or str(_rec_diag.get("status") or "") in (
@@ -29535,7 +28940,6 @@ elif active_page == "Live Draft Room":
 
         totals_df = live_draft_team_totals(room, session=st.session_state)
         if not totals_df.empty:
-            st.markdown('<div class="live-draft-totals-panel">', unsafe_allow_html=True)
             st.subheader("Team Projected Totals")
             st.caption("Canonical projected category totals by fantasy team — updates after each pick.")
             totals_show = [
@@ -30095,12 +29499,11 @@ elif active_page == "Saved Draft Library":
 
     _page_perf_start(active_page)
     _maybe_render_account_pref_sync(active_page)
-    render_section_header(
-        "📁 Saved Draft Library",
-        "Browse and manage saved draft teams from Live Draft Room and Draft Room Simulator.",
-        compact=True,
-    )
+    import draft_tools
+
+    render_section_header("📁 Saved Draft Library", draft_tools.purpose(active_page), compact=True)
     render_page_guide(active_page)
+    draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
     apply_pending_page_transfer(active_page)
     render_saved_draft_library_page(
         st,
@@ -30134,16 +29537,35 @@ elif active_page == "Fantasy Standings Tracker":
     except ImportError:
         pass
 
-    render_section_header(
-        "📊 Fantasy Standings Tracker",
-        "Upload current-season player stats and score all drafted fantasy teams by roto or points-league rules."
-    )
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "📊 League Standings", "Where your team stands, what's working, and what to do next.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     _prepare_and_show_draft_shared_settings(
         active_page,
         format_key="standings_scoring_format",
     )
+    # U1: the official answer first (place, gap, strengths, closest gains, this week, next steps).
+    # It needs only the season ledger, not current MLB stats.
+    try:
+        from fantasy_league_context import get_active_league_context as _get_ctx_for_answer
+        from league_home_ui import render_league_answer
+
+        _answer_ctx = _get_ctx_for_answer(st.session_state)
+        render_league_answer(st, st.session_state, _answer_ctx, navigate_to_page)
+    except ImportError:
+        _answer_ctx = None
+    u1.section_label(st, "Explore more · full standings, completed weeks and current-roster analysis")
+    _uses_season_ledger_early = False
+    if _answer_ctx is not None:
+        try:
+            from fantasy_season_results_ui import render_official_standings
+
+            # Official standings detail: the sum of finalized scoring periods.
+            _uses_season_ledger_early = render_official_standings(st, _answer_ctx)
+        except ImportError:
+            pass
 
     try:
         from draft_archive_ui import render_active_saved_draft_chip
@@ -30162,6 +29584,14 @@ elif active_page == "Fantasy Standings Tracker":
         except Exception:
             pass
 
+    from fantasy_standings_snapshot import SNAPSHOT_LABEL as _SNAPSHOT_LABEL
+
+    st.subheader(_SNAPSHOT_LABEL)
+    st.caption(
+        "Season-to-date stats of the players on each roster today, ranked like roto. Useful for "
+        "analysis, but it is not the league standings: a player counts for whoever owns him now, "
+        "whenever he played."
+    )
     _standings_format_options = ["5x5 Roto", "Points League"]
     validate_state_option("standings_scoring_format", _standings_format_options, "5x5 Roto")
     def _standings_format_changed():
@@ -30529,6 +29959,9 @@ elif active_page == "Fantasy Standings Tracker":
         elif active_archive and roster_stats.empty and not _used_standings_cache:
             st.warning("Loaded saved draft has no roster players to score.")
 
+        # Official standings were rendered above (U1); only remember whether this league uses them.
+        _uses_season_ledger = bool(_uses_season_ledger_early)
+
         if not roster_stats.empty:
             _show_multi_team_rosters = _use_full_league_context or not active_archive
             if _show_multi_team_rosters:
@@ -30543,12 +29976,12 @@ elif active_page == "Fantasy Standings Tracker":
                 file_name="fantasy_rosters_current_stats.csv",
                 display_rows=300,
             )
-            st.subheader("Live Fantasy Standings")
+            st.markdown(f"**{_SNAPSHOT_LABEL}: ranking table**")
             try:
                 from fantasy_weekly_hitter_scoring import cumulative_standings_rows
 
                 _wk_cum_rows = []
-                if active_league_context is not None:
+                if active_league_context is not None and not _uses_season_ledger:
                     _wk_cum_rows = cumulative_standings_rows(active_league_context)
                 if _wk_cum_rows:
                     st.subheader("Weekly Hitter Standings (finalized weeks)")
@@ -30697,13 +30130,13 @@ elif active_page == "Fantasy Lineup Assistant":
             _lineup_team_hdr = get_active_fantasy_team(st.session_state)
         except ImportError:
             _lineup_team_hdr = str(st.session_state.get("lineup_team") or st.session_state.get("room_your_team") or "").strip()
-    if _lineup_team_hdr:
-        _lineup_title = f"Fantasy Lineup Assistant — {_lineup_team_hdr}"
-    else:
-        _lineup_title = "Fantasy Lineup Assistant / Start-Sit AI"
-    render_section_header(
-        _lineup_title,
-        "Set your weekly starting lineup, then optionally review Start-Sit recommendations.",
+    import ui_hierarchy as u1
+
+    # U3: one plain title (sidebar label "Lineup & Trades"; the page key is unchanged).
+    u1.page_head(
+        st,
+        "🧠 Lineup & Trades",
+        (f"{_lineup_team_hdr}: " if _lineup_team_hdr else "") + "set this week's starters, or build and check a trade.",
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
@@ -30714,23 +30147,6 @@ elif active_page == "Fantasy Lineup Assistant":
     _xfer_cats = st.session_state.pop("lineup_context_category_needs", None)
     if _xfer_cats:
         st.info(f"Category focus from Standings: **{', '.join(_xfer_cats)}**")
-
-    try:
-        from draft_archive_ui import render_active_saved_draft_chip
-
-        render_active_saved_draft_chip(
-            st,
-            st.session_state,
-            key_prefix="lineup_archive",
-            page_label_fn=page_option_label,
-        )
-    except (ImportError, TypeError):
-        try:
-            from draft_archive_ui import render_active_draft_summary
-
-            render_active_draft_summary(st, st.session_state)
-        except Exception:
-            pass
 
     roster_stats = st.session_state.get("fantasy_current_roster_stats", pd.DataFrame()).copy()
     try:
@@ -30831,7 +30247,7 @@ elif active_page == "Fantasy Lineup Assistant":
             st.warning(
                 "**Roster stats not loaded yet this session.**\n\n"
                 "To use the Lineup Assistant:\n"
-                "1. Go to **Fantasy Standings Tracker** and load stats (MLB API or CSV upload).\n"
+                "1. Go to **League Standings** and load stats (MLB API or CSV upload).\n"
                 "2. Return here — team rosters and scores will appear automatically.\n\n"
                 + _draft_hint
             )
@@ -30966,6 +30382,7 @@ elif active_page == "Fantasy Lineup Assistant":
                 safe_collection_len=safe_collection_len,
                 lineup_default_hitting_slots=LINEUP_DEFAULT_HITTING_SLOTS,
                 resolve_lineup_scoring_format=resolve_lineup_scoring_format,
+                nav_callback=_u1_nav_cb,
             )
             render_lineup_management_page(
                 st,
@@ -30975,6 +30392,23 @@ elif active_page == "Fantasy Lineup Assistant":
                 lineup_teams=lineup_teams,
                 deps=_lineup_deps,
             )
+    # U1/U3: the active-league card (switch league, open saved drafts) sits below the page content.
+    try:
+        from draft_archive_ui import render_active_saved_draft_chip
+
+        render_active_saved_draft_chip(
+            st,
+            st.session_state,
+            key_prefix="lineup_archive",
+            page_label_fn=page_option_label,
+        )
+    except (ImportError, TypeError):
+        try:
+            from draft_archive_ui import render_active_draft_summary
+
+            render_active_draft_summary(st, st.session_state)
+        except Exception:
+            pass
     save_page_state(active_page)
     flush_fantasy_section_edits(st.session_state, "lineup", st, reason="fantasy_lineup_page_save")
     _render_consolidated_page_diagnostics(active_page)
@@ -30989,28 +30423,11 @@ elif active_page == "Waiver Wire / Add-Drop Center":
 
     _page_perf_start(active_page)
     _maybe_render_account_pref_sync(active_page)
-    render_section_header(
-        "🔄 Waiver Wire / Add-Drop Center",
-        "Improve your active fantasy team using current-season category performance, waiver pool adds, and paired add/drop planning.",
-    )
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "🔄 Waiver Wire", "Who to pick up for your team, and why.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
-    try:
-        from draft_archive_ui import render_active_saved_draft_chip
-
-        render_active_saved_draft_chip(
-            st,
-            st.session_state,
-            key_prefix="waiver_archive",
-            page_label_fn=page_option_label,
-        )
-    except (ImportError, TypeError):
-        try:
-            from draft_archive_ui import render_active_draft_summary
-
-            render_active_draft_summary(st, st.session_state)
-        except Exception:
-            pass
     _waiver_hitter_stats = st.session_state.get("_fantasy_current_hitter_stats", pd.DataFrame())
     try:
         from fantasy_league_context import get_active_league_context
@@ -31033,7 +30450,25 @@ elif active_page == "Waiver Wire / Add-Drop Center":
         league_roster_stats=_waiver_roster_stats,
         normalize_name_fn=normalize_player_name_for_merge,
         page_label_fn=page_option_label,
+        player_action_cb=_u1_player_action_cb,
     )
+    # U1: the active-league card (switch league, open saved drafts) sits below the page content.
+    try:
+        from draft_archive_ui import render_active_saved_draft_chip
+
+        render_active_saved_draft_chip(
+            st,
+            st.session_state,
+            key_prefix="waiver_archive",
+            page_label_fn=page_option_label,
+        )
+    except (ImportError, TypeError):
+        try:
+            from draft_archive_ui import render_active_draft_summary
+
+            render_active_draft_summary(st, st.session_state)
+        except Exception:
+            pass
     save_page_state(active_page)
     _render_consolidated_page_diagnostics(active_page)
     _page_perf_end(active_page)
@@ -31057,7 +30492,9 @@ elif active_page == "Valuation":
     prepare_valuation_page(st.session_state)
     prepare_valuation_filters(st.session_state)
 
-    render_section_header("💰 Valuation", "Blend recent production and trend momentum into a valuation score.")
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "💰 Valuation", "One score per hitter: recent production blended with trend, then ranked.")
     render_page_guide(active_page)
     try:
         from fantasy_context_ui import render_research_sync_badge
@@ -31069,19 +30506,10 @@ elif active_page == "Valuation":
 
     _value_lag_options = [3, 4, 5]
     with mobile_wrap_row(st, "valuation-top-filters"):
-        c1, c2, c3 = st.columns(3)
+        c1, c3 = st.columns(2)
     with c1:
         validate_state_option("value_lag", _value_lag_options, 3)
         lag_value = st.selectbox("Valuation Window (Years)", _value_lag_options, key="value_lag", on_change=valuation_filter_changed)
-    with c2:
-        validate_number_state("value_min_g", 50, min_value=0, max_value=800)
-        min_g_value = st.number_input(
-            "Minimum Games Played",
-            min_value=0,
-            max_value=800,
-            key="value_min_g",
-            on_change=valuation_filter_changed,
-        )
     with c3:
         try:
             from fantasy_position_sync import (
@@ -31118,6 +30546,16 @@ elif active_page == "Valuation":
                 help="Compare players within one fantasy position group (OF includes LF/CF/RF).",
                 on_change=valuation_filter_changed,
             )
+    value_answer_slot = st.container()
+    u1.section_label(st, "Explore more · minimum games, blend weights, the full table and player explanations")
+    validate_number_state("value_min_g", 50, min_value=0, max_value=800)
+    min_g_value = st.number_input(
+        "Minimum Games Played",
+        min_value=0,
+        max_value=800,
+        key="value_min_g",
+        on_change=valuation_filter_changed,
+    )
 
     max_year_value = int(yearly_df["yearID"].max())
     recent_years_value = list(range(max_year_value - lag_value + 1, max_year_value + 1))
@@ -31162,7 +30600,10 @@ elif active_page == "Valuation":
         recent_data_value,
         ("G", "R", "AB", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "HBP", "SF"),
     )
-    agg_value = agg_value[agg_value["G"] >= min_g_value].copy()
+    from valuation_scores import valuation_hitter_pool
+
+    # Hitters only: pitchers' batting lines (0 AB) skewed every hitter's trend percentile.
+    agg_value = valuation_hitter_pool(agg_value[agg_value["G"] >= min_g_value])
     agg_value = apply_stat_min_filters(agg_value, "value", on_change=valuation_filter_changed)
 
     trend_value = compute_player_trend_table(
@@ -31188,7 +30629,10 @@ elif active_page == "Valuation":
     )
 
     with st.expander("Valuation blend weights", expanded=False):
-        st.caption("These weights only scale how much current vs trend contributes to Valuation Score below.")
+        st.caption(
+            "Weights apply to each player's rank among the players shown — on current production and on "
+            "trend — so 1:1 gives both equal influence on Valuation Score."
+        )
         with mobile_wrap_row(st, "valuation-weights"):
             c5, c6 = st.columns(2)
         with c5:
@@ -31196,28 +30640,9 @@ elif active_page == "Valuation":
         with c6:
             w_trend = st.number_input("Weight: Trend Score", 0.0, 10.0, 1.0, key="value_w_trend", on_change=valuation_filter_changed)
 
-    valuation_df["Trend_Score"] = (
-        valuation_df["R_trend"].fillna(0) * 1.0 + valuation_df["H_trend"].fillna(0) * 0.5 +
-        valuation_df["2B_trend"].fillna(0) * 0.75 + valuation_df["3B_trend"].fillna(0) * 0.75 +
-        valuation_df["HR_trend"].fillna(0) * 2.0 + valuation_df["RBI_trend"].fillna(0) * 1.5 +
-        valuation_df["SB_trend"].fillna(0) * 1.0 + valuation_df["BB_trend"].fillna(0) * 0.5 +
-        valuation_df["BA_trend"].fillna(0) * 100 + valuation_df["OBP_trend"].fillna(0) * 100 +
-        valuation_df["SLG_trend"].fillna(0) * 100 + valuation_df["OPS_trend"].fillna(0) * 100
-    )
-    valuation_df["Perf_Score"] = (
-        valuation_df["R"] * 0.10 + valuation_df["H"] * 0.05 + valuation_df["2B"] * 0.05 +
-        valuation_df["3B"] * 0.05 + valuation_df["HR"] * 0.25 + valuation_df["RBI"] * 0.20 +
-        valuation_df["SB"] * 0.10 + valuation_df["BA"].fillna(0) * 100 * 0.05 +
-        valuation_df["OBP"].fillna(0) * 100 * 0.10 + valuation_df["SLG"].fillna(0) * 100 * 0.10 +
-        valuation_df["OPS"].fillna(0) * 100 * 0.10
-    )
-    valuation_df["Valuation_Raw"] = w_current * valuation_df["Perf_Score"] + w_trend * valuation_df["Trend_Score"]
-    val_min = valuation_df["Valuation_Raw"].min()
-    val_max = valuation_df["Valuation_Raw"].max()
-    if pd.notna(val_min) and pd.notna(val_max) and val_max != val_min:
-        valuation_df["Valuation_Score"] = (valuation_df["Valuation_Raw"] - val_min) / (val_max - val_min)
-    else:
-        valuation_df["Valuation_Score"] = 0.0
+    from valuation_scores import add_valuation_scores
+
+    add_valuation_scores(valuation_df, w_current, w_trend)
 
     valuation_lookup_df = valuation_df.copy()
     try:
@@ -31243,7 +30668,8 @@ elif active_page == "Valuation":
     valuation_chart_df["Valuation_Score"] = pd.to_numeric(
         valuation_chart_df["Valuation_Score"], errors="coerce"
     ) * 100.0
-    top_bar_chart(valuation_chart_df, "fullName", "Valuation_Score", "Top 10 Valuation Score")
+    with value_answer_slot:
+        _render_u2_valuation_answer(valuation_df, valuation_lookup_df, valuation_chart_df, w_current, w_trend, recent_years_value)
 
     c7, c8, c9 = st.columns(3)
     c7.metric(
@@ -31414,10 +30840,9 @@ elif active_page == "ML Predictions":
             "ML Projections — Star Player Forecasts",
             "Aaron Judge, Ohtani, Soto, and Gunnar Henderson with feature-importance insights preloaded.",
         )
-    render_section_header(
-        "🤖 ML Predictions",
-        "Generate next-season projections using machine learning, aging curves, regression-to-the-mean, and similar-player comparisons."
-    )
+    import ui_hierarchy as u1
+
+    u1.page_head(st, "🤖 ML Predictions", "Next-season projections for each hitter, from a model trained on past seasons.")
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
 
@@ -31436,6 +30861,62 @@ elif active_page == "ML Predictions":
         init_state_once("ml_auto_apply_tuning", True)
         init_state_once("ml_position_filter", "All positions")
         init_state_once("ml_sort_by", "Predicted OPS")
+
+        with mobile_wrap_row(st, "ml-table-controls"):
+            _ml_tbl_c1, _ml_tbl_c2 = st.columns(2)
+        with _ml_tbl_c1:
+            try:
+                from fantasy_position_sync import (
+                    FANTASY_POSITION_MULTI_OPTIONS,
+                    make_research_position_on_change,
+                    prepare_research_position_filter,
+                )
+
+                prepare_research_position_filter(
+                    st.session_state,
+                    page="ML Predictions",
+                    widget_key="ml_position_filter",
+                )
+                if isinstance(st.session_state.get("ml_position_filter"), str):
+                    legacy = st.session_state.get("ml_position_filter", "")
+                    st.session_state["ml_position_filter"] = (
+                        [] if legacy in ("All positions", "All", "") else [legacy]
+                    )
+                ml_position_filter = st.multiselect(
+                    "Fantasy Position",
+                    list(FANTASY_POSITION_MULTI_OPTIONS),
+                    key="ml_position_filter",
+                    help="Select one or more positions (empty = all).",
+                    on_change=make_research_position_on_change(
+                        "ML Predictions", "ml_position_filter", extra=projections_filter_changed
+                    ),
+                )
+            except ImportError:
+                validate_state_option("ml_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
+                ml_position_filter = st.selectbox(
+                    "Fantasy Position",
+                    FANTASY_POSITION_FILTER_OPTIONS,
+                    key="ml_position_filter",
+                    help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
+                    on_change=projections_filter_changed,
+                )
+        with _ml_tbl_c2:
+            validate_state_option("ml_sort_by", ML_DISPLAY_SORT_OPTIONS, "Predicted OPS")
+            ml_sort_by = st.selectbox(
+                "Sort Projections By",
+                ML_DISPLAY_SORT_OPTIONS,
+                key="ml_sort_by",
+                help="Display-only — does not regenerate ML projections.",
+                on_change=projections_filter_changed,
+            )
+        st.button(
+            "Generate / Refresh ML Predictions",
+            type="primary",
+            key="ml_predictions_refresh_button",
+            on_click=_on_ml_predictions_refresh_click,
+        )
+        ml_answer_slot = st.container()
+        u1.section_label(st, "Explore more · lookback, minimums, scope, model tuning, accuracy, the full table and feature importance")
 
         with mobile_wrap_row(st, "ml-top-filters"):
             c1, c2, c3 = st.columns(3)
@@ -31518,21 +30999,6 @@ elif active_page == "ML Predictions":
             if not st.session_state.get("ml_auto_apply_tuning", True):
                 st.caption("Auto-apply is off — use this button after changing sliders.")
 
-        st.button(
-            "Generate / Refresh ML Predictions",
-            type="primary",
-            key="ml_predictions_refresh_button",
-            on_click=_on_ml_predictions_refresh_click,
-        )
-
-        if not st.session_state.get("ml_predictions_have_run", False):
-            pp.render_professional_empty(
-                st,
-                "Select projection settings and generate a forecast. The model will estimate "
-                "next-season performance using historical trends, aging curves, and machine learning.",
-                title="Generate ML projections",
-            )
-
         _ml_pipeline_ran = _ml_execute_pipeline_if_needed(
             yearly_source=yearly_df,
             ml_lookback=ml_lookback,
@@ -31554,6 +31020,8 @@ elif active_page == "ML Predictions":
         ml_models = st.session_state.get("_ml_proj_models", {})
         age_curve_df = st.session_state.get("_ml_proj_age_curve_df", pd.DataFrame())
         status = st.session_state.get(ML_PREDICTIONS_STATUS_KEY) or {}
+        with ml_answer_slot:
+            _render_u2_ml_answer(stored_df, ml_position_filter, ml_sort_by, ml_models, status)
 
         if st.session_state.get("ml_predictions_have_run", False):
             if status:
@@ -31644,53 +31112,6 @@ elif active_page == "ML Predictions":
                     render_output_table(metrics_table, key="ml_accuracy", file_name="ml_model_accuracy.csv")
 
         st.subheader("Next-Season ML Projections")
-        with mobile_wrap_row(st, "ml-table-controls"):
-            _ml_tbl_c1, _ml_tbl_c2 = st.columns(2)
-        with _ml_tbl_c1:
-            try:
-                from fantasy_position_sync import (
-                    FANTASY_POSITION_MULTI_OPTIONS,
-                    make_research_position_on_change,
-                    prepare_research_position_filter,
-                )
-
-                prepare_research_position_filter(
-                    st.session_state,
-                    page="ML Predictions",
-                    widget_key="ml_position_filter",
-                )
-                if isinstance(st.session_state.get("ml_position_filter"), str):
-                    legacy = st.session_state.get("ml_position_filter", "")
-                    st.session_state["ml_position_filter"] = (
-                        [] if legacy in ("All positions", "All", "") else [legacy]
-                    )
-                ml_position_filter = st.multiselect(
-                    "Fantasy Position",
-                    list(FANTASY_POSITION_MULTI_OPTIONS),
-                    key="ml_position_filter",
-                    help="Select one or more positions (empty = all).",
-                    on_change=make_research_position_on_change(
-                        "ML Predictions", "ml_position_filter", extra=projections_filter_changed
-                    ),
-                )
-            except ImportError:
-                validate_state_option("ml_position_filter", FANTASY_POSITION_FILTER_OPTIONS, "All positions")
-                ml_position_filter = st.selectbox(
-                    "Fantasy Position",
-                    FANTASY_POSITION_FILTER_OPTIONS,
-                    key="ml_position_filter",
-                    help="LF/CF/RF count as OF. DH/UTIL includes designated hitters and multi-position utility bats.",
-                    on_change=projections_filter_changed,
-                )
-        with _ml_tbl_c2:
-            validate_state_option("ml_sort_by", ML_DISPLAY_SORT_OPTIONS, "Predicted OPS")
-            ml_sort_by = st.selectbox(
-                "Sort Projections By",
-                ML_DISPLAY_SORT_OPTIONS,
-                key="ml_sort_by",
-                help="Display-only — does not regenerate ML projections.",
-                on_change=projections_filter_changed,
-            )
 
         if st.session_state.get("ml_predictions_have_run", False):
             if not _ml_is_nonempty_dataframe(stored_df):

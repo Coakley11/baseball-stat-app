@@ -31,7 +31,7 @@ class AmiSubmitButtonPathAuditTests(unittest.TestCase):
 
     def test_streamlit_entrypoint_uses_baseball_module(self) -> None:
         text = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
-        self.assertIn("render_baseball_insight_sidebar", text)
+        self.assertIn("submit_baseball_insight", text)  # U5: Ask AMI's Get full analysis
         self.assertIn('["_suite_runtime_app_id"] = "baseball"', text)
 
     def test_no_st_button_send_to_command_center_in_python_ui(self) -> None:

@@ -473,15 +473,37 @@ def trades_enabled(context: dict[str, Any] | None, session: dict[str, Any] | Non
     if not isinstance(rosters, dict) or len(rosters) < 2:
         return False, TRADES_MOCK_SIM_DISABLED_MESSAGE
 
-    if claimed_team_count(context) < 2 or distinct_account_owner_count(context) < 2:
-        return False, TRADES_AWAITING_CLAIMS_MESSAGE
-
     uid = _resolve_user_id()
+    if claimed_team_count(context) < 2 or distinct_account_owner_count(context) < 2:
+        # A solo/imported league can still trade: the commissioner acts for unclaimed teams
+        # (explicit proxy, see fantasy_team_control). Claimed teams are never overridden.
+        if not _commissioner_can_trade_for_unclaimed(context, uid):
+            return False, TRADES_AWAITING_CLAIMS_MESSAGE
+
     my_team = owned_team_for_user(context, uid)
-    if not my_team:
+    if not my_team and not _commissioner_can_trade_for_unclaimed(context, uid):
         return False, TEAM_ASSIGNMENT_PROMPT
 
     return True, ""
+
+
+def _commissioner_can_trade_for_unclaimed(context: dict[str, Any], uid: str) -> bool:
+    if not uid:
+        return False
+    try:
+        from fantasy_league_invites import is_league_commissioner
+
+        if not is_league_commissioner(context, uid):
+            return False
+    except ImportError:
+        return False
+    ownership = get_team_ownership(context)
+    teams = [str(t) for t in (context.get("league_rosters") or {})]
+    # Truly unclaimed only: a seat reserved for an invitee is not the commissioner's to trade.
+    return any(
+        not ownership_is_firm_claim(ownership.get(t)) and not ownership_is_provisional(ownership.get(t))
+        for t in teams
+    )
 
 
 def resolve_trade_team_for_session(context: dict[str, Any] | None, session: dict[str, Any] | None = None) -> str:

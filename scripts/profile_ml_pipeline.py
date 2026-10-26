@@ -51,7 +51,7 @@ import app_tutorial  # noqa: F401
 
 _app_src = SA.read_text(encoding="utf-8").splitlines()
 _ui_start = next(i for i, line in enumerate(_app_src) if "st.set_page_config" in line)
-_def_start = next(i for i, line in enumerate(_app_src) if line.startswith("def fmt_int"))
+_def_start = next(i for i, line in enumerate(_app_src) if line.startswith(("def fmt_int", "from stat_helpers import fmt_int")))
 _render_start = next(i for i, line in enumerate(_app_src) if line.startswith("_APP_RENDER_START"))
 _exec_src = "\n".join(_app_src[:_ui_start] + _app_src[_def_start:_render_start])
 _g: dict = {

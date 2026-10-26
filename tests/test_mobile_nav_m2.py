@@ -46,6 +46,18 @@ class _FakeSt:
         return options[index] if options else None
 
 
+class _FakeStWithPills(_FakeSt):
+    def __init__(self, session_state=None):
+        super().__init__(session_state)
+        self.pills_calls = []
+
+    def pills(self, label, options, *, selection_mode="single", format_func=None, key=None, on_change=None,
+              label_visibility=None):
+        self.pills_calls.append({"label": label, "options": list(options), "format_func": format_func,
+                                 "key": key, "on_change": on_change})
+        return self.session_state.get(key)
+
+
 def live_page_options() -> list[str]:
     """Read PAGE_OPTIONS from source instead of importing streamlit_app.
 
@@ -93,13 +105,15 @@ class PageGroupCoverageTests(unittest.TestCase):
         ordered = nav.grouped_page_options(options)
         self.assertEqual(set(ordered), set(options))
         self.assertEqual(len(ordered), len(options))
-        # Group order fixed, e.g. Live Draft Room must sit after every
-        # "Explore & Analyze" page and before every "Fantasy Team" page.
+        # Section order fixed (shared with the desktop sidebar): Home first, then Players,
+        # Insights, Draft, My League, Account — e.g. Live Draft Room sits after every
+        # Insights page and before every My League page.
+        self.assertEqual(ordered[0], "Home")
         i_live = ordered.index("Live Draft Room")
-        i_explore_last = max(ordered.index(p) for p, g in nav.PAGE_GROUPS.items() if g == "Explore & Analyze")
-        i_team_first = min(ordered.index(p) for p, g in nav.PAGE_GROUPS.items() if g == "Fantasy Team")
-        self.assertLess(i_explore_last, i_live)
-        self.assertLess(i_live, i_team_first)
+        i_insights_last = max(ordered.index(p) for p, g in nav.PAGE_GROUPS.items() if g == "Insights")
+        i_league_first = min(ordered.index(p) for p, g in nav.PAGE_GROUPS.items() if g == "My League")
+        self.assertLess(i_insights_last, i_live)
+        self.assertLess(i_live, i_league_first)
 
     def test_unmapped_page_is_appended_not_dropped(self) -> None:
         ordered = nav.grouped_page_options(["Historical Explorer", "Some New Page"])
@@ -268,7 +282,7 @@ class AppWiringTests(unittest.TestCase):
     def test_render_global_app_chrome_calls_quick_nav_first(self) -> None:
         src = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
         start = src.index("def render_global_app_chrome(active_page: str)")
-        end = src.index("def fmt_int(x):")
+        end = src.index("from stat_helpers import fmt_int")
         block = src[start:end]
         self.assertIn("render_mobile_quick_nav", block)
         # Must run before the hero markup so it lands at the very top on phones.
@@ -283,3 +297,46 @@ class AppWiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SectionPillsTests(unittest.TestCase):
+    """U1: phones show six section pills, then only the current section's pages."""
+
+    OPTIONS = ["Historical Explorer", "Leaderboards", "Trend Value", "Live Draft Room",
+               "Fantasy Standings Tracker", "Waiver Wire / Add-Drop Center", "Pricing & Upgrade", "Home"]
+
+    def _render(self, st, active, changed):
+        nav.render_mobile_quick_nav(
+            st, active_page=active, page_options=self.OPTIONS, page_option_label=lambda p: p,
+            main_sidebar_page_key="main_sidebar_page", on_sidebar_page_change=lambda: changed.append(True),
+        )
+
+    def test_sections_then_section_pages(self) -> None:
+        st = _FakeStWithPills({"main_sidebar_page": "Leaderboards"})
+        self._render(st, "Leaderboards", [])
+        self.assertEqual(st.pills_calls[0]["options"], ["Home", "Players", "Insights", "Draft", "My League", "Account"])
+        self.assertEqual(st.pills_calls[0]["key"], nav.QUICK_NAV_SECTION_KEY)
+        self.assertEqual(st.session_state[nav.QUICK_NAV_SECTION_KEY], "Players")
+        self.assertEqual(st.selectbox_calls[0]["options"], ["Historical Explorer", "Leaderboards"])
+        self.assertEqual(st.selectbox_calls[0]["index"], 1)
+
+    def test_picking_a_section_opens_its_first_page_through_the_sidebar_key(self) -> None:
+        changed = []
+        st = _FakeStWithPills({"main_sidebar_page": "Leaderboards"})
+        self._render(st, "Leaderboards", changed)
+        st.session_state[nav.QUICK_NAV_SECTION_KEY] = "My League"
+        st.pills_calls[0]["on_change"]()
+        self.assertEqual(st.session_state["main_sidebar_page"], "Fantasy Standings Tracker")
+        self.assertEqual(changed, [True])
+
+    def test_tapping_the_open_section_or_clearing_it_does_not_navigate(self) -> None:
+        changed = []
+        st = _FakeStWithPills({"main_sidebar_page": "Trend Value"})
+        self._render(st, "Trend Value", changed)
+        for value in ("Insights", None):
+            st.session_state[nav.QUICK_NAV_SECTION_KEY] = value
+            st.pills_calls[0]["on_change"]()
+            self.assertEqual(st.session_state[nav.QUICK_NAV_SECTION_KEY], "Insights")
+        self.assertEqual(changed, [])
+        self.assertEqual(st.session_state["main_sidebar_page"], "Trend Value")
+

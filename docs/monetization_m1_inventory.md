@@ -1,6 +1,8 @@
 # Baseball monetization M1 inventory
 
-This is the initial product classification, not a billing contract. The Free tier remains a useful end-to-end baseball and fantasy product. M1 activates no billing.
+This is an archived candidate classification, not the current billing contract.
+No page-level gate is enforced while Stripe/Supabase billing is in test
+acceptance; the final Free-vs-Pro split will be approved separately.
 
 | Surface | Initial tier | Reasoning |
 | --- | --- | --- |
@@ -26,6 +28,8 @@ This is the initial product classification, not a billing contract. The Free tie
 | Exports/downloads | Free with limits | Existing exports stay available. Premium formatting or expanded export sets may become Pro. |
 | Applied-math/assistant insights | Undecided | Cross-cutting assistant value and compute cost need a separate usage audit. |
 
-Future billing should supply an authenticated, server-authoritative entitlement snapshot. Stripe checkout/customer/subscription state and Supabase projection/webhooks belong in M2; neither client session state nor the development selector is a billing authority.
+Billing now supplies an authenticated, server-authoritative entitlement snapshot
+from `public.subscriptions`; neither client session state nor the development
+selector is a billing authority. See `BASEBALL_BILLING_SETUP.md`.
 
 The Free/Pro development selector requires all three conditions: an eligible in-app Developer Mode session, `BASEBALL_ENTITLEMENT_DEV_CONTROLS=1`, and `BASEBALL_ENTITLEMENT_RUNTIME=local` (or `test`). Production ignores the session selection even if it is present.

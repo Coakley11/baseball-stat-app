@@ -210,8 +210,41 @@ def _is_ephemeral_widget_key(key: str) -> bool:
     return False
 
 
+def _assigned_through_session_api(key: str) -> bool:
+    """True when ``key`` holds a value written via st.session_state this run.
+
+    That is the only state Streamlit refuses for a button (StreamlitValueAssignmentNotAllowedError).
+    A clicked button's pending trigger is widget state, not an assignment. Unknown → True.
+    """
+    try:
+        from streamlit.runtime.state import get_session_state
+
+        return bool(get_session_state().is_new_state_value(key))
+    except Exception:
+        return True
+
+
+def purge_restored_ephemeral_widget_keys(session_state, is_assigned=_assigned_through_session_api) -> list[str]:
+    """Drop button/action keys that a snapshot restore wrote into session state.
+
+    Only values assigned through the session-state API are dropped. Popping a live
+    button key also deletes its pending click, so that button would never fire.
+    """
+    dropped: list[str] = []
+    for key in list(session_state.keys()):
+        if _is_file_uploader_widget_key(key) or not _is_ephemeral_widget_key(key):
+            continue
+        if is_assigned(key):
+            session_state.pop(key, None)
+            dropped.append(key)
+    return dropped
+
+
 # Session keys that must never be snapshotted (action flags / large derived data).
 _PAGE_STATE_SKIP_KEYS = frozenset({
+    # Canonical live draft blob (room + player pool); persisted at the top level, never
+    # restored from a page snapshot. The "live_draft_" prefix captured a full copy.
+    "live_draft_state",
     "ml_full_generation_requested",
     "ml_tuning_apply_requested",
     "ml_predictions_df",
@@ -244,6 +277,13 @@ _PAGE_STATE_SKIP_KEYS = frozenset({
     "standings_refresh_mlb_stats",
     "_standings_refresh_mlb_stats_requested",
     "_fantasy_stats_refresh_requested",
+    # One-time Lineup notices/modes (the "lineup_" prefix captured them): a restored flash
+    # repeated "League lineup format saved." on the next visit.
+    "lineup_format_saved_flash",
+    "lineup_format_editing",
+    # Commissioner "Manage team" pickers: a reopened session starts on your own team.
+    "lineup_manage_team",
+    "waiver_manage_team",
 })
 
 
@@ -295,6 +335,8 @@ def save_page_state(session, page_name: str, store: dict):
                 snapshot[key] = copy.deepcopy(existing[key])
             except Exception:
                 snapshot[key] = existing[key]
+    for key in _PAGE_STATE_SKIP_KEYS:
+        snapshot.pop(key, None)  # drop values an older snapshot captured before the skip
     if snapshot:
         store[page_name] = snapshot
 

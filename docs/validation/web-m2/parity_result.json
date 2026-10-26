@@ -1,0 +1,56 @@
+{
+ "historical_hr": {
+  "web_headline": "Aaron Judge, 2022: 62 home runs",
+  "streamlit_headline": "Aaron Judge, 2022: 62 home runs",
+  "streamlit range/sort": "2010–2025, sort HR",
+  "headline equal": true,
+  "detail sentence equal": true,
+  "context equal": true,
+  "tiles equal (labels+values)": true,
+  "qualification chip equal": true,
+  "table headers (names, order) equal": true,
+  "table cells compared": 450,
+  "table cell mismatches": [],
+  "top rows compared": 25
+ },
+ "historical_ops": {
+  "web_headline": "Aaron Judge, 2024: 1.159 OPS",
+  "streamlit_headline": "Aaron Judge, 2024: 1.159 OPS",
+  "streamlit range/sort": "2010–2025, sort OPS",
+  "headline equal": true,
+  "detail sentence equal": true,
+  "context equal": true,
+  "tiles equal (labels+values)": true,
+  "qualification chip equal": true,
+  "table headers (names, order) equal": true,
+  "table cells compared": 450,
+  "table cell mismatches": [],
+  "top rows compared": 25
+ },
+ "leaders_score": {
+  "web_headline": "Shohei Ohtani leads 2020–2025 in score: 929",
+  "streamlit_headline": "Shohei Ohtani leads 2020–2025 in score: 929",
+  "streamlit range/sort": "2020–2025, sort score",
+  "headline equal": true,
+  "detail sentence equal": false,
+  "context equal": true,
+  "qualification chip equal": true,
+  "table headers (names, order) equal": true,
+  "table cells compared": 400,
+  "table cell mismatches": [],
+  "top rows compared": 25
+ },
+ "leaders_ops": {
+  "web_headline": "Aaron Judge leads 2020–2025 in OPS: 1.068",
+  "streamlit_headline": "Aaron Judge leads 2020–2025 in OPS: 1.068",
+  "streamlit range/sort": "2020–2025, sort OPS",
+  "headline equal": true,
+  "detail sentence equal": true,
+  "context equal": true,
+  "qualification chip equal": true,
+  "table headers (names, order) equal": true,
+  "table cells compared": 400,
+  "table cell mismatches": [],
+  "top rows compared": 25
+ }
+}

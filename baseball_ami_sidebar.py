@@ -84,11 +84,7 @@ def render_baseball_insight_sidebar(
     on_after_send: Callable[[], None] | None = None,
 ) -> None:
     """Render Baseball Insight sidebar; submit still routes to Command Center internally."""
-    from suite_analytical_question import (
-        BASEBALL_INSIGHT_SECTION_TITLE,
-        build_submit_context,
-        submit_analytical_question,
-    )
+    from suite_analytical_question import BASEBALL_INSIGHT_SECTION_TITLE
 
     ss = session_state if session_state is not None else st.session_state
     ss["_suite_runtime_app_id"] = SOURCE_APP
@@ -155,42 +151,67 @@ def render_baseball_insight_sidebar(
         if not q:
             st.sidebar.warning("Enter a question first.")
         else:
-            submit_ctx = build_submit_context(
-                source_app,
-                source_page,
+            result = submit_baseball_insight(
                 ss,
-                context_extra_builder=context_extra_builder,
-            )
-            submit_source_state: dict[str, Any] | None = None
-            if source_state_builder is not None:
-                try:
-                    submit_source_state = source_state_builder()
-                except Exception:
-                    log.exception("AMI source_state builder failed for baseball (%s)", source_page)
-            result = submit_analytical_question(
-                source_app=source_app,
                 source_page=source_page,
                 question=q,
-                context=submit_ctx,
-                source_state=submit_source_state,
-                session_state=ss,
+                context_extra_builder=context_extra_builder,
+                source_state_builder=source_state_builder,
+                on_after_send=on_after_send,
             )
-            ss["_last_analytical_question"] = result
-            ss[f"_ami_send_gen_{source_app}_{page_suffix}"] = send_gen + 1
             if result.get("duplicate"):
-                st.sidebar.info(
-                    "That baseball insight was already requested recently. "
-                    "Open Command Center to review it."
-                )
+                st.sidebar.info(DUPLICATE_MESSAGE)
             else:
-                st.sidebar.success(
-                    "Baseball insight request saved. Open Command Center when you're ready to review it."
-                )
-            if on_after_send is not None and not result.get("duplicate"):
-                try:
-                    on_after_send()
-                except Exception:
-                    log.exception("on_after_send hook failed for baseball (%s)", source_page)
+                st.sidebar.success(SAVED_MESSAGE)
             st.rerun()
 
     st.sidebar.divider()
+
+
+SAVED_MESSAGE = "Baseball insight request saved. Open Command Center when you're ready to review it."
+DUPLICATE_MESSAGE = "That baseball insight was already requested recently. Open Command Center to review it."
+
+
+def submit_baseball_insight(
+    session_state: dict[str, Any],
+    *,
+    source_page: str,
+    question: str,
+    context_extra_builder: Callable[[], dict[str, Any] | None] | None = None,
+    source_state_builder: Callable[[], dict[str, Any] | None] | None = None,
+    on_after_send: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Hand one question to Command Center (Applied Mathematical Intelligence): the page's
+    context and source state, ``submit_analytical_question`` (activity, resume item, context
+    blob), then ``on_after_send``. Only for an explicit user action — the ⚾ Baseball Insight
+    button, or Ask AMI's "Get full analysis". Returns the submit result (``duplicate`` set when
+    the same question was sent moments ago)."""
+    from suite_analytical_question import _safe_widget_suffix, build_submit_context, submit_analytical_question
+
+    ss = session_state
+    ss["_suite_runtime_app_id"] = SOURCE_APP
+    page_suffix = _safe_widget_suffix(source_page)
+    send_gen = int(ss.get(f"_ami_send_gen_{SOURCE_APP}_{page_suffix}") or 0)
+    submit_ctx = build_submit_context(SOURCE_APP, source_page, ss, context_extra_builder=context_extra_builder)
+    submit_source_state: dict[str, Any] | None = None
+    if source_state_builder is not None:
+        try:
+            submit_source_state = source_state_builder()
+        except Exception:
+            log.exception("AMI source_state builder failed for baseball (%s)", source_page)
+    result = submit_analytical_question(
+        source_app=SOURCE_APP,
+        source_page=source_page,
+        question=str(question or "").strip(),
+        context=submit_ctx,
+        source_state=submit_source_state,
+        session_state=ss,
+    )
+    ss["_last_analytical_question"] = result
+    ss[f"_ami_send_gen_{SOURCE_APP}_{page_suffix}"] = send_gen + 1
+    if on_after_send is not None and not result.get("duplicate") and not result.get("save_failed"):
+        try:
+            on_after_send()
+        except Exception:
+            log.exception("on_after_send hook failed for baseball (%s)", source_page)
+    return result

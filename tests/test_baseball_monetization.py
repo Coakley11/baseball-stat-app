@@ -68,8 +68,15 @@ def test_registry_is_centralized_and_every_page_gate_is_registered():
 def test_entitlement_checks_do_not_mutate_business_or_session_state():
     business = {"draft_queue": ["Player A"], "room": {"status": "active"}}
     before = deepcopy(business)
-    assert not entitlement_for_page(default_entitlement(), "ML Predictions")
+    assert entitlement_for_page(default_entitlement(), "ML Predictions")
     assert business == before
+
+
+def test_page_gates_are_not_enforced_until_product_split_is_approved():
+    from baseball_monetization import ENFORCED_PAGE_FEATURES
+
+    assert not ENFORCED_PAGE_FEATURES
+    assert entitlement_for_page(default_entitlement(), "ML Predictions")
 
 
 def test_pricing_navigation_and_safe_return_preserve_context():

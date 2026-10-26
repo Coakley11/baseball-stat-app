@@ -32,6 +32,7 @@ class LineupManagementDeps:
     safe_collection_len: Callable[..., int]
     lineup_default_hitting_slots: tuple[str, ...]
     resolve_lineup_scoring_format: Callable[..., str]
+    nav_callback: Callable[[str], Callable[[], None]] | None = None  # page -> on_click that only navigates
 
 
 def render_lineup_management_page(
@@ -69,10 +70,17 @@ def render_lineup_management_page(
                 lineup_team=str(lineup_team or ""),
                 on_open_waiver_wire=deps.open_waiver_wire_from_lineup_slot,
                 scored_roster=_lineup_scored_for_weekly,
+                nav_callback=deps.nav_callback,
             )
         except ImportError:
             pass
 
+    try:
+        import ui_hierarchy as ui
+
+        ui.section_label(st, "Explore more · start/sit recommendations, lineup diagnosis, category needs")
+    except ImportError:
+        pass
     _lineup_format_options = ["5x5 Roto", "Points League", "Head-to-Head Categories"]
     with st.expander("Start-Sit recommendations", expanded=False):
         l2, l3 = st.columns(2)
@@ -157,11 +165,23 @@ def render_lineup_management_page(
             "Lineup needs and recommendations use this format — not the default 15-player template."
         )
     elif _context_no_slot_config:
-        st.info(
-            "This mock draft was saved without roster-slot settings, so analysis focuses "
-            "on player value, category balance, and team strengths rather than missing "
-            "lineup positions."
-        )
+        try:
+            from fantasy_league_lineup_format import needs_lineup_format_setup
+
+            _setup_pending = needs_lineup_format_setup(_lineup_active_context)
+        except ImportError:
+            _setup_pending = False
+        if _setup_pending:
+            st.info(
+                "This league doesn't have starting positions yet. Rosters are kept as drafted; "
+                "choose the positions under **Choose Lineup Positions** to check each team's lineup."
+            )
+        else:
+            st.info(
+                "This mock draft was saved without roster-slot settings, so analysis focuses "
+                "on player value, category balance, and team strengths rather than missing "
+                "lineup positions."
+            )
     else:
         with st.expander("Starting lineup slots (optional)"):
             deps.ensure_widget_state("lineup_include_util", True)
@@ -376,6 +396,7 @@ def render_lineup_management_page(
         _needs: dict = {}
         _waiver_pool = pd.DataFrame()
         _ctx = None
+        _my_team_df = None
         try:
             from fantasy_league_context import get_active_league_context
 
@@ -411,6 +432,12 @@ def render_lineup_management_page(
                 _cached_diag = None
                 _diag_cache_key = None
 
+            # Both the cached and the fresh diagnosis use this team's roster rows below.
+            _my_team_df = (
+                roster_stats[roster_stats["Team"].astype(str) == str(lineup_team)]
+                if "Team" in roster_stats.columns
+                else roster_stats
+            )
             if isinstance(_cached_diag, dict):
                 _needs = dict(_cached_diag.get("needs") or {})
                 _cat_ranks = dict(_cached_diag.get("category_ranks") or {})
@@ -434,11 +461,6 @@ def render_lineup_management_page(
                 with _diag_phase:
                     from fantasy_waiver_wire import analyze_current_team_needs, build_waiver_pool, merge_current_season_stats
 
-                    _my_team_df = (
-                        roster_stats[roster_stats["Team"].astype(str) == str(lineup_team)]
-                        if "Team" in roster_stats.columns
-                        else roster_stats
-                    )
                     if not _my_team_df.empty:
                         _needs = analyze_current_team_needs(_my_team_df, roster_stats)
                         _cat_ranks = dict(_needs.get("category_ranks") or {})
@@ -454,12 +476,10 @@ def render_lineup_management_page(
                         team_outlook_summary,
                     )
 
+                    # One source — the league ranks shown in the snapshot — so a category is never
+                    # listed as both a strength and a weakness.
                     _strength_cats = league_strength_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
                     _weakness_cats = league_weakness_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
-                    if _needs.get("strengths"):
-                        _strength_cats = list(_needs.get("strengths") or _strength_cats)[:2]
-                    if _needs.get("weaknesses"):
-                        _weakness_cats = list(_needs.get("weaknesses") or _weakness_cats)[:2]
                     _outlook, _confidence, _stars = team_outlook_summary(
                         strong_cats=_strength_cats,
                         weak_cats=_weakness_cats,
@@ -523,7 +543,9 @@ def render_lineup_management_page(
                             starter_df=worst_starters,
                             waiver_pool=_waiver_pool,
                             needs=_needs,
+                            league_context=_ctx if isinstance(_ctx, dict) else None,
                             benchmark=diag.get("weakest_pos_benchmark"),
+                            my_roster=_my_team_df,
                         )
                     )
                 except ImportError:
@@ -545,6 +567,7 @@ def render_lineup_management_page(
                 needs=_needs,
                 waiver_pool=_waiver_pool,
                 league_context=_ctx if isinstance(_ctx, dict) else None,
+                my_roster=_my_team_df,
             )
             with st.container(border=True):
                 render_condensed_team_summary(st, _team_summary)
@@ -595,6 +618,7 @@ def render_lineup_management_page(
                 league_rosters=roster_stats,
                 my_team=str(lineup_team or ""),
                 league_context=_ctx if isinstance(_ctx, dict) else None,
+                my_roster=_my_team_df,
             )
             _waiver_cards = list((_team_summary or {}).get("waiver_targets") or [])
             if _waiver_cards:

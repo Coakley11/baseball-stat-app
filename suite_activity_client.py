@@ -9,19 +9,41 @@ Falls back to sibling Command Center SQLite, then per-app JSON fallback.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from activity_time import utc_now_iso
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-COMMAND_CENTER_ROOT_CANDIDATES = (
-    Path(__file__).resolve().parent,
-    Path(__file__).resolve().parent.parent / "daniel-ai-command-center",
-    Path.home() / "Documents" / "GitHub" / "daniel-ai-command-center",
-)
+COMMAND_CENTER_ROOT_ENV = "SUITE_COMMAND_CENTER_ROOT"
+STORAGE_ISOLATED_ENV = "SUITE_STORAGE_ISOLATED"
 
 LOCAL_FALLBACK_DIR = Path(__file__).resolve().parent / "data"
+
+
+def storage_isolated() -> bool:
+    """Tests (pytest) and QA (SUITE_STORAGE_ISOLATED=1) must never reach a real sibling Command Center store."""
+    if str(os.environ.get(STORAGE_ISOLATED_ENV) or "").strip().lower() in ("1", "true", "yes"):
+        return True
+    return "pytest" in sys.modules
+
+
+def command_center_root_candidates() -> tuple[Path, ...]:
+    """Where suite_storage may come from. An explicit SUITE_COMMAND_CENTER_ROOT is the only root; an isolated
+    run uses only this checkout (its own shim or private store, else the per-app JSON fallback); otherwise the
+    checkout, then the sibling Command Center repo."""
+    explicit = str(os.environ.get(COMMAND_CENTER_ROOT_ENV) or "").strip()
+    if explicit:
+        return (Path(explicit).expanduser().resolve(),)
+    own = Path(__file__).resolve().parent
+    if storage_isolated():
+        return (own,)
+    return (
+        own,
+        own.parent / "daniel-ai-command-center",
+        Path.home() / "Documents" / "GitHub" / "daniel-ai-command-center",
+    )
 
 _LAST_RECORD_TRACE: dict[str, Any] = {}
 _LAST_CLOUD_ERROR: str = ""
@@ -33,7 +55,7 @@ def last_record_trace() -> dict[str, Any]:
 
 
 def _load_storage_module():
-    for root in COMMAND_CENTER_ROOT_CANDIDATES:
+    for root in command_center_root_candidates():
         storage_path = root / "suite_storage.py"
         if not storage_path.is_file():
             continue
@@ -42,6 +64,10 @@ def _load_storage_module():
             sys.path.insert(0, root_str)
         import suite_storage  # noqa: WPS433
 
+        loaded = Path(getattr(suite_storage, "__file__", "") or "").resolve()
+        if storage_isolated() and loaded != storage_path.resolve():
+            # An earlier import in this process came from somewhere else; never write through it.
+            return None
         return suite_storage
     return None
 

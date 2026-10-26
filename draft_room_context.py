@@ -398,11 +398,25 @@ def sync_shared_draft_room(
     *,
     force: bool = False,
     store: SharedRoomStore | None = None,
+    adopt_canonical: bool = False,
 ) -> bool:
     """Poll shared store; refresh session when revision advances.
 
     Returns True when the local runtime was updated from a newer remote revision.
+
+    ``adopt_canonical`` replaces the session's room with the stored document even when
+    the session looks newer or locally ahead — used only to settle an auto-pick whose
+    local apply may not have reached the shared room.
     """
+    if not adopt_canonical:
+        try:
+            from live_draft_expired_pick import settle_autopick_txn
+
+            settle_autopick_txn(session, store=store)
+        except ImportError:
+            pass
+    if adopt_canonical:
+        force = True
     try:
         from live_draft_mp_diagnostics import _last_pick_info, _on_clock_team, _pick_count, record_poll_sync_trace
     except ImportError:
@@ -520,7 +534,7 @@ def sync_shared_draft_room(
         )
         return False
 
-    if not remote_is_newer:
+    if not remote_is_newer and not adopt_canonical:
         try:
             from live_draft_state import is_live_draft_locally_dirty, runtime_room_ahead_of_blob
 
@@ -542,7 +556,9 @@ def sync_shared_draft_room(
             pass
 
     try:
-        publish_shared_room_runtime(session, document, reason="shared_room_poll")
+        publish_shared_room_runtime(
+            session, document, reason="autopick_txn_reconcile" if adopt_canonical else "shared_room_poll"
+        )
         try:
             from draft_room_shared_state import invalidate_shared_room_document_cache
 

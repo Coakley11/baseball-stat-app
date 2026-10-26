@@ -818,7 +818,11 @@ class LiveDraftSharedLeagueTests(unittest.TestCase):
         )
         league_context_id = str(context.get("league_context_id") or "")
         loaded = get_league_context(self.session, league_context_id) or context
+        # Phase D: the commissioner may act for the unclaimed team; nobody else may trade yet.
         with _as_user("user:daniel"):
+            enabled, _msg = trades_enabled(loaded, self.session)
+        self.assertTrue(enabled)
+        with _as_user("user:not-commissioner"):
             enabled, msg = trades_enabled(loaded, self.session)
         self.assertFalse(enabled)
         self.assertEqual(msg, TRADES_AWAITING_CLAIMS_MESSAGE)

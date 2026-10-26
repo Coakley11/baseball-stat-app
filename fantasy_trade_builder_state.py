@@ -30,6 +30,42 @@ FORCE_REASONS = (
 )
 
 
+def trade_scope_fingerprint(my_team: str, league_id: str) -> str:
+    """Trade Center's builder scope for one team in one league (canonical id, else context id)."""
+    return f"trade|{my_team}|{league_id}"
+
+
+def trade_scope_state_key(scope_fingerprint: str) -> str:
+    return f"trade_center_state|{scope_fingerprint}"
+
+
+def read_builder_selection(session: Any, scope_key: str) -> dict[str, Any]:
+    """What the Trade Center builder currently holds for this scope, read without changing it:
+    the widget selections when the builder has rendered, else the saved logical state.
+    ``pending_update`` is True when a queued change (e.g. a handoff) hasn't been applied yet."""
+    keys = builder_widget_keys(scope_key)
+    logical = session.get(scope_key) if hasattr(session, "get") else None
+    logical = logical if isinstance(logical, dict) else {}
+    widgets_present = any(k in session for k in keys.values())
+    if widgets_present:
+        give = list(session.get(keys["give"]) or [])
+        receive = list(session.get(keys["receive"]) or [])
+        partner = str(session.get(keys["partner"]) or "")
+    else:
+        give = list(logical.get("give_players") or [])
+        receive = list(logical.get("get_players") or [])
+        partner = str(logical.get("trade_partner") or logical.get("other_team") or "")
+    analysis = logical.get("analysis") if isinstance(logical.get("analysis"), dict) else None
+    return {
+        "give": [str(p) for p in give if str(p).strip()],
+        "receive": [str(p) for p in receive if str(p).strip()],
+        "partner": partner or ANY_TRADE_PARTNER,
+        "source": "builder" if widgets_present else ("saved_state" if logical else "none"),
+        "pending_update": isinstance(session.get(pending_builder_key(scope_key)), dict),
+        "analysis": analysis,
+    }
+
+
 def pending_builder_key(scope_key: str) -> str:
     return f"{scope_key}|{PENDING_BUILDER_SUFFIX}"
 
@@ -137,6 +173,9 @@ def maybe_migrate_builder_schema(
     clear_legacy_lineup_trade_keys(session)
 
     state = dict(logical_state or {})
+    # Only announce a reset when there was a saved builder to reset — on a first visit
+    # there is nothing to lose and the notice read like an error.
+    had_saved_builder = stored > 0 or any(state.get(f) for f in ("give_players", "get_players", "analysis"))
     for field in (
         "give_players",
         "get_players",
@@ -152,9 +191,10 @@ def maybe_migrate_builder_schema(
     state["trade_partner"] = ANY_TRADE_PARTNER
 
     session[schema_key] = TRADE_BUILDER_STATE_SCHEMA_VERSION
-    session[f"{scope_key}|{BUILDER_FLASH_SUFFIX}"] = (
-        "Trade builder reset to a fresh editable state after a layout update."
-    )
+    if had_saved_builder:
+        session[f"{scope_key}|{BUILDER_FLASH_SUFFIX}"] = (
+            "Trade builder reset to a fresh editable state after a layout update."
+        )
     return state, True
 
 

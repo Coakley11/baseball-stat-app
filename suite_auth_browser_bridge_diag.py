@@ -101,6 +101,9 @@ def probe_browser_auth_storage(
     session_id: str,
     *,
     expected_user_id: str = "",
+    expected_access_fp: str = "",
+    expected_refresh_fp: str = "",
+    expected_generation: int | None = None,
     use_cache: bool = False,
 ) -> dict[str, Any]:
     """Production-parity lookup diagnostics (no token values)."""
@@ -115,9 +118,12 @@ def probe_browser_auth_storage(
         "production_row_found": False,
         "production_row_valid": False,
         "production_record_complete": False,
+        "record_unambiguous": False,
         "row_id": "",
         "owner_id_prefix": "",
         "owner_match": None,
+        "token_identity_match": None,
+        "generation_match": None,
         "updated_at": "",
         "expires_at": 0,
         "invalid_rows_for_key": 0,
@@ -134,7 +140,7 @@ def probe_browser_auth_storage(
         "item_type": f"eq.{_AUTH_SESSION_ITEM_TYPE}",
         "item_key": f"eq.{sid}",
         "valid": "eq.true",
-        "limit": "1",
+        "limit": "2",
     }
     try:
         rows = _request(
@@ -150,6 +156,7 @@ def probe_browser_auth_storage(
         return out
     if isinstance(rows, list):
         out["production_query_row_count"] = len(rows)
+    out["record_unambiguous"] = bool(isinstance(rows, list) and len(rows) == 1)
     if isinstance(rows, list) and rows and isinstance(rows[0], dict):
         row = rows[0]
         out["production_row_found"] = True
@@ -158,17 +165,59 @@ def probe_browser_auth_storage(
         uid = str(row.get("user_id") or "")
         out["owner_id_prefix"] = uid[:8] if uid else ""
         exp_uid = str(expected_user_id or "").strip()
-        if exp_uid and uid:
-            out["owner_match"] = uid == exp_uid
-        flags = _payload_token_flags(row.get("payload"))
+        from hmac import compare_digest
+
+        if exp_uid:
+            out["owner_match"] = bool(uid) and compare_digest(uid, exp_uid)
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        flags = _payload_token_flags(payload)
         out.update(flags)
+        from suite_auth_bridge_token_meta import bridge_payload_meta
+
+        token_meta = bridge_payload_meta(payload)
+        exp_access = str(expected_access_fp or "")
+        exp_refresh = str(expected_refresh_fp or "")
+        if exp_access or exp_refresh:
+            out["token_identity_match"] = bool(exp_access and exp_refresh) and compare_digest(
+                str(token_meta.get("access_fp") or ""), exp_access
+            ) and compare_digest(str(token_meta.get("refresh_fp") or ""), exp_refresh)
+        if expected_generation is not None:
+            try:
+                expected_gen = int(expected_generation)
+                out["generation_match"] = expected_gen > 0 and int(
+                    token_meta.get("token_generation") or 0
+                ) == expected_gen
+            except (TypeError, ValueError):
+                out["generation_match"] = False
+        owner_ok = out["owner_match"] is not False and (not exp_uid or out["owner_match"] is True)
+        token_ok = out["token_identity_match"] is not False and (
+            not (exp_access or exp_refresh) or out["token_identity_match"] is True
+        )
+        generation_ok = out["generation_match"] is not False and (
+            expected_generation is None or out["generation_match"] is True
+        )
         out["production_record_complete"] = bool(
-            flags["access_token_present"] and flags["refresh_token_present"]
+            out["record_unambiguous"]
+            and flags["access_token_present"]
+            and flags["refresh_token_present"]
+            and owner_ok
+            and token_ok
+            and generation_ok
         )
         out["updated_at"] = str(row.get("updated_at") or "")[:32]
-        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
         out["expires_at"] = int(payload.get("expires_at") or 0)
-        out["rejection_reason"] = "" if out["production_record_complete"] else "token_record_incomplete"
+        if not out["record_unambiguous"]:
+            out["rejection_reason"] = "token_record_ambiguous"
+        elif not flags["access_token_present"] or not flags["refresh_token_present"]:
+            out["rejection_reason"] = "token_record_incomplete"
+        elif exp_uid and out["owner_match"] is not True:
+            out["rejection_reason"] = "owner_mismatch"
+        elif (exp_access or exp_refresh) and out["token_identity_match"] is not True:
+            out["rejection_reason"] = "token_identity_mismatch"
+        elif expected_generation is not None and out["generation_match"] is not True:
+            out["rejection_reason"] = "token_generation_mismatch"
+        else:
+            out["rejection_reason"] = ""
     else:
         out["rejection_reason"] = "token_record_missing"
     try:
@@ -198,9 +247,19 @@ def readback_after_browser_auth_save(
     session_id: str,
     *,
     expected_user_id: str = "",
+    expected_access_fp: str = "",
+    expected_refresh_fp: str = "",
+    expected_generation: int | None = None,
     save_reported_success: bool = True,
 ) -> dict[str, Any]:
-    probe = probe_browser_auth_storage(session_id, expected_user_id=expected_user_id, use_cache=False)
+    probe = probe_browser_auth_storage(
+        session_id,
+        expected_user_id=expected_user_id,
+        expected_access_fp=expected_access_fp,
+        expected_refresh_fp=expected_refresh_fp,
+        expected_generation=expected_generation,
+        use_cache=False,
+    )
     return {
         "save_reported_success": bool(save_reported_success),
         "readback_attempted": True,
@@ -209,6 +268,9 @@ def readback_after_browser_auth_save(
         "matching_row_id": str(probe.get("row_id") or "")[:64],
         "suite_sid_prefix_match": True,
         "owner_match": probe.get("owner_match"),
+        "token_identity_match": probe.get("token_identity_match"),
+        "generation_match": probe.get("generation_match"),
+        "record_unambiguous": bool(probe.get("record_unambiguous")),
         "environment": probe.get("environment"),
         "expiration_state": probe.get("expires_at") or 0,
         "failure_reason": probe.get("rejection_reason") or ("ok" if probe.get("production_record_complete") else "readback_incomplete"),

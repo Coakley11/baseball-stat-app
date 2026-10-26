@@ -19,20 +19,16 @@ def _start(page):
     return at
 
 
-def test_gate_view_pricing_button_reaches_pricing():
+def test_candidate_pro_page_is_not_gated_during_acceptance():
     at = _start("ML Predictions")
-    assert "ML Predictions is a Pro feature" in _titles(at)
-    at.button(key="monetization_gate_pricing").click().run()
-    assert not at.exception, at.exception
-    assert "Baseball Free & Pro" in _titles(at)
+    assert "ML Predictions" in _titles(at)
+    assert "is a Pro feature" not in _titles(at)
+    assert not [b for b in at.button if b.key == "monetization_gate_pricing"]
 
 
-def test_gate_back_button_returns_to_historical_explorer():
+def test_second_candidate_pro_page_is_not_gated_during_acceptance():
     at = _start("Draft Lab / Simulation")
-    assert "is a Pro feature" in _titles(at)
-    at.button(key="monetization_gate_back").click().run()
-    assert not at.exception, at.exception
-    assert "Historical Explorer" in _titles(at)
+    assert "Draft Lab / Simulation" in _titles(at)
     assert "is a Pro feature" not in _titles(at)
 
 

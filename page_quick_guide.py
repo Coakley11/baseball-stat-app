@@ -1,9 +1,8 @@
 """Polished Quick Guide card — single balanced HTML block, safely escaped.
 
-M2: the card is a native <details>/<summary> disclosure so it can collapse by
-default on phones (tap the header to expand) while staying exactly as before —
-always visible, non-interactive-looking — on desktop. No Python call site
-changes: every existing render_quick_guide_card() call keeps working as-is.
+M2: the card is a native <details>/<summary> disclosure. U1: it is closed by default at every
+width (desktop used to force it open), so the guide is one line until the user opens it. No
+Python call site changes: every existing render_quick_guide_card() call keeps working as-is.
 """
 
 from __future__ import annotations
@@ -28,22 +27,8 @@ _QUICK_GUIDE_CSS = f"""<style>
     transition: transform 0.15s ease;
 }}
 .page-guide[open] > summary::after {{ transform: rotate(90deg); }}
-@media (min-width: {PHONE_MAX_PX + 1}px) {{
-    /* Desktop: unchanged from pre-M2 — always fully visible, not a toggle. */
-    .page-guide > summary {{ cursor: default; }}
-    .page-guide > summary::after {{ display: none; }}
-    .page-guide > *:not(summary) {{ display: block !important; }}
-}}
-/* Current Chromium hides a closed disclosure's content via the ::details-content slot
-   (content-visibility), not display:none on children — so the rule above alone left
-   the desktop card showing only its header. Separate rule: a selector list containing
-   an unsupported pseudo-element would make older browsers drop the whole rule. */
-@media (min-width: {PHONE_MAX_PX + 1}px) {{
-    .page-guide::details-content {{
-        content-visibility: visible !important; display: block !important;
-        block-size: auto !important; height: auto !important;
-    }}
-}}
+/* U1: closed by default at every width (one line, tap/click to open). Desktop used to force
+   it open, which spent ~130 px above every page's content. */
 </style>"""
 
 

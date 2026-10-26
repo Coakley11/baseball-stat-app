@@ -221,6 +221,10 @@ SIMULATOR_RESUME_IDENTITY_KEY = "_draft_simulator_resume_identity"
 SIMULATOR_RESUME_DIAG_KEY = "_draft_simulator_resume_diag"
 SIMULATOR_BOARD_OWNERSHIP_KEY = "_simulator_board_ownership"
 SIMULATOR_OWNERSHIP_SCRUB_TOKEN_KEY = "_simulator_ownership_scrub_token"
+# Field inside the persisted draft_room_state blob that carries the board's ownership stamp.
+PERSISTED_OWNERSHIP_FIELD = "simulator_board_ownership"
+# Hosted (sign-in enabled) signed-out sessions: per-browser-session owner token.
+ANON_SESSION_PRINCIPAL_KEY = "_simulator_anon_session_principal"
 
 # Private Draft Room Simulator runtime — cleared on account/workspace change.
 # Never include shared Live Draft room keys here.
@@ -260,6 +264,43 @@ def _current_session_ownership(session: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _anonymous_principal(session: dict[str, Any]) -> str:
+    """Who owns a signed-out board — never just "no account + same workspace".
+
+    * Local install (sign-in disabled): this install's device id. Every browser on the
+      install is the same single user; another install sharing the workspace store is not.
+    * Hosted (sign-in enabled): signed-out visitors share a workspace and nothing durable
+      tells two of them apart, so ownership lasts only for this browser session.
+    Returns "" when no principal can be established (the board is then not ownable).
+    """
+    try:
+        from suite_auth import is_auth_enabled
+
+        hosted = bool(is_auth_enabled())
+    except Exception:
+        hosted = True
+    if hosted:
+        token = str(session.get(ANON_SESSION_PRINCIPAL_KEY) or "").strip()
+        if not token:
+            import uuid
+
+            token = f"session:{uuid.uuid4().hex}"
+            session[ANON_SESSION_PRINCIPAL_KEY] = token
+        return token
+    import os
+
+    device = str(session.get("_suite_device_id") or os.environ.get("BASEBALL_DEVICE_ID") or "").strip()
+    if not device:
+        try:
+            from baseball_persistent_state import _DEVICE_ID_FILE
+
+            if _DEVICE_ID_FILE.is_file():
+                device = _DEVICE_ID_FILE.read_text(encoding="utf-8").strip()
+        except Exception:
+            device = ""
+    return f"device:{device}" if device else ""
+
+
 def _is_daniel_account(ownership: dict[str, str]) -> bool:
     ext = str(ownership.get("external_id") or "").strip().lower()
     ws = str(ownership.get("workspace_id") or "").strip().lower()
@@ -268,9 +309,13 @@ def _is_daniel_account(ownership: dict[str, str]) -> bool:
 
 def _simulator_board_fingerprint(session: dict[str, Any]) -> str:
     """Stable fingerprint of the private simulator board (pick count + teams + players)."""
+    return simulator_board_fingerprint_for_table(session.get("draft_room_table"))
+
+
+def simulator_board_fingerprint_for_table(table: Any) -> str:
+    """Fingerprint of a board table — same value ``_simulator_board_fingerprint`` gives in session."""
     import hashlib
 
-    table = session.get("draft_room_table")
     if table is None or not hasattr(table, "empty") or table.empty:
         return ""
     col_team = "Fantasy Team" if "Fantasy Team" in table.columns else ("Team" if "Team" in table.columns else "")
@@ -311,8 +356,17 @@ def stamp_simulator_board_ownership(
     Never call this merely because an unowned board exists in session.
     """
     ownership = _current_session_ownership(session)
-    if not (ownership.get("auth_user_id") or ownership.get("external_id")) or not ownership.get("workspace_id"):
+    if not ownership.get("workspace_id"):
         return None
+    anon_principal = ""
+    if not (ownership.get("auth_user_id") or ownership.get("external_id")):
+        if _is_daniel_account(ownership):
+            # Signed-out legacy workspace: boards there are allowed unstamped (verify) — keep it
+            # that way so a later Daniel sign-in still adopts them.
+            return None
+        anon_principal = _anonymous_principal(session)
+        if not anon_principal:
+            return None
     board_fp = _simulator_board_fingerprint(session)
     if not board_fp:
         return None
@@ -323,9 +377,38 @@ def stamp_simulator_board_ownership(
         "simulator_board_fingerprint": board_fp,
         "simulator_board_created_at": _utc_now_iso(),
         "simulator_board_origin": str(origin or "local_edit").strip() or "local_edit",
+        "simulator_owner_anon_principal": anon_principal,
     }
     session[SIMULATOR_BOARD_OWNERSHIP_KEY] = stamp
     return stamp
+
+
+def ownership_stamp_for_table(session: dict[str, Any], table: Any) -> dict[str, Any] | None:
+    """The session's ownership stamp when it describes ``table`` — persisted with that board."""
+    stamp = session.get(SIMULATOR_BOARD_OWNERSHIP_KEY)
+    if not isinstance(stamp, dict):
+        return None
+    fp = str(stamp.get("simulator_board_fingerprint") or "").strip()
+    if not fp or fp != simulator_board_fingerprint_for_table(table):
+        return None
+    return {k: str(v or "") for k, v in stamp.items()}
+
+
+def persisted_simulator_board_ownership(session: dict[str, Any]) -> dict[str, Any] | None:
+    """Ownership stamp saved inside the canonical draft-room blob (survives refresh/restore).
+
+    Only a stamp written for this exact board counts; verify still checks it against the
+    current account and workspace, so a restored foreign board stays rejected.
+    """
+    blob = session.get("draft_room_state")
+    if not isinstance(blob, dict):
+        return None
+    stamp = blob.get(PERSISTED_OWNERSHIP_FIELD)
+    if not isinstance(stamp, dict):
+        return None
+    if str(stamp.get("simulator_board_fingerprint") or "").strip() != _simulator_board_fingerprint(session):
+        return None
+    return dict(stamp)
 
 
 def verify_simulator_board_ownership(session: dict[str, Any]) -> tuple[bool, str]:
@@ -335,6 +418,8 @@ def verify_simulator_board_ownership(session: dict[str, Any]) -> tuple[bool, str
         return True, ""
     ownership = _current_session_ownership(session)
     stamp = session.get(SIMULATOR_BOARD_OWNERSHIP_KEY)
+    if not isinstance(stamp, dict) or not str(stamp.get("simulator_board_fingerprint") or "").strip():
+        stamp = persisted_simulator_board_ownership(session)
     if not isinstance(stamp, dict) or not str(stamp.get("simulator_board_fingerprint") or "").strip():
         if _is_daniel_account(ownership):
             return True, "legacy_daniel_allowed"
@@ -351,6 +436,12 @@ def verify_simulator_board_ownership(session: dict[str, Any]) -> tuple[bool, str
         return False, "foreign_board_auth_mismatch"
     if str(stamp.get("simulator_board_fingerprint") or "").strip() != board_fp:
         return False, "board_fingerprint_mismatch"
+    if not (current_uid or ownership.get("external_id")):
+        # Signed out: workspace and board alone never prove ownership — the anonymous
+        # principal must match too.
+        owned_anon = str(stamp.get("simulator_owner_anon_principal") or "").strip()
+        if not owned_anon or owned_anon != _anonymous_principal(session):
+            return False, "foreign_board_anonymous_owner_mismatch"
     return True, ""
 
 
@@ -376,6 +467,10 @@ def scrub_simulator_runtime_for_current_account(
         return {"cleared": False, "verified": True, "reason": "empty_board"}
     verified, reject = verify_simulator_board_ownership(session)
     if verified:
+        if not isinstance(session.get(SIMULATOR_BOARD_OWNERSHIP_KEY), dict):
+            persisted = persisted_simulator_board_ownership(session)
+            if persisted:
+                session[SIMULATOR_BOARD_OWNERSHIP_KEY] = persisted
         _set_resume_diag(
             session,
             simulator_board_owner_verified=True,
