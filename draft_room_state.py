@@ -215,6 +215,32 @@ def live_draft_handoff_pick_count(room: Any) -> int:
     return count
 
 
+def _board_holds_another_draft(table: Any, room: dict[str, Any]) -> bool:
+    """True when the canonical board has a pick the live room does not (same pick number)."""
+    df = coerce_board_table(table)
+    if df.empty or "Player" not in df.columns or "Pick" not in df.columns:
+        return False
+    live_by_pick: dict[int, str] = {}
+    for rec in room.get("draft_board") or []:
+        if not isinstance(rec, dict):
+            continue
+        try:
+            pick = int(rec.get("Pick") or rec.get("pick") or 0)
+        except (TypeError, ValueError):
+            continue
+        live_by_pick[pick] = str(rec.get("fullName") or rec.get("Player") or "").strip().lower()
+    for _, row in df.iterrows():
+        if not _player_cell_filled(row.get("Player")):
+            continue
+        try:
+            pick = int(row.get("Pick") or 0)
+        except (TypeError, ValueError):
+            return True
+        if live_by_pick.get(pick) != str(row.get("Player") or "").strip().lower():
+            return True
+    return False
+
+
 def ensure_live_draft_synced_to_canonical_board(
     session: dict[str, Any],
     *,
@@ -269,6 +295,19 @@ def ensure_live_draft_synced_to_canonical_board(
     live_status = diag["live_draft_status"]
     live_picks = live_draft_handoff_pick_count(room)
     diag["live_draft_pick_count"] = live_picks
+
+    # A finished Live Draft must not overwrite a different draft on the board: mirroring it
+    # replaced a new Draft Room Simulator mock draft (4 teams x 5 rounds, 1 pick) with the old
+    # room's full board, so the Simulator showed "Board is full" and no pick control. An empty
+    # board, or one holding only this room's own picks, still fills from the room.
+    if live_status == "complete" and _board_holds_another_draft(session.get(DRAFT_ROOM_TABLE_KEY), room):
+        diag["skipped"] = True
+        diag["skip_reason"] = "live_draft_complete_board_holds_another_draft"
+        after = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
+        diag["canonical_pick_count_after"] = after
+        diag["assistant_roster_source"] = "canonical_draft_board" if after > 0 else "empty"
+        session[LIVE_HANDOFF_SYNC_DIAG_KEY] = diag
+        return diag
 
     # Lobby / setup rooms must not mirror into the private Simulator board.
     if live_status not in ("in_progress", "paused", "complete"):
@@ -1572,11 +1611,17 @@ def simulator_roster_view_team_options(
     return teams or configured
 
 
+def _forget_saved_mock_draft(session: dict[str, Any]) -> None:
+    """A new board is a new mock draft: its first save must not overwrite the last one saved."""
+    session.pop("_simulator_session_library_draft_id", None)
+
+
 def rebuild_simulator_board_for_teams(session: dict[str, Any]) -> pd.DataFrame:
     """Rebuild snake board from room_team_names / room_rounds (preserves no picks)."""
     teams = _simulator_team_names(session)
     rounds = int(session.get("room_rounds") or 20)
     session.pop(DRAFT_ROOM_EDITOR_CACHE_KEY, None)
+    _forget_saved_mock_draft(session)
     table = build_snake_board(teams, rounds=rounds)
     return apply_programmatic_board_update(session, table, reason="rebuild_board_teams")
 
@@ -1610,6 +1655,7 @@ def ensure_simulator_board_for_settings(session: dict[str, Any]) -> pd.DataFrame
     ):
         return table
     session.pop(DRAFT_ROOM_EDITOR_CACHE_KEY, None)
+    _forget_saved_mock_draft(session)
     board = build_snake_board(teams, rounds=rounds)
     return apply_programmatic_board_update(session, board, reason="ensure_simulator_board")
 
@@ -1617,6 +1663,7 @@ def ensure_simulator_board_for_settings(session: dict[str, Any]) -> pd.DataFrame
 def reset_canonical_draft_board(session: dict[str, Any]) -> pd.DataFrame:
     """Fresh snake board — Start New Draft."""
     clear_draft_room_local_edit(session)
+    _forget_saved_mock_draft(session)
     teams = _simulator_team_names(session)
     rounds = int(session.get("room_rounds") or 20)
     table = build_snake_board(teams, rounds=rounds)
@@ -1629,6 +1676,7 @@ def reset_canonical_draft_board(session: dict[str, Any]) -> pd.DataFrame:
 def reset_simulator_board_only(session: dict[str, Any]) -> pd.DataFrame:
     """Option B: clear practice board only; Live Draft Room record stays if present."""
     session.pop(DRAFT_ROOM_EDITOR_CACHE_KEY, None)
+    _forget_saved_mock_draft(session)
     session.pop("draft_room_board_editor_cache", None)
     session.pop("draft_room_board_editor_seed", None)
     session.pop(_BOARD_ASSIGN_SUBMIT_TRACE_KEY, None)

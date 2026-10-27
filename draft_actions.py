@@ -934,7 +934,9 @@ def resolve_player_draft_gate(
             return gate
 
     live_room = session.get("live_draft_room")
-    if isinstance(live_room, dict):
+    # Only the active Live Draft decides "complete": a finished Live Draft left in the session
+    # disabled every Draft Player button for a new Draft Room Simulator mock draft.
+    if isinstance(live_room, dict) and ctx.get("live_draft_active"):
         try:
             from live_draft_safe_mode import is_draft_truly_complete, total_expected_picks
 

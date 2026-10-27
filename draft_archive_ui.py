@@ -222,7 +222,9 @@ def _execute_simulator_league_context_save(
                 draft_name=draft_name,
                 config=dict(session.get("draft_shared_settings") or {}),
                 defer_activation=True,
-                reuse_session_draft_id=False,
+                # Saving the same mock draft again (e.g. after more picks) updates its library
+                # entry; a reset or new board starts a new one (draft_room_state).
+                reuse_session_draft_id=True,
                 save_only=save_only,
             )
             save_reason = "simulator_league_context_saved"
@@ -273,6 +275,12 @@ def _execute_simulator_league_context_save(
             except ImportError:
                 pass
             stash_league_context_save_flash(session, entry, context=context, league_save=True)
+            if save_only:
+                _set_draft_save_ui_flash(
+                    session,
+                    level="info",
+                    message=f"Saved “{entry.get('draft_name') or draft_name}” as a Mock Draft in your Saved Draft Library.",
+                )
     except Exception as exc:
         try:
             if record_save_failure_trace is not None:
@@ -4168,7 +4176,7 @@ def render_save_simulator_draft_team(
     if not team_name or team_name == "—":
         return
     expand_save = bool(session.pop("_draft_save_trace_expand", False))
-    with st.expander("Set Active Draft", expanded=expand_save):
+    with st.expander("Save this mock draft", expanded=expand_save):
         flash = _pop_draft_save_ui_flash(session)
         if flash and flash.get("message"):
             if flash.get("level") == "error":
@@ -4176,8 +4184,8 @@ def render_save_simulator_draft_team(
             else:
                 st.info(str(flash["message"]))
         st.caption(
-            "Saves the full mock draft as your **Active Draft** (all teams), "
-            "ready for Standings, Lineup, and Waiver workflows."
+            "**Save as Mock Draft** keeps the whole board (all teams and picks) in your Saved Draft "
+            "Library, finished or not. **Set Active Draft** also makes it your active draft."
         )
         st.text_input(
             "Draft name",
@@ -4185,9 +4193,16 @@ def render_save_simulator_draft_team(
             key=f"{key_prefix}_name_input",
         )
         st.button(
+            "Save as Mock Draft",
+            key=f"{key_prefix}_save_mock_btn",
+            type="primary",
+            icon=":material/save:",
+            on_click=_on_simulator_save_click,
+            kwargs={"team_name": team_name, "key_prefix": key_prefix, "save_only": True},
+        )
+        st.button(
             "Set Active Draft",
             key=f"{key_prefix}_save_league_btn",
-            type="primary",
             on_click=_on_simulator_save_click,
             kwargs={"team_name": team_name, "key_prefix": key_prefix, "save_only": False},
         )

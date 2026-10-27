@@ -372,7 +372,7 @@ def draft_type_display(entry: dict[str, Any] | None) -> str:
         return "Live Draft"
     if draft_type == DRAFT_TYPE_IMPORTED:
         return "Imported League"
-    return "Simulator"
+    return "Mock Draft"  # Draft Room Simulator saves
 
 
 def resolve_draft_type_display(
