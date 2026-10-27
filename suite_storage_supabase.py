@@ -361,30 +361,74 @@ def _workspace_storage_app_keys() -> list[str]:
         return [normalize_app_key(app) for app in sorted(ACTIVE_APP_KEYS)]
 
 
+class AnonymousAccountAccessBlocked(RuntimeError):
+    """An account-scoped read or write was attempted without a signed-in account."""
+
+
 def _scoped_user_id() -> str:
+    """Account id every account-scoped query is filtered by (the one chokepoint).
+
+    With sign-in on, a signed-out guest has no account: the query is refused here instead of
+    running unfiltered or matching the owner's legacy rows (``user_id IS NULL``).
+    """
     from suite_user import get_account_user_id
 
-    return get_account_user_id()
+    try:
+        from suite_auth import is_anonymous_guest
+
+        if is_anonymous_guest():
+            raise AnonymousAccountAccessBlocked("Sign in to use saved data.")
+    except ImportError:
+        pass
+    uid = get_account_user_id()
+    if not uid:
+        raise AnonymousAccountAccessBlocked("No signed-in account for this request.")
+    return uid
 
 
 def _cloud_user_id() -> str | None:
+    """Cloud user id for user-scoped rows; None only on a no-sign-in (single-user) install.
+
+    Callers treat None as "no user filter" (the single-user legacy rows). With sign-in on, an
+    account whose cloud row could not be resolved must not get that, so it is refused.
+    """
     uid = _scoped_user_id()
     if not uid or uid.startswith("local:"):
+        try:
+            from suite_auth import is_auth_enabled
+
+            if is_auth_enabled():
+                raise AnonymousAccountAccessBlocked("Account could not be resolved for this request.")
+        except ImportError:
+            pass
         return None
     return uid
 
 
+def _session_is_legacy_owner_workspace() -> bool:
+    try:
+        from suite_workspace import DEFAULT_WORKSPACE_ID, get_active_workspace_id
+
+        return get_active_workspace_id() == DEFAULT_WORKSPACE_ID
+    except Exception:
+        return False
+
+
 def _apply_user_scope_params(params: dict[str, str]) -> None:
     """
-    Match activity rows written with cloud user_id or legacy null user_id rows.
+    Match activity rows written with this account's cloud user_id, plus legacy null user_id rows.
 
-    Single-tenant suite: null user_id rows are legacy writes before auth-scoped ids.
+    Null user_id rows are the single-tenant suite's writes from before auth-scoped ids: they
+    belong to the owner's legacy workspace, so only that workspace reads them. Any other signed-in
+    account sees only its own rows.
     """
     uid = _cloud_user_id()
-    if uid:
+    if uid and _session_is_legacy_owner_workspace():
         params["or"] = f"(user_id.eq.{uid},user_id.is.null)"
+    elif uid:
+        params["user_id"] = f"eq.{uid}"
     else:
-        params["user_id"] = "is.null"
+        params["user_id"] = "is.null"  # single-user install (no sign-in): the legacy rows
 
 
 def ensure_user_row(

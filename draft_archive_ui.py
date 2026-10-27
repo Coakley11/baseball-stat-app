@@ -1324,6 +1324,14 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
     session.pop(_PERSIST_FAILURE_KEY, None)
     session.pop("_draft_archive_persist_error", None)
     try:
+        from suite_auth import is_anonymous_guest
+
+        if is_anonymous_guest(session):
+            session[_PERSIST_FAILURE_KEY] = "sign in to save drafts to your account"
+            return False
+    except ImportError:
+        pass
+    try:
         from workflow_persist_guard import mark_workflow_persist_authoritative
 
         mark_workflow_persist_authoritative(session)

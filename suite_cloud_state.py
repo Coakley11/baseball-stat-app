@@ -422,13 +422,23 @@ def load_cloud_full_session(app_id: str, *, force: bool = False) -> tuple[dict[s
     return read.state, read.updated_at
 
 
+def _anonymous_guest() -> bool:
+    try:
+        from suite_auth import is_anonymous_guest
+
+        return bool(is_anonymous_guest())
+    except ImportError:
+        return False
+
+
 def load_cloud_full_session_status(app_id: str, *, force: bool = False) -> CloudRead:
     """Read the cloud ``full_session`` and say how the read went (see ``CLOUD_READ_*``)."""
     try:
         from suite_storage_config import cloud_storage_enabled
     except ImportError:
         return CloudRead({}, None, CLOUD_READ_DISABLED)
-    if not cloud_storage_enabled():
+    if not cloud_storage_enabled() or _anonymous_guest():
+        # A signed-out guest has no saved session: reading would mean someone else's.
         return CloudRead({}, None, CLOUD_READ_DISABLED)
     ss = _streamlit_session()
     try:
@@ -524,6 +534,9 @@ def save_cloud_full_session(
     the user's saved data, and writing it could replace newer data with stale or empty state.
     """
     if not state:
+        return False
+    if _anonymous_guest():
+        _record_cloud_write_error("sign in to save to your account")
         return False
     try:
         from suite_storage_config import cloud_storage_enabled

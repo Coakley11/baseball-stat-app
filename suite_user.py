@@ -17,15 +17,22 @@ from suite_storage_config import get_cloud_config, reset_cloud_config_cache
 def get_external_user_id() -> str:
     """Stable account key from env or [suite_activity] secrets; prefers signed-in auth when available."""
     try:
-        import streamlit as st  # noqa: WPS433
-        from suite_auth import is_auth_enabled, is_authenticated, resolve_auth_external_id
+        from suite_auth import is_anonymous_guest, is_auth_enabled
 
-        if is_auth_enabled() and is_authenticated(st.session_state):
+        if is_auth_enabled():
+            # With sign-in on, the configured account below belongs to the owner: a guest (or a
+            # failed sign-in) gets its own temporary id, never that one.
+            import streamlit as st  # noqa: WPS433
+            from suite_auth import guest_workspace_id, resolve_auth_external_id
+
+            if is_anonymous_guest():
+                return guest_workspace_id(st.session_state)
             ext = str(resolve_auth_external_id(st.session_state) or "").strip()
-            if ext:
-                return ext
-    except Exception:
+            return ext or "user_unidentified"
+    except ImportError:
         pass
+    except Exception:
+        return "guest_unscoped"
     env_id = os.environ.get("SUITE_USER_ID", "").strip()
     if env_id:
         return env_id
@@ -50,7 +57,29 @@ def get_external_user_id() -> str:
     return "default"
 
 
+def _signed_in_email_when_auth_enabled() -> str | None:
+    """With sign-in on: the signed-in account's email ("" for a guest). None when auth is off."""
+    try:
+        from suite_auth import current_auth_email, is_anonymous_guest, is_auth_enabled
+
+        if not is_auth_enabled():
+            return None
+        if is_anonymous_guest():
+            return ""
+        import streamlit as st  # noqa: WPS433
+
+        return str(current_auth_email(st.session_state) or "").strip()
+    except ImportError:
+        return None
+    except Exception:
+        return ""
+
+
 def get_user_email() -> str:
+    auth_email = _signed_in_email_when_auth_enabled()
+    if auth_email is not None:
+        # The configured suite_user_email is the owner's; never another session's.
+        return auth_email
     env = os.environ.get("SUITE_USER_EMAIL", "").strip()
     if env:
         return env
@@ -74,6 +103,8 @@ def get_user_email() -> str:
 
 
 def get_display_name() -> str:
+    if _signed_in_email_when_auth_enabled() is not None:
+        return ""  # the configured name is the owner's; new rows derive one from the account id
     env = os.environ.get("SUITE_USER_DISPLAY_NAME", "").strip()
     if env:
         return env
@@ -147,6 +178,14 @@ def _resolve_account_user_id_cached(external_id: str, email: str) -> str:
 
 
 def get_account_user_id() -> str:
+    """Cloud account id of this session; empty for a signed-out guest (no account)."""
+    try:
+        from suite_auth import is_anonymous_guest
+
+        if is_anonymous_guest():
+            return ""
+    except ImportError:
+        pass
     external = get_external_user_id()
     email = get_user_email()
     return _resolve_account_user_id_cached(external, email)

@@ -131,6 +131,8 @@ def persist_active_workspace_id(workspace_id: str, *, session_state: dict[str, A
     if env_workspace_id_override():
         # Keep the shared pointer untouched so a guest process cannot flip the host.
         return True
+    if _anonymous_guest(session_state):
+        return True  # a signed-out guest's workspace is per session; never the shared pointer
     ws = normalize_workspace_id(workspace_id)
     try:
         from suite_workspace_registry import persist_active_workspace_for_account
@@ -146,12 +148,37 @@ def persist_active_workspace_id(workspace_id: str, *, session_state: dict[str, A
     return _write_json(_PERSISTED_FILE, payload)
 
 
+def _anonymous_guest(session_state: Any = None) -> bool:
+    try:
+        from suite_auth import is_anonymous_guest
+
+        return bool(is_anonymous_guest(session_state))
+    except ImportError:
+        return False
+
+
 def resolve_workspace_id(*, st: Any | None = None, explicit: str | None = None) -> str:
     if explicit not in (None, ""):
         return normalize_workspace_id(explicit)
     ss: dict[str, Any] | None = None
     if st is not None:
         ss = st.session_state
+    try:
+        from suite_auth import guest_workspace_id
+
+        if _anonymous_guest(ss):
+            # Signed out with sign-in on: a private temporary workspace, never the owner's
+            # default ("daniel") or the shared persisted pointer.
+            if ss is None:
+                import streamlit as st_module  # noqa: WPS433
+
+                ss = st_module.session_state
+            return guest_workspace_id(ss)
+    except ImportError:
+        pass
+    except Exception:
+        return "guest_unscoped"
+    if st is not None:
         raw = ss.get(SESSION_KEY)
         if raw not in (None, ""):
             return _maybe_clamp_resolved_workspace(ss, normalize_workspace_id(str(raw)))

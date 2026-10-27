@@ -84,6 +84,8 @@ def persist_hof_case_resume_bundle(bundle: dict[str, Any]) -> bool:
         stored = True
     except Exception:
         pass
+    if _shared_fallback_disabled():
+        return stored
     try:
         from suite_activity_client import LOCAL_FALLBACK_DIR
 
@@ -105,6 +107,17 @@ def persist_hof_case_resume_bundle(bundle: dict[str, Any]) -> bool:
     return stored
 
 
+def _shared_fallback_disabled() -> bool:
+    """With sign-in on, the local fallback files are shared by every visitor on the server, so
+    HOF case bundles live only in the account's saved items."""
+    try:
+        from suite_auth import is_auth_enabled
+
+        return bool(is_auth_enabled())
+    except ImportError:
+        return False
+
+
 def load_hof_case_resume_bundle(resume_key: str) -> dict[str, Any]:
     """Load submit-time HOF resume bundle by ``bb:hof_case:{slug}`` key."""
     key = str(resume_key or "").strip()
@@ -122,6 +135,8 @@ def load_hof_case_resume_bundle(resume_key: str) -> dict[str, Any]:
     except Exception:
         pass
 
+    if _shared_fallback_disabled():
+        return {}
     try:
         from suite_activity_client import LOCAL_FALLBACK_DIR
 

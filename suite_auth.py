@@ -125,6 +125,47 @@ def is_authenticated(session_state: dict[str, Any]) -> bool:
     return bool(session_state.get(AUTH_SESSION_KEY))
 
 
+GUEST_WORKSPACE_KEY = "_suite_guest_workspace_id"
+
+
+def is_anonymous_guest(session_state: Any = None) -> bool:
+    """True when sign-in is enabled and this visitor is not signed in.
+
+    A guest never acts as the deployment's configured account (``suite_user_id``): no account
+    id, no account-scoped cloud reads or writes, and a private temporary workspace. Without a
+    Streamlit session to check (e.g. a background thread) the answer is True: unknown callers
+    must not fall back to the owner's account.
+    """
+    if not is_auth_enabled():
+        return False
+    if session_state is None:
+        try:
+            import streamlit as st  # noqa: WPS433
+
+            session_state = st.session_state
+            session_state.get(AUTH_SESSION_KEY)
+        except Exception:
+            return True
+    try:
+        return not is_authenticated(session_state)
+    except Exception:
+        return True
+
+
+def guest_workspace_id(session_state: Any) -> str:
+    """This guest's own temporary workspace (one per browser session, never shared)."""
+    try:
+        ws = str(session_state.get(GUEST_WORKSPACE_KEY) or "").strip()
+        if not ws:
+            import secrets as _secrets
+
+            ws = f"guest_{_secrets.token_hex(8)}"
+            session_state[GUEST_WORKSPACE_KEY] = ws
+        return ws
+    except Exception:
+        return "guest_unscoped"
+
+
 def auth_session_complete(session_state: dict[str, Any]) -> bool:
     """True when Supabase auth session flag, user id, and refreshable tokens are all present."""
     if not is_auth_enabled():
@@ -229,11 +270,17 @@ def resolve_auth_external_id(session_state: dict[str, Any]) -> str:
     inferred = normalize_account_external_id(_infer_external_id_from_email(current_auth_email(session_state)))
     if inferred:
         return inferred
+    if is_auth_enabled():
+        # Never resolve an unidentified signed-in account to the owner's profile.
+        uid = re.sub(r"[^a-z0-9]", "", str(session_state.get(AUTH_USER_ID_KEY) or "").lower())[:16]
+        return f"user_{uid}" if uid else "user_unidentified"
     return "daniel"
 
 
 def allowed_workspaces_for_session(session_state: dict[str, Any]) -> tuple[str, ...]:
     """Allowed workspace ids for this session — all presets when auth is off."""
+    if is_anonymous_guest(session_state):
+        return (guest_workspace_id(session_state),)
     if not is_auth_enabled() or not is_authenticated(session_state):
         try:
             from suite_workspace import WORKSPACE_PRESETS
@@ -244,18 +291,43 @@ def allowed_workspaces_for_session(session_state: dict[str, Any]) -> tuple[str, 
     return allowed_workspaces_for_user(resolve_auth_external_id(session_state))
 
 
+def _configured_profile_emails() -> dict[str, str]:
+    """Exact email -> preset profile map (Secrets ``[suite_activity] profile_emails``)."""
+    out: dict[str, str] = {}
+    try:
+        import streamlit as st  # noqa: WPS433
+
+        block = st.secrets.get("suite_activity") if hasattr(st, "secrets") else None
+        raw = block.get("profile_emails") if block is not None else None
+        for email, profile in dict(raw or {}).items():
+            e, p = str(email or "").strip().lower(), str(profile or "").strip().lower()
+            if e and p in _DEFAULT_ALLOWED_WORKSPACES:
+                out[e] = p
+    except Exception:
+        pass
+    return out
+
+
 def _infer_external_id_from_email(email: str) -> str:
+    """Suite profile id for a signed-in email. Preset profiles (daniel, ariel, guest, test_user)
+    are reached only by exact address: the owner's admin aliases, or ``profile_emails`` in
+    Secrets. Any other address gets an id of its own; an email merely containing "daniel" or
+    "ariel", or named like a preset, used to resolve to that person's profile."""
     low = str(email or "").strip().lower()
     if not low:
         return ""
-    if "ariel" in low:
-        return "ariel"
-    if "daniel" in low:
-        return "daniel"
+    configured = _configured_profile_emails().get(low)
+    if configured:
+        return configured
     local = low.split("@", 1)[0]
-    if local in _DEFAULT_ALLOWED_WORKSPACES:
-        return local
-    return local or "daniel"
+    if local in _ADMIN_EXTERNAL_ALIASES:
+        return _ADMIN_EXTERNAL_ALIASES[local]
+    safe = re.sub(r"[^a-z0-9_]+", "_", local).strip("_")
+    if not safe:
+        return "user_unidentified"
+    if safe in _DEFAULT_ALLOWED_WORKSPACES or normalize_account_external_id(safe) in _DEFAULT_ALLOWED_WORKSPACES:
+        return f"user_{safe}"
+    return safe
 
 
 def account_scoped_workspace_target(session_state: dict[str, Any]) -> str:

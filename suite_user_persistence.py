@@ -128,6 +128,10 @@ def _load_raw(
     workspace_id: str | None = None,
 ) -> tuple[dict[str, Any], str | None, str | None]:
     """Return ``(state_dict, warning, saved_at_iso)``."""
+    if _anonymous_guest():
+        # A signed-out guest keeps its state in the browser session only; it never reads a
+        # saved workspace (including the owner's, which explicit "daniel" paths would reach).
+        return {}, None, None
     path = state_file_path(app_id, workspace_id)
     raw = _read_json(path)
     if raw is None:
@@ -155,9 +159,20 @@ def load_user_state(app_id: str) -> tuple[dict[str, Any], str | None]:
     return state, warning
 
 
+def _anonymous_guest() -> bool:
+    try:
+        from suite_auth import is_anonymous_guest
+
+        return bool(is_anonymous_guest())
+    except ImportError:
+        return False
+
+
 def save_user_state(app_id: str, state: dict[str, Any], *, workspace_id: str | None = None) -> bool:
     if not isinstance(state, dict):
         return False
+    if _anonymous_guest():
+        return False  # persistent saves need a signed-in account
     payload = {
         "version": STATE_VERSION,
         "app": app_id,
@@ -168,6 +183,8 @@ def save_user_state(app_id: str, state: dict[str, Any], *, workspace_id: str | N
 
 
 def reset_user_state(app_id: str, *, workspace_id: str | None = None) -> bool:
+    if _anonymous_guest():
+        return False  # a guest has no saved workspace, and must never reset someone else's
     path = state_file_path(app_id, workspace_id)
     try:
         if path.is_file():
@@ -1469,6 +1486,9 @@ def force_autosave(
     reason: str = "",
 ) -> bool:
     """Persist workspace immediately (e.g. after meaningful user action)."""
+    if _anonymous_guest():
+        st.session_state["_suite_autosave_cloud_blocked_reason"] = "signed_out_guest"
+        return False
     try:
         import hashlib
         import json
@@ -1585,6 +1605,8 @@ def autosave_if_changed(
     build_state: Callable[[Any], dict[str, Any]],
 ) -> None:
     """Persist to disk and Supabase when the session snapshot changes."""
+    if _anonymous_guest():
+        return  # a signed-out guest's state lives in the browser session only
     try:
         import hashlib
 

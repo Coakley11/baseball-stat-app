@@ -241,6 +241,16 @@ class LocalFileSharedLeagueStore:
 _SHARED_STORE: SharedLeagueStore | None = None
 
 
+def _anonymous_guest() -> bool:
+    """Shared leagues belong to signed-in accounts: a signed-out guest neither reads nor writes them."""
+    try:
+        from suite_auth import is_anonymous_guest
+
+        return bool(is_anonymous_guest())
+    except ImportError:
+        return False
+
+
 def get_shared_league_store() -> SharedLeagueStore:
     global _SHARED_STORE
     if _SHARED_STORE is not None:
@@ -280,7 +290,7 @@ def load_shared_league(league_id: str, *, store: SharedLeagueStore | None = None
     import time
 
     lid = str(league_id or "").strip()
-    if not lid:
+    if not lid or _anonymous_guest():
         return None
     # Soft-cache only the default store path — explicit store overrides skip cache.
     if store is None:
@@ -751,6 +761,9 @@ def sync_context_with_shared_store(
     """
     import time
 
+    if _anonymous_guest():
+        return context
+
     from fantasy_league_context import upsert_league_context
     from fantasy_workspace_team_identity import (
         overlay_workspace_team_on_context,
@@ -878,7 +891,7 @@ def push_league_context_to_shared(
     store: SharedLeagueStore | None = None,
 ) -> dict[str, Any] | None:
     league_id = resolve_canonical_league_id(context)
-    if not league_id:
+    if not league_id or _anonymous_guest():
         return None
     backend = store or get_shared_league_store()
     existing = backend.load(league_id)
