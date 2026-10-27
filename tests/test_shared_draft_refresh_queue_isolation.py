@@ -166,6 +166,8 @@ class SharedDraftRefreshQueueIsolationTests(unittest.TestCase):
             ACTIVE_SHARED_ROOM_CODE_KEY: code,
             MEMBERSHIP_KEY: dict(guest.get(MEMBERSHIP_KEY) or {}),
             PARTICIPANT_STATE_KEY: dict(guest.get(PARTICIPANT_STATE_KEY) or {}),
+            # The working queue is the account's own (restored with its workspace), never a room's.
+            DRAFT_QUEUE_KEY: list(guest.get(DRAFT_QUEUE_KEY) or []),
         }
         restored = restore_persisted_shared_room_membership(refreshed)
         self.assertEqual(restored, code)

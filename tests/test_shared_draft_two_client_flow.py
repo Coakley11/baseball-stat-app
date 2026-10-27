@@ -430,6 +430,8 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
             ACTIVE_SHARED_ROOM_CODE_KEY: code,
             MEMBERSHIP_KEY: copy.deepcopy(self.host.get(MEMBERSHIP_KEY) or {}),
             PARTICIPANT_STATE_KEY: copy.deepcopy(self.host.get(PARTICIPANT_STATE_KEY) or {}),
+            # The working queue is restored with the account's workspace, never from the room.
+            DRAFT_QUEUE_KEY: list(self.host.get(DRAFT_QUEUE_KEY) or []),
         }
         save_participant_workflow_from_session(self.host, code)
         restored = restore_persisted_shared_room_membership(refreshed)

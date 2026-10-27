@@ -121,3 +121,16 @@ def adopt_board_without_consuming(session: dict[str, Any]) -> None:
         entry = _ledger(session, source)
         for pick, name in picks:
             entry.setdefault(f"{pick}|{name.lower()}", {"player": name, "index": None})
+
+
+def clear_queue_for_account_change(session: dict[str, Any]) -> None:
+    """Sign-out / different account on this browser: drop this session's copy of the queue.
+
+    The queue is saved with the previous account's workspace, so nothing is lost; the next
+    account's own queue loads from its workspace. Never called for room joins or page changes.
+    """
+    for key in ("draft_queue", LEDGER_KEY, "_queue_player_meta", "_draft_queue_revision"):
+        session.pop(key, None)
+    state = session.get("draft_state")
+    if isinstance(state, dict):
+        state.pop("queue", None)

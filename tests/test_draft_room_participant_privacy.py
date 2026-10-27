@@ -99,6 +99,9 @@ class DraftRoomParticipantPrivacyTests(unittest.TestCase):
         save_participant_workflow_from_session(device_a, room_code)
 
         _simulate_cloud_private_state_handoff(device_a, device_b)
+        # The account's working queue reaches device B through its workspace, not the room
+        # (2026-10-27 global queue contract); joining the room must leave it as restored.
+        device_b[DRAFT_QUEUE_KEY] = list(device_a[DRAFT_QUEUE_KEY])
         load_participant_workflow_into_session(device_b, room_code)
 
         self.assertEqual(device_b.get(DRAFT_QUEUE_KEY), ["Aaron Judge", "Juan Soto"])
@@ -167,8 +170,12 @@ class DraftRoomParticipantPrivacyTests(unittest.TestCase):
                 "by_participant": {},
             }
         }
+        # The guest's session queue is the guest's own (a host's copy on this browser is dropped
+        # at sign-out, draft_queue_contract.clear_queue_for_account_change): the room never
+        # replaces it with the host's room queue.
+        guest[DRAFT_QUEUE_KEY] = ["Mookie Betts"]
         load_participant_workflow_into_session(guest, room_code)
-        self.assertEqual(guest.get(DRAFT_QUEUE_KEY), [])
+        self.assertEqual(guest.get(DRAFT_QUEUE_KEY), ["Mookie Betts"])
 
     def test_leave_shared_draft_room_clears_runtime_state(self) -> None:
         from draft_room_context import leave_shared_draft_room

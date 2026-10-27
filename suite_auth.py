@@ -917,6 +917,12 @@ def _clear_auth_session(
         clear_private_baseball_simulator_runtime(session_state, reason="auth_sign_out")
     except ImportError:
         pass
+    try:
+        from draft_queue_contract import clear_queue_for_account_change
+
+        clear_queue_for_account_change(session_state)
+    except ImportError:
+        pass
     for key in (
         AUTH_SESSION_KEY,
         AUTH_USER_EMAIL_KEY,
@@ -1058,6 +1064,12 @@ def _persist_auth_session(
                 session_state,
                 reason="auth_account_scope_changed",
             )
+        except ImportError:
+            pass
+        try:
+            from draft_queue_contract import clear_queue_for_account_change
+
+            clear_queue_for_account_change(session_state)
         except ImportError:
             pass
     if old_uid != new_uid:

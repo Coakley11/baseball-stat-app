@@ -681,24 +681,6 @@ def active_participant_team(session: dict[str, Any]) -> str:
         return ""
 
 
-def _queue_inherited_from_other_user(
-    session: dict[str, Any], room_code: str, slot: dict[str, Any], pid: str, queue: list[str]
-) -> bool:
-    """True when the session queue is exactly another participant's saved room queue."""
-    me = str(pid or "").strip()
-    records = [slot]
-    room_state = (session.get(PARTICIPANT_STATE_KEY) or {}).get(str(room_code or "").strip().upper())
-    if isinstance(room_state, dict):
-        records.append(room_state)
-        records.extend(v for v in (room_state.get("by_participant") or {}).values() if isinstance(v, dict))
-    for rec in records:
-        owner = str(rec.get("participant_id") or "").strip()
-        theirs = [str(x).strip() for x in ((rec.get("workflow") or {}).get("queue") or []) if str(x).strip()]
-        if owner and owner != me and theirs and theirs == list(queue):
-            return True
-    return False
-
-
 def _hydrate_room_extras(
     session: dict[str, Any], room_code: str, slot: dict[str, Any], workflow: dict[str, Any], pid: str
 ) -> None:
@@ -717,147 +699,25 @@ def _hydrate_room_extras(
 
 
 def load_participant_workflow_into_session(session: dict[str, Any], room_code: str) -> dict[str, Any]:
-    """Hydrate widget/canonical queue keys from participant-private storage.
+    """Hydrate room-scoped pieces (watchlists, notes, team seat) from participant storage.
 
-    Queue scope is ``(canonical_room_id, canonical_user_id)``. Session
-    ``draft_queue`` is only a cache for the current scope — never a shared
-    multiplayer board field.
+    The working draft queue is never read from a room: it is the signed-in user's one global
+    queue (session ``draft_queue``, saved with their workspace), so entering, switching or
+    refreshing a room neither replaces nor refills it — an intentionally empty queue stays empty.
+    A different user on the same browser gets their own queue because sign-out and account
+    changes clear the session copy (draft_queue_contract.clear_queue_for_account_change).
     """
     slot = participant_workflow_slot(session, room_code)
     workflow = dict(slot.get("workflow") or {})
-    old_q = [str(x).strip() for x in (session.get(DRAFT_QUEUE_KEY) or []) if str(x).strip()]
-    new_q = [str(x).strip() for x in (workflow.get("queue") or []) if str(x).strip()]
     pid = resolve_participant_id(session)
     code = str(room_code or "").strip().upper()
-    # Reject stale participant workflow that would resurrect a removed queue player.
     try:
-        local_rev = int(session.get("_draft_queue_revision") or 0)
-        remote_rev = int(workflow.get("queue_revision") or slot.get("queue_revision") or 0)
-        if local_rev > 0 and remote_rev > 0 and remote_rev < local_rev:
-            session["_live_draft_queue_stale_hydrate_blocked"] = {
-                "local_rev": local_rev,
-                "remote_rev": remote_rev,
-                "reason": "queue_revision_behind",
-            }
-            return participant_state_for_room(session, room_code)
-        if local_rev > 0 and remote_rev == local_rev:
-            # Same revision — keep local (authoritative after ✕ / reorder).
-            if list(old_q) != list(new_q) and session.get("_draft_queue_persist_dirty"):
-                session["_live_draft_queue_stale_hydrate_blocked"] = {
-                    "local_rev": local_rev,
-                    "remote_rev": remote_rev,
-                    "reason": "dirty_same_revision",
-                }
-                return participant_state_for_room(session, room_code)
-    except (TypeError, ValueError):
-        pass
-    try:
-        from live_draft_queue_survival import QUEUE_SCOPE_KEY, queue_scope_key, record_queue_write, should_block_empty_queue_write
-
-        scope = queue_scope_key(code, pid)
-        prev_scope = str(session.get(QUEUE_SCOPE_KEY) or "").strip()
-        scope_changed = bool(prev_scope and prev_scope != scope)
-        hydrate_reason = "participant_scope_change" if scope_changed else "participant_hydrate"
-        # The working queue belongs to the signed-in user, not to a room: entering or switching
-        # rooms keeps it. Only a different user on this session swaps in that user's copy.
-        prev_user = prev_scope.split("|", 1)[1] if "|" in prev_scope else ""
-        user_changed = bool(prev_scope and prev_user != str(pid or "").strip())
-        if not user_changed:
-            session[QUEUE_SCOPE_KEY] = scope
-            slot_pid = str(slot.get("participant_id") or "").strip()
-            same_user_slot = not slot_pid or slot_pid == str(pid or "").strip()
-            if not old_q and new_q and same_user_slot:
-                # This user's own queue saved from another device / before a refresh.
-                session[DRAFT_QUEUE_KEY] = list(new_q)
-            elif old_q and _queue_inherited_from_other_user(session, code, slot, pid, old_q):
-                # An exact copy of another user's room queue was inherited by this session.
-                session[DRAFT_QUEUE_KEY] = []
-            _hydrate_room_extras(session, room_code, slot, workflow, pid)
-            return participant_state_for_room(session, room_code)
-
-        # Cross-user on one session: always replace session widgets (including empty).
-        if scope_changed:
-            session.pop("_live_draft_queue_last_good", None)
-            ds = session.get("draft_state")
-            if isinstance(ds, dict):
-                ds["queue"] = list(new_q)
-            session.pop("_draft_queue_persist_dirty", None)
-            session.pop("draft_state_dirty", None)
-            session.pop("_draft_workflow_pending_sync", None)
-
-        if (not scope_changed) and should_block_empty_queue_write(
-            session,
-            old_queue=old_q,
-            new_queue=new_q,
-            reason=hydrate_reason,
-        ):
-            record_queue_write(
-                session,
-                function="load_participant_workflow_into_session",
-                reason=hydrate_reason,
-                old_session_queue=old_q,
-                new_session_queue=old_q,
-                blocked=True,
-                source=f"room={code}|user={pid}",
-            )
-            session["_live_draft_queue_empty_write_blocked"] = {
-                "function": "load_participant_workflow_into_session",
-                "reason": hydrate_reason,
-                "old": old_q[:12],
-                "attempted_new": new_q[:12],
-                "scope": scope,
-            }
-            notes = slot.get("notes")
-            if isinstance(notes, str):
-                session[PARTICIPANT_NOTES_KEY] = notes
-            team = membership_team_for_participant(session, room_code, participant_id=pid)
-            if not team:
-                team = str(slot.get("assigned_team") or "").strip()
-            if team:
-                session[ACTIVE_PARTICIPANT_ID_KEY] = pid
-                session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
-            return participant_state_for_room(session, room_code)
-
-        session[QUEUE_SCOPE_KEY] = scope
-    except ImportError:
-        hydrate_reason = "participant_hydrate"
-
-    # Always scope session widgets to this participant — never leave a prior user's queue visible.
-    session[DRAFT_QUEUE_KEY] = copy.deepcopy(workflow.get("queue") or [])
-    session[DRAFT_WATCHLIST_FOCUS_KEY] = copy.deepcopy(workflow.get("watchlist_focus") or [])
-    session[DRAFT_WATCHLIST_FAVORITES_KEY] = copy.deepcopy(workflow.get("watchlist_favorites") or [])
-    try:
-        from live_draft_queue_survival import QUEUE_SCOPE_KEY, queue_scope_key, record_queue_write
+        from live_draft_queue_survival import QUEUE_SCOPE_KEY, queue_scope_key
 
         session[QUEUE_SCOPE_KEY] = queue_scope_key(code, pid)
-        record_queue_write(
-            session,
-            function="load_participant_workflow_into_session",
-            reason=hydrate_reason,
-            old_session_queue=old_q,
-            new_session_queue=new_q,
-            blocked=False,
-            source=f"room={code}|user={pid}",
-        )
     except ImportError:
         pass
-    # Keep canonical draft_state.queue aligned with this participant scope.
-    ds = session.get("draft_state")
-    if isinstance(ds, dict):
-        ds["queue"] = list(new_q)
-    else:
-        session["draft_state"] = {"queue": list(new_q)}
-    notes = slot.get("notes")
-    if isinstance(notes, str):
-        session[PARTICIPANT_NOTES_KEY] = notes
-    else:
-        session.pop(PARTICIPANT_NOTES_KEY, None)
-    team = membership_team_for_participant(session, room_code, participant_id=pid)
-    if not team:
-        team = str(slot.get("assigned_team") or "").strip()
-    if team:
-        session[ACTIVE_PARTICIPANT_ID_KEY] = pid
-        session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
+    _hydrate_room_extras(session, room_code, slot, workflow, pid)
     return participant_state_for_room(session, room_code)
 
 

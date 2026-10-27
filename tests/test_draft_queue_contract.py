@@ -159,11 +159,24 @@ class SharedRoomTests(unittest.TestCase):
         self._load(s, "ROOM02", "user-1", [])
         self.assertEqual(s[DRAFT_QUEUE_KEY], QUEUE)
 
-    def test_a_different_user_on_the_session_does_not_see_the_previous_queue(self) -> None:
+    def test_an_intentionally_empty_queue_is_not_refilled_by_a_room(self) -> None:
+        s = {DRAFT_QUEUE_KEY: []}
+        self._load(s, "ROOM01", "user-1", ["Old Room Copy", "Consumed Player"])
+        self.assertEqual(s[DRAFT_QUEUE_KEY], [])
+
+    def test_another_users_room_queue_never_replaces_this_one(self) -> None:
         s = {DRAFT_QUEUE_KEY: list(QUEUE)}
         self._load(s, "ROOM01", "user-1", [])
         self._load(s, "ROOM01", "user-2", ["Their Player"])
-        self.assertEqual(s[DRAFT_QUEUE_KEY], ["Their Player"])
+        self.assertEqual(s[DRAFT_QUEUE_KEY], QUEUE)
+
+    def test_sign_out_drops_the_session_copy_for_the_next_account(self) -> None:
+        import suite_auth
+
+        s = {DRAFT_QUEUE_KEY: list(QUEUE), "_draft_queue_consumed": {"sim:0": {}}, suite_auth.AUTH_SESSION_KEY: True}
+        suite_auth._clear_auth_session(s)
+        self.assertNotIn(DRAFT_QUEUE_KEY, s)
+        self.assertNotIn("_draft_queue_consumed", s)
 
 
 class PersistenceTests(unittest.TestCase):
