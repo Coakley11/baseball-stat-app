@@ -1,4 +1,4 @@
-# deploy-bump: 2026-10-26-visual-polish-c047382 (forces Streamlit Cloud full redeploy; still click Manage app -> Reboot app)
+# deploy-bump: 2026-10-27-p0-release-6d4e91c (forces Streamlit Cloud full redeploy; still click Manage app -> Reboot app)
 # Runtime: Python 3.12 — also set Streamlit Cloud → Manage app → Settings → Python version → 3.12
 # Streamlit 1.59.x required for width="stretch" / width="content" dataframe and chart APIs.
 
