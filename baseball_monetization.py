@@ -45,6 +45,7 @@ class FeatureId(str, Enum):
     ADVANCED_DRAFT_INTELLIGENCE = "advanced_draft_intelligence"
     PREMIUM_EXPORTS = "premium_exports"
     EXPANDED_WORKSPACES = "expanded_workspaces"
+    DRAFT_STRATEGIES = "draft_strategies"
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,12 @@ FEATURE_REGISTRY: Mapping[FeatureId, FeatureDefinition] = MappingProxyType(
             "Additional persistent leagues and analysis workspaces.",
             Plan.PRO,
         ),
+        FeatureId.DRAFT_STRATEGIES: FeatureDefinition(
+            FeatureId.DRAFT_STRATEGIES,
+            "Saved draft strategies",
+            "Named, reusable draft queues with your research notes, loadable into any draft.",
+            Plan.PRO,
+        ),
     }
 )
 
@@ -141,6 +148,7 @@ CAPABILITY_FEATURES: Mapping[str, FeatureId] = MappingProxyType(
         "draft_team_needs": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
         "draft_lab_simulation": FeatureId.DRAFT_LAB,
         "ml_predictions": FeatureId.ML_PREDICTIONS,
+        "draft_strategy_library": FeatureId.DRAFT_STRATEGIES,
     }
 )
 
