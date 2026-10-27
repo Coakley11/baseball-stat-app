@@ -54,6 +54,11 @@ _WARM_CANDIDATE_KEEP_KEYS = (
     "Positional Fit",
     "Player Grade",
     "Model Rank",
+    # The board shows Market Rank next to Fantasy Edge (= Market Rank - Model Rank); an
+    # auto-pick saved without it showed "None" beside a real edge.
+    "Market Rank",
+    "ADP",
+    "ADP Rank",
     "Fantasy Edge",
 )
 

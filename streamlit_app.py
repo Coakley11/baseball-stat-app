@@ -9787,11 +9787,51 @@ def live_draft_build_board_df(room):
                 return ""
             return mlb
         df["MLB Team"] = df.apply(_scrub, axis=1)
+    df = _fill_board_rank_columns(df, pool_by_id)
     show = [
         "Round", "Pick", "Draft Team", "Player", "Primary Position", "MLB Team",
         "Expected Fantasy Value", "Model Rank", "Market Rank", "Fantasy Edge", "Pick Verdict",
     ]
     return df[[c for c in show if c in df.columns]]
+
+
+_BOARD_RANK_SENTINEL = 9999  # draft_scoring_pool's "no rank" fill value
+
+
+def _board_rank_or_none(value):
+    try:
+        rank = float(value)
+    except (TypeError, ValueError):
+        return None
+    if rank != rank or rank <= 0 or rank >= _BOARD_RANK_SENTINEL:
+        return None
+    return rank
+
+
+def _fill_board_rank_columns(df, pool_by_id):
+    """Board ranks come from each pick record; a rank the record lacks comes from the live pool
+    row with the same playerID. Fantasy Edge is Market Rank - Model Rank, so it is shown only
+    when both ranks are real: never beside a missing Market Rank, never from the 9999 fill."""
+    if df.empty:
+        return df
+    model_vals, market_vals, edge_vals = [], [], []
+    for _, brow in df.iterrows():
+        src = pool_by_id.get(str(brow.get("playerID") or "").strip()) if pool_by_id else None
+        model = _board_rank_or_none(brow.get("Model Rank"))
+        market = _board_rank_or_none(brow.get("Market Rank"))
+        if src is not None:
+            if model is None:
+                model = _board_rank_or_none(src.get("Model Rank"))
+            if market is None:
+                market = _board_rank_or_none(src.get("Market Rank"))
+        model_vals.append(model)
+        market_vals.append(market)
+        edge_vals.append(market - model if model is not None and market is not None else None)
+    df = df.copy()
+    df["Model Rank"] = pd.array(model_vals, dtype="Float64")
+    df["Market Rank"] = pd.array(market_vals, dtype="Float64")
+    df["Fantasy Edge"] = pd.array(edge_vals, dtype="Float64")
+    return df
 
 
 def live_draft_recommendations(room, top_n=8, team=None, session=None):
