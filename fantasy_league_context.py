@@ -2117,16 +2117,6 @@ def _archive_team_count_for_repair(archive: dict[str, Any]) -> int:
     return 0
 
 
-def _board_source_is_validated_import(session: dict[str, Any]) -> bool:
-    try:
-        from draft_room_state import get_canonical_draft_meta
-
-        meta = get_canonical_draft_meta(session)
-        return str(meta.get("source") or "").strip() == "validated_import"
-    except ImportError:
-        return False
-
-
 def purge_ephemeral_league_contexts(session: dict[str, Any]) -> int:
     """Remove persisted temporary workspace contexts from the league context store."""
     store = ensure_fantasy_league_context_state(session)
@@ -2158,7 +2148,6 @@ def repair_misclassified_imported_league_archives(session: dict[str, Any]) -> in
     repaired = 0
     entries = _archive_list(session)
     changed = False
-    validated_import_board = _board_source_is_validated_import(session)
     for i, raw in enumerate(entries):
         archive = copy.deepcopy(raw)
         draft_id = str(archive.get("draft_id") or "").strip()
@@ -2168,20 +2157,11 @@ def repair_misclassified_imported_league_archives(session: dict[str, Any]) -> in
         if team_count < 2:
             continue
         linked_id = str(archive.get("league_context_id") or "").strip()
-        draft_type = str(archive.get("draft_type") or "").strip()
-        ctx = get_league_context(session, linked_id) if linked_id else None
-        if not ctx and not is_ephemeral_league_context_id(linked_id):
-            ctx = get_league_context(session, context_id_for_archive(draft_id))
-        ctx_type = str((ctx or {}).get("context_type") or "").strip()
-        meta = (ctx or {}).get("metadata") or {}
-        meta_source = str(meta.get("source") or "").strip()
-        needs_repair = is_ephemeral_league_context_id(linked_id)
-        if not needs_repair and draft_type == DRAFT_TYPE_SIMULATOR:
-            needs_repair = validated_import_board or (
-                ctx_type == CONTEXT_TYPE_MOCK_DRAFT_SIMULATION
-                and meta_source == SOURCE_DRAFT_SIMULATOR
-            )
-        if not needs_repair:
+        # Only the legacy shape this repair exists for: an upload saved as a simulator draft
+        # on the ephemeral context. A multi-team mock draft (mock_draft_simulation from the
+        # simulator) stays a mock draft, whatever board is loaded now; this used to turn every
+        # one into an Imported League (real_league with an owner and commissioner).
+        if not is_ephemeral_league_context_id(linked_id):
             continue
 
         archive["draft_type"] = DRAFT_TYPE_IMPORTED

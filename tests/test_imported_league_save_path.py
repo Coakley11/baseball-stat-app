@@ -99,5 +99,45 @@ class ImportedLeagueSavePathTests(unittest.TestCase):
         self.assertEqual(str((context.get("metadata") or {}).get("source") or ""), SOURCE_IMPORTED_DRAFT)
 
 
+class MockDraftStaysMockAfterRepairTests(unittest.TestCase):
+    """Hosted 2026-10-26: a saved multi-team mock draft must not turn into an Imported League.
+
+    repair_misclassified_imported_league_archives used to convert every simulator archive with
+    two or more teams (mock_draft_simulation from the simulator) into a real_league with an owner.
+    """
+
+    def test_four_team_simulator_save_survives_library_repairs(self) -> None:
+        from fantasy_league_context import (
+            CONTEXT_TYPE_MOCK_DRAFT_SIMULATION,
+            get_league_context,
+            save_simulator_league_context,
+        )
+        from library_repair_scheduler import run_gated_library_repairs
+
+        session: dict = {}
+        board = pd.DataFrame(
+            [{"Team": f"Team {t}", "Player": f"Player {t}{r}", "Pick": i + 1}
+             for i, (r, t) in enumerate((r, t) for r in range(2) for t in "ABCD")]
+        )
+        save_simulator_league_context(session, board, my_team_name="Team A", draft_name="Mock",
+                                      defer_activation=True, save_only=True)
+        run_gated_library_repairs(session)
+        archive = list_draft_archives(session)[0]
+        context = get_league_context(session, archive["league_context_id"]) or {}
+        self.assertEqual(archive["draft_type"], DRAFT_TYPE_SIMULATOR)
+        self.assertEqual(context.get("context_type"), CONTEXT_TYPE_MOCK_DRAFT_SIMULATION)
+        self.assertFalse(context.get("team_ownership"))
+
+    def test_mock_draft_is_not_repaired_while_an_import_board_is_loaded(self) -> None:
+        from fantasy_league_context import save_simulator_league_context
+
+        session: dict = {}
+        board = pd.DataFrame([{"Team": "Team A", "Player": "P1", "Pick": 1}, {"Team": "Team B", "Player": "P2", "Pick": 2}])
+        save_simulator_league_context(session, board, my_team_name="Team A", defer_activation=True, save_only=True)
+        session["canonical_draft_meta"] = {"source": "validated_import", "pick_count": 2}
+        self.assertEqual(repair_misclassified_imported_league_archives(session), 0)
+        self.assertEqual(list_draft_archives(session)[0]["draft_type"], DRAFT_TYPE_SIMULATOR)
+
+
 if __name__ == "__main__":
     unittest.main()
