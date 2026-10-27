@@ -26,6 +26,70 @@ BENCH_ZONE = "__bench__"
 FACE_SIZE = 72
 
 
+def resolve_board_move(
+    assignments: dict[str, str],
+    slot_keys: list[tuple[str, str]],
+    *,
+    player: str,
+    target: str,
+    roster_df: pd.DataFrame,
+) -> tuple[dict[str, str] | None, str]:
+    """Move one player (drag or tap) on the authoritative assignments.
+
+    Returns ``(new_assignments, message)``; ``new_assignments`` is None when the move is
+    refused or changes nothing, and ``message`` then says why. A starter displaced from the
+    target swaps into the mover's old slot when eligible there, otherwise goes to the bench,
+    and the message names where they went.
+    """
+    player = str(player or "").strip()
+    target = str(target or "").strip()
+    labels = dict(slot_keys)
+    if not player or player not in set(roster_player_names(roster_df)):
+        return None, f"{player or 'That player'} is not on this roster."
+
+    new = {key: str((assignments or {}).get(key) or "").strip() for key, _ in slot_keys}
+    origin_key = next((key for key, _ in slot_keys if new.get(key) == player), "")
+
+    if target == BENCH_ZONE:
+        if not origin_key:
+            return None, f"{player} is already on the bench."
+        new[origin_key] = ""
+        return new, f"{player} moved to the bench."
+
+    if target not in new:
+        return None, "That position is not in this lineup."
+    if origin_key == target:
+        return None, f"{player} is already at {labels[target]}."
+
+    name_col = _player_name_col(roster_df)
+    lookup = {
+        str(row[name_col]).strip(): row
+        for _, row in roster_df.iterrows()
+        if str(row.get(name_col) or "").strip()
+    }
+
+    def _eligible(name: str, key: str) -> bool:
+        row = lookup.get(name)
+        return row is not None and player_eligible_for_slot(position_tokens_from_row(row), key.split("_", 1)[0])
+
+    if not _eligible(player, target):
+        positions = "/".join(position_tokens_from_row(lookup[player])) if player in lookup else ""
+        return None, f"{player} can't play {labels[target]}" + (f" (eligible: {positions})." if positions else ".")
+
+    displaced = new.get(target, "")
+    new[target] = player
+    if origin_key:
+        new[origin_key] = ""
+    message = f"{player} moved to {labels[target]}."
+    if displaced:
+        if origin_key and _eligible(displaced, origin_key):
+            new[origin_key] = displaced
+            message = f"{player} moved to {labels[target]}; {displaced} moved to {labels[origin_key]}."
+        else:
+            message = f"{player} moved to {labels[target]}; {displaced} moved to the bench."
+    return new, message
+
+
 def apply_board_drop(
     assignments: dict[str, str],
     slot_keys: list[tuple[str, str]],
@@ -34,41 +98,9 @@ def apply_board_drop(
     target: str,
     roster_df: pd.DataFrame,
 ) -> dict[str, str]:
-    """Apply one face-to-circle drop onto canonical assignments."""
-    player = str(player or "").strip()
-    target = str(target or "").strip()
-    valid_names = set(roster_player_names(roster_df))
-    if not player or player not in valid_names:
-        return dict(assignments)
-
-    new = {key: str((assignments or {}).get(key) or "").strip() for key, _ in slot_keys}
-    origin_key = next((key for key, _ in slot_keys if new.get(key) == player), "")
-
-    if target == BENCH_ZONE:
-        if origin_key:
-            new[origin_key] = ""
-        return new
-
-    if target not in new:
-        return dict(assignments)
-
-    base_slot = target.split("_", 1)[0]
-    name_col = _player_name_col(roster_df)
-    lookup = {
-        str(row[name_col]).strip(): row
-        for _, row in roster_df.iterrows()
-        if str(row.get(name_col) or "").strip()
-    }
-    row = lookup.get(player)
-    if row is None or not player_eligible_for_slot(position_tokens_from_row(row), base_slot):
-        return dict(assignments)
-
-    displaced = new.get(target, "").strip()
-    new[target] = player
-    if origin_key and origin_key != target:
-        new[origin_key] = ""
-    # Displaced starter returns to bench (slot cleared).
-    return new
+    """Apply one face-to-circle drop onto canonical assignments (unchanged copy when refused)."""
+    new, _message = resolve_board_move(assignments, slot_keys, player=player, target=target, roster_df=roster_df)
+    return new if new is not None else dict(assignments)
 
 
 def _normalize_slot_assignments(
@@ -116,27 +148,36 @@ def apply_drop_event(
     roster_df: pd.DataFrame,
 ) -> dict[str, str] | None:
     """Apply a component drop event; return None when invalid or unchanged."""
+    return apply_drop_event_with_message(assignments, slot_keys, drop_event, roster_df=roster_df)[0]
+
+
+def apply_drop_event_with_message(
+    assignments: dict[str, str],
+    slot_keys: list[tuple[str, str]],
+    drop_event: dict[str, Any],
+    *,
+    roster_df: pd.DataFrame,
+) -> tuple[dict[str, str] | None, str]:
+    """Apply a drag or tap move to the server's assignments, never the browser's copy of them.
+
+    The browser's ``assignments`` map is used only for an event that names no move."""
     if not isinstance(drop_event, dict):
-        return None
+        return None, ""
     player = str(drop_event.get("player") or "").strip()
     target = str(drop_event.get("target") or "").strip()
-    raw_assignments = drop_event.get("assignments")
-    if isinstance(raw_assignments, dict):
-        candidate = _normalize_slot_assignments(raw_assignments, slot_keys)
-        if assignments_are_valid(candidate, slot_keys, roster_df):
-            return candidate
     if not player or not target:
-        return None
-    result = apply_board_drop(
-        assignments,
-        slot_keys,
-        player=player,
-        target=target,
-        roster_df=roster_df,
-    )
-    if assignments_are_valid(result, slot_keys, roster_df) or target == BENCH_ZONE:
-        return result
-    return None
+        raw_assignments = drop_event.get("assignments")
+        if isinstance(raw_assignments, dict):
+            candidate = _normalize_slot_assignments(raw_assignments, slot_keys)
+            if assignments_are_valid(candidate, slot_keys, roster_df):
+                return candidate, ""
+        return None, ""
+    result, message = resolve_board_move(assignments, slot_keys, player=player, target=target, roster_df=roster_df)
+    if result is None:
+        return None, message
+    if target == BENCH_ZONE or assignments_are_valid(result, slot_keys, roster_df):
+        return result, message
+    return None, "That move would leave the lineup invalid."
 
 
 def _face_inner_html(*, player_name: str, row: pd.Series | None, size: int) -> str:

@@ -8,7 +8,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from fantasy_lineup_interactive_board import (
-    apply_drop_event,
+    apply_drop_event_with_message,
     build_interactive_board_payload,
     parse_board_drop_result,
     parse_board_player_select,
@@ -335,6 +335,8 @@ def _render_manage_team_picker(st: Any, session: dict[str, Any], context: dict[s
 
 
 _SAVE_ERROR_KEY = "_weekly_lineup_save_error"
+# Result of the last board move ({"level", "text"}), drawn inside the board on the next render.
+_BOARD_NOTICE_KEY = "_weekly_lineup_board_notice"
 
 
 def _on_save_lineup_click(scope: Any, proxy_control: Any, **save_kwargs: Any) -> None:
@@ -678,6 +680,10 @@ def render_weekly_lineup_section(
         editable=not lineup_locked,
         session=session,
     )
+    board_notice = session.pop(_BOARD_NOTICE_KEY, None)
+    if isinstance(board_notice, dict):
+        # Shown inside the board, where the player was dropped or tapped (never cached).
+        board_payload = {**board_payload, "notice": board_notice}
     board_nonce = int(session.get(board_nonce_key, 0))
     component_key = (
         f"{scope.component_key_base}_{board_nonce}"
@@ -713,18 +719,26 @@ def render_weekly_lineup_section(
                 profile=scoring_profile,
             )
 
-    if drop_event and not lineup_locked:
+    def _refuse_move(text: str) -> None:
+        # The board already drew the move; redraw it from the server's lineup and say why.
+        session[_BOARD_NOTICE_KEY] = {"level": "error", "text": text}
+        session[board_nonce_key] = board_nonce + 1
+        st.rerun()
+
+    if drop_event and not lineup_locked and drop_event.get("action") != "select_player":
         write_ok, write_err = _lineup_write_check(scope, proxy_control)
         if not write_ok:
-            st.error(write_err)
+            _refuse_move(write_err)
         else:
             prior_assignments = dict(assignments)
-            new_assignments = apply_drop_event(
+            new_assignments, move_message = apply_drop_event_with_message(
                 assignments,
                 slot_keys,
                 drop_event,
                 roster_df=team_roster,
             )
+            if new_assignments is None and move_message:
+                _refuse_move(move_message)
             if new_assignments is not None and reconcile_editor_assignments(
                 session,
                 canon_key=canon_key,
@@ -741,7 +755,7 @@ def render_weekly_lineup_section(
                 )
                 if not save_result.get("ok"):
                     session[canon_key] = _normalize_assignments(prior_assignments, slot_keys)
-                    st.error("; ".join(save_result.get("errors") or ["Could not save lineup draft."]))
+                    _refuse_move("; ".join(save_result.get("errors") or ["Could not save lineup draft."]))
                 else:
                     slot_map = assignments_to_slot_player_map(slots, new_assignments)
                     readback = get_saved_weekly_lineup(
@@ -753,17 +767,12 @@ def render_weekly_lineup_section(
                     readback_map = dict((readback or {}).get("assignments") or {})
                     if readback_map != slot_map:
                         session[canon_key] = _normalize_assignments(prior_assignments, slot_keys)
-                        st.error("Draft save did not read back correctly. Restored prior lineup.")
+                        _refuse_move("Draft save did not read back correctly. Restored prior lineup.")
                     else:
-                        player = str(drop_event.get("player") or "").strip()
-                        target = str(drop_event.get("target") or "").strip()
-                        slot_label = "Bench"
-                        if target and target != "__bench__":
-                            for key, label in slot_keys:
-                                if key == target:
-                                    slot_label = label
-                                    break
-                        session["weekly_lineup_drop_flash"] = f"{player} saved to {slot_label}"
+                        session[_BOARD_NOTICE_KEY] = {
+                            "level": "success",
+                            "text": move_message or "Lineup updated.",
+                        }
                         try:
                             from fantasy_lineup_perf import invalidate_lineup_page_caches
 

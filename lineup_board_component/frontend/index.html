@@ -77,6 +77,20 @@ body {
   box-shadow: 0 10px 24px rgba(11, 61, 110, 0.35);
   z-index: 50;
 }
+/* A long press on a photo must start a drag, not the phone's save-image / context menu,
+   which cancels the pointer and drops the player nowhere. */
+.fl-face, .fl-face * { -webkit-touch-callout: none; }
+.fl-face * { pointer-events: none; -webkit-user-drag: none; }
+.fl-face.selected { box-shadow: 0 0 0 4px #0b3d6e, 0 0 0 7px rgba(56, 189, 248, 0.55); border-radius: 50%; }
+.fl-face:focus-visible, .fl-circle-drop:focus-visible, .fl-bench-zone:focus-visible { outline: 3px solid #0b3d6e; outline-offset: 3px; }
+.fl-notice {
+  font-size: 0.86rem; font-weight: 600; line-height: 1.3;
+  border-radius: 10px; padding: 8px 10px; margin: 0 0 8px;
+  border: 1px solid #cbd5e1; background: #f8fafc; color: #0f172a;
+}
+.fl-notice.success { border-color: #86efac; background: #f0fdf4; color: #14532d; }
+.fl-notice.error { border-color: #fca5a5; background: #fef2f2; color: #7f1d1d; }
+.fl-notice.select { border-color: #7dd3fc; background: #f0f9ff; color: #0b3d6e; }
 .fl-face-img, .fl-face-fallback {
   width: 100%; height: 100%;
   border-radius: 50%;
@@ -139,7 +153,6 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
 (function() {
   const BENCH = "__bench__";
   const TOUCH_HOLD_MS = 280;
-  const MOUSE_HOLD_MS = 100;
   const MOUSE_DRAG_DIST = 5;
   const TOUCH_CANCEL_DIST = 10;
 
@@ -159,6 +172,36 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
   let drag = null;
   let ghost = null;
   let activePointer = null;
+  // Tap-to-assign: tap a player, then tap a highlighted position (or the bench). Uses the
+  // same move event as a drag, so the server applies both the same way.
+  let selected = "";
+  let localNotice = null;
+
+  function esc(value) {
+    return String(value == null ? "" : value).replace(/[&<>"']/g, function(c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function slotLabel(key) {
+    const slot = (PAYLOAD.slots || []).find(function(s) { return s.key === key; });
+    return slot ? slot.label : key;
+  }
+
+  function originOf(player) {
+    return Object.keys(assignments).find(function(k) { return assignments[k] === player; }) || "";
+  }
+
+  function noticeHtml() {
+    let n = localNotice || PAYLOAD.notice || null;
+    if (selected) {
+      n = { level: "select", text: "Selected " + selected + ". Tap a highlighted position"
+        + (originOf(selected) ? ", or the bench," : "") + " to move them. Tap them again to cancel." };
+    }
+    if (!n || !n.text) return "";
+    const level = ["success", "error", "select"].indexOf(n.level) >= 0 ? n.level : "";
+    return '<div class="fl-notice ' + level + '" role="status" aria-live="polite">' + esc(n.text) + '</div>';
+  }
 
   function boardHeight() {
     const slots = PAYLOAD.slots || [];
@@ -182,7 +225,7 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
     }
     const safeName = String(name || "");
     if (data.url) {
-      return '<img class="fl-face-img" src="' + data.url + '" alt="' + safeName + '" />';
+      return '<img class="fl-face-img" src="' + data.url + '" alt="' + esc(safeName) + '" draggable="false" />';
     }
     const initials = String(data.initials || "?");
     return '<div class="fl-face-fallback" aria-label="' + safeName + '">'
@@ -213,15 +256,19 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
     const slots = PAYLOAD.slots || [];
     const bench = benchPlayers();
     const filledCount = slots.filter(function(s) { return !!assignments[s.key]; }).length;
-    let html = '<div class="fl-board-title">Starting Lineup<span class="fl-count">' + filledCount + '/' + slots.length + '</span></div><div class="fl-circle-grid">';
+    const editable = PAYLOAD.editable !== false;
+    let html = noticeHtml();
+    html += '<div class="fl-board-title">Starting Lineup<span class="fl-count">' + filledCount + '/' + slots.length + '</span></div><div class="fl-circle-grid">';
     slots.forEach(function(slot) {
       const player = assignments[slot.key] || "";
       const filled = !!player;
       html += '<div class="fl-circle-slot">';
       html += '<div class="fl-slot-label">' + slot.label + '</div>';
-      html += '<div class="fl-circle-drop' + (filled ? ' filled' : ' open') + '" data-slot-key="' + slot.key + '" data-base-slot="' + slot.base_slot + '">';
+      html += '<div class="fl-circle-drop' + (filled ? ' filled' : ' open') + '" data-slot-key="' + slot.key + '" data-base-slot="' + slot.base_slot + '"'
+        + (editable ? ' tabindex="0" role="button" aria-label="' + esc(slot.label + (filled ? ": " + player : ": open")) + '"' : '') + '>';
       if (filled) {
-        html += '<div class="fl-face" data-player="' + player + '" data-origin="' + slot.key + '">' + faceHtml(player) + '</div>';
+        html += '<div class="fl-face' + (selected === player ? ' selected' : '') + '" data-player="' + esc(player) + '" data-origin="' + slot.key + '"'
+          + ' tabindex="0" role="button" aria-pressed="' + (selected === player) + '" aria-label="' + esc(player + ", " + slot.label) + '">' + faceHtml(player) + '</div>';
       } else {
         html += '<span class="fl-open-text">Open</span>';
       }
@@ -236,10 +283,11 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
       html += '</div>';
     });
     html += '</div><div class="fl-board-title">Bench<span class="fl-count">' + bench.length + '</span></div>';
-    html += '<div class="fl-bench-zone" data-zone="bench"><div class="fl-bench-faces">';
+    html += '<div class="fl-bench-zone" data-zone="bench"' + (editable ? ' tabindex="0" role="button" aria-label="Bench"' : '') + '><div class="fl-bench-faces">';
     bench.forEach(function(name) {
       html += '<div class="fl-bench-face-wrap">';
-      html += '<div class="fl-face" data-player="' + name + '" data-origin="bench">' + faceHtml(name) + '</div>';
+      html += '<div class="fl-face' + (selected === name ? ' selected' : '') + '" data-player="' + esc(name) + '" data-origin="bench"'
+        + ' tabindex="0" role="button" aria-pressed="' + (selected === name) + '" aria-label="' + esc(name + ", bench") + '">' + faceHtml(name) + '</div>';
       html += '<div class="fl-bench-name">' + name + '</div>';
       const pos = benchPositions(name);
       if (pos.length) {
@@ -250,7 +298,73 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
     html += '</div></div>';
     root.innerHTML = html;
     bindFaces();
+    bindZones();
+    if (selected) markTargets(selected);
     fitFrame();
+  }
+
+  function markTargets(player) {
+    document.querySelectorAll(".fl-circle-drop").forEach(function(drop) {
+      if (eligibleFor(drop.dataset.slotKey, player)) drop.classList.add("eligible");
+      else drop.classList.add("ineligible");
+    });
+    const bench = document.querySelector(".fl-bench-zone");
+    if (bench && originOf(player)) bench.classList.add("eligible");
+  }
+
+  // Tap on a player: select them; tap the selected player again: cancel; with a player
+  // selected, tapping a starter's face means "move the selected player to that position".
+  // A face tap redraws the board, so the browser's follow-up click lands on whatever is
+  // under the finger now (often the bench). Zones ignore that click.
+  let ignoreZoneClickUntil = 0;
+
+  function handleFaceTap(face) {
+    const player = face.dataset.player;
+    if (!player) return;
+    ignoreZoneClickUntil = Date.now() + 300;
+    if (PAYLOAD.editable === false) { sendPlayerSelect(player); return; }
+    localNotice = null;
+    if (selected === player) { selected = ""; render(); return; }
+    const origin = face.dataset.origin || "bench";
+    if (selected && origin !== "bench") { tryMove(origin); return; }
+    selected = player;
+    render();
+  }
+
+  function tryMove(target) {
+    const player = selected;
+    if (!player) return;
+    if (target === BENCH) {
+      if (!originOf(player)) { selected = ""; localNotice = { level: "error", text: player + " is already on the bench." }; render(); return; }
+    } else if (!eligibleFor(target, player)) {
+      localNotice = { level: "error", text: player + " can't play " + slotLabel(target) + "." };
+      selected = ""; render(); return;
+    }
+    selected = ""; localNotice = null;
+    sendDrop(player, target);
+  }
+
+  function bindZones() {
+    if (PAYLOAD.editable === false) return;
+    document.querySelectorAll(".fl-circle-drop").forEach(function(drop) {
+      const go = function(e) {
+        if (e.type === "click" && Date.now() < ignoreZoneClickUntil) return;
+        if (e.target.closest && e.target.closest(".fl-face")) return;  // faces handle their own taps
+        if (selected) tryMove(drop.dataset.slotKey);
+      };
+      drop.addEventListener("click", go);
+      drop.addEventListener("keydown", function(e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(e); } });
+    });
+    const bench = document.querySelector(".fl-bench-zone");
+    if (bench) {
+      const go = function(e) {
+        if (e.type === "click" && Date.now() < ignoreZoneClickUntil) return;
+        if (e.target.closest && e.target.closest(".fl-face")) return;
+        if (selected) tryMove(BENCH);
+      };
+      bench.addEventListener("click", go);
+      bench.addEventListener("keydown", function(e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(e); } });
+    }
   }
 
   // Size the iframe to what was actually drawn: the grid fits 9+ spots per row on desktop and
@@ -309,6 +423,7 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
   }
 
   function startDrag(face, player, origin, x, y) {
+    selected = ""; localNotice = null;
     drag = { face: face, player: player, origin: origin, active: true };
     face.classList.add("dragging");
     face.style.visibility = "hidden";
@@ -337,12 +452,21 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
     ghost = null;
     clearHighlights();
     document.body.classList.remove("fl-drag-active");
-    if (target && (target === BENCH || eligibleFor(target, player))) {
+    const origin = drag.origin || "bench";
+    drag = null;
+    if (target === origin || (target === BENCH && origin === "bench")) {
+      render();  // dropped back where it started
+    } else if (target && (target === BENCH || eligibleFor(target, player))) {
       sendDrop(player, target);
     } else {
+      // Say why instead of silently snapping back.
+      const over = document.elementFromPoint(x, y);
+      const drop = over && over.closest ? over.closest(".fl-circle-drop") : null;
+      localNotice = drop
+        ? { level: "error", text: player + " can't play " + slotLabel(drop.dataset.slotKey) + "." }
+        : { level: "error", text: "Drop " + player + " on a highlighted position or the bench." };
       render();
     }
-    drag = null;
   }
 
   function removeWindowListeners() {
@@ -381,14 +505,19 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
 
   function finishPointer(e) {
     if (!activePointer) return;
-    clearTimeout(activePointer.holdTimer);
-    if (activePointer.dragging && drag) {
-      e.preventDefault();
-      endDrag(e.clientX, e.clientY);
-    }
-    try { activePointer.face.releasePointerCapture(activePointer.pointerId); } catch (_) {}
+    const ap = activePointer;
+    clearTimeout(ap.holdTimer);
+    const cancelled = e.type === "pointercancel";
+    try { ap.face.releasePointerCapture(ap.pointerId); } catch (_) {}
     removeWindowListeners();
     activePointer = null;
+    if (ap.dragging && drag) {
+      e.preventDefault();
+      // A cancel (browser took the gesture) reports no useful position: use the last move.
+      endDrag(cancelled ? ap.lastX : e.clientX, cancelled ? ap.lastY : e.clientY);
+    } else if (!cancelled) {
+      handleFaceTap(ap.face);
+    }
   }
 
   function handlePointerMove(e) {
@@ -396,6 +525,8 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
     const dx = e.clientX - activePointer.startX;
     const dy = e.clientY - activePointer.startY;
     const dist = Math.hypot(dx, dy);
+    activePointer.lastX = e.clientX;
+    activePointer.lastY = e.clientY;
     if (!activePointer.dragging) {
       if (activePointer.isTouch) {
         if (dist > TOUCH_CANCEL_DIST) cancelPointer();
@@ -425,12 +556,17 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
       dragging: false,
       startX: e.clientX,
       startY: e.clientY,
+      lastX: e.clientX,
+      lastY: e.clientY,
       holdTimer: null
     };
-    const holdMs = isTouch ? TOUCH_HOLD_MS : MOUSE_HOLD_MS;
-    activePointer.holdTimer = setTimeout(function() {
-      if (activePointer && !activePointer.dragging) beginDrag(e.clientX, e.clientY);
-    }, holdMs);
+    // Touch: press and hold to drag (a quick tap selects). Mouse: drag starts on movement,
+    // so a click is always a tap.
+    if (isTouch) {
+      activePointer.holdTimer = setTimeout(function() {
+        if (activePointer && !activePointer.dragging) beginDrag(activePointer.lastX, activePointer.lastY);
+      }, TOUCH_HOLD_MS);
+    }
     try { face.setPointerCapture(e.pointerId); } catch (_) {}
   }
 
@@ -452,6 +588,11 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
 
   function bindFaces() {
     document.querySelectorAll(".fl-face").forEach(function(face) {
+      face.addEventListener("contextmenu", function(e) { e.preventDefault(); });
+      face.addEventListener("dragstart", function(e) { e.preventDefault(); });
+      face.addEventListener("keydown", function(e) {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleFaceTap(face); }
+      });
       if (PAYLOAD.editable === false) {
         face.style.cursor = "pointer";
         face.addEventListener("click", onFaceTap);
@@ -470,9 +611,18 @@ body.fl-drag-active { overflow: hidden; touch-action: none; }
     if (!PAYLOAD.slots && args.slots) {
       PAYLOAD = args;
     }
-    assignments = Object.assign({}, PAYLOAD.assignments || {});
+    // Streamlit re-sends the same render after a frame resize; only a new payload (the
+    // server's lineup after a move) resets the board, so a refused move is undone there.
+    const signature = JSON.stringify(PAYLOAD);
+    if (signature !== lastSignature) {
+      lastSignature = signature;
+      assignments = Object.assign({}, PAYLOAD.assignments || {});
+      localNotice = null;
+      if (selected && (PAYLOAD.roster || []).indexOf(selected) < 0) selected = "";
+    }
     render();
   }
+  let lastSignature = "";
 
   window.addEventListener("message", function(event) {
     if (!event.data || event.data.type !== RENDER_EVENT) return;
