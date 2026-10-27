@@ -729,8 +729,9 @@ def render_draft_information_panel(
                 label="Cancel Shared Room",
                 icon=ICON_CANCEL,
                 use_container_width=True,
-                warning="This closes the shared room for everyone who joined. It cannot be reopened.",
+                warning="You will leave this shared room and give up your team. Managers who joined stay in it.",
                 confirm_label="Cancel room",
+                target=str(shared_room_code(session) or ""),
             ):
                 try:
                     from draft_room_context import leave_shared_draft_room

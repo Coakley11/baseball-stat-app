@@ -510,6 +510,7 @@ def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
                     icon=ICON_DELETE,
                     warning=f"Delete chat message {mid} for everyone in this room?",
                     confirm_label="Delete message",
+                    target=str(mid),
                 ):
                     ok, err = delete_chat_message(session, mid)
                     if not ok and err:

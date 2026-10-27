@@ -21480,6 +21480,7 @@ elif active_page == "Draft Room Simulator":
                 help="Clear the practice/canonical board only. Use for a fresh mock draft.",
                 warning="This clears every pick on the simulator board. Saved drafts and your queue are not changed.",
                 confirm_label="Reset board",
+                target=f"sim:{int(st.session_state.get('_simulator_board_epoch') or 0)}",
             ):
                 _on_reset_draft_room_simulator_click()
                 st.rerun()
@@ -21514,6 +21515,7 @@ elif active_page == "Draft Room Simulator":
                 help="Remove the Live Draft Room record only. Simulator board and queue stay.",
                 warning="This permanently deletes the Live Draft Room record. The simulator board and your queue stay.",
                 confirm_label="Delete Live Draft",
+                target=str(_ldr.get("draft_room_id") or "") if isinstance(_ldr := st.session_state.get("live_draft_room"), dict) else "",
             ):
                 from draft_room_state import delete_live_draft_only
                 from live_draft_state import commit_live_draft_room

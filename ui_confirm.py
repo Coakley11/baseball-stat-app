@@ -22,8 +22,9 @@ ICON_CANCEL = ":material/cancel:"
 
 _LAPSE_SECONDS = 120.0
 _MAX_SESSIONS = 500
-# {browser session id: {key: ("armed", ts) | ("fired", ts)}}
-_PENDING: dict[str, dict[str, tuple[str, float]]] = {}
+# {browser session id: {key: (state "armed" | "fired", ts, target)}} — one browser session's
+# prompts are invisible to every other session, and a prompt only fires for the target it asked about.
+_PENDING: dict[str, dict[str, tuple[str, float, str]]] = {}
 # Widget keys end in "_btn": page snapshots skip those (page_state._is_ephemeral_widget_key); a
 # restored button value raises StreamlitValueAssignmentNotAllowedError.
 
@@ -40,7 +41,7 @@ def _session_id(st: Any) -> str:
     return f"obj:{id(st.session_state)}"
 
 
-def _pending_for(st: Any) -> dict[str, tuple[str, float]]:
+def _pending_for(st: Any) -> dict[str, tuple[str, float, str]]:
     sid = _session_id(st)
     pending = _PENDING.get(sid)
     if pending is None:
@@ -50,16 +51,16 @@ def _pending_for(st: Any) -> dict[str, tuple[str, float]]:
     return pending
 
 
-def _arm(pending: dict, key: str) -> None:
-    pending[key] = ("armed", time.time())
+def _arm(pending: dict, key: str, target: str) -> None:
+    pending[key] = ("armed", time.time(), target)
 
 
 def _disarm(pending: dict, key: str) -> None:
     pending.pop(key, None)
 
 
-def _fire(pending: dict, key: str) -> None:
-    pending[key] = ("fired", time.time())
+def _fire(pending: dict, key: str, target: str) -> None:
+    pending[key] = ("fired", time.time(), target)
 
 
 def confirm_destructive_action(
@@ -72,11 +73,18 @@ def confirm_destructive_action(
     icon: str = ICON_DELETE,
     help: str | None = None,
     use_container_width: bool = False,
+    target: str = "",
 ) -> bool:
-    """Render a destructive button; return True only on the run right after Confirm."""
+    """Render a destructive button; return True only on the run right after Confirm.
+
+    ``target`` names what the action applies to (a draft id, room code, message id). A prompt
+    answered for one target never fires for another: if the target changes while the prompt is
+    open, the prompt is dropped. Callers still run their own permission checks when acting.
+    """
     pending = _pending_for(st)
-    state, at = pending.get(key, ("", 0.0))
-    if state and time.time() - at > _LAPSE_SECONDS:
+    target = str(target or "")
+    state, at, armed_target = pending.get(key, ("", 0.0, ""))
+    if state and (time.time() - at > _LAPSE_SECONDS or armed_target != target):
         pending.pop(key, None)
         state = ""
     if state == "fired":
@@ -84,12 +92,12 @@ def confirm_destructive_action(
         return True
     if state != "armed":
         st.button(label, key=f"{key}__ask_btn", icon=icon, help=help, use_container_width=use_container_width,
-                  on_click=_arm, args=(pending, key))
+                  on_click=_arm, args=(pending, key, target))
         return False
     st.warning(warning, icon=":material/warning:")
     yes_col, no_col = st.columns(2)
     yes_col.button(confirm_label, key=f"{key}__yes_btn", type="primary", icon=icon, use_container_width=True,
-                   on_click=_fire, args=(pending, key))
+                   on_click=_fire, args=(pending, key, target))
     no_col.button("Cancel", key=f"{key}__no_btn", icon=":material/close:", use_container_width=True,
                   on_click=_disarm, args=(pending, key))
     return False

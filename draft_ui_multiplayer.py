@@ -219,6 +219,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                 icon=ICON_LEAVE,
                 warning="You will leave this shared draft room. You can rejoin with the room code if it is still open.",
                 confirm_label="Leave room",
+                target=str(ctx.get("room_code") or ""),
             ):
                 leave_shared_draft_room(session)
                 try:
