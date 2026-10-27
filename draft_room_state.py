@@ -1637,9 +1637,16 @@ def simulator_roster_view_team_options(
 
 
 def _forget_saved_mock_draft(session: dict[str, Any]) -> None:
-    """A new board is a new mock draft: its first save must not overwrite the last one saved."""
+    """A new board is a new mock draft: its first save must not overwrite the last one saved, and
+    its picks are a new draft for queue consumption (a reset never restores or clears the queue)."""
     from saved_mock_resume import release_mock_edit
     release_mock_edit(session)
+    try:
+        from draft_queue_contract import start_new_simulator_draft
+
+        start_new_simulator_draft(session)
+    except ImportError:
+        pass
 
 
 def rebuild_simulator_board_for_teams(session: dict[str, Any]) -> pd.DataFrame:
@@ -1770,7 +1777,7 @@ def delete_live_draft_only(session: dict[str, Any]) -> dict[str, Any]:
     return trace
 
 
-def delete_active_draft(session: dict[str, Any], *, clear_queue: bool = True) -> dict[str, Any]:
+def delete_active_draft(session: dict[str, Any], *, clear_queue: bool = False) -> dict[str, Any]:
     """Option A: wipe live draft + canonical board + draft queue (fresh start)."""
     trace: dict[str, Any] = {
         "ok": True,

@@ -222,86 +222,18 @@ def _clear_ami_draft_cache(session: dict[str, Any]) -> None:
 
 
 def _prune_drafted_from_queue(session: dict[str, Any]) -> list[str]:
-    """Remove any already-drafted players from the queue (by name and player ID).
+    """Remove queued players picked in the *active* draft (each committed pick once).
 
-    Draft Queue must never retain drafted players or show \"Already drafted by…\".
-    That label belongs only on Watchlist / Tracked / search — not in the queue.
+    Delegates to draft_queue_contract: a player drafted on an old, finished or unrelated board
+    (another league, a past Live Draft) stays in the global queue; viewing the queue changes
+    nothing beyond applying picks the active draft has committed (incl. other managers' picks in a
+    shared room, and Undo restoring the player).
     """
     try:
-        from draft_room_state import get_all_drafted_player_names
-        from draft_state import DRAFT_QUEUE_KEY, sync_draft_queue, _normalize_player_list
+        from draft_queue_contract import sync_queue_with_active_draft
     except ImportError:
         return list(session.get("draft_queue") or [])
-
-    drafted_names = set(get_all_drafted_player_names(session))
-    drafted_lower = {str(n).strip().lower() for n in drafted_names if str(n).strip()}
-    drafted_ids: set[str] = set()
-    try:
-        from shared_live_draft_snapshot import drafted_player_tokens, refresh_shared_live_draft_snapshot
-
-        refresh_shared_live_draft_snapshot(session)
-        tokens = drafted_player_tokens(session)
-        for t in tokens:
-            s = str(t or "").strip()
-            if not s:
-                continue
-            drafted_lower.add(s.lower())
-            # IDs are typically alphanumeric without spaces.
-            if " " not in s:
-                drafted_ids.add(s)
-                drafted_ids.add(s.lower())
-            else:
-                drafted_names.add(s)
-    except ImportError:
-        # Fall back: live_draft_room board names + ids.
-        room = session.get("live_draft_room")
-        if isinstance(room, dict):
-            for entry in room.get("draft_board") or []:
-                if not isinstance(entry, dict):
-                    continue
-                name = str(entry.get("fullName") or entry.get("Player") or "").strip()
-                pid = str(entry.get("playerID") or entry.get("player_id") or "").strip()
-                if name:
-                    drafted_names.add(name)
-                    drafted_lower.add(name.lower())
-                if pid:
-                    drafted_ids.add(pid)
-                    drafted_ids.add(pid.lower())
-            for pid in room.get("drafted_player_ids") or []:
-                s = str(pid or "").strip()
-                if s:
-                    drafted_ids.add(s)
-                    drafted_ids.add(s.lower())
-
-    q = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
-    kept: list[str] = []
-    for p in q:
-        name = str(p or "").strip()
-        if not name:
-            continue
-        if name in drafted_names or name.lower() in drafted_lower:
-            continue
-        if name in drafted_ids or name.lower() in drafted_ids:
-            continue
-        kept.append(name)
-    if kept != q:
-        sync_draft_queue(session, kept, reason="auto_remove_drafted")
-        session["_live_draft_queue_last_good"] = list(kept)
-        if not kept:
-            session.pop("_live_draft_queue_last_good", None)
-        session["_draft_queue_widget_epoch"] = int(session.get("_draft_queue_widget_epoch") or 0) + 1
-        session["_draft_queue_skip_sortable_once"] = True
-        # Persist shared participant workflow so other accounts converge.
-        try:
-            from draft_room_context import resolve_shared_room_code
-            from draft_room_participant_state import save_participant_workflow_from_session
-
-            code = str(resolve_shared_room_code(session) or "").strip().upper()
-            if code:
-                save_participant_workflow_from_session(session, code)
-        except ImportError:
-            pass
-    return kept
+    return sync_queue_with_active_draft(session)
 
 
 def _post_draft_side_effects(

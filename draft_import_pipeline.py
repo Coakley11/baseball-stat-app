@@ -832,6 +832,13 @@ def apply_validated_import_to_board(
     session.pop("_draft_room_assign_submit_trace", None)
 
     sync_board_to_session_keys(session, board, local_edit=True, reason="validated_import")
+    try:
+        from draft_queue_contract import adopt_board_without_consuming
+
+        # An imported board records someone's past draft; it must not consume the queue.
+        adopt_board_without_consuming(session)
+    except ImportError:
+        pass
     bump_editor_version(session)
     mark_draft_room_board_authority(session, pick_count=pick_count, reason="validated_import")
     set_canonical_draft_meta(

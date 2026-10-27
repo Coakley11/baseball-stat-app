@@ -115,9 +115,12 @@ def cache_queue_player_meta(session: dict[str, Any], player_name: str, meta: dic
     store = session.get(QUEUE_PLAYER_META_KEY)
     if not isinstance(store, dict):
         store = {}
+    prior = store.get(name.lower()) if isinstance(store.get(name.lower()), dict) else {}
     store[name.lower()] = {
         "position": str(meta.get("position") or "—").strip() or "—",
         "team": str(meta.get("team") or "—").strip() or "—",
+        # Stable identity beside the name-based queue (older entries simply lack it).
+        "player_id": str(meta.get("player_id") or prior.get("player_id") or "").strip(),
     }
     session[QUEUE_PLAYER_META_KEY] = store
     session.pop(DRAFT_PLAYER_META_LOOKUP_KEY, None)

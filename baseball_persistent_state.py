@@ -141,6 +141,8 @@ _WORKFLOW_KEYS = (
     "workflow_recent_compare_pairs",
     "workflow_transfer_batches",
     "_queue_player_meta",
+    "_draft_queue_consumed",
+    "_simulator_board_epoch",
     "draft_archive_teams",
     "active_draft_archive_id",
     "fantasy_league_context_state",

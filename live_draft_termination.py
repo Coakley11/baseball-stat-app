@@ -714,7 +714,7 @@ def permanently_delete_live_draft(
     try:
         from draft_room_state import delete_active_draft
 
-        delete_active_draft(session, clear_queue=True)
+        delete_active_draft(session)  # the global queue is the user's; ending a draft keeps it
         cleared.append("delete_active_draft")
     except Exception:
         try:

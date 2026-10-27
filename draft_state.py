@@ -621,6 +621,7 @@ def add_player_to_draft_queue(session: dict[str, Any], player_name: str) -> tupl
                             {
                                 "position": str(row.get("Primary Position") or row.get("Position") or "—"),
                                 "team": str(row.get("Team") or row.get("MLB Team") or "—"),
+                                "player_id": str(row.get("playerID") or row.get("player_id") or "").strip(),
                             },
                         )
                 except Exception:

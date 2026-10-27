@@ -793,7 +793,8 @@ class TestDeleteActiveDraft(unittest.TestCase):
         trace = delete_active_draft(session)
         self.assertTrue(trace.get("ok"))
         self.assertEqual(table_pick_count(session[DRAFT_ROOM_TABLE_KEY]), 0)
-        self.assertEqual(session.get(DRAFT_QUEUE_KEY), [])
+        # The global working queue belongs to the user: deleting a draft keeps it (2026-10-27).
+        self.assertEqual(session.get(DRAFT_QUEUE_KEY), ["Aaron Judge"])
 
     def test_reset_simulator_only_keeps_live_record(self) -> None:
         session: dict = {

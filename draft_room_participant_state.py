@@ -681,6 +681,41 @@ def active_participant_team(session: dict[str, Any]) -> str:
         return ""
 
 
+def _queue_inherited_from_other_user(
+    session: dict[str, Any], room_code: str, slot: dict[str, Any], pid: str, queue: list[str]
+) -> bool:
+    """True when the session queue is exactly another participant's saved room queue."""
+    me = str(pid or "").strip()
+    records = [slot]
+    room_state = (session.get(PARTICIPANT_STATE_KEY) or {}).get(str(room_code or "").strip().upper())
+    if isinstance(room_state, dict):
+        records.append(room_state)
+        records.extend(v for v in (room_state.get("by_participant") or {}).values() if isinstance(v, dict))
+    for rec in records:
+        owner = str(rec.get("participant_id") or "").strip()
+        theirs = [str(x).strip() for x in ((rec.get("workflow") or {}).get("queue") or []) if str(x).strip()]
+        if owner and owner != me and theirs and theirs == list(queue):
+            return True
+    return False
+
+
+def _hydrate_room_extras(
+    session: dict[str, Any], room_code: str, slot: dict[str, Any], workflow: dict[str, Any], pid: str
+) -> None:
+    """Room-scoped pieces (watchlists, notes, team seat) without touching the working queue."""
+    session[DRAFT_WATCHLIST_FOCUS_KEY] = copy.deepcopy(workflow.get("watchlist_focus") or [])
+    session[DRAFT_WATCHLIST_FAVORITES_KEY] = copy.deepcopy(workflow.get("watchlist_favorites") or [])
+    notes = slot.get("notes")
+    if isinstance(notes, str):
+        session[PARTICIPANT_NOTES_KEY] = notes
+    team = membership_team_for_participant(session, room_code, participant_id=pid)
+    if not team:
+        team = str(slot.get("assigned_team") or "").strip()
+    if team:
+        session[ACTIVE_PARTICIPANT_ID_KEY] = pid
+        session[ACTIVE_PARTICIPANT_TEAM_KEY] = team
+
+
 def load_participant_workflow_into_session(session: dict[str, Any], room_code: str) -> dict[str, Any]:
     """Hydrate widget/canonical queue keys from participant-private storage.
 
@@ -723,8 +758,24 @@ def load_participant_workflow_into_session(session: dict[str, Any], room_code: s
         prev_scope = str(session.get(QUEUE_SCOPE_KEY) or "").strip()
         scope_changed = bool(prev_scope and prev_scope != scope)
         hydrate_reason = "participant_scope_change" if scope_changed else "participant_hydrate"
+        # The working queue belongs to the signed-in user, not to a room: entering or switching
+        # rooms keeps it. Only a different user on this session swaps in that user's copy.
+        prev_user = prev_scope.split("|", 1)[1] if "|" in prev_scope else ""
+        user_changed = bool(prev_scope and prev_user != str(pid or "").strip())
+        if not user_changed:
+            session[QUEUE_SCOPE_KEY] = scope
+            slot_pid = str(slot.get("participant_id") or "").strip()
+            same_user_slot = not slot_pid or slot_pid == str(pid or "").strip()
+            if not old_q and new_q and same_user_slot:
+                # This user's own queue saved from another device / before a refresh.
+                session[DRAFT_QUEUE_KEY] = list(new_q)
+            elif old_q and _queue_inherited_from_other_user(session, code, slot, pid, old_q):
+                # An exact copy of another user's room queue was inherited by this session.
+                session[DRAFT_QUEUE_KEY] = []
+            _hydrate_room_extras(session, room_code, slot, workflow, pid)
+            return participant_state_for_room(session, room_code)
 
-        # Cross-user / cross-room: always replace session widgets (including empty).
+        # Cross-user on one session: always replace session widgets (including empty).
         if scope_changed:
             session.pop("_live_draft_queue_last_good", None)
             ds = session.get("draft_state")
