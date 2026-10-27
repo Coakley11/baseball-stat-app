@@ -26,6 +26,11 @@ def _app() -> None:
 
 
 class ConfirmDestructiveActionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import ui_confirm
+
+        ui_confirm._PENDING.clear()
+
     def _at(self) -> AppTest:
         at = AppTest.from_function(_app, default_timeout=60)
         at.run()
@@ -56,10 +61,27 @@ class ConfirmDestructiveActionTests(unittest.TestCase):
     def test_stale_request_lapses(self) -> None:
         at = self._at()
         self._button(at, "Delete it").click().run()
-        at.session_state["_confirm_armed::t"] = time.time() - 600
+        import ui_confirm
+
+        for pending in ui_confirm._PENDING.values():
+            if "t" in pending:
+                pending["t"] = (pending["t"][0], time.time() - 600)
         at.run()
         self.assertEqual([b.label for b in at.button], ["Delete it"])
         self.assertEqual(at.session_state["ran"], 0)
+
+
+class WidgetKeyTests(unittest.TestCase):
+    def test_generated_keys_are_never_snapshotted(self) -> None:
+        """Browser run 2026-10-27: a restored page snapshot set draft_room_reset_simulator_btn__ask,
+        a button key, and raised StreamlitValueAssignmentNotAllowedError on the Simulator."""
+        from page_state import _is_ephemeral_widget_key
+
+        for suffix in ("__ask_btn", "__yes_btn", "__no_btn"):
+            self.assertTrue(_is_ephemeral_widget_key(f"draft_room_reset_simulator_btn{suffix}"), suffix)
+        src = (ROOT / "ui_confirm.py").read_text(encoding="utf-8")
+        for suffix in ("__ask_btn", "__yes_btn", "__no_btn"):
+            self.assertIn(f'key=f"{{key}}{suffix}"', src)
 
 
 class CallSitesTests(unittest.TestCase):

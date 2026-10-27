@@ -770,6 +770,15 @@ def remove_drafted_player_from_active_queues(
     if not token:
         return result
 
+    # The committed pick is on the active draft's board now: let the consumption ledger take it,
+    # so it records the player's queue position and an Undo can put him back. The direct removal
+    # below then only covers a pick the board does not show yet.
+    try:
+        from draft_queue_contract import sync_queue_with_active_draft
+
+        sync_queue_with_active_draft(session)
+    except ImportError:
+        pass
     before = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
     q, changed = remove_player_from_user_draft_queue(
         session,

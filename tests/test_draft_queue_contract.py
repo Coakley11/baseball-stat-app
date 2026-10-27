@@ -65,6 +65,33 @@ class ConsumptionTests(unittest.TestCase):
         self.assertEqual(s[DRAFT_QUEUE_KEY], QUEUE)
 
 
+    def test_undo_to_zero_picks_restores_even_after_the_empty_board_is_rebuilt(self) -> None:
+        """Browser run: the Simulator rebuilds an empty board on render; that is not a new draft."""
+        s = _session()
+        _pick(s, QUEUE[1])
+        drs.undo_last_simulator_pick(s)
+        drs.ensure_simulator_board_for_settings(s)
+        _prune_drafted_from_queue(s)
+        self.assertEqual(s[DRAFT_QUEUE_KEY], QUEUE)
+
+
+    def test_undo_restores_after_a_direct_drafted_removal(self) -> None:
+        """Browser run: the pick handlers remove the drafted player directly; the ledger must still
+        record his position, or Undo cannot put him back."""
+        from draft_state import remove_drafted_player_from_active_queues
+
+        s = _session()
+        df = drs.ensure_runtime_draft_board(s)
+        label = drs.open_pick_row_options(df)[0][1]
+        drs.submit_board_pick_assignment(s, pick_label=label, player_match=QUEUE[2],
+                                         pick_row_by_label=drs.pick_label_row_map(df), all_names=[QUEUE[2]])
+        remove_drafted_player_from_active_queues(s, QUEUE[2])
+        self.assertNotIn(QUEUE[2], s[DRAFT_QUEUE_KEY])
+        drs.undo_last_simulator_pick(s)
+        _prune_drafted_from_queue(s)
+        self.assertEqual(s[DRAFT_QUEUE_KEY], QUEUE)
+
+
 class LeftAloneTests(unittest.TestCase):
     def test_reset_neither_clears_nor_replenishes(self) -> None:
         s = _session()

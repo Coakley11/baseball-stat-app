@@ -12139,18 +12139,19 @@ def _drafted_player_names_from_room():
 
 
 def _auto_remove_drafted_from_queue():
-    """Remove drafted players from Draft Queue, but leave Watchlist/Tracked Players untouched."""
-    from draft_state import sync_draft_queue
+    """Apply picks committed in the active draft to the Draft Queue (Watchlist/Tracked untouched).
+
+    Goes through draft_queue_contract like every queue consumer: a player drafted on an old or
+    unrelated board stays queued, each committed pick counts once, and Undo restores the player.
+    (This sidebar pass used to strip anyone drafted on any board in the session on every rerun.)
+    """
+    from draft_queue_contract import sync_queue_with_active_draft
 
     _workflow_normalize_draft_queue()
-    drafted = _drafted_player_names_from_room()
-    if not drafted:
-        return []
-    q = st.session_state.get("draft_queue", []) or []
-    kept = [p for p in q if str(p).strip() not in drafted]
-    removed = [p for p in q if str(p).strip() in drafted]
+    q = list(st.session_state.get("draft_queue", []) or [])
+    after = sync_queue_with_active_draft(st.session_state)
+    removed = [p for p in q if p not in after]
     if removed:
-        sync_draft_queue(st.session_state, kept, reason="auto_remove_drafted")
         try:
             from live_draft_queue_persist import note_queue_mutation
 
