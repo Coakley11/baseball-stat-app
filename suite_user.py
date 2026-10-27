@@ -118,32 +118,38 @@ def _read_secret(block: Any, name: str) -> str:
 
 def reset_account_cache() -> None:
     reset_cloud_config_cache()
-    _resolve_account_user_id.cache_clear()
+    _resolve_account_user_id_cached.cache_clear()
 
 
-@lru_cache(maxsize=1)
-def _resolve_account_user_id() -> str:
+@lru_cache(maxsize=16)
+def _resolve_account_user_id_cached(external_id: str, email: str) -> str:
     """
-    Return Supabase user UUID when cloud is configured, else ``local:{external_id}``.
+    Return Supabase suite_users UUID for one external account key.
+
+    Keyed by external_id + email so switching accounts on a shared Streamlit worker
+    cannot reuse another user's cached cloud row id. (A key-less cache returned the
+    first resolved account to every session on the process.)
     """
-    external = get_external_user_id()
+    ext = str(external_id or "default").strip() or "default"
     cfg = get_cloud_config()
     if cfg is None:
-        return f"local:{external}"
+        return f"local:{ext}"
     try:
         from suite_storage_supabase import ensure_user_row
 
         return ensure_user_row(
-            external,
-            email=get_user_email(),
+            ext,
+            email=str(email or "").strip(),
             display_name=get_display_name(),
         )
     except Exception:
-        return f"local:{external}"
+        return f"local:{ext}"
 
 
 def get_account_user_id() -> str:
-    return _resolve_account_user_id()
+    external = get_external_user_id()
+    email = get_user_email()
+    return _resolve_account_user_id_cached(external, email)
 
 
 def account_mode() -> str:
