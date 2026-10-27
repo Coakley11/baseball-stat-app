@@ -21464,16 +21464,24 @@ elif active_page == "Draft Room Simulator":
             st.button(
                 "Undo Last Pick",
                 key="draft_room_undo_last_pick_btn",
+                icon=":material/undo:",
                 help="Remove the most recent simulator pick and restore the previous on-clock team.",
                 on_click=_on_undo_last_simulator_pick_click,
             )
         with reset_col:
-            st.button(
-                "Reset Draft Room Simulator",
+            from ui_confirm import ICON_RESET, confirm_destructive_action
+
+            if confirm_destructive_action(
+                st,
                 key="draft_room_reset_simulator_btn",
+                label="Reset Draft Room Simulator",
+                icon=ICON_RESET,
                 help="Clear the practice/canonical board only. Use for a fresh mock draft.",
-                on_click=_on_reset_draft_room_simulator_click,
-            )
+                warning="This clears every pick on the simulator board. Saved drafts and your queue are not changed.",
+                confirm_label="Reset board",
+            ):
+                _on_reset_draft_room_simulator_click()
+                st.rerun()
         _undo_flash = st.session_state.pop("_draft_room_undo_flash", None)
         if _undo_flash:
             if st.session_state.get("_draft_room_action_trace", {}).get("ok"):
@@ -21495,10 +21503,16 @@ elif active_page == "Draft Room Simulator":
             except Exception as _board_trace_exc:
                 st.error(f"Board-tab trace panel failed: {_board_trace_exc}")
         with delete_live_col:
-            if st.button(
-                "Delete Live Draft Room draft",
+            from ui_confirm import ICON_DELETE, confirm_destructive_action
+
+            if confirm_destructive_action(
+                st,
                 key="draft_room_delete_live_draft_btn",
+                label="Delete Live Draft Room draft",
+                icon=ICON_DELETE,
                 help="Remove the Live Draft Room record only. Simulator board and queue stay.",
+                warning="This permanently deletes the Live Draft Room record. The simulator board and your queue stay.",
+                confirm_label="Delete Live Draft",
             ):
                 from draft_room_state import delete_live_draft_only
                 from live_draft_state import commit_live_draft_room

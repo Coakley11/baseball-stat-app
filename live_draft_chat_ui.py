@@ -501,7 +501,16 @@ def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
                     label_visibility="collapsed",
                     placeholder="Message id",
                 )
-                if st.button("Delete", key="ld_chat_delete_btn") and mid:
+                from ui_confirm import ICON_DELETE, confirm_destructive_action
+
+                if mid and confirm_destructive_action(
+                    st,
+                    key="ld_chat_delete_btn",
+                    label="Delete",
+                    icon=ICON_DELETE,
+                    warning=f"Delete chat message {mid} for everyone in this room?",
+                    confirm_label="Delete message",
+                ):
                     ok, err = delete_chat_message(session, mid)
                     if not ok and err:
                         st.caption(err)

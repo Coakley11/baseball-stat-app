@@ -721,7 +721,17 @@ def render_draft_information_panel(
                     pass
                 session["_live_draft_lobby_refresh"] = True
         with action_col3:
-            if is_host and st.button("Cancel Shared Room", key="live_draft_lobby_cancel_btn", use_container_width=True):
+            from ui_confirm import ICON_CANCEL, confirm_destructive_action
+
+            if is_host and confirm_destructive_action(
+                st,
+                key="live_draft_lobby_cancel_btn",
+                label="Cancel Shared Room",
+                icon=ICON_CANCEL,
+                use_container_width=True,
+                warning="This closes the shared room for everyone who joined. It cannot be reopened.",
+                confirm_label="Cancel room",
+            ):
                 try:
                     from draft_room_context import leave_shared_draft_room
 

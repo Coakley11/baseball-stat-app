@@ -210,7 +210,16 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
             if st.button("Refresh board now", key="shared_draft_refresh_btn"):
                 sync_shared_draft_room(session, force=True)
                 return True
-            if st.button("Leave shared room", key="shared_draft_leave_btn"):
+            from ui_confirm import ICON_LEAVE, confirm_destructive_action
+
+            if confirm_destructive_action(
+                st,
+                key="shared_draft_leave_btn",
+                label="Leave shared room",
+                icon=ICON_LEAVE,
+                warning="You will leave this shared draft room. You can rejoin with the room code if it is still open.",
+                confirm_label="Leave room",
+            ):
                 leave_shared_draft_room(session)
                 try:
                     from baseball_persistent_state import force_save_baseball_state
