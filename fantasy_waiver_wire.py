@@ -1345,9 +1345,12 @@ def compute_position_need_weights(
 def _player_position_weight(row: pd.Series, position_weights: dict[str, float]) -> float:
     if not position_weights:
         return 0.0
+    # Same rule as _player_eligible_at, with the row's positions derived once, not per position.
+    positions = _row_positions(row)
     best = 0.0
     for pos, weight in position_weights.items():
-        if _player_eligible_at(row, pos):
+        aliases = _WAIVER_POSITION_ALIASES.get(str(pos).strip().upper(), (str(pos).strip().upper(),))
+        if positions & set(aliases):
             best = max(best, float(weight))
     return best
 

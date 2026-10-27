@@ -13902,25 +13902,11 @@ def _render_baseball_sidebar_chrome(st_obj) -> None:
         pass
     head = "?"
     try:
-        import subprocess
         from pathlib import Path
 
-        _repo = str(Path(__file__).resolve().parent)
-        head = subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=_repo,
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-        # Mark dirty tree so humans know uncommitted UI fixes are live on this process.
-        dirty = subprocess.check_output(
-            ["git", "status", "--porcelain"],
-            cwd=_repo,
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-        if dirty:
-            head = f"{head}+"
+        from build_stamp import build_stamp
+
+        head = build_stamp(Path(__file__).resolve().parent)
     except Exception:
         pass
     try:

@@ -315,6 +315,14 @@ _FORCE_SAVE_CLOUD_REASONS = frozenset({
     "nba_settings_change",
 })
 
+# Saves a page issues on every render (Historical Explorer, Career Totals, League Standings).
+# force_autosave skips them when the saved content is unchanged; a real edit changes it.
+_RENDER_SNAPSHOT_SAVE_REASONS = frozenset({
+    "historical_edit",
+    "career_edit",
+    "fantasy_in_season_snapshot",
+})
+
 
 def _cloud_autosave_blocked_reason(
     st: Any,
@@ -1502,6 +1510,11 @@ def force_autosave(
             state = _preserve_cloud_widget_fields_on_page_change(app_id, state)
         blob = json.dumps(state, sort_keys=True, default=str)
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
+        if reason in _RENDER_SNAPSHOT_SAVE_REASONS and st.session_state.get(f"_suite_autosave_fp::{app_id}") == fp:
+            # A page re-saving its own render snapshot: nothing changed since the last save,
+            # so skip the disk write and the cloud read + write (as autosave_if_changed does).
+            st.session_state["_suite_force_save_skipped_unchanged"] = reason
+            return True
         saved_disk = save_user_state(app_id, state)
         page, summary = session_page_summary(app_id, state)
         cloud_block = _cloud_autosave_blocked_reason(st, app_id, state, save_reason=reason)
