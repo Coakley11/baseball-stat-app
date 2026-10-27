@@ -37,6 +37,7 @@ ADMIN_ACCOUNTS = ADMIN_EMAIL_LOCAL_PARTS  # public alias used by tests/docs
 _ADMIN_EXTERNAL_IDS = ADMIN_EMAIL_LOCAL_PARTS  # backward-compatible alias
 _COAKLEY_EXTERNAL_ID = "coakley11"
 _DANIEL_RESOLVED_EXTERNAL_ID = "daniel"
+_ADMIN_BOUND_PROFILES = frozenset({_COAKLEY_EXTERNAL_ID, _DANIEL_RESOLVED_EXTERNAL_ID})
 _DEMO_WORKSPACE_IDS = frozenset({"guest", "test_user"})
 _ADMIN_DEMO_WORKSPACES = ("daniel", "ariel", "guest", "test_user")
 
@@ -109,8 +110,13 @@ def is_admin_user(
                 sess_email = current_auth_email(ss)
                 if not sess_email:
                     return False
-                # Auth path: email is authoritative. Ignore session external_id /
-                # workspace / display-name fields — those are not immutable identity.
+                # The local part alone is not identity: coakley11@<any domain> could sign up.
+                # The account must also be bound (at sign-in, by verified email) to an admin
+                # profile; a look-alike address gets its own profile and no admin.
+                from suite_auth import resolve_auth_external_id
+
+                if resolve_auth_external_id(ss) not in _ADMIN_BOUND_PROFILES:
+                    return False
                 verified_locals |= _admin_locals_from_email(sess_email)
                 auth_resolved = True
         except Exception:

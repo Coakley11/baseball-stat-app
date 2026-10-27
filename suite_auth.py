@@ -62,6 +62,7 @@ AUTH_PROTECTED_SESSION_KEYS = (
     AUTH_TOKENS_KEY,
     AUTH_PROFILE_KEY,
     "_suite_cloud_user_id",
+    "_suite_auth_profile_bound_uid",
     AUTH_JUST_LOGGED_IN_KEY,
     AUTH_LAST_LOGIN_ERROR_KEY,
     AUTH_LAST_RESTORE_ERROR_KEY,
@@ -126,6 +127,7 @@ def is_authenticated(session_state: dict[str, Any]) -> bool:
 
 
 GUEST_WORKSPACE_KEY = "_suite_guest_workspace_id"
+_PROFILE_BOUND_UID_KEY = "_suite_auth_profile_bound_uid"
 
 
 def is_anonymous_guest(session_state: Any = None) -> bool:
@@ -259,7 +261,7 @@ def allowed_workspaces_for_user(external_user_id: str) -> tuple[str, ...]:
         return ("daniel", "ariel", "guest", "test_user")
     if re.fullmatch(r"[a-z0-9_]+", key):
         return (key,)
-    return ("daniel", "guest", "test_user")
+    return ("user_unidentified",)  # never fall back to the owner's workspaces
 
 
 def resolve_auth_external_id(session_state: dict[str, Any]) -> str:
@@ -267,13 +269,17 @@ def resolve_auth_external_id(session_state: dict[str, Any]) -> str:
     ext = normalize_account_external_id(str(session_state.get(AUTH_EXTERNAL_ID_KEY) or "").strip().lower())
     if ext:
         return ext
+    if is_auth_enabled():
+        # Not bound at sign-in (see resolve_account_profile_id): an unverified readable id could
+        # be someone else's, so use this account's own collision-free id, never the owner's.
+        uid = str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
+        if not uid:
+            return "user_unidentified"
+        candidate = _infer_external_id_from_email(current_auth_email(session_state)) or "user"
+        return _collision_free_id(candidate, uid)
     inferred = normalize_account_external_id(_infer_external_id_from_email(current_auth_email(session_state)))
     if inferred:
         return inferred
-    if is_auth_enabled():
-        # Never resolve an unidentified signed-in account to the owner's profile.
-        uid = re.sub(r"[^a-z0-9]", "", str(session_state.get(AUTH_USER_ID_KEY) or "").lower())[:16]
-        return f"user_{uid}" if uid else "user_unidentified"
     return "daniel"
 
 
@@ -301,7 +307,7 @@ def _configured_profile_emails() -> dict[str, str]:
         raw = block.get("profile_emails") if block is not None else None
         for email, profile in dict(raw or {}).items():
             e, p = str(email or "").strip().lower(), str(profile or "").strip().lower()
-            if e and p in _DEFAULT_ALLOWED_WORKSPACES:
+            if e and re.fullmatch(r"[a-z0-9_]+", p):
                 out[e] = p
     except Exception:
         pass
@@ -309,10 +315,13 @@ def _configured_profile_emails() -> dict[str, str]:
 
 
 def _infer_external_id_from_email(email: str) -> str:
-    """Suite profile id for a signed-in email. Preset profiles (daniel, ariel, guest, test_user)
-    are reached only by exact address: the owner's admin aliases, or ``profile_emails`` in
-    Secrets. Any other address gets an id of its own; an email merely containing "daniel" or
-    "ariel", or named like a preset, used to resolve to that person's profile."""
+    """Readable profile id candidate for an email: its local part, never a preset or admin id.
+
+    Only a candidate: ``resolve_account_profile_id`` grants it at sign-in once no other account
+    holds it. Preset profiles (daniel, ariel, guest, test_user) are reached only through
+    ``profile_emails`` in Secrets or a verified existing account row; an email merely
+    containing "daniel"/"ariel", or named like a preset or admin, used to resolve to that profile.
+    """
     low = str(email or "").strip().lower()
     if not low:
         return ""
@@ -320,14 +329,67 @@ def _infer_external_id_from_email(email: str) -> str:
     if configured:
         return configured
     local = low.split("@", 1)[0]
-    if local in _ADMIN_EXTERNAL_ALIASES:
-        return _ADMIN_EXTERNAL_ALIASES[local]
     safe = re.sub(r"[^a-z0-9_]+", "_", local).strip("_")
     if not safe:
         return "user_unidentified"
-    if safe in _DEFAULT_ALLOWED_WORKSPACES or normalize_account_external_id(safe) in _DEFAULT_ALLOWED_WORKSPACES:
+    protected = set(_DEFAULT_ALLOWED_WORKSPACES) | set(_ADMIN_EXTERNAL_ALIASES) | {"coakley11", "default"}
+    if safe in protected or normalize_account_external_id(safe) in protected:
         return f"user_{safe}"
     return safe
+
+
+def _legacy_external_id_from_email(email: str) -> str:
+    """The pre-2026-10-27 rule, used only to choose among this email's own verified rows."""
+    low = str(email or "").strip().lower()
+    if "ariel" in low:
+        return "ariel"
+    if "daniel" in low:
+        return "daniel"
+    local = low.split("@", 1)[0]
+    return normalize_account_external_id(local)
+
+
+def _collision_free_id(candidate: str, auth_user_id: str) -> str:
+    import hashlib
+
+    digest = hashlib.sha256(str(auth_user_id or candidate).encode("utf-8")).hexdigest()[:8]
+    return f"{candidate or 'user'}_{digest}"
+
+
+def resolve_account_profile_id(email: str, auth_user_id: str) -> str:
+    """Suite profile id for a verified sign-in; two accounts never share one.
+
+    1. ``profile_emails`` in Secrets (exact address; owner-controlled).
+    2. An existing suite_users row recorded with this exact email: keeps that account's id, so
+       existing profiles (Daniel, Ariel, everyone) keep their saved data with no migration.
+    3. A new email claims its readable id (``_infer_external_id_from_email``) only when no other
+       account holds it, re-checked after the claim.
+    4. Otherwise ``<id>_<hash of the Supabase user id>``: stable for this account, never shared.
+    Nothing is merged, moved or deleted. If the account store cannot be read, step 4's id is used
+    (an empty profile for this sign-in, never another account's).
+    """
+    low = str(email or "").strip().lower()
+    candidate = _infer_external_id_from_email(low) or "user"
+    if not low:
+        return _collision_free_id("user", auth_user_id)
+    configured = _configured_profile_emails().get(low)
+    if configured:
+        return configured
+    try:
+        from suite_storage_supabase import ensure_user_row, find_user_rows
+
+        verified = sorted({r["external_id"] for r in find_user_rows(email=low) if r.get("external_id")})
+        if verified:
+            legacy = _legacy_external_id_from_email(low)
+            return legacy if legacy in verified else verified[0]
+        if not find_user_rows(external_id=candidate):
+            ensure_user_row(candidate, email=low)
+            claimed = find_user_rows(external_id=candidate)
+            if len(claimed) == 1 and claimed[0].get("email", "").lower() == low:
+                return candidate
+    except Exception:
+        pass
+    return _collision_free_id(candidate, auth_user_id)
 
 
 def account_scoped_workspace_target(session_state: dict[str, Any]) -> str:
@@ -730,7 +792,15 @@ def _apply_authenticated_user(
         pass
     email = str(getattr(user, "email", None) or (user.get("email") if isinstance(user, dict) else None) or email_fallback).strip()
     session_state[AUTH_USER_EMAIL_KEY] = email
-    session_state[AUTH_EXTERNAL_ID_KEY] = normalize_account_external_id(_infer_external_id_from_email(email))
+    _bound_uid = str(getattr(user, "id", None) or (user.get("id") if isinstance(user, dict) else None) or "").strip()
+    if not (
+        _bound_uid
+        and session_state.get(_PROFILE_BOUND_UID_KEY) == _bound_uid
+        and session_state.get(AUTH_EXTERNAL_ID_KEY)
+    ):
+        # Bound to this verified account (see resolve_account_profile_id), once per session.
+        session_state[AUTH_EXTERNAL_ID_KEY] = resolve_account_profile_id(email, _bound_uid)
+        session_state[_PROFILE_BOUND_UID_KEY] = _bound_uid
     try:
         from live_draft_auth_prestart_stage1_diag import trace_prestart_key_set
 
@@ -846,6 +916,7 @@ def _clear_auth_session(
         AUTH_PROFILE_KEY,
         AUTH_NOTICE_KEY,
         AUTH_EXTERNAL_ID_KEY,
+        _PROFILE_BOUND_UID_KEY,
         AUTH_TOKENS_KEY,
         AUTH_CLIENT_KEY,
         AUTH_JUST_LOGGED_IN_KEY,

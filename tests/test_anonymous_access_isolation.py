@@ -20,14 +20,14 @@ import suite_user
 OWNER_ROW, OTHER_ROW = "uuid-owner", "uuid-other"
 
 
-def _signed_in(email: str, uid: str) -> dict:
+def _signed_in(email: str, uid: str, profile: str) -> dict:
+    """A signed-in session as _apply_authenticated_user leaves it (profile bound at sign-in;
+    the binding itself is tested in test_account_identity_binding)."""
     return {
         suite_auth.AUTH_SESSION_KEY: True,
         suite_auth.AUTH_USER_ID_KEY: uid,
         suite_auth.AUTH_USER_EMAIL_KEY: email,
-        suite_auth.AUTH_EXTERNAL_ID_KEY: suite_auth.normalize_account_external_id(
-            suite_auth._infer_external_id_from_email(email)
-        ),
+        suite_auth.AUTH_EXTERNAL_ID_KEY: profile,
     }
 
 
@@ -150,8 +150,8 @@ class SignedOutGuestTests(_Base):
 
 class SignedInIsolationTests(_Base):
     def test_two_accounts_get_their_own_ids_and_rows(self) -> None:
-        owner = _signed_in("daniel.cohen11@yahoo.com", "auth-owner")
-        other = _signed_in("pat@example.com", "auth-pat")
+        owner = _signed_in("daniel.cohen11@yahoo.com", "auth-owner", "daniel")
+        other = _signed_in("pat@example.com", "auth-pat", "pat")
         seen = []
         for session in (owner, other, owner, other):
             with mock.patch.object(streamlit, "session_state", session):
@@ -160,8 +160,8 @@ class SignedInIsolationTests(_Base):
 
     def test_only_the_owner_workspace_reads_legacy_rows(self) -> None:
         for session, ws, expect_null in (
-            (_signed_in("daniel.cohen11@yahoo.com", "auth-owner"), "daniel", True),
-            (_signed_in("pat@example.com", "auth-pat"), "pat", False),
+            (_signed_in("daniel.cohen11@yahoo.com", "auth-owner", "daniel"), "daniel", True),
+            (_signed_in("pat@example.com", "auth-pat", "pat"), "pat", False),
         ):
             with mock.patch.object(streamlit, "session_state", session), \
                     mock.patch("suite_workspace.get_active_workspace_id", return_value=ws):
@@ -173,7 +173,7 @@ class SignedInIsolationTests(_Base):
                     self.assertEqual(params, {"user_id": "eq.uuid-pat"})
 
     def test_unresolved_account_is_refused_not_given_the_owners_rows(self) -> None:
-        session = _signed_in("pat@example.com", "auth-pat")
+        session = _signed_in("pat@example.com", "auth-pat", "pat")
         with mock.patch.object(streamlit, "session_state", session), \
                 mock.patch("suite_storage_supabase.ensure_user_row", side_effect=RuntimeError("offline")):
             suite_user.reset_account_cache()
@@ -183,10 +183,9 @@ class SignedInIsolationTests(_Base):
 
     def test_email_lookalikes_do_not_reach_preset_profiles(self) -> None:
         infer = suite_auth._infer_external_id_from_email
-        self.assertEqual(infer("daniel.cohen11@yahoo.com"), "daniel")
-        for email in ("daniel.smith@example.com", "mydaniel@x.com", "ariel.k@x.com", "daniel@x.com",
+        for email in ("daniel.cohen11@gmail.com", "coakley11@example.com", "daniel.smith@example.com", "mydaniel@x.com", "ariel.k@x.com", "daniel@x.com",
                       "ariel@x.com", "guest@x.com", "test_user@x.com"):
-            self.assertNotIn(infer(email), ("daniel", "ariel", "guest", "test_user"), email)
+            self.assertNotIn(infer(email), ("daniel", "ariel", "guest", "test_user", "coakley11"), email)
         self.assertNotEqual(suite_auth.resolve_auth_external_id({suite_auth.AUTH_USER_ID_KEY: "abc"}), "daniel")
 
     def test_configured_profile_email_maps_exactly(self) -> None:
@@ -195,7 +194,7 @@ class SignedInIsolationTests(_Base):
             self.assertNotEqual(suite_auth._infer_external_id_from_email("kid2@family.example"), "ariel")
 
     def test_signed_in_email_is_the_accounts_own_not_the_owners(self) -> None:
-        with mock.patch.object(streamlit, "session_state", _signed_in("pat@example.com", "auth-pat")):
+        with mock.patch.object(streamlit, "session_state", _signed_in("pat@example.com", "auth-pat", "pat")):
             self.assertEqual(suite_user.get_user_email(), "pat@example.com")
 
 

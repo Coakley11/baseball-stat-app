@@ -431,6 +431,32 @@ def _apply_user_scope_params(params: dict[str, str]) -> None:
         params["user_id"] = "is.null"  # single-user install (no sign-in): the legacy rows
 
 
+def find_user_rows(*, external_id: str = "", email: str = "") -> list[dict[str, str]]:
+    """suite_users rows (id, external_id, email) matching an external id or an email.
+
+    Used at sign-in to bind an account to its existing profile; not user-scoped (like
+    ensure_user_row). Raises when the store cannot be read, so callers never guess.
+    """
+    params: dict[str, str] = {"select": "id,external_id,email", "limit": "20"}
+    if external_id:
+        params["external_id"] = f"eq.{str(external_id).strip()}"
+    elif email:
+        params["email"] = f"ilike.{str(email).strip()}"
+    else:
+        return []
+    rows = _request("GET", _TABLE_USERS, params=params, prefer="return=representation")
+    if not isinstance(rows, list):
+        raise RuntimeError("suite_users lookup returned no list")
+    out: list[dict[str, str]] = []
+    for row in rows:
+        if isinstance(row, dict):
+            out.append({k: str(row.get(k) or "").strip() for k in ("id", "external_id", "email")})
+    if email and not external_id:
+        want = str(email).strip().lower()
+        out = [r for r in out if r["email"].lower() == want]  # ilike is pattern-based; keep exact
+    return out
+
+
 def ensure_user_row(
     external_id: str,
     *,
