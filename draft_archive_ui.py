@@ -120,6 +120,17 @@ def _set_draft_save_ui_flash(session: dict[str, Any], *, level: str, message: st
     session[_DRAFT_SAVE_UI_FLASH_KEY] = {"level": str(level or "info"), "message": str(message or "")}
 
 
+_PERSIST_FAILURE_KEY = "_draft_archive_persist_failure"
+
+
+def _persist_failure_message(session: dict[str, Any]) -> str:
+    """Save-failure text naming the cause recorded by _persist_archive."""
+    cause = str(session.get(_PERSIST_FAILURE_KEY) or "").strip()
+    if not cause:
+        return "Couldn't save changes. Try again."
+    return f"Couldn't save this draft: {cause}. It is still open here, so you can try again."
+
+
 def _pop_draft_save_ui_flash(session: dict[str, Any]) -> dict[str, str] | None:
     flash = session.pop(_DRAFT_SAVE_UI_FLASH_KEY, None)
     return flash if isinstance(flash, dict) else None
@@ -252,7 +263,7 @@ def _execute_simulator_league_context_save(
             _set_draft_save_ui_flash(
                 session,
                 level="error",
-                message="Couldn't save changes. Try again.",
+                message=_persist_failure_message(session),
             )
         else:
             try:
@@ -1310,6 +1321,8 @@ def _cloud_persist_reason(reason: str) -> str:
 
 def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: dict[str, Any] | None = None) -> bool:
     before = _workflow_counts(session)
+    session.pop(_PERSIST_FAILURE_KEY, None)
+    session.pop("_draft_archive_persist_error", None)
     try:
         from workflow_persist_guard import mark_workflow_persist_authoritative
 
@@ -1366,12 +1379,12 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
         session_has_entry = int(after.get("draft_archive_count") or 0) >= int(before.get("draft_archive_count") or 0) > 0
     count_increased = int(after.get("draft_archive_count") or 0) > int(before.get("draft_archive_count") or 0)
     persist_ok = bool(session_has_entry and ok) if reason != "draft_archive_deleted" else bool(ok and session_has_entry)
+    cloud_expected = False
     try:
         from draft_library_save_trace import save_persist_mode_context
 
-        if save_persist_mode_context(session).get("cloud_write_expected") and not session.get(
-            "_suite_persist_last_save_cloud"
-        ):
+        cloud_expected = bool(save_persist_mode_context(session).get("cloud_write_expected"))
+        if cloud_expected and not session.get("_suite_persist_last_save_cloud"):
             persist_ok = False
     except ImportError:
         pass
@@ -1383,7 +1396,9 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
             persist_ok = persist_ok or bool(ok and get_draft_archive(session, entry_id))
         except Exception:
             pass
-    if persist_ok and entry_id:
+    # Without cloud storage the disk copy is the record: confirming it against a cloud row that
+    # cannot exist failed every local save.
+    if persist_ok and entry_id and cloud_expected:
         try:
             from workflow_persist_guard import record_draft_library_readback, verify_cloud_draft_library_readback
             from suite_workspace import get_active_workspace_id, scoped_cloud_app_id
@@ -1413,8 +1428,24 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
             }
             if not readback.get("ok"):
                 persist_ok = False
+                session[_PERSIST_FAILURE_KEY] = (
+                    "the saved draft could not be read back from cloud storage "
+                    f"({readback.get('error') or 'not found'})"
+                )
         except ImportError:
             pass
+    if not persist_ok and not session.get(_PERSIST_FAILURE_KEY):
+        cloud_error = ""
+        try:
+            from suite_cloud_state import cloud_write_error_message
+
+            cloud_error = cloud_write_error_message(session)
+        except ImportError:
+            pass
+        if cloud_error:
+            session[_PERSIST_FAILURE_KEY] = f"cloud storage did not accept the save ({cloud_error})"
+        elif session.get("_draft_archive_persist_error"):
+            session[_PERSIST_FAILURE_KEY] = str(session["_draft_archive_persist_error"])
     _record_save_diag(
         session,
         reason=reason,
@@ -1956,7 +1987,7 @@ def _execute_live_draft_save_click(
             _set_draft_save_ui_flash(
                 session,
                 level="error",
-                message="Couldn't save changes. Try again.",
+                message=_persist_failure_message(session),
             )
         elif defer_activation:
             st.toast(f"Saved draft: {entry.get('draft_name', 'Saved Draft')}")

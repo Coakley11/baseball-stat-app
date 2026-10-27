@@ -9,6 +9,7 @@ loads the newer of cloud vs local disk and applies it to ``st.session_state``.
 from __future__ import annotations
 
 import copy
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -29,6 +30,7 @@ CLOUD_READ_DISABLED = "disabled"  # cloud storage is not configured (local insta
 CLOUD_READ_FAILED_KEY = "_suite_cloud_read_failed"
 CLOUD_RECONCILED_KEY = "_suite_cloud_reconciled"
 CLOUD_WRITE_BLOCKED_KEY = "_suite_cloud_write_blocked"
+CLOUD_WRITE_ERROR_KEY = "_suite_cloud_write_error"
 
 
 @dataclass(frozen=True)
@@ -537,6 +539,7 @@ def save_cloud_full_session(
                 ss[CLOUD_WRITE_BLOCKED_KEY] = {"reason": "cloud_read_failed", "since": failure.get("at")}
         except Exception:
             pass
+        _record_cloud_write_error("cloud storage could not be read, so writing was refused")
         return False
     try:
         storage, _ = _import_storage()
@@ -549,9 +552,39 @@ def save_cloud_full_session(
             skip_metrics_merge_read=skip_metrics_merge_read,
         )
         invalidate_cloud_full_session_cache(app_id)
+        _record_cloud_write_error(None)
         return True
-    except Exception:
+    except Exception as exc:
+        _record_cloud_write_error(exc)
         return False
+
+
+def _record_cloud_write_error(exc: BaseException | str | None) -> None:
+    """Keep why the last full_session write failed (URLs and keys stripped) for save messages."""
+    ss = _streamlit_session()
+    if ss is None:
+        return
+    try:
+        if exc is None:
+            ss.pop(CLOUD_WRITE_ERROR_KEY, None)
+            return
+        if isinstance(exc, str):
+            ss[CLOUD_WRITE_ERROR_KEY] = exc
+            return
+        detail = re.sub(r"https?://\S+", "<cloud>", str(exc))
+        detail = re.sub(r"\b(?:sb_\w+|ey[\w-]{10,}\.[\w.-]+)", "<key>", detail)[:200]
+        ss[CLOUD_WRITE_ERROR_KEY] = f"{type(exc).__name__}: {detail}"
+    except Exception:
+        pass
+
+
+def cloud_write_error_message(ss: Any = None) -> str:
+    """Why the last full_session write failed; empty when it succeeded."""
+    ss = ss if ss is not None else _streamlit_session()
+    try:
+        return str((ss or {}).get(CLOUD_WRITE_ERROR_KEY) or "")
+    except Exception:
+        return ""
 
 
 def clear_cloud_full_session(app_id: str) -> None:
