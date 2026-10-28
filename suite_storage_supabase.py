@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import copy
 import json
+import threading
 from activity_time import normalize_timestamp_iso, utc_now_iso
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from suite_storage_config import SuiteCloudConfig, get_auth_api_key, get_cloud_config, reset_cloud_config_cache
@@ -101,7 +102,7 @@ def _row_to_state_dict(row: dict[str, Any], *, logical: str) -> dict[str, Any]:
         "page": page,
         "summary": str(row.get("summary") or ""),
         "metrics": metrics,
-        "updated_at": str(row.get("updated_at") or "")[:19],
+        "updated_at": str(row.get("updated_at") or ""),
     }
 
 
@@ -130,7 +131,7 @@ def load_current_state_meta_for_app(app: str) -> dict[str, Any]:
         "app": logical,
         "page": str(row.get("page") or ""),
         "summary": str(row.get("summary") or ""),
-        "updated_at": str(row.get("updated_at") or "")[:19],
+        "updated_at": str(row.get("updated_at") or ""),
     }
 
 
@@ -186,7 +187,7 @@ def load_current_states_summary() -> dict[str, dict[str, Any]]:
             "page": str(row.get("page") or ""),
             "summary": str(row.get("summary") or ""),
             "metrics": {},
-            "updated_at": str(row.get("updated_at") or "")[:19],
+            "updated_at": str(row.get("updated_at") or ""),
         }
     return out
 
@@ -276,6 +277,25 @@ def _merge_state_metrics(
 
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+_revision_lock = threading.Lock()
+_last_revision_us = 0
+
+
+def _next_state_revision(previous: str | None = None) -> str:
+    """UTC timestamp with microseconds, always different from the revision just read."""
+    global _last_revision_us
+    with _revision_lock:
+        candidate = int(datetime.now(timezone.utc).timestamp() * 1_000_000)
+        if candidate <= _last_revision_us:
+            candidate = _last_revision_us + 1
+        token = datetime.fromtimestamp(candidate / 1_000_000, tz=timezone.utc).isoformat(timespec="microseconds")
+        if previous and token == str(previous).strip():
+            candidate += 1
+            token = datetime.fromtimestamp(candidate / 1_000_000, tz=timezone.utc).isoformat(timespec="microseconds")
+        _last_revision_us = candidate
+        return token
 
 
 def _headers(cfg: SuiteCloudConfig, *, prefer: str = "return=minimal") -> dict[str, str]:
@@ -672,7 +692,7 @@ def _save_state_if_revision(
         "page": page or "",
         "summary": summary or "",
         "metrics": merged_metrics,
-        "updated_at": _now_iso(),
+        "updated_at": _next_state_revision(expected_updated_at),
     }
     uid = _cloud_user_id()
     expected = str(expected_updated_at or "")
@@ -1331,8 +1351,8 @@ def load_saved_items(
                 "item_key": str(row.get("item_key") or ""),
                 "title": str(row.get("title") or ""),
                 "payload": payload,
-                "updated_at": str(row.get("updated_at") or "")[:19],
-            }
+        "updated_at": str(row.get("updated_at") or ""),
+    }
         )
     return out
 

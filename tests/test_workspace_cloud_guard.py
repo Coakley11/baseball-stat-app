@@ -233,6 +233,80 @@ class GuardTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(store.app_keys, ["baseball__coakley11"])
 
+    def test_same_second_writers_and_offset_timestamps_do_not_collide(self):
+        import suite_storage_supabase as storage
+
+        stored = "2026-10-28T15:50:28.100000+00:00"
+        db = {
+            "updated_at": stored,
+            "metrics": {
+                scs.FULL_SESSION_KEY: _board(4),
+                VERIFIED_BOARD_SNAPSHOT_KEY: {"schema": 1, "pick_count": 4, "cleared": False},
+            },
+        }
+        calls = []
+
+        def request(method, path, *, params=None, json_body=None, prefer="return=minimal", cfg=None, use_cache=None):
+            calls.append((method, params, json_body))
+            self.assertEqual(method, "PATCH")
+            expected = str((params or {}).get("updated_at") or "")
+            self.assertEqual(expected, f"eq.{stored}")
+            self.assertIn(".100000+00:00", expected)
+            self.assertNotEqual(expected, f"eq.{stored[:19]}")
+            if db["updated_at"] != stored:
+                return []
+            written = str((json_body or {}).get("updated_at") or "")
+            self.assertNotEqual(written, stored)
+            self.assertIn("+00:00", written)
+            self.assertIn(".", written)
+            db["updated_at"] = written
+            db["metrics"] = (json_body or {}).get("metrics") or db["metrics"]
+            return [{"updated_at": written, "metrics": db["metrics"]}]
+
+        def save(label):
+            with (
+                mock.patch.object(storage, "_logical_active_app", return_value=("baseball", "baseball")),
+                mock.patch.object(storage, "_cloud_user_id", return_value="user-1"),
+                mock.patch.object(storage, "_request", side_effect=request),
+                mock.patch.object(storage, "_merge_state_metrics", side_effect=lambda _key, incoming, allow_network=True: {
+                    **db["metrics"],
+                    **dict(incoming or {}),
+                    VERIFIED_BOARD_SNAPSHOT_KEY: db["metrics"][VERIFIED_BOARD_SNAPSHOT_KEY],
+                }),
+            ):
+                return storage.save_current_state(
+                    "baseball",
+                    page="Trend Value",
+                    summary=label,
+                    metrics={scs.FULL_SESSION_KEY: {"active_page": label}},
+                    expected_updated_at=stored,
+                )
+
+        self.assertTrue(save("first"))
+        self.assertFalse(save("second"))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(db["metrics"][VERIFIED_BOARD_SNAPSHOT_KEY]["pick_count"], 4)
+        self.assertNotEqual(db["updated_at"], stored)
+        self.assertFalse(save("second-again"))
+
+    def test_zero_row_patch_is_not_a_successful_save(self):
+        import suite_storage_supabase as storage
+
+        with (
+            mock.patch.object(storage, "_logical_active_app", return_value=("baseball", "baseball")),
+            mock.patch.object(storage, "_cloud_user_id", return_value="user-1"),
+            mock.patch.object(storage, "_request", return_value=[]),
+            mock.patch.object(storage, "_merge_state_metrics", side_effect=lambda _key, incoming, allow_network=True: dict(incoming or {})),
+        ):
+            wrote = storage.save_current_state(
+                "baseball",
+                page="Trend Value",
+                summary="stale",
+                metrics={scs.FULL_SESSION_KEY: {"active_page": "Trend Value"}},
+                expected_updated_at="2026-10-28T01:22:30.654321+00:00",
+            )
+        self.assertFalse(wrote)
+
     def test_atomic_revision_filter_rejects_a_writer_that_loses_the_race(self):
         import suite_storage_supabase as storage
 
