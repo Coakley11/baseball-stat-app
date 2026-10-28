@@ -33,6 +33,7 @@ PROTECTED_WORKSPACE_KEYS: tuple[str, ...] = (
     "watchlist_favorites",
     "last_draft_board_snapshot",
     "fantasy_research_mode_selection",
+    "_deleted_draft_archive_ids",
 )
 
 BOARD_MUTATION_REASONS = frozenset(
@@ -212,7 +213,23 @@ def _snapshot_from_state(state: dict[str, Any], revision: str) -> dict[str, Any]
     }
 
 
-def _cleared_snapshot(reason: str, revision: str) -> dict[str, Any]:
+def _previous_verified(prior: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(prior, dict):
+        return None
+    if not prior.get("cleared") and int(prior.get("pick_count") or 0) > 0:
+        blob = prior.get("draft_room_state")
+        if isinstance(blob, dict) and blob:
+            return {
+                "pick_count": int(prior.get("pick_count") or 0),
+                "draft_room_state": copy.deepcopy(blob),
+                "saved_at": prior.get("saved_at") or "",
+                "source_revision": prior.get("source_revision") or "",
+            }
+    previous = prior.get("previous_verified")
+    return copy.deepcopy(previous) if isinstance(previous, dict) and previous else None
+
+
+def _cleared_snapshot(reason: str, revision: str, prior: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "schema": 1,
         "pick_count": 0,
@@ -221,7 +238,27 @@ def _cleared_snapshot(reason: str, revision: str) -> dict[str, Any]:
         "cleared_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "reason": _reason_base(reason),
         "source_revision": revision,
+        "previous_verified": _previous_verified(prior),
     }
+
+
+def recover_board_from_verified_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Copy a verified board out of the snapshot. Does not write cloud or disk."""
+    if not isinstance(snapshot, dict):
+        return None
+    source = snapshot.get("previous_verified") if snapshot.get("cleared") else snapshot
+    if not isinstance(source, dict):
+        return None
+    blob = source.get("draft_room_state")
+    if not isinstance(blob, dict) or not blob:
+        return None
+    recovered = {
+        BOARD_STATE_KEY: copy.deepcopy(blob),
+        BOARD_TABLE_KEY: copy.deepcopy(blob),
+    }
+    if filled_pick_count(recovered) <= 0:
+        return None
+    return recovered
 
 
 def prepare_cloud_full_session_write(
@@ -278,7 +315,10 @@ def prepare_cloud_full_session_write(
         _preserve_workspace(outgoing, cloud, reason)
 
     if explicit_reset:
-        snapshot = _cleared_snapshot(reason, revision)
+        retained = prior_snapshot
+        if _previous_verified(retained) is None and cloud_picks > 0:
+            retained = _snapshot_from_state(cloud, revision)
+        snapshot = _cleared_snapshot(reason, revision, retained)
         include_snapshot = True
     elif filled_pick_count(outgoing) > 0:
         snapshot = _snapshot_from_state(outgoing, revision)

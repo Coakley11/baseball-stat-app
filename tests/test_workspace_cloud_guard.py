@@ -13,6 +13,7 @@ from workspace_cloud_guard import (
     authorize_explicit_reset,
     filled_pick_count,
     note_cloud_revision_seen,
+    recover_board_from_verified_snapshot,
 )
 
 APP = "baseball"
@@ -178,6 +179,7 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(filled_pick_count(store.blob), 0)
         self.assertTrue(store.snapshot.get("cleared"))
         self.assertEqual(store.snapshot.get("reason"), "reset_simulator_board")
+        self.assertEqual(store.snapshot.get("previous_verified", {}).get("pick_count"), 4)
 
     def test_undo_can_reduce_picks_without_clearing_recovery_snapshot(self):
         store = Store(_board(4), snapshot={"schema": 1, "pick_count": 4, "cleared": False, "draft_room_state": {"pick_count": 4}})
@@ -230,6 +232,90 @@ class GuardTests(unittest.TestCase):
             ok = scs.save_cloud_full_session(APP, {"active_page": "Home"}, save_reason="manual_save")
         self.assertTrue(ok)
         self.assertEqual(store.app_keys, ["baseball__coakley11"])
+
+    def test_atomic_revision_filter_rejects_a_writer_that_loses_the_race(self):
+        import suite_storage_supabase as storage
+
+        db = {"updated_at": TS, "metrics": {scs.FULL_SESSION_KEY: _board(4)}}
+
+        def request(method, path, *, params=None, json_body=None, prefer="return=minimal", cfg=None, use_cache=None):
+            self.assertEqual(method, "PATCH")
+            self.assertNotIn("resolution=merge-duplicates", prefer)
+            db["updated_at"] = NEWER
+            expected = str((params or {}).get("updated_at") or "").removeprefix("eq.")
+            if str(db["updated_at"])[:19] != expected[:19]:
+                return []
+            db["metrics"] = json_body["metrics"]
+            db["updated_at"] = json_body["updated_at"]
+            return [dict(db)]
+
+        with (
+            mock.patch.object(storage, "_logical_active_app", return_value=("baseball", "baseball")),
+            mock.patch.object(storage, "_cloud_user_id", return_value="user-1"),
+            mock.patch.object(storage, "_request", side_effect=request),
+            mock.patch.object(storage, "_merge_state_metrics", side_effect=lambda _key, incoming, allow_network=True: dict(incoming or {})),
+        ):
+            wrote = storage.save_current_state(
+                "baseball",
+                page="Trend Value",
+                summary="stale",
+                metrics={scs.FULL_SESSION_KEY: {"active_page": "Trend Value"}},
+                expected_updated_at=TS,
+            )
+        self.assertFalse(wrote)
+        self.assertEqual(filled_pick_count(db["metrics"][scs.FULL_SESSION_KEY]), 4)
+        self.assertEqual(db["updated_at"], NEWER)
+
+    def test_snapshot_survives_failed_hydration_and_can_restore_four_picks(self):
+        board = _board(4)
+        snapshot = {
+            "schema": 1,
+            "pick_count": 4,
+            "cleared": False,
+            "draft_room_state": board["draft_room_state"],
+        }
+        store = Store(board, snapshot=snapshot)
+        session: dict = {}
+        st = SimpleNamespace(session_state=session, warning=mock.Mock())
+        with (
+            mock.patch("suite_storage_config.cloud_storage_enabled", return_value=True),
+            mock.patch.object(scs, "_import_storage", return_value=(store, "fake")),
+            mock.patch.object(scs, "_streamlit_session", return_value=session),
+            mock.patch.object(scs, "_anonymous_guest", return_value=True),
+            mock.patch.object(sup, "_load_raw", return_value=({}, None, None)),
+        ):
+            self.assertFalse(sup.sync_workspace_protocol(st, APP, apply_state=lambda *_a: None))
+        ok, _st = self._run(store, session, {"active_page": "Trend Value"}, reason="fantasy_edit", guest=True)
+        self.assertFalse(ok)
+        self.assertEqual(store.snapshot.get("pick_count"), 4)
+        recovered = recover_board_from_verified_snapshot(store.snapshot)
+        self.assertEqual(filled_pick_count(recovered), 4)
+        self.assertEqual(store.writes, [])
+
+    def test_blocked_cloud_save_is_not_reported_as_success(self):
+        store = Store(_board(4))
+        session: dict = {}
+        st = SimpleNamespace(session_state=session, warning=mock.Mock())
+        with (
+            mock.patch("suite_storage_config.cloud_storage_enabled", return_value=True),
+            mock.patch("suite_user_persistence.save_user_state", return_value=True),
+            mock.patch.object(scs, "_import_storage", return_value=(store, "fake")),
+            mock.patch.object(scs, "_streamlit_session", return_value=session),
+            mock.patch.object(scs, "_anonymous_guest", return_value=False),
+            mock.patch.object(scs, "_cloud_storage_app_id", return_value="baseball"),
+            mock.patch.object(scs, "invalidate_cloud_full_session_cache", lambda app_id: None),
+            mock.patch("suite_egress_policy.cloud_autosave_allowed", return_value=(True, "")),
+        ):
+            ok = sup.force_autosave(
+                st,
+                APP,
+                build_state=lambda _st: {"active_page": "Trend Value"},
+                reason="fantasy_edit",
+            )
+        self.assertFalse(ok)
+        self.assertFalse(session.get("_suite_persist_last_save_cloud"))
+        self.assertTrue(session.get("_suite_autosave_cloud_blocked_reason"))
+        self.assertEqual(store.writes, [])
 
     def test_reset_without_intent_does_not_clear_a_verified_board(self):
         store = Store(_board(4))

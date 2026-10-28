@@ -201,6 +201,34 @@ _STALE_RESUME_SESSION_FLAGS: tuple[str, ...] = (
 )
 
 
+def _draft_library_slice_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
+    """Compact draft-library fields, including an empty archive and delete tombstones."""
+    src = state if isinstance(state, dict) else {}
+    out: dict[str, Any] = {}
+    for key in (
+        "draft_archive_teams",
+        "_deleted_draft_archive_ids",
+        "active_draft_archive_id",
+        "fantasy_league_context_state",
+    ):
+        if key in src:
+            out[key] = copy.deepcopy(src.get(key))
+    return out
+
+
+def is_draft_library_cloud_save_reason(reason: str) -> bool:
+    base = str(reason or "").strip()
+    if base.endswith("_retry"):
+        base = base[:-6]
+    return base in {
+        "draft_archive_saved",
+        "draft_archive_deleted",
+        "draft_archive_cleared",
+        "simulator_league_context_saved",
+        "live_draft_league_context_saved",
+    }
+
+
 def reconcile_stale_resume_session_flags(st: Any, app_key: str) -> list[str]:
     """
     Drop stale resume/AMI session flags when the URL no longer carries resume params.
@@ -212,7 +240,13 @@ def reconcile_stale_resume_session_flags(st: Any, app_key: str) -> list[str]:
         return []
     cleared: list[str] = []
     key = _normalize_resume_app_key(app_key)
+    ami_page = str(ss.get("_ami_return_page") or "")
     for flag in (*_STALE_RESUME_SESSION_FLAGS, f"_suite_resume_launch_{key}"):
+        if flag in ("_navigate_to_page", "_skip_page_restore_for"):
+            target = str(ss.get(flag) or "")
+            current = str(ss.get("active_page") or ss.get("main_sidebar_page") or "")
+            if target and target != current and target != ami_page:
+                continue
         if flag in ss:
             ss.pop(flag, None)
             cleared.append(flag)
@@ -609,7 +643,7 @@ def save_cloud_full_session(
             summary=summary or "Last session",
             metrics=metrics,
             skip_metrics_merge_read=skip_metrics_merge_read,
-            expected_updated_at=plan.expected_updated_at,
+            expected_updated_at="" if plan.expected_updated_at is None else str(plan.expected_updated_at),
         )
         if wrote is False:
             _record_cloud_write_error("cloud_revision_conflict")
@@ -1069,6 +1103,49 @@ def pick_restore_session(
             disk_ts,
         )
 
+    try:
+        from workflow_persist_guard import PROTECTED_WORKFLOW_PERSIST_KEYS, workflow_richness
+
+        cloud_wf = sum(workflow_richness(k, cloud_state.get(k)) for k in PROTECTED_WORKFLOW_PERSIST_KEYS)
+        disk_wf = sum(workflow_richness(k, disk_state.get(k)) for k in PROTECTED_WORKFLOW_PERSIST_KEYS)
+        if disk_wf > cloud_wf:
+            return RestorePickResult(disk_state, "disk", "disk richer saved drafts / league contexts", cloud_ts, disk_ts)
+        if cloud_wf > disk_wf:
+            return RestorePickResult(cloud_state, "cloud", "cloud richer saved drafts / league contexts", cloud_ts, disk_ts)
+    except ImportError:
+        pass
+    try:
+        from workspace_cloud_guard import filled_pick_count
+
+        if filled_pick_count(disk_state) > 0 and filled_pick_count(cloud_state) == 0:
+            return RestorePickResult(
+                disk_state,
+                "disk",
+                "disk draft room beats newer empty cloud",
+                cloud_ts,
+                disk_ts,
+            )
+    except ImportError:
+        pass
+    try:
+        from live_draft_state import live_draft_restore_stats
+
+        cloud_has_ld = bool(live_draft_restore_stats(cloud_state).get("has_live_draft_state"))
+        disk_has_ld = bool(live_draft_restore_stats(disk_state).get("has_live_draft_state"))
+    except ImportError:
+        cloud_has_ld = disk_has_ld = False
+    if disk_has_ld and not cloud_has_ld and disk_epoch > cloud_epoch:
+        return RestorePickResult(
+            disk_state,
+            "disk",
+            f"disk newer than cloud and has live draft ({disk_ts} > {cloud_ts})",
+            cloud_ts,
+            disk_ts,
+        )
+    if disk_has_ld and not cloud_has_ld:
+        return RestorePickResult(disk_state, "disk", "disk has live draft; cloud missing", cloud_ts, disk_ts)
+    if not cloud_first and disk_state:
+        return RestorePickResult(disk_state, "disk", "local/demo disk-first restore", cloud_ts, disk_ts)
     if cloud_first and cloud_state:
         return RestorePickResult(
             cloud_state,

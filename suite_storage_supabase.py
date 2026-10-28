@@ -4,6 +4,7 @@ Supabase PostgREST backend for cross-deployment suite activity.
 
 from __future__ import annotations
 
+import copy
 import json
 from activity_time import normalize_timestamp_iso, utc_now_iso
 from datetime import datetime
@@ -190,6 +191,41 @@ def load_current_states_summary() -> dict[str, dict[str, Any]]:
     return out
 
 
+def _merge_full_session_preserve_richer_draft(
+    prior: dict[str, Any] | None,
+    incoming: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Keep a verified board or saved-draft list when an incoming session would empty it."""
+    base = dict(prior or {})
+    new = dict(incoming or {})
+    merged = dict(base)
+    merged.update(new)
+    try:
+        from workspace_cloud_guard import filled_pick_count
+
+        prior_picks = filled_pick_count(base)
+        incoming_picks = filled_pick_count(new)
+    except Exception:
+        prior_picks = incoming_picks = 0
+    if incoming_picks == 0 and prior_picks > 0:
+        for key in ("draft_room_state", "draft_room_table"):
+            if key in base:
+                merged[key] = copy.deepcopy(base.get(key))
+    tombstones = {str(item) for item in (new.get("_deleted_draft_archive_ids") or []) if str(item)}
+    prior_archives = base.get("draft_archive_teams")
+    incoming_archives = new.get("draft_archive_teams")
+    if isinstance(prior_archives, list) and prior_archives and not incoming_archives and not tombstones:
+        merged["draft_archive_teams"] = copy.deepcopy(prior_archives)
+        if base.get("active_draft_archive_id") and not new.get("active_draft_archive_id"):
+            merged["active_draft_archive_id"] = base.get("active_draft_archive_id")
+    elif tombstones and isinstance(incoming_archives, list):
+        merged["draft_archive_teams"] = [
+            item for item in incoming_archives if str((item or {}).get("draft_id") or "") not in tombstones
+        ]
+        merged["_deleted_draft_archive_ids"] = sorted(tombstones)
+    return merged
+
+
 def _merge_state_metrics(
     scoped_app_key: str,
     incoming: dict[str, Any] | None,
@@ -227,6 +263,14 @@ def _merge_state_metrics(
     merged.update(new_metrics)
     if _FULL_SESSION_KEY not in new_metrics and _FULL_SESSION_KEY in prior:
         merged[_FULL_SESSION_KEY] = prior[_FULL_SESSION_KEY]
+    elif isinstance(prior.get(_FULL_SESSION_KEY), dict) and isinstance(merged.get(_FULL_SESSION_KEY), dict):
+        merged[_FULL_SESSION_KEY] = _merge_full_session_preserve_richer_draft(
+            prior.get(_FULL_SESSION_KEY),
+            merged.get(_FULL_SESSION_KEY),
+        )
+    snapshot_key = "draft_room_verified_snapshot"
+    if snapshot_key not in new_metrics and snapshot_key in prior:
+        merged[snapshot_key] = prior[snapshot_key]
     return merged
 
 
@@ -608,6 +652,72 @@ def _logical_active_app(app: str) -> tuple[str, str] | None:
     return storage_app, logical
 
 
+def _save_state_if_revision(
+    app_key: str,
+    *,
+    page: str,
+    summary: str,
+    metrics: dict[str, Any] | None,
+    expected_updated_at: str,
+    skip_metrics_merge_read: bool,
+) -> bool:
+    """Commit only if the stored revision still matches. The filter is the write, not a prior read."""
+    allow_network = not (
+        skip_metrics_merge_read
+        and isinstance(metrics, dict)
+        and _FULL_SESSION_KEY in metrics
+    )
+    merged_metrics = _merge_state_metrics(app_key, metrics, allow_network=allow_network)
+    body: dict[str, Any] = {
+        "page": page or "",
+        "summary": summary or "",
+        "metrics": merged_metrics,
+        "updated_at": _now_iso(),
+    }
+    uid = _cloud_user_id()
+    expected = str(expected_updated_at or "")
+    if expected:
+        params = {
+            "app": f"eq.{app_key}",
+            "updated_at": f"eq.{expected}",
+        }
+        if uid:
+            params["user_id"] = f"eq.{uid}"
+        rows = _request(
+            "PATCH",
+            _TABLE_STATE,
+            params=params,
+            json_body=body,
+            prefer="return=representation",
+        )
+        matched = rows if isinstance(rows, list) else ([rows] if isinstance(rows, dict) else [])
+        if not matched:
+            return False
+        remember_metrics_merge_cache(app_key, merged_metrics)
+        return True
+    insert_body = dict(body)
+    insert_body["app"] = app_key
+    if uid:
+        insert_body["user_id"] = uid
+    try:
+        rows = _request(
+            "POST",
+            _TABLE_STATE,
+            json_body=insert_body,
+            prefer="return=representation",
+        )
+    except RuntimeError as exc:
+        text = str(exc)
+        if "409" in text or "23505" in text or "duplicate" in text.lower():
+            return False
+        raise
+    matched = rows if isinstance(rows, list) else ([rows] if isinstance(rows, dict) else [])
+    if not matched:
+        return False
+    remember_metrics_merge_cache(app_key, merged_metrics)
+    return True
+
+
 def save_current_state(
     app: str,
     *,
@@ -622,11 +732,14 @@ def save_current_state(
         return False
     app_key, _logical_app = target
     if expected_updated_at is not None:
-        meta = load_current_state_meta_for_app(app) or {}
-        current = str(meta.get("updated_at") or "")[:19]
-        expected = str(expected_updated_at or "")[:19]
-        if current != expected:
-            return False
+        return _save_state_if_revision(
+            app_key,
+            page=page,
+            summary=summary,
+            metrics=metrics,
+            expected_updated_at=str(expected_updated_at or ""),
+            skip_metrics_merge_read=skip_metrics_merge_read,
+        )
     # Routine full_session autosaves: merge from process cache, not a GET every write.
     allow_network = not (
         skip_metrics_merge_read

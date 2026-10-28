@@ -455,17 +455,22 @@ def clear_ami_return_deferred_flags(st: Any, app_key: str) -> list[str]:
     """Drop deferred AMI tab/holdings restore flags (safe after return consumed or on normal reboot)."""
     ss = st.session_state
     cleared: list[str] = []
+    ami_page = str(ss.get(SESSION_RETURN_PAGE_KEY) or "")
     for flag in (
         SESSION_RETURN_CONTEXT_KEY,
         SESSION_RETURN_PAGE_KEY,
-        "_skip_page_restore_for",
         "_suite_holdings_fp",
         "_ami_hydrated_insight_id",
-        "_navigate_to_page",
         "_suite_page_overwrite_source",
         "_suite_holdings_fp_mismatch",
         "_suite_holdings_fp_confirmed",
     ):
+        if flag in ss:
+            ss.pop(flag, None)
+            cleared.append(flag)
+    for flag in ("_navigate_to_page", "_skip_page_restore_for"):
+        if not ami_page or str(ss.get(flag) or "") != ami_page:
+            continue
         if flag in ss:
             ss.pop(flag, None)
             cleared.append(flag)

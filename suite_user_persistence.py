@@ -1580,6 +1580,27 @@ def force_autosave(
                     save_reason=reason,
                 )
             )
+        cloud_on = False
+        try:
+            from suite_storage_config import cloud_storage_enabled
+
+            cloud_on = bool(cloud_storage_enabled())
+        except ImportError:
+            cloud_on = False
+        if cloud_on and not saved_cloud:
+            st.session_state["_suite_persist_last_save_disk"] = saved_disk
+            st.session_state["_suite_persist_last_save_cloud"] = False
+            st.session_state["_suite_persist_last_save_reason"] = reason or "force_autosave"
+            if not st.session_state.get("_suite_autosave_cloud_blocked_reason"):
+                try:
+                    from suite_cloud_state import cloud_write_error_message
+
+                    st.session_state["_suite_autosave_cloud_blocked_reason"] = (
+                        cloud_write_error_message(st.session_state) or "cloud_write_refused"
+                    )
+                except Exception:
+                    st.session_state["_suite_autosave_cloud_blocked_reason"] = "cloud_write_refused"
+            return False
         if saved_disk or saved_cloud:
             st.session_state[f"_suite_autosave_fp::{app_id}"] = fp
             st.session_state[_restored_fp_key(app_id)] = fp
@@ -1694,6 +1715,19 @@ def autosave_if_changed(
                         pass
         except Exception as exc:
             cloud_err = str(exc)
+        cloud_on = False
+        try:
+            from suite_storage_config import cloud_storage_enabled
+
+            cloud_on = bool(cloud_storage_enabled())
+        except ImportError:
+            cloud_on = False
+        if cloud_on and not saved_cloud:
+            st.session_state["_suite_persist_last_save_disk"] = saved_disk
+            st.session_state["_suite_persist_last_save_cloud"] = False
+            if not st.session_state.get("_suite_autosave_cloud_blocked_reason"):
+                st.session_state["_suite_autosave_cloud_blocked_reason"] = cloud_err or "cloud_write_refused"
+            return
         if saved_disk or saved_cloud:
             st.session_state[key] = fp
             st.session_state[_restored_fp_key(app_id)] = fp
