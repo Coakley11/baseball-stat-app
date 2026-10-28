@@ -82,13 +82,18 @@ class CloudWritePlan:
     include_snapshot: bool = False
 
 
+def session_state_writable(session: Any) -> bool:
+    """True for a dict or a Streamlit SessionStateProxy."""
+    return session is not None and hasattr(session, "__setitem__") and hasattr(session, "get")
+
+
 def note_cloud_revision_seen(
-    session: dict[str, Any] | None,
+    session: Any,
     updated_at: str | None,
     *,
     confirmed_empty: bool = False,
 ) -> None:
-    if not isinstance(session, dict):
+    if not session_state_writable(session):
         return
     if confirmed_empty:
         session[CLOUD_CONFIRMED_EMPTY_KEY] = True
@@ -98,8 +103,8 @@ def note_cloud_revision_seen(
     session[CLOUD_REVISION_SEEN_KEY] = str(updated_at or "")
 
 
-def authorize_explicit_reset(session: dict[str, Any] | None, *, reason: str) -> None:
-    if not isinstance(session, dict):
+def authorize_explicit_reset(session: Any, *, reason: str) -> None:
+    if not session_state_writable(session):
         return
     current = session.get(EXPLICIT_RESET_KEY)
     reasons = []
@@ -115,8 +120,20 @@ def authorize_explicit_reset(session: dict[str, Any] | None, *, reason: str) -> 
     }
 
 
-def consume_explicit_reset(session: dict[str, Any] | None, reason: str) -> bool:
-    if not isinstance(session, dict):
+def explicit_reset_ready(session: Any, reason: str) -> bool:
+    if _reason_base(reason) not in EXPLICIT_RESET_REASONS or not session_state_writable(session):
+        return False
+    intent = session.get(EXPLICIT_RESET_KEY)
+    if not isinstance(intent, dict):
+        return False
+    reasons = intent.get("reasons")
+    if not isinstance(reasons, list) or _reason_base(reason) not in {str(item) for item in reasons}:
+        return False
+    return str(intent.get("revision") or "") == str(session.get(CLOUD_REVISION_SEEN_KEY) or "")
+
+
+def consume_explicit_reset(session: Any, reason: str) -> bool:
+    if not session_state_writable(session):
         return False
     intent = session.get(EXPLICIT_RESET_KEY)
     if not isinstance(intent, dict):
@@ -295,22 +312,33 @@ def prepare_cloud_full_session_write(
     cloud = cloud_state if isinstance(cloud_state, dict) else {}
     reason = _reason_base(save_reason)
     revision = str(cloud_updated_at or "")
-    seen = str((session or {}).get(CLOUD_REVISION_SEEN_KEY) or "") if isinstance(session, dict) else ""
-    confirmed_empty = bool(isinstance(session, dict) and session.get(CLOUD_CONFIRMED_EMPTY_KEY))
+    writable = session_state_writable(session)
+    seen = str(session.get(CLOUD_REVISION_SEEN_KEY) or "") if writable else ""
+    confirmed_empty = bool(writable and session.get(CLOUD_CONFIRMED_EMPTY_KEY))
+    previously_observed = bool(seen) or confirmed_empty
 
-    if read_status == CLOUD_READ_OK and cloud_write_blocked_by_newer_data(seen or None, revision or None):
-        return CloudWritePlan(False, outgoing, "stale_or_unhydrated_cloud_revision", expected_updated_at=revision or None)
-
-    explicit_reset = reason in EXPLICIT_RESET_REASONS and consume_explicit_reset(session, reason)
+    explicit_reset = explicit_reset_ready(session, reason)
     cloud_picks = filled_pick_count(cloud)
     incoming_picks = filled_pick_count(outgoing)
     if (
         read_status == CLOUD_READ_OK
-        and cloud_picks > incoming_picks
-        and reason not in BOARD_MUTATION_REASONS
-        and not explicit_reset
+        and previously_observed
+        and cloud_write_blocked_by_newer_data(seen or None, revision or None)
     ):
-        _copy_board(cloud, outgoing)
+        return CloudWritePlan(False, outgoing, "stale_or_unhydrated_cloud_revision", expected_updated_at=revision or None)
+    if (
+        read_status == CLOUD_READ_OK
+        and not previously_observed
+        and not explicit_reset
+        and (reason not in BOARD_MUTATION_REASONS or incoming_picks < cloud_picks)
+    ):
+        return CloudWritePlan(False, outgoing, "stale_or_unhydrated_cloud_revision", expected_updated_at=revision or None)
+    if explicit_reset:
+        consume_explicit_reset(session, reason)
+
+    if read_status == CLOUD_READ_OK and cloud_picks > incoming_picks and not explicit_reset:
+        if reason not in BOARD_MUTATION_REASONS or not previously_observed:
+            _copy_board(cloud, outgoing)
     if read_status == CLOUD_READ_OK:
         _preserve_workspace(outgoing, cloud, reason)
 
@@ -330,8 +358,10 @@ def prepare_cloud_full_session_write(
         snapshot = None
         include_snapshot = False
 
-    if read_status == CLOUD_READ_NOT_FOUND and not confirmed_empty and isinstance(session, dict):
+    if read_status == CLOUD_READ_NOT_FOUND and not confirmed_empty and writable:
         note_cloud_revision_seen(session, revision or None, confirmed_empty=True)
+    elif read_status == CLOUD_READ_OK and writable and not previously_observed:
+        note_cloud_revision_seen(session, revision or None)
     return CloudWritePlan(
         True,
         outgoing,

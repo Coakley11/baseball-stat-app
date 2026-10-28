@@ -599,6 +599,7 @@ def save_cloud_full_session(
             VERIFIED_BOARD_SNAPSHOT_KEY,
             note_cloud_revision_seen,
             prepare_cloud_full_session_write,
+            session_state_writable,
         )
 
         storage, _ = _import_storage()
@@ -620,7 +621,7 @@ def save_cloud_full_session(
         prior_snapshot = _metrics_snapshot(storage, app_id)
         plan = prepare_cloud_full_session_write(
             state,
-            session=ss if isinstance(ss, dict) else None,
+            session=ss if session_state_writable(ss) else None,
             read_status=fresh.status,
             cloud_state=fresh.state,
             cloud_updated_at=fresh.updated_at,
@@ -650,7 +651,7 @@ def save_cloud_full_session(
             return False
         invalidate_cloud_full_session_cache(app_id)
         observed = load_cloud_full_session_status(app_id, force=True)
-        if isinstance(ss, dict) and observed.status in (CLOUD_READ_OK, CLOUD_READ_NOT_FOUND):
+        if session_state_writable(ss) and observed.status in (CLOUD_READ_OK, CLOUD_READ_NOT_FOUND):
             note_cloud_revision_seen(
                 ss,
                 observed.updated_at,

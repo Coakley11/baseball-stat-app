@@ -1416,8 +1416,9 @@ def record_activity(
                 action_url=action_url,
             )
         return event_id
-    if summary or page or metrics:
-        save_current_state(app, page=page, summary=summary, metrics=metrics)
+    # Activity logs must not upsert suite_app_current_state. That path used a
+    # second-resolution timestamp and left full_session untouched, which moved
+    # updated_at without saving the board.
     if resume_key and resume_title:
         upsert_resume_item(
             app,

@@ -391,6 +391,98 @@ class GuardTests(unittest.TestCase):
         self.assertTrue(session.get("_suite_autosave_cloud_blocked_reason"))
         self.assertEqual(store.writes, [])
 
+    def test_session_proxy_records_revision_and_saves_one_pick(self):
+        class SessionProxy:
+            def __init__(self):
+                self._data = {}
+
+            def __getitem__(self, key):
+                return self._data[key]
+
+            def __setitem__(self, key, value):
+                self._data[key] = value
+
+            def get(self, key, default=None):
+                return self._data.get(key, default)
+
+            def pop(self, key, default=None):
+                return self._data.pop(key, default)
+
+        self.assertNotIsInstance(SessionProxy(), dict)
+        empty = {"active_page": "Draft Room Simulator", "draft_room_state": {"pick_count": 0, "table_records": []}}
+        store = Store(empty, updated_at="2026-10-28T03:48:58+00:00")
+        proxy = SessionProxy()
+        from workspace_cloud_guard import note_cloud_revision_seen
+
+        note_cloud_revision_seen(proxy, store.updated_at)
+        self.assertEqual(proxy.get("_suite_cloud_revision_seen"), store.updated_at)
+        with (
+            mock.patch("suite_storage_config.cloud_storage_enabled", return_value=True),
+            mock.patch.object(scs, "_import_storage", return_value=(store, "fake")),
+            mock.patch.object(scs, "_streamlit_session", return_value=proxy),
+            mock.patch.object(scs, "_anonymous_guest", return_value=False),
+            mock.patch.object(scs, "_cloud_storage_app_id", return_value="baseball"),
+            mock.patch.object(scs, "invalidate_cloud_full_session_cache", lambda app_id: None),
+        ):
+            ok = scs.save_cloud_full_session(
+                APP,
+                _board(1),
+                page="Draft Room Simulator",
+                summary="Save Draft Board Now",
+                save_reason="manual_save",
+            )
+        self.assertTrue(ok)
+        self.assertEqual(filled_pick_count(store.blob), 1)
+        self.assertEqual(store.snapshot.get("pick_count"), 1)
+        with (
+            mock.patch("suite_storage_config.cloud_storage_enabled", return_value=True),
+            mock.patch.object(scs, "_import_storage", return_value=(store, "fake")),
+            mock.patch.object(scs, "_streamlit_session", return_value=proxy),
+            mock.patch.object(scs, "_anonymous_guest", return_value=False),
+            mock.patch.object(scs, "_cloud_storage_app_id", return_value="baseball"),
+            mock.patch.object(scs, "invalidate_cloud_full_session_cache", lambda app_id: None),
+        ):
+            trend_ok = scs.save_cloud_full_session(
+                APP,
+                {"active_page": "Trend Value"},
+                page="Trend Value",
+                save_reason="fantasy_edit",
+            )
+        self.assertTrue(trend_ok)
+        self.assertEqual(filled_pick_count(store.blob), 1)
+        local_board = _board(1)
+        proxy["draft_room_table"] = local_board["draft_room_table"]
+        stale = Store(_board(4), updated_at="2026-10-28T16:14:34+00:00")
+        with (
+            mock.patch("suite_storage_config.cloud_storage_enabled", return_value=True),
+            mock.patch.object(scs, "_import_storage", return_value=(stale, "fake")),
+            mock.patch.object(scs, "_streamlit_session", return_value=proxy),
+            mock.patch.object(scs, "_anonymous_guest", return_value=False),
+            mock.patch.object(scs, "_cloud_storage_app_id", return_value="baseball"),
+            mock.patch.object(scs, "invalidate_cloud_full_session_cache", lambda app_id: None),
+        ):
+            rejected = scs.save_cloud_full_session(APP, local_board, save_reason="manual_save")
+        self.assertFalse(rejected)
+        self.assertEqual(filled_pick_count(proxy["draft_room_table"] and {"draft_room_state": proxy["draft_room_table"], "draft_room_table": proxy["draft_room_table"]}), 1)
+        self.assertEqual(stale.writes, [])
+
+    def test_activity_log_does_not_move_the_state_row_timestamp(self):
+        from suite_storage_supabase import record_activity
+
+        with mock.patch("suite_storage_supabase.save_current_state") as save_state, mock.patch(
+            "suite_storage_supabase.append_event", return_value="evt"
+        ), mock.patch("suite_storage_supabase.upsert_resume_item"):
+            record_activity(
+                "baseball",
+                "simulator_draft_session",
+                page="Draft Room Simulator",
+                metrics={"pick_count": 1, "team": "", "workstream": "baseball_draft"},
+                summary="Draft Room Simulator — 1 pick(s) logged",
+                resume_key="bb:simulator_draft",
+                resume_title="Continue mock draft",
+            )
+        save_state.assert_not_called()
+
     def test_reset_without_intent_does_not_clear_a_verified_board(self):
         store = Store(_board(4))
         session: dict = {}

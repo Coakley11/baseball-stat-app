@@ -116,10 +116,18 @@ def sync_local_state_to_cloud(app: str, state: dict[str, Any]) -> None:
         return
     import suite_storage as storage
 
-    scoped_app = _scoped_storage_app(app) or str(app or "").strip()
     page = str(state.get("page") or "")
     summary = str(state.get("summary") or state.get("label") or "")
-    metrics = {k: v for k, v in state.items() if k not in {"page", "summary", "label"}}
-    storage.save_current_state(scoped_app, page=page, summary=summary, metrics=metrics)
+    full_session = state.get("full_session")
+    if isinstance(full_session, dict):
+        from suite_cloud_state import save_cloud_full_session
+
+        save_cloud_full_session(
+            app,
+            full_session,
+            page=page,
+            summary=summary,
+            save_reason="activity_sync",
+        )
     if state.get("settings") and isinstance(state["settings"], dict):
         storage.save_user_settings(app, state["settings"])
