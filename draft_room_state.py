@@ -3835,11 +3835,20 @@ def record_manual_save_button_click(session: dict[str, Any]) -> dict[str, Any]:
     return stub
 
 
+def _safe_cloud_error(exc: BaseException | str) -> str:
+    try:
+        from suite_cloud_state import redact_cloud_error
+
+        return redact_cloud_error(exc)
+    except Exception:
+        return type(exc).__name__ if isinstance(exc, BaseException) else "cloud_save_failed"
+
+
 def record_manual_save_error(session: dict[str, Any], exc: BaseException) -> None:
     trace = session.get(_BOARD_MANUAL_SAVE_TRACE_KEY)
     if not isinstance(trace, dict):
         trace = record_manual_save_button_click(session)
-    trace["error"] = f"{type(exc).__name__}: {exc}"
+    trace["error"] = _safe_cloud_error(exc)
     trace["cloud_write_error"] = trace["error"]
     trace["saved"] = False
     trace["saved_cloud"] = False
@@ -3943,7 +3952,7 @@ def render_manual_save_readback_panel(st: Any) -> None:
                     "Cloud readback not confirmed. "
                     f"payload={manual.get('cloud_payload_pick_count')} "
                     f"readback={readback} "
-                    f"error={manual.get('cloud_write_error') or manual.get('error') or '—'}"
+                    f"error={_safe_cloud_error(str(manual.get('cloud_write_error') or manual.get('error') or '—'))}"
                 )
 
 
@@ -4108,8 +4117,12 @@ def save_draft_board_direct_to_cloud(
 
     try:
         from suite_cloud_state import (
+            block_cloud_writes_until_reconciled,
+            cloud_read_failure,
+            cloud_write_blocked_by_newer_data,
             invalidate_cloud_full_session_cache,
             load_cloud_full_session,
+            redact_cloud_error,
             save_cloud_full_session_with_result,
             session_page_summary,
         )
@@ -4172,6 +4185,35 @@ def save_draft_board_direct_to_cloud(
             trace["cloud_write_error"] = trace["error"]
             return trace
 
+        outbound_picks = int(draft_room_restore_stats(state).get("pick_count") or 0)
+        if outbound_picks < 1 or outbound_picks < expected_picks:
+            trace["error"] = (
+                f"draft_pick_count_below_minimum:expected={expected_picks} got={outbound_picks}"
+            )
+            trace["cloud_write_error"] = trace["error"]
+            return trace
+
+        if cloud_read_failure() is not None:
+            trace["error"] = "cloud storage could not be read, so writing was refused"
+            trace["cloud_write_error"] = trace["error"]
+            return trace
+
+        _cloud_now, ts_now = load_cloud_full_session("baseball", force=True)
+        if cloud_read_failure() is not None:
+            trace["error"] = "cloud storage could not be read, so writing was refused"
+            trace["cloud_write_error"] = trace["error"]
+            return trace
+        if cloud_write_blocked_by_newer_data(ts_before, ts_now):
+            block_cloud_writes_until_reconciled(
+                "baseball",
+                session,
+                reason="cloud_newer_than_loaded_session",
+            )
+            trace["cloud_timestamp_after"] = ts_now
+            trace["error"] = "cloud_newer_than_loaded_session"
+            trace["cloud_write_error"] = trace["error"]
+            return trace
+
         ok, cloud_err = save_cloud_full_session_with_result(
             "baseball",
             state,
@@ -4179,8 +4221,9 @@ def save_draft_board_direct_to_cloud(
             summary=summary,
             min_draft_pick_count=expected_picks,
         )
+        cloud_err = redact_cloud_error(cloud_err) if cloud_err else ""
         trace["saved_cloud"] = ok
-        trace["cloud_write_error"] = cloud_err or ""
+        trace["cloud_write_error"] = cloud_err
         if cloud_err:
             trace["error"] = cloud_err
             session["_suite_persist_last_cloud_error"] = cloud_err
@@ -4221,7 +4264,7 @@ def save_draft_board_direct_to_cloud(
         else:
             session["_suite_persist_last_save_cloud"] = False
     except Exception as exc:
-        trace["error"] = f"{type(exc).__name__}: {exc}"
+        trace["error"] = _safe_cloud_error(exc)
         trace["cloud_write_error"] = trace["error"]
     return trace
 

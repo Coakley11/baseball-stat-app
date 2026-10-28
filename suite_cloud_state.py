@@ -572,6 +572,21 @@ def save_cloud_full_session(
         return False
 
 
+def _redact_cloud_text(text: str, *, limit: int = 300) -> str:
+    detail = re.sub(r"https?://\S+", "<cloud>", str(text or ""))
+    detail = re.sub(r"\b(?:sb_\w+|ey[\w-]{10,}\.[\w.-]+)", "<key>", detail)
+    return detail[:limit]
+
+
+def redact_cloud_error(exc: BaseException | str | None) -> str:
+    """Error text safe to store and show. URLs and key-like tokens are stripped."""
+    if exc is None:
+        return ""
+    if isinstance(exc, str):
+        return _redact_cloud_text(exc)
+    return _redact_cloud_text(f"{type(exc).__name__}: {exc}")
+
+
 def _record_cloud_write_error(exc: BaseException | str | None) -> None:
     """Keep why the last full_session write failed (URLs and keys stripped) for save messages."""
     ss = _streamlit_session()
@@ -581,12 +596,7 @@ def _record_cloud_write_error(exc: BaseException | str | None) -> None:
         if exc is None:
             ss.pop(CLOUD_WRITE_ERROR_KEY, None)
             return
-        if isinstance(exc, str):
-            ss[CLOUD_WRITE_ERROR_KEY] = exc
-            return
-        detail = re.sub(r"https?://\S+", "<cloud>", str(exc))
-        detail = re.sub(r"\b(?:sb_\w+|ey[\w-]{10,}\.[\w.-]+)", "<key>", detail)[:200]
-        ss[CLOUD_WRITE_ERROR_KEY] = f"{type(exc).__name__}: {detail}"
+        ss[CLOUD_WRITE_ERROR_KEY] = redact_cloud_error(exc)[:200]
     except Exception:
         pass
 
@@ -595,9 +605,243 @@ def cloud_write_error_message(ss: Any = None) -> str:
     """Why the last full_session write failed; empty when it succeeded."""
     ss = ss if ss is not None else _streamlit_session()
     try:
-        return str((ss or {}).get(CLOUD_WRITE_ERROR_KEY) or "")
+        return redact_cloud_error(str((ss or {}).get(CLOUD_WRITE_ERROR_KEY) or ""))
     except Exception:
         return ""
+
+
+def cloud_write_blocked_by_newer_data(
+    previous_updated_at: str | None,
+    current_updated_at: str | None,
+) -> bool:
+    """True when the store moved forward after this save already read it.
+
+    A missing current timestamp is not treated as newer. Equal timestamps may be written.
+    """
+    if not current_updated_at:
+        return False
+    previous = int(parse_persist_timestamp(previous_updated_at))
+    current = int(parse_persist_timestamp(current_updated_at))
+    return current > previous
+
+
+def block_cloud_writes_until_reconciled(app_id: str, ss: Any = None, *, reason: str = "cloud_read_failed") -> None:
+    """Pause cloud writes until workspace sync reconciles this session with the store."""
+    ss = ss if ss is not None else _streamlit_session()
+    _record_cloud_read_failure(ss, app_id, RuntimeError(reason))
+    if ss is None:
+        return
+    try:
+        ss[CLOUD_WRITE_BLOCKED_KEY] = {"reason": reason}
+    except Exception:
+        pass
+
+
+def _resolved_cloud_app_key(app_id: str) -> str:
+    try:
+        storage, _ = _import_storage()
+        return storage.normalize_app_key(_cloud_storage_app_id(app_id))
+    except Exception:
+        try:
+            return str(_cloud_storage_app_id(app_id) or app_id or "")
+        except Exception:
+            return str(app_id or "")
+
+
+def _state_draft_pick_count(state: dict[str, Any]) -> int | None:
+    try:
+        from draft_room_state import draft_room_restore_stats
+
+        return int(draft_room_restore_stats(state).get("pick_count") or 0)
+    except Exception:
+        return None
+
+
+def save_cloud_full_session_with_details(
+    app_id: str,
+    state: dict[str, Any],
+    *,
+    page: str = "",
+    summary: str = "",
+    skip_metrics_merge_read: bool = False,
+) -> tuple[bool, str, str]:
+    """Persist full_session through the guarded writer. Returns (ok, error, app_key).
+
+    Does not bypass anonymous-guest refusal, workspace scoping, or the cloud-read
+    failure lock in ``save_cloud_full_session``.
+    """
+    app_key = _resolved_cloud_app_key(app_id)
+    if not state:
+        return False, "empty_state", app_key
+    ok = save_cloud_full_session(
+        app_id,
+        state,
+        page=page,
+        summary=summary,
+        skip_metrics_merge_read=skip_metrics_merge_read,
+    )
+    if not ok:
+        return False, redact_cloud_error(cloud_write_error_message() or "cloud_save_failed"), app_key
+    ss = _streamlit_session()
+    if isinstance(ss, dict):
+        ss.pop("_suite_cloud_write_used_workflow_fallback", None)
+        ss["_suite_last_cloud_app_key"] = app_key
+    return True, "", app_key
+
+
+def verify_cloud_draft_room_readback(
+    app_id: str = "baseball",
+    *,
+    min_picks: int = 1,
+    cloud_app_key: str = "",
+    session: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Read this account's cloud row back and count draft picks. Never writes."""
+    out: dict[str, Any] = {
+        "ok": False,
+        "pick_count": 0,
+        "cloud_app_key": str(cloud_app_key or ""),
+        "workspace_id": "",
+        "scope_user_id": None,
+        "selected_row_user_id": None,
+        "row_found": False,
+        "error": "",
+    }
+    if _anonymous_guest():
+        out["error"] = "sign in to save to your account"
+        return out
+    try:
+        from suite_workspace import get_active_workspace_id
+
+        out["workspace_id"] = str(get_active_workspace_id() or "")
+    except Exception:
+        out["workspace_id"] = ""
+    try:
+        from suite_user import get_account_user_id
+
+        uid = str(get_account_user_id() or "").strip() or None
+        out["scope_user_id"] = uid
+        out["selected_row_user_id"] = uid
+    except Exception:
+        pass
+    app_key = str(cloud_app_key or "").strip() or _resolved_cloud_app_key(app_id)
+    out["cloud_app_key"] = app_key
+    read = load_cloud_full_session_status(app_id, force=True)
+    if read.status == CLOUD_READ_ERROR:
+        out["error"] = redact_cloud_error(read.error or "cloud_read_failed")
+        return out
+    if read.status == CLOUD_READ_DISABLED:
+        out["error"] = "cloud_storage_disabled"
+        return out
+    if read.status != CLOUD_READ_OK:
+        out["error"] = "cloud_row_not_found"
+        return out
+    out["row_found"] = True
+    counted = _state_draft_pick_count(read.state)
+    out["pick_count"] = int(counted or 0)
+    minimum = max(0, int(min_picks or 0))
+    out["ok"] = counted is not None and out["pick_count"] >= minimum
+    if not out["ok"] and not out["error"]:
+        out["error"] = f"readback_pick_count_{out['pick_count']}_lt_{minimum}"
+    if isinstance(session, dict) and out["ok"]:
+        session["_suite_last_draft_room_readback"] = {
+            "cloud_app_key": app_key,
+            "workspace_id": out["workspace_id"],
+            "scope_user_id": out["scope_user_id"],
+            "selected_row_user_id": out["selected_row_user_id"],
+            "pick_count": out["pick_count"],
+            "expected_pick_count": minimum,
+        }
+    return out
+
+
+def _format_draft_readback_error(readback: dict[str, Any], expected: int, app_key: str) -> str:
+    err = str(readback.get("error") or "readback_pick_mismatch")
+    got = int(readback.get("pick_count") or 0)
+    if "readback_pick_mismatch" not in err:
+        err = f"readback_pick_mismatch:expected={expected} got={got}"
+    key = readback.get("cloud_app_key") or app_key
+    workspace = readback.get("workspace_id") or ""
+    suffix = f"key={key}, workspace={workspace or '—'}"
+    row_uid = readback.get("selected_row_user_id")
+    if row_uid is not None:
+        suffix += f", row_user_id={row_uid}"
+    return redact_cloud_error(f"{err}; {suffix}")
+
+
+def save_cloud_full_session_with_result(
+    app_id: str,
+    state: dict[str, Any],
+    *,
+    page: str = "",
+    summary: str = "",
+    min_draft_pick_count: int | None = None,
+) -> tuple[bool, str]:
+    """Persist full_session and return ``(ok, error)``.
+
+    When ``min_draft_pick_count`` is set, the outbound board is counted first and a short
+    payload is refused before any cloud write. The write itself still goes through
+    ``save_cloud_full_session``, so a guest, an unscoped key, or an unresolved cloud-read
+    failure cannot replace stored data.
+    """
+    try:
+        minimum = 0 if min_draft_pick_count is None else int(min_draft_pick_count)
+    except (TypeError, ValueError):
+        err = "draft_pick_count_below_minimum:expected=unreadable got=unknown"
+        _record_cloud_write_error(err)
+        return False, err
+    if minimum > 0:
+        counted = _state_draft_pick_count(state if isinstance(state, dict) else {})
+        if counted is None or counted < minimum:
+            got = "unknown" if counted is None else str(counted)
+            err = f"draft_pick_count_below_minimum:expected={minimum} got={got}"
+            _record_cloud_write_error(err)
+            return False, err
+    try:
+        ok, error, app_key = save_cloud_full_session_with_details(
+            app_id,
+            state,
+            page=page,
+            summary=summary,
+        )
+    except Exception as exc:
+        safe = redact_cloud_error(exc)
+        _record_cloud_write_error(safe)
+        return False, safe
+    if not ok:
+        return False, redact_cloud_error(error or "cloud_save_failed")
+    if minimum <= 0:
+        return True, ""
+    ss = _streamlit_session()
+    if isinstance(ss, dict) and ss.get("_suite_cloud_write_used_workflow_fallback"):
+        err = "workflow_fallback_omitted_draft_room_picks"
+        _record_cloud_write_error(err)
+        return False, err
+    try:
+        readback = verify_cloud_draft_room_readback(
+            app_id,
+            min_picks=minimum,
+            cloud_app_key=app_key,
+            session=ss if isinstance(ss, dict) else None,
+        )
+    except Exception as exc:
+        safe = redact_cloud_error(exc)
+        _record_cloud_write_error(safe)
+        return False, safe
+    if not readback.get("ok"):
+        err = _format_draft_readback_error(readback, minimum, app_key)
+        _record_cloud_write_error(err)
+        return False, err
+    if isinstance(ss, dict):
+        ss["_suite_last_draft_room_readback"] = {
+            "cloud_app_key": readback.get("cloud_app_key") or app_key,
+            "workspace_id": readback.get("workspace_id"),
+            "scope_user_id": readback.get("scope_user_id"),
+            "selected_row_user_id": readback.get("selected_row_user_id"),
+            "pick_count": readback.get("pick_count"),
+            "expected_pick_count": minimum,
+        }
+    return True, ""
 
 
 def clear_cloud_full_session(app_id: str) -> None:

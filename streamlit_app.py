@@ -21444,14 +21444,17 @@ elif active_page == "Draft Room Simulator":
                 except Exception as exc:
                     record_manual_save_error(st.session_state, exc)
                     from ui_user_copy import DRAFT_BOARD_SAVE_FAILED, format_user_error
+                    from suite_cloud_state import redact_cloud_error
 
-                    st.error(format_user_error(exc, developer_mode=developer_mode_enabled()))
+                    st.error(format_user_error(redact_cloud_error(exc), developer_mode=developer_mode_enabled()))
 
             if developer_mode_enabled():
                 render_manual_save_readback_panel(st)
                 render_board_tab_diagnostics(st)
         except Exception as exc:
-            st.error(f"Manual save panel error: {type(exc).__name__}: {exc}")
+            from suite_cloud_state import redact_cloud_error
+
+            st.error(f"Manual save panel error: {redact_cloud_error(exc)}")
         removed_after_edit = _auto_remove_drafted_from_queue()
         if removed_after_edit:
             st.session_state["workflow_sidebar_flash"] = (

@@ -8,6 +8,17 @@ from unittest.mock import MagicMock, patch
 from suite_cloud_state import reconcile_stale_resume_session_flags, save_cloud_full_session_with_result
 
 
+def _four_pick_state() -> dict:
+    return {
+        "draft_room_table": {
+            "table_records": [
+                {"Round": 1, "Pick": n, "Team": "NYY", "Player": f"Player {n}"}
+                for n in range(1, 5)
+            ]
+        }
+    }
+
+
 class SaveCloudFullSessionWithResultTests(unittest.TestCase):
     def test_resolves_without_importerror(self) -> None:
         self.assertTrue(callable(save_cloud_full_session_with_result))
@@ -21,7 +32,7 @@ class SaveCloudFullSessionWithResultTests(unittest.TestCase):
     def test_readback_pick_count_ok(self, _verify, _save, _enabled) -> None:
         ok, err = save_cloud_full_session_with_result(
             "baseball",
-            {"draft_room_state": {"board": []}},
+            _four_pick_state(),
             page="Live Draft Room",
             summary="test",
             min_draft_pick_count=4,
@@ -45,7 +56,7 @@ class SaveCloudFullSessionWithResultTests(unittest.TestCase):
     def test_readback_pick_count_mismatch(self, _verify, _save, _enabled) -> None:
         ok, err = save_cloud_full_session_with_result(
             "baseball",
-            {"draft_room_state": {"board": []}},
+            _four_pick_state(),
             min_draft_pick_count=4,
         )
         self.assertFalse(ok)
@@ -58,7 +69,7 @@ class SaveCloudFullSessionWithResultTests(unittest.TestCase):
         with patch("suite_cloud_state._streamlit_session", return_value={"_suite_cloud_write_used_workflow_fallback": True}):
             ok, err = save_cloud_full_session_with_result(
                 "baseball",
-                {"draft_room_state": {}},
+                _four_pick_state(),
                 min_draft_pick_count=4,
             )
         self.assertFalse(ok)
