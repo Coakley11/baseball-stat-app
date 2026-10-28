@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 _TABLE_STATE = "suite_app_current_state"
+_HEALTH_PROBE_APP_KEY = "baseball__health_probe"
 _PROBE_METRICS_KEY = "_suite_health_probe"
 _DEFAULT_SIZE_LADDER_BYTES = (1024, 32 * 1024, 128 * 1024, 512 * 1024)
 
@@ -104,14 +105,10 @@ def probe_suite_app_current_state_health(
         out["user_message"] = "Table reachable (read probe only)."
         return out
 
-    app_key = str(scoped_app_key or "").strip()
-    if not app_key:
-        try:
-            from suite_workspace import scoped_cloud_app_id
-
-            app_key = scoped_cloud_app_id("baseball")
-        except Exception:
-            app_key = "baseball"
+    # Never write the signed-in account row. A probe upsert would advance updated_at
+    # and make the next legitimate save look stale.
+    app_key = _HEALTH_PROBE_APP_KEY
+    out["write_probe_app_key"] = app_key
 
     minimal_body: dict[str, Any] = {
         "app": app_key,

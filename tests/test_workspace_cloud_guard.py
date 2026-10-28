@@ -466,6 +466,49 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(filled_pick_count(proxy["draft_room_table"] and {"draft_room_state": proxy["draft_room_table"], "draft_room_table": proxy["draft_room_table"]}), 1)
         self.assertEqual(stale.writes, [])
 
+    def test_health_probe_writes_a_separate_row(self):
+        from suite_app_current_state_health import probe_suite_app_current_state_health
+
+        with (
+            mock.patch("suite_storage_config.cloud_storage_enabled", return_value=True),
+            mock.patch("suite_storage_config.get_cloud_config", return_value=SimpleNamespace(url="https://x.supabase.co")),
+            mock.patch("suite_storage_supabase.ping", return_value=True),
+            mock.patch("suite_storage_supabase._request", return_value=[]),
+            mock.patch("suite_storage_supabase._cloud_user_id", return_value="user-1"),
+            mock.patch("suite_storage_supabase.save_current_state", return_value=True) as save_state,
+        ):
+            out = probe_suite_app_current_state_health(scoped_app_key="baseball", run_write_probe=True)
+        self.assertTrue(out["minimal_write_ok"])
+        self.assertEqual(save_state.call_args.args[0], "baseball__health_probe")
+        self.assertNotIn("full_session", save_state.call_args.kwargs["metrics"])
+
+    def test_one_pick_save_survives_activity_and_health_probe(self):
+        from suite_storage_supabase import record_activity
+
+        store = Store(
+            {"active_page": "Draft Room Simulator", "draft_room_state": {"pick_count": 0, "table_records": []}},
+            updated_at="2026-10-28T03:48:58+00:00",
+        )
+        session: dict = {}
+        note_cloud_revision_seen(session, store.updated_at)
+        with mock.patch("suite_storage_supabase.save_current_state") as save_state, mock.patch(
+            "suite_storage_supabase.append_event", return_value="evt"
+        ), mock.patch("suite_storage_supabase.upsert_resume_item"):
+            record_activity(
+                "baseball",
+                "simulator_draft_session",
+                page="Draft Room Simulator",
+                metrics={"pick_count": 1},
+                summary="Draft Room Simulator — 1 pick(s) logged",
+            )
+        save_state.assert_not_called()
+        self.assertEqual(store.updated_at, "2026-10-28T03:48:58+00:00")
+        ok, _st = self._run(store, session, _board(1), reason="manual_save")
+        self.assertTrue(ok)
+        self.assertEqual(filled_pick_count(store.blob), 1)
+        self.assertEqual(store.snapshot.get("pick_count"), 1)
+        self.assertEqual(store.app_keys, ["baseball"])
+
     def test_activity_log_does_not_move_the_state_row_timestamp(self):
         from suite_storage_supabase import record_activity
 
