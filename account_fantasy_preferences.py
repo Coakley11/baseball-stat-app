@@ -42,6 +42,7 @@ POLL_INTERVAL_SEC = 8.0
 
 # Owned exclusively by the account preference document — never restored from full_session.
 FANTASY_OVERRIDE_SELECTION_KEY = "fantasy_source_override_selection"
+FANTASY_RESEARCH_MODE_SELECTION_KEY = "fantasy_research_mode_selection"
 
 ACCOUNT_OWNED_SESSION_KEYS: tuple[str, ...] = (
     "use_active_league_context_waiver_filter",
@@ -165,6 +166,69 @@ def _apply_override_kind_to_session(session: dict[str, Any], kind: str) -> None:
     normalized = str(kind or "none").strip().lower()
     session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = normalized == "live_draft_room"
     session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = normalized == "simulator_board"
+
+
+def record_verified_research_mode(session: dict[str, Any], *, enabled: bool) -> dict[str, Any]:
+    """Remember an explicit Research Mode toggle. Independent of source overrides."""
+    user_id, workspace_id = _selection_identity(session)
+    previous = session.get(FANTASY_RESEARCH_MODE_SELECTION_KEY)
+    seq = int(previous.get("local_seq") or 0) + 1 if isinstance(previous, dict) else 1
+    record = {
+        "user_id": user_id,
+        "workspace_id": workspace_id,
+        "enabled": bool(enabled),
+        "selected_at": _utc_now_iso(),
+        "seen_revision": int(session.get(SESSION_APPLIED_REV_KEY) or session.get(SESSION_LOCAL_REV_KEY) or 0),
+        "local_seq": seq,
+    }
+    session[FANTASY_RESEARCH_MODE_SELECTION_KEY] = record
+    session["use_active_league_context_waiver_filter"] = bool(enabled)
+    return record
+
+
+def apply_verified_research_mode(session: dict[str, Any]) -> bool:
+    record = session.get(FANTASY_RESEARCH_MODE_SELECTION_KEY)
+    if not isinstance(record, dict):
+        return False
+    if not fantasy_override_selection_belongs(session, record):
+        session.pop(FANTASY_RESEARCH_MODE_SELECTION_KEY, None)
+        return False
+    session["use_active_league_context_waiver_filter"] = bool(record.get("enabled"))
+    return True
+
+
+def cloud_research_mode_is_newer(session: dict[str, Any], doc: dict[str, Any] | None) -> bool:
+    record = session.get(FANTASY_RESEARCH_MODE_SELECTION_KEY)
+    if not fantasy_override_selection_belongs(session, record if isinstance(record, dict) else None):
+        return True
+    local_at = _iso_epoch(str(record.get("selected_at") or ""))
+    if local_at <= 0:
+        return True
+    cloud_at = _iso_epoch(str((doc or {}).get("updated_at") or ""))
+    cloud_rev = int((doc or {}).get("revision") or 0)
+    seen_rev = int(record.get("seen_revision") or 0)
+    if cloud_rev > seen_rev and cloud_at >= local_at:
+        return True
+    return cloud_at > local_at
+
+
+def _maybe_apply_cloud_research_mode(session: dict[str, Any], doc: dict[str, Any]) -> None:
+    if not cloud_research_mode_is_newer(session, doc):
+        apply_verified_research_mode(session)
+        return
+    enabled = bool(doc.get("research_mode_enabled"))
+    session["use_active_league_context_waiver_filter"] = enabled
+    user_id, workspace_id = _selection_identity(session)
+    session[FANTASY_RESEARCH_MODE_SELECTION_KEY] = {
+        "user_id": user_id,
+        "workspace_id": workspace_id,
+        "enabled": enabled,
+        "selected_at": str(doc.get("updated_at") or _utc_now_iso()),
+        "seen_revision": int(doc.get("revision") or 0),
+        "local_seq": int((session.get(FANTASY_RESEARCH_MODE_SELECTION_KEY) or {}).get("local_seq") or 0) + 1
+        if isinstance(session.get(FANTASY_RESEARCH_MODE_SELECTION_KEY), dict)
+        else 1,
+    }
 
 
 def cloud_override_is_newer_than_verified_selection(session: dict[str, Any], doc: dict[str, Any] | None) -> bool:
@@ -844,7 +908,7 @@ def _apply_prefs_to_session(session: dict[str, Any], doc: dict[str, Any], *, sou
         except ImportError:
             pass
 
-        session[FANTASY_RESEARCH_SYNC_KEY] = bool(doc.get("research_mode_enabled"))
+        _maybe_apply_cloud_research_mode(session, doc)
         session[SYNC_POSITION_NEEDS_KEY] = bool(doc.get("use_draft_assistant_position_needs"))
 
         _maybe_apply_cloud_override(session, doc)
@@ -903,7 +967,7 @@ def reassert_account_preferences_after_hydration(session: dict[str, Any]) -> dic
     # Same-revision (or any cloud doc) with local drift: reassert without bumping revision.
     session[REMOTE_APPLY_IN_PROGRESS_KEY] = True
     try:
-        session[FANTASY_RESEARCH_SYNC_KEY] = bool(cloud.get("research_mode_enabled"))
+        _maybe_apply_cloud_research_mode(session, cloud)
         session[SYNC_POSITION_NEEDS_KEY] = bool(cloud.get("use_draft_assistant_position_needs"))
         _maybe_apply_cloud_override(session, cloud)
         target_draft = str(cloud.get("active_draft_id") or "").strip()
@@ -1166,7 +1230,7 @@ def update_account_fantasy_preference_fields(
     try:
         _apply_changed_fields_locally(session, {k: readback.get(k) for k in changed_fields})
         # Also sync any remaining known preference fields from readback
-        session[FANTASY_RESEARCH_SYNC_KEY] = bool(readback.get("research_mode_enabled"))
+        _maybe_apply_cloud_research_mode(session, readback)
         session[SYNC_POSITION_NEEDS_KEY] = bool(readback.get("use_draft_assistant_position_needs"))
         _maybe_apply_cloud_override(session, readback)
         session[SESSION_APPLIED_REV_KEY] = new_rev
@@ -1234,6 +1298,7 @@ def ensure_account_preferences_applied_before_controls(session: dict[str, Any]) 
     """Authoritative prefs must win before Research/Live/Simulator checkboxes render."""
     trace: dict[str, Any] = {"applied": False, "source": "before_controls"}
     apply_verified_fantasy_override(session)
+    apply_verified_research_mode(session)
     if not _signed_in(session) or not _cloud_sync_available():
         # Still reseed widgets from whatever persisted keys exist.
         try:

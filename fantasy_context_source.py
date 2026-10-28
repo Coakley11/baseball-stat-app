@@ -253,9 +253,11 @@ def _resolve_override_source(session: dict[str, Any]) -> FantasyContextSource | 
         return FantasyContextSource(
             SOURCE_LIVE_DRAFT, "Live Draft Room (temporary override)", origin="override"
         )
-    if simulator_board_sync_enabled(session) and simulator_board_context_available(session):
+    if simulator_board_sync_enabled(session):
+        # A checked override stays the effective source even if the board is briefly empty.
+        # Do not fall through to a saved Active Draft or League.
         return FantasyContextSource(
-            SOURCE_SIMULATOR_BOARD, "Draft Room Simulator (temporary override)", origin="override"
+            SOURCE_SIMULATOR_BOARD, "Draft Room Simulator Board", origin="override"
         )
     return None
 
@@ -833,8 +835,6 @@ def get_effective_fantasy_context(
         )
     if source.kind == SOURCE_SIMULATOR_BOARD:
         board = _resolve_simulator_board(session)
-        if board.empty:
-            return _get_saved_active_league_context(session)
         return create_league_context_from_simulator_board(
             session,
             board,

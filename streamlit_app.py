@@ -10967,6 +10967,12 @@ def _render_player_action_button_row(
                 )
 
     secondary = []
+    try:
+        from fantasy_context_source import fantasy_context_using_caption
+
+        st.caption(f"Effective source: {fantasy_context_using_caption(st.session_state)}")
+    except Exception:
+        pass
     if show_watchlist:
         secondary.append(("Add to Watchlist", "Add to Watchlist", "add_watchlist"))
     if show_draft and can_draft:
@@ -11593,7 +11599,15 @@ def render_contextual_player_actions(
         if not active_current:
             st.caption("Watchlist, projection, draft, queue, and trade actions are hidden for historical/inactive players.")
         if already_drafted:
-            st.caption("Draft queue is hidden because this player is already drafted.")
+            try:
+                from fantasy_context_source import fantasy_context_using_caption
+
+                st.caption(
+                    f"Already drafted — {fantasy_context_using_caption(st.session_state)}. "
+                    "Research Mode does not make a drafted player selectable again."
+                )
+            except Exception:
+                st.caption("Draft queue is hidden because this player is already drafted.")
         elif active_current and not show_trade_acquire:
             st.caption(
                 trade_block

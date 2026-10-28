@@ -39,6 +39,33 @@ def _display_base(name: str) -> str:
     return str(name or "").split(" (")[0].strip()
 
 
+def _league_actions_blocked_reason(session: dict[str, Any]) -> str:
+    """League transactions are only valid for an eligible configured league source."""
+    try:
+        from fantasy_context_source import (
+            SOURCE_ACTIVE_DRAFT,
+            SOURCE_LIVE_DRAFT,
+            SOURCE_SIMULATOR_BOARD,
+            fantasy_context_using_caption,
+            resolve_fantasy_context_source,
+        )
+        from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE, get_active_league_context
+    except ImportError:
+        return ""
+    source = resolve_fantasy_context_source(session)
+    label = fantasy_context_using_caption(session)
+    if source.kind == SOURCE_SIMULATOR_BOARD:
+        return f"League actions are unavailable for the temporary simulator board. Effective source: {label}."
+    if source.kind == SOURCE_LIVE_DRAFT:
+        return f"League actions are unavailable for the Live Draft Room. Effective source: {label}."
+    if source.kind != SOURCE_ACTIVE_DRAFT:
+        return f"League actions need an eligible active league. Effective source: {label}."
+    active = get_active_league_context(session, respect_source_priority=False) or {}
+    if str(active.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
+        return f"This saved draft is not a configured league. Effective source: {label}."
+    return ""
+
+
 def _canonical_roster_player_name(roster_stats: pd.DataFrame | None, player_name: str) -> str | None:
     try:
         from fantasy_league_context import normalize_player_key
@@ -85,6 +112,14 @@ def resolve_active_league_player_trade_eligibility(
     }
     if not display:
         out["block_message"] = "Pick a player first."
+        return out
+    blocked = _league_actions_blocked_reason(session)
+    if blocked:
+        out["block_message"] = blocked
+        out["trade_away_help"] = blocked
+        out["acquire_help"] = blocked
+        out["plan_add_help"] = blocked
+        out["plan_drop_help"] = blocked
         return out
 
     try:

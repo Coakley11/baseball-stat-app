@@ -196,6 +196,12 @@ def apply_research_mode_toggle_from_widget(session: dict[str, Any]) -> dict[str,
     enabled = bool(session.get(_RESEARCH_SYNC_TOGGLE_WIDGET_KEY))
     session[FANTASY_RESEARCH_SYNC_KEY] = enabled
     try:
+        from account_fantasy_preferences import record_verified_research_mode
+
+        record_verified_research_mode(session, enabled=enabled)
+    except ImportError:
+        pass
+    try:
         from account_fantasy_preferences import update_account_fantasy_preference_fields
 
         return update_account_fantasy_preference_fields(
