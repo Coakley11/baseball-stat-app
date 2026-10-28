@@ -145,8 +145,12 @@ class CloudReadStatusTests(unittest.TestCase):
             scs.load_cloud_full_session_status(APP, force=True)
             self.assertFalse(scs.save_cloud_full_session(APP, {"x": 1}))
             scs.mark_cloud_reconciled(h.session)
-            self.assertTrue(scs.save_cloud_full_session(APP, {"x": 1}))
-            self.assertEqual(store.writes, [{"x": 1}])
+            self.assertFalse(scs.save_cloud_full_session(APP, {"x": 1}))
+            from workspace_cloud_guard import note_cloud_revision_seen
+
+            note_cloud_revision_seen(h.session, store.updated_at)
+            self.assertTrue(scs.save_cloud_full_session(APP, {"x": 1}, save_reason="fantasy_edit"))
+            self.assertEqual(store.writes[-1]["x"], 1)
 
 
 class HostedSyncTests(unittest.TestCase):

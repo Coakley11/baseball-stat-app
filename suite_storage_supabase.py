@@ -615,11 +615,18 @@ def save_current_state(
     summary: str = "",
     metrics: dict[str, Any] | None = None,
     skip_metrics_merge_read: bool = False,
+    expected_updated_at: str | None = None,
 ) -> bool:
     target = _logical_active_app(app)
     if target is None:
         return False
     app_key, _logical_app = target
+    if expected_updated_at is not None:
+        meta = load_current_state_meta_for_app(app) or {}
+        current = str(meta.get("updated_at") or "")[:19]
+        expected = str(expected_updated_at or "")[:19]
+        if current != expected:
+            return False
     # Routine full_session autosaves: merge from process cache, not a GET every write.
     allow_network = not (
         skip_metrics_merge_read

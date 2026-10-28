@@ -23,6 +23,7 @@ CLOUD_READ_OK = "ok"  # store answered and returned a saved session
 CLOUD_READ_NOT_FOUND = "not_found"  # store answered: no row, or no saved session in it
 CLOUD_READ_ERROR = "error"  # store did not answer (network, timeout, permissions, bad payload)
 CLOUD_READ_DISABLED = "disabled"  # cloud storage is not configured (local install)
+CLOUD_READ_NOT_READY = "not_ready"  # auth is on, but the account is not ready to read
 
 # Set when any cloud read fails. While set, save_cloud_full_session refuses to write, for every
 # save reason, because this session may not hold the user's real saved data. Only the workspace
@@ -437,9 +438,11 @@ def load_cloud_full_session_status(app_id: str, *, force: bool = False) -> Cloud
         from suite_storage_config import cloud_storage_enabled
     except ImportError:
         return CloudRead({}, None, CLOUD_READ_DISABLED)
-    if not cloud_storage_enabled() or _anonymous_guest():
-        # A signed-out guest has no saved session: reading would mean someone else's.
+    if not cloud_storage_enabled():
         return CloudRead({}, None, CLOUD_READ_DISABLED)
+    if _anonymous_guest():
+        # Auth is enabled but the account is not ready. This is not an empty account.
+        return CloudRead({}, None, CLOUD_READ_NOT_READY, "auth_not_ready")
     ss = _streamlit_session()
     try:
         storage, _ = _import_storage()
@@ -527,13 +530,16 @@ def save_cloud_full_session(
     page: str = "",
     summary: str = "",
     skip_metrics_merge_read: bool = False,
+    save_reason: str = "",
+    allow_empty: bool = False,
 ) -> bool:
     """Persist full_session to Supabase. Returns True when cloud write succeeds.
 
-    Refuses (returns False) while a cloud read failure is unresolved: the session may not hold
-    the user's saved data, and writing it could replace newer data with stale or empty state.
+    Refuses while a cloud read has failed, while the account is not authenticated, or while this
+    session has not observed the current cloud revision. A zero-pick payload cannot replace a
+    verified nonempty board unless the save reason is an intentional board edit or an explicit reset.
     """
-    if not state:
+    if not state and not allow_empty:
         return False
     if _anonymous_guest():
         _record_cloud_write_error("sign in to save to your account")
@@ -544,9 +550,9 @@ def save_cloud_full_session(
         return False
     if not cloud_storage_enabled():
         return False
-    failure = cloud_read_failure()
+    ss = _streamlit_session()
+    failure = cloud_read_failure(ss)
     if failure is not None:
-        ss = _streamlit_session()
         try:
             if ss is not None:
                 ss[CLOUD_WRITE_BLOCKED_KEY] = {"reason": "cloud_read_failed", "since": failure.get("at")}
@@ -555,28 +561,115 @@ def save_cloud_full_session(
         _record_cloud_write_error("cloud storage could not be read, so writing was refused")
         return False
     try:
+        from workspace_cloud_guard import (
+            VERIFIED_BOARD_SNAPSHOT_KEY,
+            note_cloud_revision_seen,
+            prepare_cloud_full_session_write,
+        )
+
         storage, _ = _import_storage()
         app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
         target_fn = getattr(storage, "_logical_active_app", None)
         if callable(target_fn) and target_fn(app_key) is None:
             _record_cloud_write_error("cloud_app_key_not_writable")
             return False
-        wrote = storage.save_current_state(
+        fresh = load_cloud_full_session_status(app_id, force=True)
+        if fresh.status in (CLOUD_READ_ERROR, CLOUD_READ_NOT_READY):
+            if ss is not None:
+                ss[CLOUD_WRITE_BLOCKED_KEY] = {"reason": fresh.status}
+            _record_cloud_write_error(
+                fresh.error or "cloud storage could not be read, so writing was refused"
+                if fresh.status == CLOUD_READ_ERROR
+                else "sign in to save to your account"
+            )
+            return False
+        prior_snapshot = _metrics_snapshot(storage, app_id)
+        plan = prepare_cloud_full_session_write(
+            state,
+            session=ss if isinstance(ss, dict) else None,
+            read_status=fresh.status,
+            cloud_state=fresh.state,
+            cloud_updated_at=fresh.updated_at,
+            save_reason=save_reason,
+            prior_snapshot=prior_snapshot,
+            allow_empty=allow_empty,
+        )
+        if not plan.allowed:
+            if ss is not None:
+                ss[CLOUD_WRITE_BLOCKED_KEY] = {"reason": plan.reason}
+            _record_cloud_write_error(plan.reason or "cloud_write_refused")
+            return False
+        metrics: dict[str, Any] = {FULL_SESSION_KEY: copy.deepcopy(plan.state)}
+        if plan.include_snapshot and isinstance(plan.snapshot, dict):
+            metrics[VERIFIED_BOARD_SNAPSHOT_KEY] = plan.snapshot
+        wrote = _save_guarded_state(
+            storage,
             app_key,
             page=page or "",
             summary=summary or "Last session",
-            metrics={FULL_SESSION_KEY: copy.deepcopy(state)},
+            metrics=metrics,
             skip_metrics_merge_read=skip_metrics_merge_read,
+            expected_updated_at=plan.expected_updated_at,
         )
         if wrote is False:
-            _record_cloud_write_error("cloud_app_key_not_writable")
+            _record_cloud_write_error("cloud_revision_conflict")
             return False
         invalidate_cloud_full_session_cache(app_id)
+        observed = load_cloud_full_session_status(app_id, force=True)
+        if isinstance(ss, dict) and observed.status in (CLOUD_READ_OK, CLOUD_READ_NOT_FOUND):
+            note_cloud_revision_seen(
+                ss,
+                observed.updated_at,
+                confirmed_empty=observed.status == CLOUD_READ_NOT_FOUND,
+            )
         _record_cloud_write_error(None)
         return True
     except Exception as exc:
         _record_cloud_write_error(exc)
         return False
+
+
+def _metrics_snapshot(storage: Any, app_id: str) -> dict[str, Any] | None:
+    from workspace_cloud_guard import VERIFIED_BOARD_SNAPSHOT_KEY
+
+    row_fn = getattr(storage, "load_current_state_for_app", None)
+    if not callable(row_fn):
+        return None
+    row = row_fn(app_id) or {}
+    if not isinstance(row, dict):
+        return None
+    metrics = row.get("metrics")
+    if not isinstance(metrics, dict):
+        return None
+    snapshot = metrics.get(VERIFIED_BOARD_SNAPSHOT_KEY)
+    return snapshot if isinstance(snapshot, dict) else None
+
+
+def _save_guarded_state(
+    storage: Any,
+    app_key: str,
+    *,
+    page: str,
+    summary: str,
+    metrics: dict[str, Any],
+    skip_metrics_merge_read: bool,
+    expected_updated_at: str | None,
+) -> bool:
+    import inspect
+
+    kwargs: dict[str, Any] = {
+        "page": page,
+        "summary": summary,
+        "metrics": metrics,
+        "skip_metrics_merge_read": skip_metrics_merge_read,
+    }
+    try:
+        if "expected_updated_at" in inspect.signature(storage.save_current_state).parameters:
+            kwargs["expected_updated_at"] = expected_updated_at
+    except (TypeError, ValueError):
+        pass
+    wrote = storage.save_current_state(app_key, **kwargs)
+    return wrote is not False
 
 
 def _redact_cloud_text(text: str, *, limit: int = 300) -> str:
@@ -696,7 +789,7 @@ def read_cloud_persistence_boundary(app_id: str = "baseball") -> dict[str, Any]:
     if _anonymous_guest():
         out["cloud_fetch_attempted"] = False
         out["cloud_load_error"] = "sign in to save to your account"
-        out["read_status"] = CLOUD_READ_DISABLED
+        out["read_status"] = CLOUD_READ_NOT_READY
         return out
     try:
         from suite_user import get_account_user_id
@@ -710,8 +803,8 @@ def read_cloud_persistence_boundary(app_id: str = "baseball") -> dict[str, Any]:
     out["read_status"] = read.status
     out["cloud_fetch_updated_at"] = read.updated_at
     out["supabase_row_updated_at_after_write"] = read.updated_at
-    if read.status == CLOUD_READ_ERROR:
-        out["cloud_load_error"] = redact_cloud_error(read.error or "cloud_read_failed")
+    if read.status in (CLOUD_READ_ERROR, CLOUD_READ_NOT_READY):
+        out["cloud_load_error"] = redact_cloud_error(read.error or read.status)
         return out
     if read.status == CLOUD_READ_DISABLED:
         out["cloud_load_error"] = "cloud_storage_disabled"
@@ -741,6 +834,8 @@ def save_cloud_full_session_with_details(
     page: str = "",
     summary: str = "",
     skip_metrics_merge_read: bool = False,
+    save_reason: str = "",
+    allow_empty: bool = False,
 ) -> tuple[bool, str, str]:
     """Persist full_session through the guarded writer. Returns (ok, error, app_key).
 
@@ -756,6 +851,8 @@ def save_cloud_full_session_with_details(
         page=page,
         summary=summary,
         skip_metrics_merge_read=skip_metrics_merge_read,
+        save_reason=save_reason,
+        allow_empty=allow_empty,
     )
     if not ok:
         return False, redact_cloud_error(cloud_write_error_message() or "cloud_save_failed"), app_key
@@ -853,6 +950,7 @@ def save_cloud_full_session_with_result(
     page: str = "",
     summary: str = "",
     min_draft_pick_count: int | None = None,
+    save_reason: str = "",
 ) -> tuple[bool, str]:
     """Persist full_session and return ``(ok, error)``.
 
@@ -880,6 +978,7 @@ def save_cloud_full_session_with_result(
             state,
             page=page,
             summary=summary,
+            save_reason=save_reason,
         )
     except Exception as exc:
         safe = redact_cloud_error(exc)
@@ -921,25 +1020,16 @@ def save_cloud_full_session_with_result(
     return True, ""
 
 
-def clear_cloud_full_session(app_id: str) -> None:
-    """Remove persisted full_session blob from cloud (reset flows)."""
-    try:
-        from suite_storage_config import cloud_storage_enabled
-    except ImportError:
-        return
-    if not cloud_storage_enabled():
-        return
-    try:
-        storage, _ = _import_storage()
-        app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
-        storage.save_current_state(
-            app_key,
-            page="",
-            summary="",
-            metrics={FULL_SESSION_KEY: {}},
-        )
-    except Exception:
-        pass
+def clear_cloud_full_session(app_id: str, *, save_reason: str = "suite_reset") -> None:
+    """Remove persisted full_session only for an explicit, revision-matched reset."""
+    save_cloud_full_session(
+        app_id,
+        {},
+        page="",
+        summary="Reset to defaults",
+        save_reason=save_reason,
+        allow_empty=True,
+    )
 
 
 def pick_restore_session(

@@ -1675,6 +1675,13 @@ def reset_canonical_draft_board(session: dict[str, Any]) -> pd.DataFrame:
 
 def reset_simulator_board_only(session: dict[str, Any]) -> pd.DataFrame:
     """Option B: clear practice board only; Live Draft Room record stays if present."""
+    try:
+        from workspace_cloud_guard import authorize_explicit_reset
+
+        authorize_explicit_reset(session, reason="reset_simulator_board")
+        authorize_explicit_reset(session, reason="reset_canonical_board")
+    except Exception:
+        pass
     session.pop(DRAFT_ROOM_EDITOR_CACHE_KEY, None)
     _forget_saved_mock_draft(session)
     session.pop("draft_room_board_editor_cache", None)
@@ -4222,6 +4229,7 @@ def save_draft_board_direct_to_cloud(
             page=page,
             summary=summary,
             min_draft_pick_count=expected_picks,
+            save_reason="manual_save",
         )
         cloud_err = redact_cloud_error(cloud_err) if cloud_err else ""
         trace["saved_cloud"] = ok

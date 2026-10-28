@@ -738,11 +738,15 @@ def sync_workspace_protocol(
 
     from suite_cloud_state import (
         CLOUD_READ_ERROR,
+        CLOUD_READ_NOT_FOUND,
+        CLOUD_READ_NOT_READY,
+        CLOUD_READ_OK,
         CLOUD_RECONCILED_KEY,
         cloud_read_failure,
         load_cloud_full_session_status,
         mark_cloud_reconciled,
     )
+    from workspace_cloud_guard import note_cloud_revision_seen
 
     failure = cloud_read_failure(st.session_state)
     if failure is not None and _cloud_read_retry_wait(failure) > 0:
@@ -758,6 +762,21 @@ def sync_workspace_protocol(
     disk_state, disk_warn, disk_ts = _load_raw(app_id)
     if disk_warn:
         st.session_state[_SESSION_INVALID_WARN_KEY] = disk_warn
+
+    if cloud_read.status == CLOUD_READ_NOT_READY:
+        reason = "auth not ready — saved data not loaded; cloud saves paused"
+        st.session_state["_suite_persist_restore_skip_reason"] = reason
+        st.session_state["_suite_cloud_auth_not_ready"] = True
+        st.session_state.pop(CLOUD_RECONCILED_KEY, None)
+        _mark_workspace_sync_skipped(st, app_id, reason)
+        _record_startup_restore_diagnostics(
+            st, app_id,
+            cloud_state={}, cloud_ts=None,
+            disk_state=disk_state, disk_ts=disk_ts,
+            picked_source="none", picked_reason=reason,
+            should_apply=False, apply_reason="", skip_reason=reason,
+        )
+        return False
 
     if cloud_read.status == CLOUD_READ_ERROR:
         # The store did not answer. This is not "no saved data": applying the disk copy could show
@@ -836,10 +855,14 @@ def sync_workspace_protocol(
             # nothing to protect. Blocking autosave here meant its first league never saved.
             # (With cloud storage a failed read also looks empty, so keep the guard there.)
             st.session_state["_suite_workspace_sync_skipped_no_apply"] = True
-        else:
-            # The store answered and holds nothing: confirmed empty, so a later save cannot
-            # overwrite anything. (A failed read returned above and never reaches here.)
+        elif cloud_read.status == CLOUD_READ_NOT_FOUND:
+            # Authenticated read answered and the account row has no saved session.
             mark_cloud_reconciled(st.session_state)
+            note_cloud_revision_seen(st.session_state, cloud_ts, confirmed_empty=True)
+            _mark_workspace_sync_skipped(st, app_id, reason)
+        else:
+            reason = "cloud read inconclusive — saved data not loaded; cloud saves paused"
+            st.session_state["_suite_persist_restore_skip_reason"] = reason
             _mark_workspace_sync_skipped(st, app_id, reason)
         _record_startup_restore_diagnostics(
             st, app_id,
@@ -968,6 +991,10 @@ def sync_workspace_protocol(
         return False
 
     _lock_fingerprint_after_restore(st, app_id, picked.state)
+    if cloud_read.status == CLOUD_READ_OK:
+        note_cloud_revision_seen(st.session_state, cloud_ts)
+    elif cloud_read.status == CLOUD_READ_NOT_FOUND:
+        note_cloud_revision_seen(st.session_state, cloud_ts, confirmed_empty=True)
     mark_cloud_reconciled(st.session_state)  # applied after a read the store answered
     st.session_state[synced_key] = True
     st.session_state[f"{_SESSION_RESTORED_PREFIX}{app_id}"] = True
@@ -1550,6 +1577,7 @@ def force_autosave(
                     page=page,
                     summary=summary,
                     skip_metrics_merge_read=True,
+                    save_reason=reason,
                 )
             )
         if saved_disk or saved_cloud:
@@ -1652,6 +1680,7 @@ def autosave_if_changed(
                         page=page,
                         summary=summary,
                         skip_metrics_merge_read=True,
+                        save_reason="autosave",
                     )
                 )
                 if saved_cloud:
@@ -1838,8 +1867,11 @@ def finalize_suite_reset(
             save_cloud_full_session,
             session_page_summary,
         )
+        from workspace_cloud_guard import authorize_explicit_reset
 
-        clear_cloud_full_session(app_id)
+        authorize_explicit_reset(st.session_state, reason="suite_reset")
+        authorize_explicit_reset(st.session_state, reason="reset_user_state")
+        clear_cloud_full_session(app_id, save_reason="suite_reset")
         auto_page, auto_summary = session_page_summary(app_id, fresh_state)
         save_cloud_full_session(
             app_id,
