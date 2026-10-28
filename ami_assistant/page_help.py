@@ -291,6 +291,17 @@ PAGES: tuple[PageHelp, ...] = (
                  "Simulation** sit under the answer.",),
     ),
     PageHelp(
+        "Draft Strategy Assistant",
+        controls=("Preferred approach", "Strategy name", "Save strategy",
+                  "Load into queue", "Update from queue", "Rename", "Duplicate", "Delete strategy"),
+        questions=("What can I do on this page?",),
+        sources=("draft_strategy_ui.py", MONOLITH),
+        aliases=("draft strategy", "strategy assistant", "saved strategies", "draft plan"),
+        headline="Turn your research into a draft plan: build a queue, save it as a strategy, load it into any draft.",
+        reading=("A saved strategy is a snapshot of your queue: drafting takes players off the queue, never off a "
+                 "saved strategy. **Load into queue** replaces the whole queue, after asking when it is not empty.",),
+    ),
+    PageHelp(
         "Live Draft Room",
         controls=("League & Draft Settings", "League Name", "Number of Teams", "Picks per Team", "Draft Type",
                   "Scoring Type", "Timer per Pick", "Auto-Pick Rule", "Roster Settings", "Start New Live Draft",

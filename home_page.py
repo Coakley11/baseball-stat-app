@@ -29,7 +29,8 @@ TOOL_GROUPS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("insights", "Who is rising, what they are worth, and next season.",
      ("Trend Value", "Valuation", "ML Predictions", "Fantasy Sleepers & Busts")),
     ("draft", "Practice, run and review drafts.",
-     ("Live Draft Room", "Draft Room Simulator", "Draft Assistant Simulator", "Draft Lab / Simulation", "Saved Draft Library")),
+     ("Live Draft Room", "Draft Room Simulator", "Draft Assistant Simulator", "Draft Strategy Assistant",
+      "Draft Lab / Simulation", "Saved Draft Library")),
     ("league", "Run your fantasy league week to week.",
      ("Fantasy Standings Tracker", "Fantasy Lineup Assistant", "Waiver Wire / Add-Drop Center")),
 )

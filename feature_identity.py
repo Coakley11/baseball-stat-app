@@ -79,6 +79,8 @@ _FEATURES: tuple[Feature, ...] = (
             "Practice a draft and log every pick yourself."),
     Feature("Draft Assistant Simulator", "🧩", "Draft Assistant Simulator", "draft",
             "Who to pick next, with reasons."),
+    Feature("Draft Strategy Assistant", "♟️", "Draft Strategy · PRO", "draft",
+            "Build a draft plan, save it as a strategy and load it into any draft."),
     Feature("Draft Lab / Simulation", "🧪", "Draft Lab / Simulation", "draft",
             "Test a draft strategy and grade every roster."),
     Feature("Saved Draft Library", "📁", "Saved Draft Library", "draft",

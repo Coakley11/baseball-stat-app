@@ -15,7 +15,8 @@ NAV_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Home", (HOME_PAGE,)),
     ("Players", ("Historical Explorer", "Career Totals", "Comparison Tool", "Leaderboards")),
     ("Insights", ("Trend Value", "Valuation", "ML Predictions", "Fantasy Sleepers & Busts")),
-    ("Draft", ("Draft Room Simulator", "Draft Assistant Simulator", "Draft Lab / Simulation", "Live Draft Room")),
+    ("Draft", ("Draft Room Simulator", "Draft Assistant Simulator", "Draft Strategy Assistant", "Draft Lab / Simulation",
+               "Live Draft Room")),
     ("My League", ("Fantasy Standings Tracker", "Fantasy Lineup Assistant", "Waiver Wire / Add-Drop Center",
                    "Saved Draft Library")),
     ("Account", ("Pricing & Upgrade",)),
@@ -35,6 +36,7 @@ NAV_LABELS: dict[str, str] = {
     "Comparison Tool": "⚖️ Compare Players",
     "Fantasy Sleepers & Busts": "💎 Sleepers & Busts",
     "Fantasy Lineup Assistant": "📋 Lineup & Trades",  # U3: the page also holds the Trade Center
+    "Draft Strategy Assistant": "♟️ Draft Strategy · PRO",  # a Pro feature, discoverable by everyone
 }
 
 # Earlier sidebar labels, still resolvable to their page (icons are display only; the feature

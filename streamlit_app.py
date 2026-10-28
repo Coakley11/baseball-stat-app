@@ -12372,6 +12372,7 @@ PAGE_OPTIONS = [
     "Fantasy Sleepers & Busts",
     "Draft Room Simulator",
     "Draft Assistant Simulator",
+    "Draft Strategy Assistant",
     "Draft Lab / Simulation",
     "Live Draft Room",
     "Saved Draft Library",
@@ -12401,6 +12402,7 @@ PAGE_OPTION_LABELS = {
     "Fantasy Sleepers & Busts": "💎 Fantasy Sleepers & Busts",
     "Draft Room Simulator": "🧾 Draft Room Simulator",
     "Draft Assistant Simulator": "🧩 Draft Assistant Simulator",
+    "Draft Strategy Assistant": "♟️ Draft Strategy · PRO",
     "Draft Lab / Simulation": "🧪 Draft Lab / Simulation",
     "Live Draft Room": "📡 Live Draft Room",
     "Saved Draft Library": "📁 Saved Draft Library",
@@ -30783,6 +30785,26 @@ elif active_page == "Fantasy Lineup Assistant":
     render_page_filters_debug(active_page)
 
 
+elif active_page == "Draft Strategy Assistant":
+    from draft_strategy_ui import render_draft_strategy_page
+
+    _page_perf_start(active_page)
+    _maybe_render_account_pref_sync(active_page)
+    import ui_hierarchy as u1
+
+    u1.page_head(
+        st,
+        "♟️ Draft Strategy Assistant",
+        "Turn your research into a draft plan: build a queue, save it as a strategy, load it into any draft.",
+        feature="Draft Strategy Assistant",
+    )
+    render_page_guide(active_page)
+    apply_pending_page_transfer(active_page)
+    render_draft_strategy_page(st, st.session_state)
+    save_page_state(active_page)
+    _render_consolidated_page_diagnostics(active_page)
+    _page_perf_end(active_page)
+    render_page_filters_debug(active_page)
 elif active_page == "Waiver Wire / Add-Drop Center":
     try:
         from isolated_browser_seed import apply_isolated_browser_seed
