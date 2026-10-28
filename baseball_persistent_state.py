@@ -145,6 +145,7 @@ _WORKFLOW_KEYS = (
     "use_active_league_context_waiver_filter",
     "use_live_draft_as_fantasy_context",
     "use_simulator_board_as_fantasy_context",
+    "fantasy_source_override_selection",
     "live_draft_termination_tombstones",
     "last_draft_board_snapshot",
     "resumable_live_draft_slot",
@@ -1484,6 +1485,12 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
             pass
 
     ss["_suite_cloud_workspace_applied"] = True
+    try:
+        from account_fantasy_preferences import apply_verified_fantasy_override
+
+        apply_verified_fantasy_override(ss)
+    except ImportError:
+        pass
     try:
         from live_draft_key_ownership_diag import diag_enabled, record_key_ownership
 

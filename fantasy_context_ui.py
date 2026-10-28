@@ -207,11 +207,48 @@ def apply_research_mode_toggle_from_widget(session: dict[str, Any]) -> dict[str,
         return {"skipped": "import_error", "write_verified": False}
 
 
+def _remember_verified_override(session: dict[str, Any], *, enabled: bool, kind: str, override_id: str) -> None:
+    try:
+        from account_fantasy_preferences import record_verified_fantasy_override
+
+        record_verified_fantasy_override(
+            session,
+            kind=kind if enabled else "none",
+            override_id=override_id if enabled else "",
+        )
+    except ImportError:
+        pass
+    _queue_override_disk_save()
+
+
+def _queue_override_disk_save() -> None:
+    try:
+        from account_fantasy_preferences import _TEST_CLOUD_STORE
+
+        if _TEST_CLOUD_STORE is not None:
+            return
+    except Exception:
+        return
+    try:
+        import streamlit as st
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason="fantasy_source_override_toggle")
+    except Exception:
+        pass
+
+
 def apply_live_override_toggle_from_widget(session: dict[str, Any]) -> dict[str, Any]:
     enabled = bool(session.get(_LIVE_CONTEXT_TOGGLE_WIDGET_KEY))
     session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = enabled
     if enabled:
         session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
+    _remember_verified_override(
+        session,
+        enabled=enabled,
+        kind="live_draft_room",
+        override_id=str(session.get("active_shared_draft_room_code") or "").strip(),
+    )
     try:
         from account_fantasy_preferences import (
             invalidate_preference_dependent_caches,
@@ -244,6 +281,7 @@ def apply_simulator_override_toggle_from_widget(session: dict[str, Any]) -> dict
     session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = enabled
     if enabled:
         session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = False
+    _remember_verified_override(session, enabled=enabled, kind="simulator_board", override_id="simulator")
     try:
         from account_fantasy_preferences import (
             invalidate_preference_dependent_caches,
@@ -345,6 +383,12 @@ def render_fantasy_context_source_controls(
     st.markdown(FANTASY_CONTEXT_INTRO)
     from fantasy_context_source import prepare_fantasy_context_source_defaults, resolve_fantasy_context_source
 
+    try:
+        from account_fantasy_preferences import apply_verified_fantasy_override
+
+        apply_verified_fantasy_override(session)
+    except ImportError:
+        pass
     prepare_fantasy_context_source_defaults(session)
 
     effective = resolve_fantasy_context_source(session)

@@ -41,6 +41,8 @@ SYNC_OK_STATUS_MSG = "Synced to your account"
 POLL_INTERVAL_SEC = 8.0
 
 # Owned exclusively by the account preference document — never restored from full_session.
+FANTASY_OVERRIDE_SELECTION_KEY = "fantasy_source_override_selection"
+
 ACCOUNT_OWNED_SESSION_KEYS: tuple[str, ...] = (
     "use_active_league_context_waiver_filter",
     "use_live_draft_as_fantasy_context",
@@ -89,6 +91,116 @@ def install_test_header_save_failure(fail: bool = True) -> None:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _iso_epoch(value: str | None) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _selection_identity(session: dict[str, Any]) -> tuple[str, str]:
+    user_id = str(session.get("_suite_auth_user_id") or session.get("_suite_account_user_id") or "").strip()
+    return user_id, _workspace_id(session)
+
+
+def fantasy_override_selection_belongs(session: dict[str, Any], record: dict[str, Any] | None) -> bool:
+    """True only for this account. A guest record must not apply to a signed-in user, or the reverse."""
+    if not isinstance(record, dict):
+        return False
+    current_user, current_ws = _selection_identity(session)
+    record_user = str(record.get("user_id") or "").strip()
+    record_ws = str(record.get("workspace_id") or "").strip()
+    if bool(record_user) != bool(current_user) or record_user != current_user:
+        return False
+    if record_ws and current_ws and record_ws != current_ws:
+        return False
+    return True
+
+
+def record_verified_fantasy_override(session: dict[str, Any], *, kind: str, override_id: str = "") -> dict[str, Any]:
+    """Remember an explicit user toggle. A missing board must not clear this record."""
+    user_id, workspace_id = _selection_identity(session)
+    previous = session.get(FANTASY_OVERRIDE_SELECTION_KEY)
+    seq = int(previous.get("local_seq") or 0) + 1 if isinstance(previous, dict) else 1
+    normalized = str(kind or "none").strip().lower()
+    if normalized not in ("live_draft_room", "simulator_board", "none"):
+        normalized = "none"
+    record = {
+        "user_id": user_id,
+        "workspace_id": workspace_id,
+        "override_kind": normalized,
+        "override_id": str(override_id or "").strip(),
+        "selected_at": _utc_now_iso(),
+        "seen_revision": int(session.get(SESSION_APPLIED_REV_KEY) or session.get(SESSION_LOCAL_REV_KEY) or 0),
+        "local_seq": seq,
+    }
+    session[FANTASY_OVERRIDE_SELECTION_KEY] = record
+    _apply_override_kind_to_session(session, normalized)
+    return record
+
+
+def apply_verified_fantasy_override(session: dict[str, Any]) -> bool:
+    """Restore checkbox keys from the durable selection. Drops another account's record."""
+    record = session.get(FANTASY_OVERRIDE_SELECTION_KEY)
+    if not isinstance(record, dict):
+        return False
+    if not fantasy_override_selection_belongs(session, record):
+        session.pop(FANTASY_OVERRIDE_SELECTION_KEY, None)
+        return False
+    _apply_override_kind_to_session(session, str(record.get("override_kind") or "none"))
+    return True
+
+
+def _apply_override_kind_to_session(session: dict[str, Any], kind: str) -> None:
+    from fantasy_context_source import (
+        USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY,
+        USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY,
+    )
+
+    normalized = str(kind or "none").strip().lower()
+    session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = normalized == "live_draft_room"
+    session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = normalized == "simulator_board"
+
+
+def cloud_override_is_newer_than_verified_selection(session: dict[str, Any], doc: dict[str, Any] | None) -> bool:
+    """Older or missing cloud docs must not erase a newer explicit toggle."""
+    record = session.get(FANTASY_OVERRIDE_SELECTION_KEY)
+    if not fantasy_override_selection_belongs(session, record if isinstance(record, dict) else None):
+        return True
+    local_at = _iso_epoch(str(record.get("selected_at") or ""))
+    if local_at <= 0:
+        return True
+    cloud_at = _iso_epoch(str((doc or {}).get("updated_at") or ""))
+    cloud_rev = int((doc or {}).get("revision") or 0)
+    seen_rev = int(record.get("seen_revision") or 0)
+    if cloud_rev > seen_rev and cloud_at >= local_at:
+        return True
+    return cloud_at > local_at
+
+
+def _maybe_apply_cloud_override(session: dict[str, Any], doc: dict[str, Any]) -> None:
+    kind = str(doc.get("fantasy_source_override_kind") or "none").strip().lower()
+    if not cloud_override_is_newer_than_verified_selection(session, doc):
+        apply_verified_fantasy_override(session)
+        return
+    _apply_override_kind_to_session(session, kind)
+    user_id, workspace_id = _selection_identity(session)
+    session[FANTASY_OVERRIDE_SELECTION_KEY] = {
+        "user_id": user_id,
+        "workspace_id": workspace_id,
+        "override_kind": kind if kind in ("live_draft_room", "simulator_board") else "none",
+        "override_id": str(doc.get("fantasy_source_override_id") or "").strip(),
+        "selected_at": str(doc.get("updated_at") or _utc_now_iso()),
+        "seen_revision": int(doc.get("revision") or 0),
+        "local_seq": int((session.get(FANTASY_OVERRIDE_SELECTION_KEY) or {}).get("local_seq") or 0) + 1
+        if isinstance(session.get(FANTASY_OVERRIDE_SELECTION_KEY), dict)
+        else 1,
+    }
 
 
 def _record_error(session: dict[str, Any], *, where: str, exc: BaseException) -> None:
@@ -735,9 +847,7 @@ def _apply_prefs_to_session(session: dict[str, Any], doc: dict[str, Any], *, sou
         session[FANTASY_RESEARCH_SYNC_KEY] = bool(doc.get("research_mode_enabled"))
         session[SYNC_POSITION_NEEDS_KEY] = bool(doc.get("use_draft_assistant_position_needs"))
 
-        override_kind = str(doc.get("fantasy_source_override_kind") or "none").strip().lower()
-        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = override_kind == "live_draft_room"
-        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = override_kind == "simulator_board"
+        _maybe_apply_cloud_override(session, doc)
 
         target_draft = str(doc.get("active_draft_id") or "").strip()
         target_ctx = str(doc.get("active_league_context_id") or "").strip()
@@ -795,9 +905,7 @@ def reassert_account_preferences_after_hydration(session: dict[str, Any]) -> dic
     try:
         session[FANTASY_RESEARCH_SYNC_KEY] = bool(cloud.get("research_mode_enabled"))
         session[SYNC_POSITION_NEEDS_KEY] = bool(cloud.get("use_draft_assistant_position_needs"))
-        override_kind = str(cloud.get("fantasy_source_override_kind") or "none").strip().lower()
-        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = override_kind == "live_draft_room"
-        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = override_kind == "simulator_board"
+        _maybe_apply_cloud_override(session, cloud)
         target_draft = str(cloud.get("active_draft_id") or "").strip()
         if target_draft and str(session.get("active_draft_archive_id") or "").strip() != target_draft:
             try:
@@ -1060,9 +1168,7 @@ def update_account_fantasy_preference_fields(
         # Also sync any remaining known preference fields from readback
         session[FANTASY_RESEARCH_SYNC_KEY] = bool(readback.get("research_mode_enabled"))
         session[SYNC_POSITION_NEEDS_KEY] = bool(readback.get("use_draft_assistant_position_needs"))
-        override_kind = str(readback.get("fantasy_source_override_kind") or "none").strip().lower()
-        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = override_kind == "live_draft_room"
-        session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = override_kind == "simulator_board"
+        _maybe_apply_cloud_override(session, readback)
         session[SESSION_APPLIED_REV_KEY] = new_rev
         session[SESSION_LOCAL_REV_KEY] = new_rev
         session[SESSION_APPLIED_FP_KEY] = preference_document_fingerprint(readback)
@@ -1127,6 +1233,7 @@ def _apply_changed_fields_locally(session: dict[str, Any], changed_fields: dict[
 def ensure_account_preferences_applied_before_controls(session: dict[str, Any]) -> dict[str, Any]:
     """Authoritative prefs must win before Research/Live/Simulator checkboxes render."""
     trace: dict[str, Any] = {"applied": False, "source": "before_controls"}
+    apply_verified_fantasy_override(session)
     if not _signed_in(session) or not _cloud_sync_available():
         # Still reseed widgets from whatever persisted keys exist.
         try:
