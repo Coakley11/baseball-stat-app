@@ -588,6 +588,26 @@ def append_event(
     return ""
 
 
+def _logical_active_app(app: str) -> tuple[str, str] | None:
+    """Return ``(storage_app, logical_app)`` or None when the key must not be written.
+
+    ``baseball__coakley11`` is an active baseball row. The workspace suffix stays on the
+    stored key so accounts do not share a row. Only the allow-list check uses the logical name.
+    """
+    storage_app = _scoped_storage_app(app)
+    try:
+        from suite_workspace import logical_storage_app_key
+
+        logical = logical_storage_app_key(storage_app)
+    except ImportError:
+        logical = normalize_app_key(storage_app)
+        if "__" in logical:
+            logical = logical.split("__", 1)[0]
+    if logical not in ACTIVE_APP_KEYS:
+        return None
+    return storage_app, logical
+
+
 def save_current_state(
     app: str,
     *,
@@ -595,11 +615,11 @@ def save_current_state(
     summary: str = "",
     metrics: dict[str, Any] | None = None,
     skip_metrics_merge_read: bool = False,
-) -> None:
-    logical_app = normalize_app_key(app)
-    app_key = _scoped_storage_app(app)
-    if logical_app not in ACTIVE_APP_KEYS:
-        return
+) -> bool:
+    target = _logical_active_app(app)
+    if target is None:
+        return False
+    app_key, _logical_app = target
     # Routine full_session autosaves: merge from process cache, not a GET every write.
     allow_network = not (
         skip_metrics_merge_read
@@ -624,6 +644,7 @@ def save_current_state(
         prefer="resolution=merge-duplicates,return=minimal",
     )
     remember_metrics_merge_cache(app_key, merged_metrics)
+    return True
 
 
 def upsert_resume_item(
@@ -634,14 +655,12 @@ def upsert_resume_item(
     subtitle: str = "",
     action_url: str = "",
 ) -> None:
-    logical_app = normalize_app_key(app)
-    app_key = _scoped_storage_app(app)
+    target = _logical_active_app(app)
     key = str(item_key or "").strip()
     title_clean = str(title or "").strip()
-    if not app_key or not key or not title_clean:
+    if target is None or not key or not title_clean:
         return
-    if logical_app not in ACTIVE_APP_KEYS:
-        return
+    app_key, _logical_app = target
     body: dict[str, Any] = {
         "app": app_key,
         "item_key": key,

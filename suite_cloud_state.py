@@ -557,13 +557,20 @@ def save_cloud_full_session(
     try:
         storage, _ = _import_storage()
         app_key = storage.normalize_app_key(_cloud_storage_app_id(app_id))
-        storage.save_current_state(
+        target_fn = getattr(storage, "_logical_active_app", None)
+        if callable(target_fn) and target_fn(app_key) is None:
+            _record_cloud_write_error("cloud_app_key_not_writable")
+            return False
+        wrote = storage.save_current_state(
             app_key,
             page=page or "",
             summary=summary or "Last session",
             metrics={FULL_SESSION_KEY: copy.deepcopy(state)},
             skip_metrics_merge_read=skip_metrics_merge_read,
         )
+        if wrote is False:
+            _record_cloud_write_error("cloud_app_key_not_writable")
+            return False
         invalidate_cloud_full_session_cache(app_id)
         _record_cloud_write_error(None)
         return True
@@ -646,6 +653,76 @@ def _resolved_cloud_app_key(app_id: str) -> str:
             return str(_cloud_storage_app_id(app_id) or app_id or "")
         except Exception:
             return str(app_id or "")
+
+
+def last_cloud_write_meta() -> dict[str, Any]:
+    """Session notes from the last full-session write. Empty outside Streamlit."""
+    ss = _streamlit_session()
+    if not isinstance(ss, dict):
+        return {}
+    return {
+        "write_mode": str(ss.get("_suite_last_cloud_write_mode") or ""),
+        "cloud_app_key": str(ss.get("_suite_last_cloud_app_key") or ""),
+        "payload_bytes": int(ss.get("_suite_last_cloud_payload_bytes") or 0),
+        "used_workflow_fallback": bool(ss.get("_suite_cloud_write_used_workflow_fallback")),
+    }
+
+
+def read_cloud_persistence_boundary(app_id: str = "baseball") -> dict[str, Any]:
+    """User-scoped read of this account's cloud row. Never writes and never lists other users.
+
+    ``supabase_row_pick_count_after_write`` is an int only when the store answered.
+    A failed read leaves it None so callers cannot treat an outage as an empty board.
+    """
+    out: dict[str, Any] = {
+        "cloud_fetch_attempted": True,
+        "cloud_fetch_success": False,
+        "cloud_target_user_id": None,
+        "cloud_target_app_id": "",
+        "cloud_fetch_user_id": None,
+        "cloud_fetch_app_id": "",
+        "cloud_fetch_updated_at": None,
+        "cloud_fetch_pick_count": None,
+        "supabase_row_pick_count_after_write": None,
+        "supabase_row_updated_at_after_write": None,
+        "cloud_row_count": 0,
+        "cloud_row_pick_counts": [],
+        "cloud_load_error": None,
+        "read_status": "",
+    }
+    app_key = _resolved_cloud_app_key(app_id)
+    out["cloud_target_app_id"] = app_key
+    out["cloud_fetch_app_id"] = app_key
+    if _anonymous_guest():
+        out["cloud_fetch_attempted"] = False
+        out["cloud_load_error"] = "sign in to save to your account"
+        out["read_status"] = CLOUD_READ_DISABLED
+        return out
+    try:
+        from suite_user import get_account_user_id
+
+        uid = str(get_account_user_id() or "").strip() or None
+        out["cloud_target_user_id"] = uid
+        out["cloud_fetch_user_id"] = uid
+    except Exception:
+        pass
+    read = load_cloud_full_session_status(app_id, force=True)
+    out["read_status"] = read.status
+    out["cloud_fetch_updated_at"] = read.updated_at
+    out["supabase_row_updated_at_after_write"] = read.updated_at
+    if read.status == CLOUD_READ_ERROR:
+        out["cloud_load_error"] = redact_cloud_error(read.error or "cloud_read_failed")
+        return out
+    if read.status == CLOUD_READ_DISABLED:
+        out["cloud_load_error"] = "cloud_storage_disabled"
+        return out
+    counted = _state_draft_pick_count(read.state)
+    picks = int(counted or 0)
+    out["cloud_fetch_success"] = True
+    out["cloud_fetch_pick_count"] = picks
+    out["supabase_row_pick_count_after_write"] = picks
+    out["cloud_row_count"] = 1 if read.status == CLOUD_READ_OK else 0
+    return out
 
 
 def _state_draft_pick_count(state: dict[str, Any]) -> int | None:

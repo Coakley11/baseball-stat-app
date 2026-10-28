@@ -1542,6 +1542,7 @@ def force_autosave(
         if cloud_block:
             st.session_state["_suite_autosave_cloud_blocked_reason"] = cloud_block
         else:
+            st.session_state.pop("_suite_autosave_cloud_blocked_reason", None)
             saved_cloud = bool(
                 save_cloud_full_session(
                     app_id,

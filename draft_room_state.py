@@ -3994,26 +3994,25 @@ def _attach_cloud_boundary_diagnostics(
         from suite_cloud_state import read_cloud_persistence_boundary
 
         boundary = read_cloud_persistence_boundary(app_id)
-        trace.update(
-            {
-                "cloud_target_user_id": boundary.get("cloud_target_user_id"),
-                "cloud_target_app_id": boundary.get("cloud_target_app_id"),
-                "cloud_fetch_user_id": boundary.get("cloud_fetch_user_id"),
-                "cloud_fetch_app_id": boundary.get("cloud_fetch_app_id"),
-                "cloud_fetch_attempted": boundary.get("cloud_fetch_attempted"),
-                "cloud_fetch_success": boundary.get("cloud_fetch_success"),
-                "cloud_fetch_updated_at": boundary.get("cloud_fetch_updated_at"),
-                "cloud_fetch_pick_count": boundary.get("cloud_fetch_pick_count"),
-                "supabase_row_pick_count_after_write": boundary.get(
-                    "supabase_row_pick_count_after_write"
-                ),
-                "supabase_row_updated_at_after_write": boundary.get(
-                    "supabase_row_updated_at_after_write"
-                ),
-                "cloud_row_count": boundary.get("cloud_row_count"),
-                "cloud_row_pick_counts": boundary.get("cloud_row_pick_counts"),
-            }
-        )
+        confirmed_count = boundary.get("supabase_row_pick_count_after_write")
+        fields = {
+            "cloud_target_user_id": boundary.get("cloud_target_user_id"),
+            "cloud_target_app_id": boundary.get("cloud_target_app_id"),
+            "cloud_fetch_user_id": boundary.get("cloud_fetch_user_id"),
+            "cloud_fetch_app_id": boundary.get("cloud_fetch_app_id"),
+            "cloud_fetch_attempted": boundary.get("cloud_fetch_attempted"),
+            "cloud_fetch_success": boundary.get("cloud_fetch_success"),
+            "cloud_fetch_updated_at": boundary.get("cloud_fetch_updated_at"),
+            "cloud_fetch_pick_count": boundary.get("cloud_fetch_pick_count"),
+            "supabase_row_updated_at_after_write": boundary.get(
+                "supabase_row_updated_at_after_write"
+            ),
+            "cloud_row_count": boundary.get("cloud_row_count"),
+            "cloud_row_pick_counts": boundary.get("cloud_row_pick_counts"),
+        }
+        if isinstance(confirmed_count, int):
+            fields["supabase_row_pick_count_after_write"] = confirmed_count
+        trace.update(fields)
         try:
             from suite_cloud_state import last_cloud_write_meta
 
@@ -4037,28 +4036,31 @@ def _refresh_cloud_draft_room_stats(
         "cloud_has_draft_room_board": False,
         "cloud_draft_room_pick_count": 0,
         "cloud_fetch_updated_at": cloud_ts,
-        "cloud_fetch_pick_count": 0,
-        "supabase_row_pick_count_after_write": 0,
+        "cloud_fetch_pick_count": None,
+        "supabase_row_pick_count_after_write": None,
     }
     try:
         from suite_cloud_state import load_cloud_full_session, read_cloud_persistence_boundary
 
         boundary = read_cloud_persistence_boundary("baseball")
+        boundary_count = boundary.get("supabase_row_pick_count_after_write")
+        fetch_count = boundary.get("cloud_fetch_pick_count")
         stats.update(
             {
                 "cloud_fetch_attempted": boundary.get("cloud_fetch_attempted"),
                 "cloud_fetch_success": boundary.get("cloud_fetch_success"),
                 "cloud_fetch_user_id": boundary.get("cloud_fetch_user_id"),
                 "cloud_fetch_app_id": boundary.get("cloud_fetch_app_id"),
-                "cloud_fetch_pick_count": int(boundary.get("cloud_fetch_pick_count") or 0),
-                "supabase_row_pick_count_after_write": int(
-                    boundary.get("supabase_row_pick_count_after_write") or 0
+                "cloud_fetch_pick_count": fetch_count if isinstance(fetch_count, int) else None,
+                "supabase_row_pick_count_after_write": (
+                    boundary_count if isinstance(boundary_count, int) else None
                 ),
                 "supabase_row_updated_at_after_write": boundary.get(
                     "supabase_row_updated_at_after_write"
                 ),
                 "cloud_row_count": boundary.get("cloud_row_count"),
                 "cloud_row_pick_counts": boundary.get("cloud_row_pick_counts"),
+                "cloud_readback_error": boundary.get("cloud_load_error"),
             }
         )
         cloud_state, cloud_updated = load_cloud_full_session("baseball")
@@ -4068,9 +4070,9 @@ def _refresh_cloud_draft_room_stats(
         cloud_dr = draft_room_restore_stats(cloud_state)
         stats["cloud_has_draft_room_board"] = bool(cloud_dr.get("has_draft_board"))
         stats["cloud_draft_room_pick_count"] = int(cloud_dr.get("pick_count") or 0)
-        if int(stats.get("cloud_fetch_pick_count") or 0) == 0:
+        if stats.get("cloud_fetch_pick_count") is None:
             stats["cloud_fetch_pick_count"] = stats["cloud_draft_room_pick_count"]
-        if int(stats.get("supabase_row_pick_count_after_write") or 0) == 0:
+        if stats.get("supabase_row_pick_count_after_write") is None and cloud_state:
             stats["supabase_row_pick_count_after_write"] = stats["cloud_draft_room_pick_count"]
     except Exception as exc:
         stats["cloud_refresh_error"] = f"{type(exc).__name__}: {exc}"
@@ -4246,20 +4248,31 @@ def save_draft_board_direct_to_cloud(
             cloud_stats = _refresh_cloud_draft_room_stats(session, cloud_ts=ts_after)
             trace.update(cloud_stats)
             _attach_cloud_boundary_diagnostics(trace)
-            readback = int(trace.get("supabase_row_pick_count_after_write") or 0)
+            raw_readback = trace.get("supabase_row_pick_count_after_write")
             room_readback = session.get("_suite_last_draft_room_readback")
             if isinstance(room_readback, dict) and room_readback:
                 trace["readback_scope_user_id"] = room_readback.get("scope_user_id")
                 trace["readback_selected_row_user_id"] = room_readback.get("selected_row_user_id")
                 trace["readback_row_inspection"] = room_readback
-            if readback < expected_picks:
+            if not isinstance(raw_readback, int) and isinstance(room_readback, dict):
+                confirmed = room_readback.get("pick_count")
+                if isinstance(confirmed, int):
+                    raw_readback = confirmed
+                    trace["supabase_row_pick_count_after_write"] = confirmed
+                    trace["readback_source"] = "authoritative_save_result"
+            if isinstance(raw_readback, int) and raw_readback < expected_picks:
                 trace["saved_cloud"] = False
                 trace["error"] = (
-                    f"readback_pick_mismatch:expected={expected_picks} got={readback}"
+                    f"readback_pick_mismatch:expected={expected_picks} got={raw_readback}"
                 )
                 trace["cloud_write_error"] = trace["error"]
                 session["_suite_persist_last_cloud_error"] = trace["error"]
-            elif readback > 0:
+            elif not isinstance(raw_readback, int):
+                trace["readback_unconfirmed"] = True
+                trace["saved_cloud"] = False
+                trace["error"] = "cloud_readback_unconfirmed"
+                trace["cloud_write_error"] = trace["error"]
+            elif raw_readback > 0:
                 clear_draft_room_local_edit(session)
         else:
             session["_suite_persist_last_save_cloud"] = False
@@ -4429,6 +4442,10 @@ def _save_draft_board_now_impl(
 
     if pick_count > 0:
         trace["direct_cloud_save_attempted"] = True
+        stale_block = str(trace.get("cloud_blocked_reason") or "")
+        if stale_block:
+            trace["autosave_cloud_blocked_reason"] = stale_block
+            trace["cloud_blocked_reason"] = ""
         direct = save_draft_board_direct_to_cloud(st, session, board=board)
         trace["direct_cloud_save_ok"] = bool(direct.get("saved_cloud"))
         trace["cloud_write_mode"] = direct.get("cloud_write_mode")
