@@ -222,6 +222,16 @@ def _fingerprint_state(state: dict[str, Any]) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
 
 
+def _note_restored_board_from_cloud(session: Any, state: dict[str, Any]) -> None:
+    """The Simulator board just applied came from the account copy: it is verified as saved."""
+    try:
+        from draft_room_state import mark_board_cloud_verified
+
+        mark_board_cloud_verified(session, cloud_state=state)
+    except Exception:
+        pass
+
+
 def _lock_fingerprint_after_restore(st: Any, app_id: str, state: dict[str, Any]) -> None:
     """Prevent post-restore autosave from treating widget drift as local_dirty."""
     fp = _fingerprint_state(state)
@@ -1012,6 +1022,7 @@ def sync_workspace_protocol(
         st.session_state[applied_key] = cloud_ts or _utc_now_iso()
         save_user_state(app_id, picked.state)
         st.session_state[_SESSION_CLOUD_BANNER_KEY] = True
+        _note_restored_board_from_cloud(st.session_state, picked.state)
     elif picked.source == "disk":
         st.session_state[applied_key] = disk_ts or _utc_now_iso()
         st.session_state[_SESSION_BANNER_KEY] = "Loaded your last session"
@@ -1226,6 +1237,7 @@ def restore_once(
 
     if from_cloud:
         st.session_state[_SESSION_CLOUD_BANNER_KEY] = True
+        _note_restored_board_from_cloud(st.session_state, state)
     else:
         st.session_state[_SESSION_BANNER_KEY] = "Loaded your last session"
     return True
@@ -1475,6 +1487,7 @@ def sync_cloud_workspace_before_sidebar(
 
     save_user_state(app_id, picked.state)
     st.session_state[_SESSION_CLOUD_BANNER_KEY] = True
+    _note_restored_board_from_cloud(st.session_state, picked.state)
     return True
 
 

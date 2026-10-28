@@ -21444,23 +21444,39 @@ elif active_page == "Draft Room Simulator":
 
                         st.success(DRAFT_BOARD_SAVED_ACCOUNT.format(count=picks))
                     elif result.get("saved") and picks > 0 and result.get("direct_cloud_save_attempted"):
+                        from draft_board_reconcile import save_failure_message
                         from ui_user_copy import DRAFT_BOARD_BACKUP_FAILED
 
-                        st.warning(DRAFT_BOARD_BACKUP_FAILED.format(count=picks))
+                        st.warning(
+                            save_failure_message(
+                                result.get("cloud_write_error") or result.get("error"),
+                                DRAFT_BOARD_BACKUP_FAILED.format(count=picks),
+                            )
+                        )
                     elif result.get("saved") and picks > 0:
                         from ui_user_copy import DRAFT_BOARD_DEVICE_ONLY
 
                         st.warning(DRAFT_BOARD_DEVICE_ONLY.format(count=picks))
                     else:
+                        from draft_board_reconcile import save_failure_message
                         from ui_user_copy import DRAFT_BOARD_SAVE_FAILED
 
-                        st.error(DRAFT_BOARD_SAVE_FAILED)
+                        st.error(
+                            save_failure_message(
+                                result.get("cloud_write_error") or result.get("error"),
+                                DRAFT_BOARD_SAVE_FAILED,
+                            )
+                        )
                 except Exception as exc:
                     record_manual_save_error(st.session_state, exc)
                     from ui_user_copy import DRAFT_BOARD_SAVE_FAILED, format_user_error
                     from suite_cloud_state import redact_cloud_error
 
                     st.error(format_user_error(redact_cloud_error(exc), developer_mode=developer_mode_enabled()))
+
+            from draft_board_reconcile import render_board_conflict_controls
+
+            render_board_conflict_controls(st, st.session_state)
 
             if developer_mode_enabled():
                 render_manual_save_readback_panel(st)

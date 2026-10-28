@@ -961,6 +961,13 @@ def clear_private_baseball_simulator_runtime(
         if key in session:
             session.pop(key, None)
             cleared.append(key)
+    # A cleared board has no edits left to protect and nothing verified as saved: leaving these
+    # set kept the account's saved board from restoring into the emptied simulator.
+    for key in ("draft_room_state_dirty", "draft_room_state_last_local_edit_ts", "_draft_room_cloud_verified_fp"):
+        session.pop(key, None)
+    # The workspace restore may already have run (and skipped the board) in this same pass:
+    # ask for a fresh sync so the account's own saved board is applied on the next run.
+    session.pop("_suite_workspace_synced::baseball", None)
     pfs = session.get("page_filter_state")
     if isinstance(pfs, dict):
         for page_key in ("Draft Room Simulator", "Draft Workflow"):
