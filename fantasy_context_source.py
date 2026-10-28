@@ -63,7 +63,7 @@ class FantasyContextSource:
         if self.kind == SOURCE_LIVE_DRAFT:
             return f"{_BADGE_PREFIX} **Live Draft Room (temporary / unsaved)**"
         if self.kind == SOURCE_SIMULATOR_BOARD:
-            return f"{_BADGE_PREFIX} **Draft Room Simulator Board (temporary / unsaved)**"
+            return f"{_BADGE_PREFIX} **Draft Room Simulator Board (working board)**"
         return f"{_BADGE_PREFIX} **Generic/default simulator context**"
 
 
@@ -533,9 +533,21 @@ def fantasy_context_source_badge_text(session: dict[str, Any]) -> str:
     source = resolve_fantasy_context_source(session)
     team = _context_team_name(session)
     text = source.badge_text
+    if source.kind == SOURCE_SIMULATOR_BOARD:
+        text = f"{text} · {_simulator_status_phrase(session)}"
     if team and "Team:" not in text:
         text = f"{text} · Team: **{team}**"
     return text
+
+
+def _simulator_status_phrase(session: dict[str, Any]) -> str:
+    """What is true of the Simulator working board right now (see draft_room_state)."""
+    try:
+        from draft_room_state import simulator_board_status_phrase
+
+        return simulator_board_status_phrase(session)
+    except Exception:
+        return "save status unknown"
 
 
 def fantasy_context_using_caption(session: dict[str, Any]) -> str:
@@ -557,10 +569,11 @@ def fantasy_context_using_caption(session: dict[str, Any]) -> str:
         )
     if display["kind"] == "temporary_simulator":
         team = str(display.get("team") or "").strip()
+        status = _simulator_status_phrase(session)
         return (
-            f"Temporary Draft Board (Unsaved) — Simulator — Team {team}"
+            f"Simulator working board ({status}) — Team {team}"
             if team
-            else "Temporary Draft Board (Unsaved)"
+            else f"Simulator working board ({status})"
         )
     return "General MLB (no draft context)"
 
@@ -594,7 +607,7 @@ def fantasy_context_using_display(session: dict[str, Any]) -> dict[str, str]:
         return {
             "kind": "temporary_simulator",
             "draft_name": "",
-            "board_label": "Temporary Draft Board (Unsaved)",
+            "board_label": f"Simulator working board — {_simulator_status_phrase(session)}",
             "team": team,
         }
 
@@ -628,9 +641,10 @@ def fantasy_context_using_html(session: dict[str, Any]) -> str:
 
     if kind in ("temporary_live", "temporary_simulator"):
         board = _html_esc(display.get("board_label") or "Temporary Draft Board (Unsaved)")
+        kicker = "Draft Room Simulator board" if kind == "temporary_simulator" else "Temporary Draft Board (Unsaved)"
         return f"""
 <div class="fantasy-source-card fantasy-source-card-temporary">
-  <div class="fantasy-source-kicker">Temporary Draft Board (Unsaved)</div>
+  <div class="fantasy-source-kicker">{kicker}</div>
   <div class="fantasy-source-sub">{board}</div>
   {team_row}
 </div>"""
@@ -664,7 +678,7 @@ def fantasy_context_using_markdown(session: dict[str, Any]) -> str:
         return "\n\n".join(lines)
 
     if display["kind"] == "temporary_simulator":
-        lines = ["**Temporary Draft Board (Unsaved)**"]
+        lines = [f"**Simulator working board** — {display.get('board_label', '').split(' — ', 1)[-1]}"]
         if team_line:
             lines.append(team_line)
         return "\n\n".join(lines)
@@ -751,6 +765,12 @@ def _resolve_my_team_for_ephemeral(session: dict[str, Any], *, source: FantasyCo
         candidate = str(session.get("room_your_team") or "").strip()
         if candidate and (not board_teams or candidate in board_teams):
             return candidate
+        # The widget value can be missing or reset (a page that does not render it); the saved
+        # board carries the team it was drafted as. Prefer that to guessing "Team 1".
+        blob = session.get("draft_room_state")
+        blob_team = str(blob.get("room_your_team") or "").strip() if isinstance(blob, dict) else ""
+        if blob_team and blob_team in board_teams:
+            return blob_team
         if board_teams:
             return board_teams[0]
         return candidate

@@ -105,7 +105,7 @@ class FantasyContextSourceTests(unittest.TestCase):
         session.update(_simulator_board_session())
         source = resolve_fantasy_context_source(session)
         self.assertEqual(source.kind, SOURCE_SIMULATOR_BOARD)
-        self.assertIn("temporary / unsaved", source.badge_text)
+        self.assertIn("working board", source.badge_text)
 
     def test_simulator_override_disabled_falls_back_to_active_draft(self) -> None:
         session = _saved_context_session()
@@ -311,7 +311,8 @@ class FantasyContextSourceTests(unittest.TestCase):
         self.assertEqual(display["kind"], "temporary_simulator")
         caption = fantasy_context_using_caption(session)
         self.assertTrue(
-            ("Temporary Simulator Board" in caption)
+            ("Simulator working board" in caption)
+            or ("Temporary Simulator Board" in caption)
             or ("Temporary Draft Board" in caption),
             caption,
         )
@@ -358,6 +359,7 @@ class FantasyContextSourceTests(unittest.TestCase):
         self.assertIn("fantasy-source-card-temporary", temp_html)
         self.assertTrue(
             ("Temporary Practice Board" in temp_html)
+            or ("Simulator working board" in temp_html)
             or ("Temporary Draft Board" in temp_html),
             temp_html,
         )

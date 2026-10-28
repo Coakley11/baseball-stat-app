@@ -641,5 +641,5 @@ def active_team_context_badge(ctx: ActiveTeamContext) -> str:
     if ctx.source == SOURCE_LIVE_DRAFT:
         return f"Active team: **{ctx.active_team}** (Live Draft Room — temporary / unsaved)"
     if ctx.source == SOURCE_SIMULATOR:
-        return f"Active team: **{ctx.active_team}** (Draft Room Simulator Board — temporary / unsaved)"
+        return f"Active team: **{ctx.active_team}** (Draft Room Simulator working board)"
     return "Active team: **Not set** — select a Saved Active Draft or enable a workspace override"
