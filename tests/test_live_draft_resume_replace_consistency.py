@@ -179,8 +179,10 @@ class ResumeReplaceConsistencyTests(unittest.TestCase):
             "watchlist_favorites": [],
         }
         load_participant_workflow_into_session(session, "ABC123")
+        # Since 2026-10-27 a room never writes the working queue at all (draft_queue_contract), so
+        # an older room revision cannot resurrect "C" - there is no hydrate left to block.
         self.assertEqual(session.get("draft_queue"), ["A", "B"])
-        self.assertTrue(session.get("_live_draft_queue_stale_hydrate_blocked"))
+        self.assertEqual(session.get("_draft_queue_revision"), 15)
 
         # Save advances remote to 15; hydrate of same dirty still keeps local.
         save_participant_workflow_from_session(session, "ABC123")
