@@ -20,6 +20,21 @@ DEPTH_TOP_N = 150  # "startable" pool: the top of the remaining board by Decisio
 SCORE_COL = "Decision Score"
 
 
+# Scored pools by signature (team, format, board picks, projection settings). Lives in this
+# imported module because streamlit_app.py re-executes, and its globals reset, on every rerun.
+_POOL_MEMO: dict[tuple, Any] = {}
+_POOL_MEMO_MAX = 8
+
+
+def memoized_pool(signature: tuple, build):
+    """The scored pool for ``signature``, built once; the signature covers everything it depends on."""
+    if signature not in _POOL_MEMO:
+        if len(_POOL_MEMO) >= _POOL_MEMO_MAX:
+            _POOL_MEMO.pop(next(iter(_POOL_MEMO)))
+        _POOL_MEMO[signature] = build()
+    return _POOL_MEMO[signature]
+
+
 def _names(values: Any) -> list[str]:
     if values is None:
         return []

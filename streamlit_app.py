@@ -30802,10 +30802,22 @@ elif active_page == "Draft Strategy Assistant":
     apply_pending_page_transfer(active_page)
     def _strategy_pool():
         # The same pool and roster-aware scoring the Draft Assistant uses, for the active team.
+        # Re-scoring the whole pool on every rerun made this the slowest draft page; the result
+        # only changes with the team, format, projection settings or a pick, so cache on those.
         from active_team_context import resolve_active_team_context
+        from draft_room_state import table_picks_fingerprint
 
         _ctx = resolve_active_team_context(st.session_state)
-        return build_profile_draft_metrics_pool(sync_team=_ctx.active_team or None, fantasy_format=_ctx.fantasy_format)
+        _sig = (
+            str(_ctx.active_team or ""),
+            str(_ctx.fantasy_format or ""),
+            table_picks_fingerprint(_canonical_draft_board_df()),
+            repr(sorted(_draft_projection_session_kwargs().items())),
+        )
+        from draft_strategy_plan import memoized_pool
+
+        return memoized_pool(_sig, lambda: build_profile_draft_metrics_pool(
+            sync_team=_ctx.active_team or None, fantasy_format=_ctx.fantasy_format))
 
     render_draft_strategy_page(st, st.session_state, pool_fn=_strategy_pool)
     save_page_state(active_page)
