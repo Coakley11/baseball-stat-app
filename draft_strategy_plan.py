@@ -118,25 +118,69 @@ def positional_depth(available: pd.DataFrame) -> list[dict[str, Any]]:
     return rows
 
 
-def _reason(rank: int, row: pd.Series, profile: dict[str, Any], available: pd.DataFrame) -> str:
+def _template(text: str) -> str:
+    """A reason's wording with numbers removed: "Projects 33 HR" and "Projects 41 HR" match."""
+    import re
+
+    return re.sub(r"\d+(\.\d+)?", "#", str(text or "").strip().lower())
+
+
+def _reason_candidates(rank: int, row: pd.Series, profile: dict[str, Any], available: pd.DataFrame) -> list[str]:
+    """Reasons for one player, most specific first (the Live Draft card reasons, then facts)."""
     needs = profile.get("position_needs") or []
     cats = [lvl["label"] for lvl in profile.get("category_needs") or []]
     strengths = profile.get("strengths") or []
+    pos = str(row.get("Primary Position") or "")
+    out: list[str] = []
     try:
         from live_draft_rec_badges import primary_recommendation_reason
 
-        text = primary_recommendation_reason(rank, row, gaps=needs, category_needs=cats, strengths=None, rec_df=available)
-        if text:
-            return str(text)
+        out.append(str(primary_recommendation_reason(rank, row, gaps=needs, category_needs=cats, strengths=None,
+                                                     rec_df=available) or ""))
     except Exception:
         pass
     try:
         from live_draft_room_ui import build_why_this_pick_summary
 
-        return str(build_why_this_pick_summary(row, str(row.get("Primary Position") or ""), gaps=needs,
-                                               category_needs=cats, strengths=strengths, include_position_need=True))
+        summary = str(build_why_this_pick_summary(row, pos, gaps=needs, category_needs=cats, strengths=strengths,
+                                                  include_position_need=True) or "")
+        if summary and not summary.startswith("Balanced upside"):
+            out.append(summary)
     except Exception:
-        return ""
+        pass
+    if pos and pos in needs:
+        out.append(f"Fills your open {pos} spot")
+    if pos and not available.empty and "Primary Position" in available.columns:
+        same = available[available["Primary Position"].astype(str) == pos]
+        if not same.empty and str(same.iloc[0]["fullName"]) == str(row.get("fullName")):
+            out.append(f"Best {pos} left on the board")
+    adp = pd.to_numeric(row.get("ADP"), errors="coerce")
+    if pd.notna(adp) and rank and float(adp) > rank * 3:
+        out.append(f"Value: usually drafted around pick {int(adp)}")
+    for col, label in (("proj_SB", "SB"), ("proj_RBI", "RBI"), ("proj_R", "R"), ("proj_HR", "HR")):
+        val = pd.to_numeric(row.get(col), errors="coerce")
+        if pd.notna(val) and float(val) > 0:
+            out.append(f"Projects {int(round(float(val)))} {label}")
+    return [r for r in out if r]
+
+
+def _reason(rank: int, row: pd.Series, profile: dict[str, Any], available: pd.DataFrame,
+            used: set[str] | None = None) -> str:
+    """The first candidate reason whose wording has not already been used on a card above."""
+    candidates = _reason_candidates(rank, row, profile, available)
+    for text in candidates:
+        if used is None or _template(text) not in used:
+            if used is not None:
+                used.add(_template(text))
+            return text
+    # Every single fact has been said already: combine two, which reads as new information.
+    for i, first in enumerate(candidates):
+        for second in candidates[i + 1:]:
+            text = f"{first} · {second}"
+            if _template(text) not in used:
+                used.add(_template(text))
+                return text
+    return candidates[0] if candidates else ""
 
 
 def recommended_targets(
@@ -156,6 +200,7 @@ def recommended_targets(
     if position:
         pool = pool[pool["Primary Position"].astype(str).str.upper() == position.upper()]
     out = []
+    used: set[str] = set()  # each card says something different (no repeated "Projects N HR")
     for rank, (_idx, row) in enumerate(pool.head(limit).iterrows(), start=1):
         out.append({
             "rank": rank,
@@ -165,7 +210,7 @@ def recommended_targets(
             "score": float(row[SCORE_COL]) if SCORE_COL in pool.columns else None,
             "adp": float(row["ADP"]) if "ADP" in pool.columns and pd.notna(row.get("ADP")) else None,
             "fills_need": str(row.get("Primary Position") or "") in (profile.get("position_needs") or []),
-            "reason": _reason(rank, row, profile, available),
+            "reason": _reason(rank, row, profile, available, used),
         })
     return out
 

@@ -62,6 +62,20 @@ class PlanTests(unittest.TestCase):
         self.assertEqual({t["position"] for t in ofs}, {"OF"})
         self.assertEqual(session["draft_queue"], ["Bobby Witt"])  # suggestions never touch the queue
 
+    def test_cards_never_repeat_the_same_reason(self) -> None:
+        sluggers = pd.DataFrame([
+            {"fullName": f"Slugger {i}", "Primary Position": "OF", "Decision Score": 0.9 - i / 100, "ADP": 10 + i,
+             "proj_HR": 40 - i, "proj_RBI": 100 - i, "proj_R": 90 - i, "proj_SB": 5 + i}
+            for i in range(6)
+        ])
+        session = _session({})
+        profile = plan.team_profile(session, sluggers)
+        available = plan.available_pool(session, sluggers, profile)
+        reasons = [t["reason"] for t in plan.recommended_targets(session, available, profile, queue=[], limit=6)]
+        templates = [plan._template(r) for r in reasons]
+        self.assertEqual(len(templates), len(set(templates)), reasons)
+        self.assertTrue(all(reasons), reasons)
+
     def test_depth_and_backups(self) -> None:
         session = _session({1: "Aaron Judge"})
         profile = plan.team_profile(session, POOL)
