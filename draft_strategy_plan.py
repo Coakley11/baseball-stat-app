@@ -21,7 +21,9 @@ SCORE_COL = "Decision Score"
 
 
 def _names(values: Any) -> list[str]:
-    return [str(v).strip() for v in (values or []) if str(v).strip()]
+    if values is None:
+        return []
+    return [str(v).strip() for v in list(values) if str(v).strip() and str(v).strip().lower() != "nan"]
 
 
 def _category_specs(fantasy_format: str) -> list[tuple[str, str, str]]:

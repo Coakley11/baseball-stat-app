@@ -74,6 +74,19 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(backups["Juan Soto"], ["Kyle Tucker"])
         self.assertEqual(backups["Bobby Witt"], ["Mookie Betts"])
 
+    def test_a_real_roster_frame_gives_roster_and_category_profile(self) -> None:
+        from unittest import mock
+
+        import active_team_context as atc
+
+        roster = POOL[POOL["fullName"].isin(["Aaron Judge", "Juan Soto"])].reset_index(drop=True)
+        ctx = atc.ActiveTeamContext(source="simulator", active_team="Daniel", fantasy_format="5x5 Roto",
+                                    drafted_names=["Aaron Judge", "Juan Soto"], my_roster_df=roster)
+        with mock.patch("active_team_context.resolve_active_team_context", return_value=ctx):
+            profile = plan.team_profile({}, POOL)
+        self.assertEqual(profile["roster"], ["Aaron Judge", "Juan Soto"])
+        self.assertIn("SB", [c["label"] for c in profile["category_needs"]])   # two sluggers: speed is the gap
+
     def test_queue_status_flags_drafted_players(self) -> None:
         session = _session({1: "Aaron Judge"})
         profile = plan.team_profile(session, POOL)
