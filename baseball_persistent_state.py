@@ -1522,6 +1522,31 @@ except ImportError:
     pass
 
 
+# Where the browser is, not the account's work: kept through a change of account.
+_KEPT_THROUGH_ACCOUNT_CHANGE = frozenset({"active_page", "main_sidebar_page"})
+
+
+def clear_baseball_account_workspace(session: Any) -> None:
+    """Drop every key the account workspace carries, and the widget values its pages saved."""
+    keys = set(_GLOBAL_KEYS) | set(_WORKFLOW_KEYS) | set(_INSIGHT_KEYS) | set(_HOF_HANDOFF_KEYS)
+    keys |= set(_WORKSPACE_KEYS) | {"page_filter_state", "baseball_workspace_state", "live_draft_room"}
+    store = session.get("page_filter_state")
+    if isinstance(store, dict):
+        for block in store.values():
+            if isinstance(block, dict):
+                keys |= {k for k in block if not str(k).startswith("_suite_auth")}
+    for key in keys - _KEPT_THROUGH_ACCOUNT_CHANGE:
+        session.pop(key, None)
+
+
+try:
+    from suite_user_persistence import register_account_state_clearer
+
+    register_account_state_clearer(APP_ID, clear_baseball_account_workspace)
+except ImportError:
+    pass
+
+
 def _build_local_for_merge(st: Any) -> dict[str, Any]:
     """This session's work as it stands, for a merge with the account's newer copy.
 

@@ -226,5 +226,35 @@ class RecoveryScanTests(_Isolated):
         self.assert_owner_untouched()
 
 
+
+class AccountChangeInOneBrowserTests(unittest.TestCase):
+    def test_logging_out_leaves_nothing_of_the_account_in_the_browser_session(self) -> None:
+        import baseball_persistent_state  # noqa: F401  (registers the baseball workspace clearer)
+
+        ss = signed_in("qa_iso_a")
+        ss.update({
+            "active_page": "Historical Explorer",
+            "hist_HR_min": 41,
+            "page_filter_state": {"Historical Explorer": {"hist_HR_min": 41, "historical_year_range_filter": (2006, 2012)}},
+            "historical_year_range_filter": (2006, 2012),
+            "draft_queue": ["Aaron Judge"],
+            "draft_archive_teams": [{"draft_id": "a1", "draft_name": "A's league"}],
+            "fantasy_league_context_state": {"active_league_context_id": "archive:a1", "contexts": {}},
+            "_ami_assistant_conversation": [{"q": "A's question"}],
+            "_suite_workspace_base::baseball": {"draft_queue": ["Aaron Judge"]},
+            "_suite_cloud_revision_seen": "2026-10-29T10:00:00+00:00",
+            "_account_fantasy_prefs_base_document": {"active_draft_id": "a1"},
+        })
+        with mock.patch.object(suite_auth, "_auth_api", side_effect=RuntimeError("offline")):
+            suite_auth.logout(ss)
+        for key in ("hist_HR_min", "page_filter_state", "historical_year_range_filter", "draft_queue",
+                    "draft_archive_teams", "fantasy_league_context_state", "_ami_assistant_conversation",
+                    "_suite_workspace_base::baseball", "_suite_cloud_revision_seen",
+                    "_account_fantasy_prefs_base_document"):
+            self.assertNotIn(key, ss, key)
+        self.assertEqual(ss.get("active_page"), "Historical Explorer")   # where the browser was stays
+        self.assertNotIn("_suite_auth_session", ss)
+
+
 if __name__ == "__main__":
     unittest.main()

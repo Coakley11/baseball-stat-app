@@ -1040,6 +1040,12 @@ def _persist_auth_session(
     )
     if scope_changed:
         try:
+            from suite_user_persistence import clear_account_session_state
+
+            clear_account_session_state(session_state)  # the previous account's work stays with it
+        except ImportError:
+            pass
+        try:
             from workflow_persist_guard import clear_draft_library_on_account_scope_change
 
             clear_draft_library_on_account_scope_change(session_state)
@@ -1458,6 +1464,12 @@ def logout(session_state: dict[str, Any], *, st: Any | None = None) -> None:
         from suite_user import reset_account_cache
 
         reset_account_cache()
+    except ImportError:
+        pass
+    try:
+        from suite_user_persistence import clear_account_session_state
+
+        clear_account_session_state(session_state)  # the next account on this browser starts clean
     except ImportError:
         pass
     for key in list(session_state.keys()):

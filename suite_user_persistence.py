@@ -73,6 +73,61 @@ def _utc_now_iso() -> str:
 WORKSPACE_ACCESS_REFUSED_KEY = "_suite_workspace_access_refused"
 
 
+# Session bookkeeping that belongs to the account it was recorded for (merge base, revisions seen,
+# fingerprints, preference and manifest revisions). Never carried over to another account.
+_ACCOUNT_BOOKKEEPING_PREFIXES = (
+    "_suite_workspace_base::",
+    "_suite_workspace_held_base::",
+    "_suite_workspace_conflicts::",
+    "_suite_workspace_reapply::",
+    "_suite_workspace_conflict_resolution::",
+    _WORKSPACE_SYNCED_PREFIX,
+    _SESSION_RESTORED_PREFIX,
+    _AUTOSAVE_BLOCK_PREFIX,
+    _LOCAL_DIRTY_PREFIX,
+    _APPLIED_CLOUD_TS_PREFIX,
+    _RESTORED_FP_PREFIX,
+    "_suite_autosave_fp::",
+    "_suite_restore_reconciled::",
+    "_account_fantasy_prefs_",
+    "_library_manifest_",
+    "_ami_assistant_",  # Ask AMI's conversation is session-only: it must not outlive its account
+)
+_ACCOUNT_BOOKKEEPING_KEYS = (
+    "_suite_cloud_revision_seen",
+    "_suite_cloud_confirmed_empty",
+    "_suite_cloud_reconciled",
+    "_suite_cloud_read_failed",
+    _CLOUD_WORKSPACE_RESTORED,
+    WORKSPACE_ACCESS_REFUSED_KEY,
+)
+_ACCOUNT_STATE_CLEARERS: dict[str, Callable[[Any], None]] = {}
+
+
+def register_account_state_clearer(app_id: str, fn: Callable[[Any], None]) -> None:
+    """``fn(session)`` drops an app's account workspace (its saved keys and widget values)."""
+    _ACCOUNT_STATE_CLEARERS[app_id] = fn
+
+
+def clear_account_session_state(session: Any) -> None:
+    """The signed-in account changed: log out, or another account signed in on this browser.
+
+    Everything the previous account's workspace put in this session goes, so the next account
+    (or the signed-out guest) starts like a fresh browser and can neither see nor save it.
+    A guest's own edits are not touched by signing in (they carry into that account by design).
+    """
+    for fn in list(_ACCOUNT_STATE_CLEARERS.values()):
+        try:
+            fn(session)
+        except Exception:
+            pass
+    for key in list(session.keys()):
+        sk = str(key)
+        if sk.startswith(_ACCOUNT_BOOKKEEPING_PREFIXES) or sk in _ACCOUNT_BOOKKEEPING_KEYS:
+            session.pop(key, None)
+    session["_suite_workspace_force_sync"] = True
+
+
 def _signed_in_script_session() -> Any | None:
     """The running script's session while a signed-in account uses it; None outside a run."""
     try:

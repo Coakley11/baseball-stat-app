@@ -106,6 +106,42 @@ class AccountIsolationThroughTheApp(CloudRestoreHarness, unittest.TestCase):
                 self.assertEqual(mine["page_filter_state"][HIST]["hist_HR_min"], 41 if acct == self.account else 12)
         self.assert_owner_untouched()
 
+    def log_out(self, dev) -> None:
+        """Press the sidebar's Log out button (suite_auth.logout runs inside the app's own run)."""
+        buttons = [b for b in dev.at.button if b.key in ("suite_account_workspace_logout_btn", "suite_auth_logout_btn")]
+        self.assertTrue(buttons, "no Log out button rendered")
+        self.store.who = dev.name
+        buttons[0].click().run()
+        dev.run()
+
+    def test_signing_out_and_in_as_another_account_in_one_browser_inherits_nothing(self) -> None:
+        from tests.cloud_restore_harness import auth_for
+
+        a = self.on_hist("shared-browser")
+        a.at.number_input(key="hist_HR_min").set_value(41).run()
+        a.go("Trend Value")
+        self.assertEqual(((self.store.row(f"baseball@{self.account}") or {}).get("metrics") or {})
+                         .get("full_session", {}).get("page_filter_state", {}).get(HIST, {}).get("hist_HR_min"), 41)
+        self.log_out(a)
+        other = f"{self.account}_next"
+        self._extra_accounts = {other}
+        self.acting_as(other)
+        for key, value in auth_for(other).items():                     # B signs in on the same tab
+            a.at.session_state[key] = value
+        a.at.session_state["active_page"] = HIST
+        a.at.session_state["main_sidebar_page"] = HIST
+        a.run()
+        a.run()
+        self.assertEqual(a.state().get("_suite_active_workspace_id"), other)
+        self.assertNotEqual(a.state().get("hist_HR_min"), 41, "B's session shows A's filter")
+        a.go("Trend Value")
+        row = (self.store.row(f"baseball@{other}") or {}).get("metrics", {}).get("full_session", {})
+        self.assertNotEqual(row.get("page_filter_state", {}).get(HIST, {}).get("hist_HR_min"), 41,
+                            "A's filter was saved into B's account")
+        self.acting_as(self.account)
+        mine = (self.store.row(f"baseball@{self.account}") or {}).get("metrics", {}).get("full_session", {})
+        self.assertEqual(mine["page_filter_state"][HIST]["hist_HR_min"], 41)     # A's account untouched
+
 
 if __name__ == "__main__":
     unittest.main()
