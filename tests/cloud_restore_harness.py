@@ -175,20 +175,40 @@ class Device:
 class CloudRestoreHarness:
     """Mixin for TestCase: fake cloud, throwaway account, cleanup."""
 
-    def start_cloud(self, account: str | None = None) -> None:
+    def start_cloud(self, account: str | None = None, *, real_workspace: bool = False) -> None:
+        """``real_workspace``: the app resolves the signed-in account's workspace itself (no patch),
+        and workspace files live in a private data directory (``self.data``) instead of ``data/``."""
         self.account = account or f"qa_restore_{uuid.uuid4().hex[:8]}"
         self._tmp = tempfile.mkdtemp(prefix="cloud_restore_")
+        self.data = ROOT / "data"
         self.store = FileStore(Path(self._tmp) / "cloud.json", account_fn=self._current_account)
         self.app_key = self.account  # fake scoping key, see _scoped below
         self._stack = contextlib.ExitStack()
         env = mock.patch.dict(os.environ, {"SUITE_AUTH_ENABLED": "1", "SUITE_STORAGE_ISOLATED": "1"})
         self._stack.enter_context(env)
-        for patcher in (
+        patchers = [
             mock.patch("suite_storage_config.cloud_storage_enabled", return_value=True),
             mock.patch.object(scs, "_import_storage", return_value=(self.store, "fake")),
+            # Supabase scopes every row by the account's user_id; this is that, whatever the workspace.
             mock.patch.object(scs, "_cloud_storage_app_id", side_effect=lambda app: f"{app}@{self._current_account()}"),
-            mock.patch("suite_workspace.get_active_workspace_id", side_effect=lambda *a, **k: self._current_account()),
-        ):
+        ]
+        if real_workspace:
+            self.data = Path(self._tmp) / "data"
+            (self.data / "workspaces").mkdir(parents=True)
+            patchers += [
+                mock.patch("suite_workspace.DATA_DIR", self.data),
+                mock.patch("suite_workspace._PERSISTED_FILE", self.data / "suite_active_workspace.json"),
+                mock.patch("suite_workspace_registry.DATA_DIR", self.data),
+                mock.patch("suite_workspace_registry.REGISTRY_FILE", self.data / "workspaces" / "_ownership_registry.json"),
+                mock.patch("suite_workspace_registry.ACTIVE_DIR", self.data / "workspaces" / "_active"),
+                mock.patch("suite_user_persistence.DATA_DIR", self.data),
+                mock.patch("suite_user_persistence._LEGACY_COMBINED_FILE", self.data / "app_state.json"),
+            ]
+        else:
+            patchers.append(
+                mock.patch("suite_workspace.get_active_workspace_id", side_effect=lambda *a, **k: self._current_account())
+            )
+        for patcher in patchers:
             self._stack.enter_context(patcher)
         self.addCleanup(self.stop_cloud)
 
@@ -199,6 +219,8 @@ class CloudRestoreHarness:
         self._stack.close()
         shutil.rmtree(self._tmp, ignore_errors=True)
         data = ROOT / "data"
+        if self.data != data:
+            return  # a private data directory, removed with the temp dir
         for account in {self.account, *getattr(self, "_extra_accounts", ())}:
             shutil.rmtree(data / "workspaces" / account, ignore_errors=True)
             for leftover in data.glob(f"*{account}*"):
@@ -218,7 +240,7 @@ class CloudRestoreHarness:
 
     def wipe_local_disk(self) -> None:
         """A fresh phone: no local copy of this account's workspace."""
-        data = ROOT / "data"
+        data = self.data
         shutil.rmtree(data / "workspaces" / self.account, ignore_errors=True)
         for leftover in data.glob(f"*{self.account}*"):
             if leftover.is_file():

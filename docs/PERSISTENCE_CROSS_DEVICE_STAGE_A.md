@@ -52,6 +52,7 @@ Other pages with widget-backed settings had the same exposure through mechanisms
 
 ### Merge rules
 
+- *(Superseded in Stage B: the queue and watchlists now merge as ordered lists, the Saved Draft Library per draft and leagues per league. See `PERSISTENCE_STAGE_B_ISOLATION.md`.)*
 - **Player lists are merged as sets.** This covers the draft queue, watchlists, focus players and dismissals.
   - Additions and removals from both sides are kept.
   - Example: Dell has `[B, C, D]` and the phone added `E`. The merge is `[B, C, D, E]`.
@@ -109,7 +110,7 @@ Other pages with widget-backed settings had the same exposure through mechanisms
 **Stage C: cosmetic state**
 - Expanders, tab choice, column widths. These stay per device.
 
-## Pre-existing issues found while testing (same on `8ae73a5`, not changed here)
+## Pre-existing issues found while testing (same on `8ae73a5`; both fixed in Stage B)
 
 - **A leftover local workspace can leak into a fresh device's restore.**
   - Example: `data/workspaces/daniel/` with `data/suite_active_workspace.json` pointing at it.

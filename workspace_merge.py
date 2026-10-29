@@ -14,8 +14,11 @@ or wrote to the cloud:
   keeps its own, and nothing is decided until the user chooses (``render_workspace_conflicts``).
 
 Dicts merge per key (so two pages, or two filters on one page, never collide). The queue and
-player lists merge as sets (both devices' additions kept, either side's removals honoured). The
-Simulator board and live drafts are atomic: their own guards (``workspace_cloud_guard``,
+the watchlists are ordered lists merged as operations against the base: both devices' additions
+are kept, a removal on either device stays removed (an older copy never brings a player back),
+and a reorder on one device is kept with the other device's additions placed beside their
+neighbours. A reorder on *both* devices is a conflict. The
+Saved Draft Library merges per saved draft. The Simulator board and live drafts are atomic: their own guards (``workspace_cloud_guard``,
 ``draft_board_reconcile``) decide them, and a both-sides change is never merged pick by pick.
 
 Never by size: a smaller board, an emptied queue, or a filter set back to its default is a real
@@ -42,9 +45,7 @@ ATOMIC_TOP_KEYS = frozenset({
     "live_draft_state",
     "last_draft_board_snapshot",
     "draft_lab_persisted_state",
-    "fantasy_league_context_state",
     "fantasy_in_season_state",
-    "draft_archive_teams",
     "resumable_live_draft_slot",
     "draft_shared_settings",
     "draft_room_shared_meta",
@@ -58,20 +59,40 @@ ATOMIC_PAGE_BLOCKS = frozenset({
     "Draft Lab / Simulation",
     "Draft Simulation Test Mode",
 })
+# Lists of records with an id: merged per record (each record whole), so a draft saved on each
+# device keeps both. A conflict path addresses one record as ``@<id>``.
+KEYED_LISTS = {"draft_archive_teams": "draft_id"}
+_ID = "__id__"
+# Leagues merge per league: each league's context is whole, the active league is its own field,
+# so editing one league here and switching leagues there are two changes, not one conflict.
+LEAGUE_STORE_KEY = "fantasy_league_context_state"
+# One explicit choice per record (which fantasy source, research mode on/off): never mixed field
+# by field. When both devices chose, the later choice is the account's.
+NEWEST_CHOICE_KEYS = frozenset({"fantasy_source_override_selection", "fantasy_research_mode_selection"})
 # Rebuilt from the merged state on every save; never merged.
 DERIVED_TOP_KEYS = frozenset({"baseball_workspace_state"})
-# Player lists: a set merge keeps both devices' additions and honours either side's removals.
-SET_MERGE_LEAVES = frozenset({
+# Ordered player lists: membership merges like a set, and the order is kept (see _ordered_merge).
+ORDERED_LIST_LEAVES = frozenset({
     "draft_queue",
     "queue",
     "watchlist_focus",
     "watchlist_favorites",
     "draft_assistant_focus_players",
+    "workflow_favorite_targets",
+})
+# Id sets: both devices' additions kept, either side's removals honoured.
+SET_MERGE_LEAVES = frozenset({
     "_deleted_draft_archive_ids",
+    "deleted_context_ids",
     "_ami_dismissed_insight_ids",
     "_ami_dismissed_question_ids",
     "trade_offer_inbox_dismissals",
 })
+
+# Most-recent-first view history: what this device looked at, never a user conflict.
+LOCAL_HISTORY_LEAVES = frozenset({"workflow_recently_viewed", "workflow_recent_compare_pairs"})
+# Counters that only ever go up (a reset or new board bumps the Simulator epoch).
+MAX_LEAVES = frozenset({"_simulator_board_epoch"})
 
 _MISSING = {"__missing__": True}
 _FP = "__fp__"
@@ -111,6 +132,8 @@ same_value = _same
 def _is_atomic(path: tuple[str, ...]) -> bool:
     if len(path) == 1 and path[0] in ATOMIC_TOP_KEYS:
         return True
+    if len(path) == 3 and path[0] == LEAGUE_STORE_KEY and path[1] == "contexts":
+        return True
     return len(path) == 2 and path[0] == "page_filter_state" and path[1] in ATOMIC_PAGE_BLOCKS
 
 
@@ -122,6 +145,14 @@ def compact_base(state: dict[str, Any]) -> dict[str, Any]:
             continue
         if key in ATOMIC_TOP_KEYS:
             out[key] = {_FP: _fp(value)}
+        elif key in KEYED_LISTS and isinstance(value, list):
+            id_field = KEYED_LISTS[key]
+            out[key] = [{_ID: str(e.get(id_field) or ""), _FP: _fp(e)} for e in value if isinstance(e, dict)]
+        elif key == LEAGUE_STORE_KEY and isinstance(value, dict):
+            out[key] = copy.deepcopy({k: v for k, v in value.items() if k != "contexts"})
+            contexts = value.get("contexts")
+            if isinstance(contexts, dict):
+                out[key]["contexts"] = {cid: {_FP: _fp(ctx)} for cid, ctx in contexts.items()}
         elif key == "page_filter_state" and isinstance(value, dict):
             out[key] = {
                 page: ({_FP: _fp(block)} if page in ATOMIC_PAGE_BLOCKS else copy.deepcopy(block))
@@ -150,6 +181,84 @@ def _set_merge(base: Any, local: list, remote: list) -> list:
     return out
 
 
+def _relative_order(seq: list[str], keep: set[str]) -> list[str]:
+    return [f for f in seq if f in keep]
+
+
+def _ordered_merge(base: Any, local: list, remote: list, path: tuple[str, ...], conflicts: list) -> list:
+    """Three-way merge of an ordered list of distinct items (the queue, a watchlist).
+
+    Membership: an item the base had and either side dropped is removed (a deliberate removal,
+    or a pick that consumed it); an item either side added is kept. Order: the side that did not
+    reorder follows the side that did; the other side's additions go just before the item that
+    followed them there, and an addition at the end (Add to Queue) stays at the end. Both sides reordering the same items differently is a
+    conflict (the account keeps its order, this session its own, until the user chooses).
+    """
+    base_items = list(base) if isinstance(base, list) else []
+    fb, fl, fr = ([_fp(x) for x in seq] for seq in (base_items, local, remote))
+    by_fp: dict[str, Any] = {}
+    for f, item in list(zip(fb, base_items)) + list(zip(fr, remote)) + list(zip(fl, local)):
+        by_fp.setdefault(f, item)
+    removed = (set(fb) - set(fl)) | (set(fb) - set(fr))
+    survivors = (set(fl) | set(fr)) - removed
+    common = survivors & set(fb) & set(fl) & set(fr)
+    base_order = _relative_order(list(dict.fromkeys(fb)), common)
+    local_order = _relative_order(list(dict.fromkeys(fl)), common)
+    remote_order = _relative_order(list(dict.fromkeys(fr)), common)
+    local_moved, remote_moved = local_order != base_order, remote_order != base_order
+    if local_moved and remote_moved and local_order != remote_order:
+        conflicts.append(path)
+        return remote
+    lead, other = (fl, fr) if local_moved and not remote_moved else (fr, fl)
+    out = [f for f in dict.fromkeys(lead) if f in survivors]
+    placed = set(out)
+    for i, f in enumerate(other):
+        if f in placed or f not in survivors:
+            continue
+        # Before the next item it preceded there; an append stays at the end.
+        follower = next((g for g in other[i + 1:] if g in placed), None)
+        out.insert(out.index(follower) if follower is not None else len(out), f)
+        placed.add(f)
+    return [by_fp[f] for f in out]
+
+
+def _keyed_merge(base: Any, local: list, remote: list, path: tuple[str, ...], conflicts: list) -> list:
+    """Per-record three-way merge of a list of records keyed by ``KEYED_LISTS[path[0]]``."""
+    id_field = KEYED_LISTS[path[0]]
+
+    def index(seq: Any, compact: bool = False) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for e in seq if isinstance(seq, list) else []:
+            if isinstance(e, dict):
+                rid = str(e.get(_ID) if compact and _ID in e else e.get(id_field) or "")
+                if rid:
+                    out.setdefault(rid, {_FP: e[_FP]} if compact and _FP in e else e)
+        return out
+
+    b, l, r = index(base, compact=True), index(local), index(remote)
+    merged: dict[str, Any] = {}
+    for rid in dict.fromkeys(list(r) + list(l)):
+        bv, lv, rv = b.get(rid, _MISSING), l.get(rid, _MISSING), r.get(rid, _MISSING)
+        if _same(lv, rv) or _same(lv, bv):
+            value = rv
+        elif _same(rv, bv):
+            value = lv
+        else:
+            conflicts.append(path + (f"@{rid}",))  # both changed this record: the account's meanwhile
+            value = rv
+        if value is not _MISSING:
+            merged[rid] = value
+    return list(merged.values())
+
+
+def _choice_order(record: dict[str, Any]) -> tuple[str, int]:
+    try:
+        seq = int(record.get("local_seq") or 0)
+    except (TypeError, ValueError):
+        seq = 0
+    return str(record.get("selected_at") or ""), seq
+
+
 def _merge(base: Any, local: Any, remote: Any, path: tuple[str, ...], conflicts: list) -> Any:
     if _same(local, remote):
         return remote
@@ -158,6 +267,10 @@ def _merge(base: Any, local: Any, remote: Any, path: tuple[str, ...], conflicts:
     if _same(remote, base):
         return local
     leaf = path[-1] if path else ""
+    if len(path) == 1 and leaf in KEYED_LISTS and isinstance(local, list) and isinstance(remote, list):
+        return _keyed_merge(base, local, remote, path, conflicts)
+    if len(path) == 1 and leaf in NEWEST_CHOICE_KEYS and isinstance(local, dict) and isinstance(remote, dict):
+        return max((remote, local), key=_choice_order)  # remote first: a tie keeps the account's
     if _is_atomic(path):
         conflicts.append(path)
         return remote
@@ -175,8 +288,14 @@ def _merge(base: Any, local: Any, remote: Any, path: tuple[str, ...], conflicts:
             if value is not _MISSING:
                 merged[key] = value
         return merged
+    if leaf in ORDERED_LIST_LEAVES and isinstance(local, list) and isinstance(remote, list):
+        return _ordered_merge(base, local, remote, path, conflicts)
     if leaf in SET_MERGE_LEAVES and isinstance(local, list) and isinstance(remote, list):
         return _set_merge(base, local, remote)
+    if leaf in LOCAL_HISTORY_LEAVES and local is not _MISSING:
+        return local
+    if leaf in MAX_LEAVES and isinstance(local, (int, float)) and isinstance(remote, (int, float)):
+        return max(local, remote)
     if leaf.startswith("_"):
         return local  # diagnostics, flashes and traces: this session's own, never a user conflict
     conflicts.append(path)
@@ -212,9 +331,24 @@ def three_way_merge(
     return merged, conflicts
 
 
+def _record_at(path: tuple[str, ...], container: Any, part: str) -> tuple[int, Any]:
+    """``@<id>`` in a keyed list: (index, record), or (-1, _MISSING)."""
+    id_field = KEYED_LISTS.get(path[0], "id") if path else "id"
+    rid = part[1:]
+    for i, e in enumerate(container if isinstance(container, list) else []):
+        if isinstance(e, dict) and str(e.get(id_field) or "") == rid:
+            return i, e
+    return -1, _MISSING
+
+
 def get_path(state: dict[str, Any], path: tuple[str, ...]) -> Any:
     cur: Any = state
     for part in path:
+        if isinstance(cur, list) and str(part).startswith("@"):
+            cur = _record_at(path, cur, str(part))[1]
+            if cur is _MISSING:
+                return _MISSING
+            continue
         if not isinstance(cur, dict) or part not in cur:
             return _MISSING
         cur = cur[part]
@@ -222,6 +356,19 @@ def get_path(state: dict[str, Any], path: tuple[str, ...]) -> Any:
 
 
 def set_path(state: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
+    if len(path) == 2 and str(path[1]).startswith("@"):
+        records = state.get(path[0])
+        records = records if isinstance(records, list) else []
+        i, _ = _record_at(path, records, str(path[1]))
+        if value is _MISSING:
+            if i >= 0:
+                records.pop(i)
+        elif i >= 0:
+            records[i] = copy.deepcopy(value)
+        else:
+            records.append(copy.deepcopy(value))
+        state[path[0]] = records
+        return
     cur = state
     for part in path[:-1]:
         nxt = cur.get(part)
@@ -375,6 +522,12 @@ def conflict_label(path: tuple[str, ...] | list[str]) -> str:
         "draft_archive_teams": "Saved Draft Library",
         "fantasy_league_context_state": "Leagues",
     }
+    if len(parts) == 2 and parts[0] in KEYED_LISTS and parts[1].startswith("@"):
+        return f"Saved Draft Library: a draft ({parts[1][1:]})"
+    if len(parts) == 3 and parts[0] == LEAGUE_STORE_KEY and parts[1] == "contexts":
+        return f"League settings ({parts[2].split(':', 1)[-1]})"
+    if len(parts) == 2 and parts[0] == LEAGUE_STORE_KEY and parts[1] == "active_league_context_id":
+        return "Active league"
     head = names.get(parts[0], parts[0].replace("_", " ").strip().capitalize()) if parts else "Settings"
     return head if len(parts) == 1 else f"{head}: {' / '.join(parts[1:])}"
 

@@ -50,6 +50,20 @@ def _scoped_storage_app(app: str | None) -> str | None:
         return base or None
 
 
+def _storage() -> Any:
+    """The suite store: Command Center's ``suite_storage`` when it is on the path, else this repo's
+    ``suite_storage_supabase`` — which is exactly what ``suite_storage`` calls in cloud mode.
+
+    A Baseball deploy does not ship ``suite_storage.py``; importing it bare made every settings
+    and saved-item read here raise, so account preferences and AMI saved items never synced.
+    """
+    try:
+        import suite_storage as storage
+    except ImportError:
+        import suite_storage_supabase as storage
+    return storage
+
+
 def remember_saved_item(
     app: str,
     item_type: str,
@@ -59,11 +73,7 @@ def remember_saved_item(
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist a song, player, portfolio, simulation, etc. for this account."""
-    try:
-        import suite_storage as storage
-    except ImportError:
-        import suite_storage_supabase as storage
-
+    storage = _storage()
     scoped_app = _scoped_storage_app(app) or str(app or "").strip()
     result = storage.upsert_saved_item(
         scoped_app, item_type, item_key, title=title, payload=payload
@@ -75,7 +85,7 @@ def remember_saved_item(
 
 def forget_saved_item(app: str, item_type: str, item_key: str) -> None:
     """Mark saved item invalid — removes it from active dashboard surfaces."""
-    import suite_storage as storage
+    storage = _storage()
 
     scoped_app = _scoped_storage_app(app) or str(app or "").strip()
     storage.invalidate_saved_item(scoped_app, item_type, item_key)
@@ -88,7 +98,7 @@ def load_saved_items(
     item_type: str | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
-    import suite_storage as storage
+    storage = _storage()
 
     app_key = _scoped_storage_app(app)
     return storage.load_saved_items(app=app_key, item_type=item_type, limit=limit)
@@ -96,13 +106,13 @@ def load_saved_items(
 
 def save_settings(app: str, settings: dict[str, Any]) -> None:
     """Per-app settings, or ``_global`` for suite-wide preferences."""
-    import suite_storage as storage
+    storage = _storage()
 
     storage.save_user_settings(app, settings)
 
 
 def load_settings(app: str = "_global") -> dict[str, Any]:
-    import suite_storage as storage
+    storage = _storage()
 
     return storage.load_user_settings(app)
 
@@ -114,7 +124,7 @@ def sync_local_state_to_cloud(app: str, state: dict[str, Any]) -> None:
     """
     if not state:
         return
-    import suite_storage as storage
+    storage = _storage()
 
     page = str(state.get("page") or "")
     summary = str(state.get("summary") or state.get("label") or "")

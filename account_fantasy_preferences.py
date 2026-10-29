@@ -22,6 +22,17 @@ PREFS_REVISION_DOC_KEY = "fantasy_account_prefs_revision"
 SESSION_APPLIED_REV_KEY = "_account_fantasy_prefs_applied_revision"
 SESSION_LOCAL_REV_KEY = "_account_fantasy_prefs_local_revision"
 SESSION_APPLIED_FP_KEY = "_account_fantasy_prefs_applied_fingerprint"
+# The account document this session last applied or wrote: what "changed here" is measured from.
+SESSION_BASE_DOC_KEY = "_account_fantasy_prefs_base_document"
+PREFERENCE_FIELDS = (
+    "active_draft_id",
+    "active_league_context_id",
+    "active_canonical_league_id",
+    "fantasy_source_override_kind",
+    "fantasy_source_override_id",
+    "research_mode_enabled",
+    "use_draft_assistant_position_needs",
+)
 LAST_POLL_TS_KEY = "_account_fantasy_prefs_last_poll_ts"
 LAST_SYNC_TRACE_KEY = "_account_fantasy_prefs_last_sync_trace"
 LAST_SYNC_ERROR_KEY = "_account_fantasy_prefs_last_error"
@@ -936,6 +947,7 @@ def _apply_prefs_to_session(session: dict[str, Any], doc: dict[str, Any], *, sou
         session[SESSION_APPLIED_REV_KEY] = incoming
         session[SESSION_LOCAL_REV_KEY] = incoming
         session[SESSION_APPLIED_FP_KEY] = preference_document_fingerprint(doc)
+        _record_base_document(session, doc)
         trace["changed"] = True
         trace["toggles_changed"] = True
         invalidate_preference_dependent_caches(session)
@@ -1107,14 +1119,50 @@ def sync_account_fantasy_preferences(
         return trace
 
 
+def _record_base_document(session: dict[str, Any], doc: dict[str, Any]) -> None:
+    session[SESSION_BASE_DOC_KEY] = {k: copy.deepcopy(doc.get(k)) for k in PREFERENCE_FIELDS}
+
+
+def _same_pref_value(a: Any, b: Any) -> bool:
+    if isinstance(a, bool) or isinstance(b, bool):
+        return bool(a) == bool(b)
+    return str(a or "").strip() == str(b or "").strip()
+
+
+def fields_changed_on_this_device(
+    session: dict[str, Any],
+    cloud: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Preference fields this session changed since it last applied or wrote the account document.
+
+    Measured against that base, not against the account: a field the other device changed meanwhile
+    differs from the account here too, and writing it back would undo the other device's choice.
+    Without a base (this session never synced its preferences) the fields that differ from the
+    account are the only evidence, as before.
+    """
+    current = _read_session_prefs_fields(session)
+    base = session.get(SESSION_BASE_DOC_KEY)
+    reference = base if isinstance(base, dict) else (cloud or {})
+    return {
+        k: current.get(k)
+        for k in PREFERENCE_FIELDS
+        if not _same_pref_value(current.get(k), reference.get(k))
+    }
+
+
 def update_account_fantasy_preference_fields(
     session: dict[str, Any],
     *,
     changed_fields: dict[str, Any],
     reason: str = "",
     expected_revision: int | None = None,
+    _retry: bool = True,
 ) -> dict[str, Any]:
-    """Atomically patch preference fields without rebuilding from ambient session state."""
+    """Atomically patch preference fields without rebuilding from ambient session state.
+
+    The settings row has no compare-and-set, so a concurrent write by the other device is caught
+    on readback: the patch is then re-applied once onto the newer document.
+    """
     trace: dict[str, Any] = {
         "reason": reason,
         "written": False,
@@ -1216,6 +1264,13 @@ def update_account_fantasy_preference_fields(
     if not pair.get("write_verified"):
         mismatches.append("revision_header_pair")
     trace["write_verified"] = not mismatches and bool(pair.get("write_verified"))
+    if mismatches and _retry and int(readback.get("revision") or 0) >= new_rev:
+        # Another device wrote between our read and our write (same or newer revision, other
+        # values). Re-patch onto what it wrote; its own fields stay as it left them.
+        return update_account_fantasy_preference_fields(
+            session, changed_fields=changed_fields, reason=f"{reason}:after_concurrent_write",
+            expected_revision=None, _retry=False,
+        )
     if mismatches or not pair.get("write_verified"):
         trace["verification_error"] = (
             pair.get("error") or f"changed_field_mismatch:{mismatches}"
@@ -1236,6 +1291,7 @@ def update_account_fantasy_preference_fields(
         session[SESSION_APPLIED_REV_KEY] = new_rev
         session[SESSION_LOCAL_REV_KEY] = new_rev
         session[SESSION_APPLIED_FP_KEY] = preference_document_fingerprint(readback)
+        _record_base_document(session, readback)
         reseed_ok = False
         try:
             from fantasy_context_ui import (
@@ -1426,6 +1482,19 @@ def write_account_fantasy_preferences(
         session[LAST_SYNC_TRACE_KEY] = trace
         return trace
 
+    if cloud:
+        # Patch what this device changed onto the account's document; never write this session's
+        # stale copy of the fields the other device changed (a whole rebuild used to).
+        changed = fields_changed_on_this_device(session, cloud)
+        changed.update({k: v for k, v in (field_overrides or {}).items() if v is not None})
+        if not changed:
+            trace.update({"skipped": "no_changes", "write_verified": True})
+            session[LAST_WRITE_TRACE_KEY] = trace
+            return trace
+        return update_account_fantasy_preference_fields(
+            session, changed_fields=changed, reason=reason, expected_revision=expected_revision,
+        )
+
     new_rev = base_rev + 1
     doc = build_preference_document(session, revision=new_rev, field_overrides=field_overrides)
     trace["revision"] = new_rev
@@ -1457,6 +1526,7 @@ def write_account_fantasy_preferences(
     session[SESSION_APPLIED_REV_KEY] = new_rev
     session[SESSION_LOCAL_REV_KEY] = new_rev
     session[SESSION_APPLIED_FP_KEY] = preference_document_fingerprint(doc)
+    _record_base_document(session, doc)
     session.pop(LAST_SYNC_ERROR_KEY, None)
     session[SYNC_STATUS_FLASH_KEY] = SYNC_OK_STATUS_MSG
     trace["written"] = True

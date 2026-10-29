@@ -422,6 +422,11 @@ def _full_session_cache_keys(app_key: str) -> tuple[str, str]:
     return f"_suite_full_session_ts_{app_key}", f"_suite_full_session_blob_{app_key}"
 
 
+def _is_session(ss: Any) -> bool:
+    """A dict or Streamlit's SessionStateProxy (which is not a dict)."""
+    return ss is not None and hasattr(ss, "get")
+
+
 def _streamlit_session() -> Any | None:
     try:
         import streamlit as st  # noqa: WPS433
@@ -903,7 +908,7 @@ def _resolved_cloud_app_key(app_id: str) -> str:
 def last_cloud_write_meta() -> dict[str, Any]:
     """Session notes from the last full-session write. Empty outside Streamlit."""
     ss = _streamlit_session()
-    if not isinstance(ss, dict):
+    if not _is_session(ss):
         return {}
     return {
         "write_mode": str(ss.get("_suite_last_cloud_write_mode") or ""),
@@ -1009,7 +1014,7 @@ def save_cloud_full_session_with_details(
     if not ok:
         return False, redact_cloud_error(cloud_write_error_message() or "cloud_save_failed"), app_key
     ss = _streamlit_session()
-    if isinstance(ss, dict):
+    if _is_session(ss):
         ss.pop("_suite_cloud_write_used_workflow_fallback", None)
         ss["_suite_last_cloud_app_key"] = app_key
     return True, "", app_key
@@ -1141,7 +1146,7 @@ def save_cloud_full_session_with_result(
     if minimum <= 0:
         return True, ""
     ss = _streamlit_session()
-    if isinstance(ss, dict) and ss.get("_suite_cloud_write_used_workflow_fallback"):
+    if _is_session(ss) and ss.get("_suite_cloud_write_used_workflow_fallback"):
         err = "workflow_fallback_omitted_draft_room_picks"
         _record_cloud_write_error(err)
         return False, err
@@ -1150,7 +1155,7 @@ def save_cloud_full_session_with_result(
             app_id,
             min_picks=minimum,
             cloud_app_key=app_key,
-            session=ss if isinstance(ss, dict) else None,
+            session=ss if _is_session(ss) else None,
         )
     except Exception as exc:
         safe = redact_cloud_error(exc)
@@ -1160,7 +1165,7 @@ def save_cloud_full_session_with_result(
         err = _format_draft_readback_error(readback, minimum, app_key)
         _record_cloud_write_error(err)
         return False, err
-    if isinstance(ss, dict):
+    if _is_session(ss):
         ss["_suite_last_draft_room_readback"] = {
             "cloud_app_key": readback.get("cloud_app_key") or app_key,
             "workspace_id": readback.get("workspace_id"),

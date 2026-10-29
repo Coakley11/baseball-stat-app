@@ -282,7 +282,7 @@ def list_owned_workspace_ids(*, session_state: dict[str, Any] | None = None) -> 
     try:
         from suite_auth import allowed_workspaces_for_session, is_auth_enabled, is_authenticated
 
-        if isinstance(session_state, dict) and is_auth_enabled() and is_authenticated(session_state):
+        if _session_mapping(session_state) is not None and is_auth_enabled() and is_authenticated(session_state):
             return allowed_workspaces_for_session(session_state)
     except ImportError:
         pass
@@ -398,7 +398,7 @@ def ensure_owned_workspace_for_session(session_state: dict[str, Any]) -> dict[st
 
 def get_owned_workspace_id(session_state: dict[str, Any] | None = None) -> str:
     """Owned workspace slug for authenticated session; empty when auth off."""
-    if not isinstance(session_state, dict):
+    if _session_mapping(session_state) is None:
         return ""
     cached = str(session_state.get(SESSION_OWNED_WORKSPACE_KEY) or "").strip()
     if cached:
@@ -437,12 +437,14 @@ def load_persisted_workspace_for_account(*, session_state: dict[str, Any] | None
     from suite_workspace import normalize_workspace_id, _load_legacy_persisted_workspace_id, _read_json
 
     owner_user_id = ""
+    signed_in = False
     try:
         from suite_auth import is_auth_enabled, is_authenticated
 
-        if isinstance(session_state, dict) and is_auth_enabled() and is_authenticated(session_state):
+        if _session_mapping(session_state) is not None and is_auth_enabled() and is_authenticated(session_state):
             ctx = _account_context(session_state)
             owner_user_id = ctx["owner_user_id"]
+            signed_in = True
     except ImportError:
         pass
 
@@ -450,7 +452,8 @@ def load_persisted_workspace_for_account(*, session_state: dict[str, Any] | None
         path = active_workspace_persist_path(owner_user_id=owner_user_id)
         raw = _read_json(path)
         if isinstance(raw, dict):
-            wid = normalize_workspace_id(str(raw.get("workspace_id") or raw.get("active_workspace_id") or ""))
+            raw_wid = str(raw.get("workspace_id") or raw.get("active_workspace_id") or "").strip()
+            wid = normalize_workspace_id(raw_wid) if raw_wid else ""
             if wid:
                 if not workspace_access_allowed(wid, session_state=session_state):
                     owned = get_owned_workspace_id(session_state)
@@ -459,6 +462,16 @@ def load_persisted_workspace_for_account(*, session_state: dict[str, Any] | None
         owned = get_owned_workspace_id(session_state)
         if owned:
             return owned
+    if signed_in:
+        # The global pointer belongs to the signed-out single-user install; a signed-in account
+        # resolves only to a workspace it owns, never to whichever profile last wrote that file.
+        try:
+            from suite_auth import account_scoped_workspace_target
+
+            target = account_scoped_workspace_target(session_state)
+        except ImportError:
+            target = ""
+        return normalize_workspace_id(target) if target else "user_unidentified"
 
     # No account owner: fall back to the legacy global file directly (no callback).
     return _load_legacy_persisted_workspace_id()
@@ -468,7 +481,7 @@ def persist_active_workspace_for_account(workspace_id: str, *, session_state: di
     from suite_workspace import _PERSISTED_FILE, normalize_workspace_id, workspace_label, _write_json
 
     ws = normalize_workspace_id(workspace_id)
-    if isinstance(session_state, dict) and not workspace_access_allowed(ws, session_state=session_state):
+    if _session_mapping(session_state) is not None and not workspace_access_allowed(ws, session_state=session_state):
         owned = get_owned_workspace_id(session_state)
         if owned:
             ws = normalize_workspace_id(owned)
@@ -479,10 +492,12 @@ def persist_active_workspace_for_account(workspace_id: str, *, session_state: di
         "label": workspace_label(ws),
     }
     owner_user_id = ""
+    signed_in = False
     try:
         from suite_auth import is_auth_enabled, is_authenticated
 
-        if isinstance(session_state, dict) and is_auth_enabled() and is_authenticated(session_state):
+        if _session_mapping(session_state) is not None and is_auth_enabled() and is_authenticated(session_state):
+            signed_in = True
             ctx = _account_context(session_state)
             owner_user_id = ctx["owner_user_id"]
             payload[OWNER_USER_ID_KEY] = owner_user_id
@@ -491,4 +506,6 @@ def persist_active_workspace_for_account(workspace_id: str, *, session_state: di
     if owner_user_id:
         path = active_workspace_persist_path(owner_user_id=owner_user_id)
         return _write_json(path, payload)
+    if signed_in:
+        return False  # never the shared pointer: every other session on this server reads it
     return _write_json(_PERSISTED_FILE, payload)

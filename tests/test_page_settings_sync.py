@@ -217,9 +217,19 @@ class DraftRoomSyncTests(_Base):
         phone.go("Draft Room Simulator")
         self.assertEqual(phone.board(), [OHTANI, JUDGE, SOTO])
 
+    def test_a_brand_new_accounts_first_pick_is_saved_without_pressing_save(self) -> None:  # 4
+        # The account has never saved anything: its read answers "no row" and there is nothing on
+        # this device. Its first picks used to live in the browser session only.
+        dell = self.device("dell").run()
+        dell.pick(OHTANI)
+        dell.go(TREND)
+        self.assertEqual(self.store.board(self.cloud_key), [OHTANI])
+        self.wipe_local_disk()
+        phone = self.device("phone").run()
+        self.assertEqual(phone.board(), [OHTANI])
+
     def test_a_pick_is_saved_without_pressing_save_and_survives_navigation(self) -> None:  # 4
-        # An account that already has a saved board. (A brand-new account's very first board is
-        # held until Save Draft Board Now: the empty-account autosave block, by design.)
+        # An account that already has a saved board.
         dell = self.device("dell").run()
         dell.pick(OHTANI)
         dell.save()

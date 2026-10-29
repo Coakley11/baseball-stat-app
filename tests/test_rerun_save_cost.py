@@ -52,6 +52,27 @@ class RenderSnapshotSaveTests(unittest.TestCase):
             self.assertEqual(disk.call_count, 2)
 
 
+class LiveDraftLeaveSaveTests(unittest.TestCase):
+    """Leaving Live Draft Room: the setup flush, then its page preferences, used to both write."""
+
+    def _leave(self, st, *, cloud_ok: bool):
+        import suite_user_persistence as sup
+
+        state = {"active_page": "Trend Value", "live_draft_state": {"draft_room_id": "R1"}}
+        with mock.patch("suite_user_persistence.save_user_state", return_value=True),                 mock.patch("suite_user_persistence._cloud_storage_disabled", return_value=False),                 mock.patch("suite_storage_config.cloud_storage_enabled", return_value=True),                 mock.patch("suite_user_persistence._cloud_autosave_blocked_reason", return_value=None),                 mock.patch("suite_cloud_state.save_cloud_full_session", return_value=cloud_ok) as cloud:
+            for reason in ("live_draft_setup_page_leave", "user_page_prefs:live_draft_setup"):
+                sup.force_autosave(st, "baseball", build_state=lambda _st: dict(state), reason=reason)
+        return cloud.call_count
+
+    def test_the_second_identical_leave_save_is_skipped(self) -> None:
+        st = _St()
+        self.assertEqual(self._leave(st, cloud_ok=True), 1)
+        self.assertEqual(st.session_state["_suite_force_save_skipped_unchanged"], "user_page_prefs:live_draft_setup")
+
+    def test_it_still_retries_when_the_first_did_not_reach_the_account(self) -> None:
+        self.assertEqual(self._leave(_St(), cloud_ok=False), 2)
+
+
 class WaiverPositionWeightTests(unittest.TestCase):
     def test_matches_per_position_eligibility(self) -> None:
         import fantasy_waiver_wire as ww

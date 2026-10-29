@@ -441,6 +441,14 @@ def _seed_owned_workspace_cache(session_state: dict[str, Any], workspace_id: str
         session_state["_suite_owned_workspace_id"] = ws
 
 
+def _normalized_or_empty(workspace_id: str | None) -> str:
+    """Normalized id, or "" when unresolved: ``normalize_workspace_id("")`` is the owner's "daniel"."""
+    from suite_workspace import normalize_workspace_id
+
+    text = str(workspace_id or "").strip()
+    return normalize_workspace_id(text) if text else ""
+
+
 def hard_clamp_owned_workspace_before_scoped_load(session_state: dict[str, Any]) -> str:
     """Final ownership clamp immediately before any workspace-scoped cloud/disk load.
 
@@ -450,7 +458,7 @@ def hard_clamp_owned_workspace_before_scoped_load(session_state: dict[str, Any])
     """
     from suite_workspace import SESSION_KEY, normalize_workspace_id, scoped_cloud_app_id
 
-    active_before = normalize_workspace_id(str(session_state.get(SESSION_KEY) or ""))
+    active_before = _normalized_or_empty(session_state.get(SESSION_KEY))
     email = current_auth_email(session_state)
     auth_uid = str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
     external = resolve_auth_external_id(session_state) if is_authenticated(session_state) else ""
@@ -475,18 +483,18 @@ def hard_clamp_owned_workspace_before_scoped_load(session_state: dict[str, Any])
         from suite_workspace_registry import resolve_owned_workspace_id
 
         stage = "resolve_owned"
-        owned = normalize_workspace_id(resolve_owned_workspace_id(session_state) or "")
+        owned = _normalized_or_empty(resolve_owned_workspace_id(session_state))
     except Exception as exc:
         clamp_error = f"resolve_owned: {type(exc).__name__}: {exc}"
         session_state["_suite_workspace_enforce_error"] = clamp_error
 
     if not owned:
         stage = "account_scoped_fallback"
-        owned = normalize_workspace_id(account_scoped_workspace_target(session_state) or "")
+        owned = _normalized_or_empty(account_scoped_workspace_target(session_state))
     if not owned:
         # Last resort: authenticated external id — never invent Daniel for Coakley11.
         stage = "external_id_fallback"
-        ext_n = normalize_workspace_id(external or "")
+        ext_n = _normalized_or_empty(external)
         if ext_n and ext_n != "daniel":
             owned = ext_n
         elif ext_n == "daniel":
@@ -593,7 +601,7 @@ def enforce_workspace_ownership(session_state: dict[str, Any]) -> None:
             hard_clamp_owned_workspace_before_scoped_load(session_state)
             return
 
-        owned = normalize_workspace_id(_resolve_owned(session_state))
+        owned = _normalized_or_empty(_resolve_owned(session_state))
         if owned:
             _seed_owned_workspace_cache(session_state, owned)
 

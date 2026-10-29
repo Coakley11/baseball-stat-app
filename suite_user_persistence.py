@@ -70,6 +70,56 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+WORKSPACE_ACCESS_REFUSED_KEY = "_suite_workspace_access_refused"
+
+
+def _signed_in_script_session() -> Any | None:
+    """The running script's session while a signed-in account uses it; None outside a run."""
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        if get_script_run_ctx(suppress_warning=True) is None:
+            return None
+        import streamlit as st
+
+        from suite_auth import is_auth_enabled, is_authenticated
+
+        ss = st.session_state
+        return ss if is_auth_enabled() and is_authenticated(ss) else None
+    except Exception:
+        return None
+
+
+def _resolved_workspace(workspace_id: str | None) -> str:
+    from suite_workspace import resolve_workspace_id
+
+    return resolve_workspace_id(explicit=workspace_id) if workspace_id else resolve_workspace_id()
+
+
+def workspace_disk_access_allowed(app_id: str, workspace_id: str | None, *, op: str) -> bool:
+    """Server-local workspace files are shared by every session on this server.
+
+    A signed-in account may only read, write or reset the workspaces it owns; anything else is
+    refused here and recorded, whatever workspace id a caller passed or a session key held.
+    """
+    ss = _signed_in_script_session()
+    if ss is None:
+        return True
+    try:
+        from suite_workspace_registry import workspace_access_allowed
+
+        ws = _resolved_workspace(workspace_id)
+        if workspace_access_allowed(ws, session_state=ss):
+            return True
+    except Exception:
+        ws = str(workspace_id or "")
+    try:
+        ss[WORKSPACE_ACCESS_REFUSED_KEY] = {"app_id": app_id, "workspace_id": ws, "op": op, "at": _utc_now_iso()}
+    except Exception:
+        pass
+    return False
+
+
 def state_file_path(app_id: str, workspace_id: str | None = None) -> Path:
     from suite_workspace import migrate_legacy_app_state_to_daniel, normalize_workspace_id, resolve_workspace_id, workspace_dir
 
@@ -110,6 +160,10 @@ def _write_json(path: Path, payload: dict[str, Any]) -> bool:
 
 
 def _migrate_legacy_combined(app_id: str) -> dict[str, Any] | None:
+    from suite_workspace import DEFAULT_WORKSPACE_ID
+
+    if _resolved_workspace(None) != DEFAULT_WORKSPACE_ID:
+        return None  # the pre-workspace single-user file is the owner's, never a new account's
     combined = _read_json(_LEGACY_COMBINED_FILE)
     if not combined:
         return None
@@ -132,9 +186,11 @@ def _load_raw(
         # A signed-out guest keeps its state in the browser session only; it never reads a
         # saved workspace (including the owner's, which explicit "daniel" paths would reach).
         return {}, None, None
+    if not workspace_disk_access_allowed(app_id, workspace_id, op="load"):
+        return {}, None, None
     path = state_file_path(app_id, workspace_id)
     raw = _read_json(path)
-    if raw is None:
+    if raw is None and not workspace_id:
         raw = _migrate_legacy_combined(app_id)
     if raw is None:
         return {}, None, None
@@ -173,6 +229,8 @@ def save_user_state(app_id: str, state: dict[str, Any], *, workspace_id: str | N
         return False
     if _anonymous_guest():
         return False  # persistent saves need a signed-in account
+    if not workspace_disk_access_allowed(app_id, workspace_id, op="save"):
+        return False
     payload = {
         "version": STATE_VERSION,
         "app": app_id,
@@ -185,6 +243,8 @@ def save_user_state(app_id: str, state: dict[str, Any], *, workspace_id: str | N
 def reset_user_state(app_id: str, *, workspace_id: str | None = None) -> bool:
     if _anonymous_guest():
         return False  # a guest has no saved workspace, and must never reset someone else's
+    if not workspace_disk_access_allowed(app_id, workspace_id, op="reset"):
+        return False
     path = state_file_path(app_id, workspace_id)
     try:
         if path.is_file():
@@ -349,6 +409,19 @@ _RENDER_SNAPSHOT_SAVE_REASONS = frozenset({
     "career_edit",
     "fantasy_in_season_snapshot",
 })
+# Leaving Live Draft Room saved twice in a row (the setup flush, then its page preferences) with
+# the same content. The second is skipped only when the first reached the account.
+_LEAVE_RESAVE_REASONS = frozenset({"live_draft_setup_page_leave"})
+
+
+def _unchanged_resave(st: Any, app_id: str, reason: str, fp: str) -> bool:
+    if st.session_state.get(f"_suite_autosave_fp::{app_id}") != fp:
+        return False
+    if reason in _RENDER_SNAPSHOT_SAVE_REASONS:
+        return True
+    if reason in _LEAVE_RESAVE_REASONS or reason.startswith("user_page_prefs:"):
+        return bool(st.session_state.get("_suite_persist_last_save_cloud")) or _cloud_storage_disabled()
+    return False
 
 
 def _cloud_autosave_blocked_reason(
@@ -880,10 +953,17 @@ def sync_workspace_protocol(
             # (With cloud storage a failed read also looks empty, so keep the guard there.)
             st.session_state["_suite_workspace_sync_skipped_no_apply"] = True
         elif cloud_read.status == CLOUD_READ_NOT_FOUND:
-            # Authenticated read answered and the account row has no saved session.
+            # The signed-in account's read answered: no saved session, and this device has no copy
+            # of the account's own workspace either. A brand-new account has nothing to protect, so
+            # its first edits and first picks autosave (they used to sit in the browser session only
+            # until Save Draft Board Now). A write here is create-only: the save re-reads first, and
+            # if the other device created the account's row meanwhile, the write is refused as
+            # stale and merged against this empty base (both first boards go to the board prompt).
             mark_cloud_reconciled(st.session_state)
             note_cloud_revision_seen(st.session_state, cloud_ts, confirmed_empty=True)
-            _mark_workspace_sync_skipped(st, app_id, reason)
+            wm.record_base(st.session_state, app_id, {})
+            st.session_state[_workspace_synced_key(app_id)] = True
+            st.session_state["_suite_persist_restore_skip_reason"] = "new account — nothing saved yet"
         else:
             reason = "cloud read inconclusive — saved data not loaded; cloud saves paused"
             st.session_state["_suite_persist_restore_skip_reason"] = reason
@@ -1640,7 +1720,7 @@ def force_autosave(
             state = _preserve_cloud_widget_fields_on_page_change(app_id, state)
         blob = json.dumps(state, sort_keys=True, default=str)
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
-        if reason in _RENDER_SNAPSHOT_SAVE_REASONS and st.session_state.get(f"_suite_autosave_fp::{app_id}") == fp:
+        if _unchanged_resave(st, app_id, reason, fp):
             # A page re-saving its own render snapshot: nothing changed since the last save,
             # so skip the disk write and the cloud read + write (as autosave_if_changed does).
             st.session_state["_suite_force_save_skipped_unchanged"] = reason
