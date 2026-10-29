@@ -674,6 +674,7 @@ def sync_workspace_protocol(
     *,
     apply_state: Callable[[Any, dict[str, Any]], None],
     cloud_first: bool = True,
+    build_local: Callable[[Any], dict[str, Any]] | None = None,
 ) -> bool:
     """
     Authoritative workspace sync before sidebar widgets.
@@ -681,7 +682,15 @@ def sync_workspace_protocol(
     On first sync per browser session, apply the picked cloud/disk blob atomically,
     block autosave for this rerun, and lock the restore fingerprint so stale local
     state is not written back to cloud on startup.
+
+    A later apply over a session that already holds the account's work (another device saved,
+    or a refused save was rebased) merges instead: what this session changed since it last
+    loaded or saved is kept (``workspace_merge``). Widget edits that arrived with this rerun are
+    re-applied after any restore, so the edit that caused the rerun is never reverted.
     """
+    import workspace_merge as wm
+
+    reapply = bool(st.session_state.get(wm.REAPPLY_KEY_PREFIX + app_id))
     st.session_state["_suite_persist_app_id"] = app_id
     st.session_state["_suite_workspace_sync_attempted"] = True
     st.session_state.pop("_suite_persist_restore_skip_reason", None)
@@ -804,10 +813,15 @@ def sync_workspace_protocol(
         )
         return False
 
-    if failure is not None and not st.session_state.get(CLOUD_RECONCILED_KEY):
+    if (
+        failure is not None
+        and not st.session_state.get(CLOUD_RECONCILED_KEY)
+        and wm.merge_base(st.session_state, app_id) is None
+    ):
         # The store answered after a failure, but this session never loaded the saved data.
         # Whatever it holds now (edits made during the outage included) must not reach the cloud:
-        # restore from the saved copy as a first sync.
+        # restore from the saved copy as a first sync. (A session that did load it has a base, so
+        # its outage edits are real work: they are saved, or merged if the account moved on.)
         st.session_state.pop(dirty_key, None)
         st.session_state.pop(_workspace_synced_key(app_id), None)
 
@@ -815,7 +829,7 @@ def sync_workspace_protocol(
     disk_epoch = parse_persist_timestamp(disk_ts)
     cloud_newer_than_disk = bool(cloud_ts and cloud_epoch > disk_epoch)
 
-    if st.session_state.get(dirty_key) and not cloud_newer_than_disk:
+    if st.session_state.get(dirty_key) and not cloud_newer_than_disk and not reapply:
         reason = "local unsaved edits — workspace sync skipped"
         st.session_state["_suite_persist_restore_skip_reason"] = reason
         if st.session_state.get(CLOUD_RECONCILED_KEY):
@@ -830,7 +844,7 @@ def sync_workspace_protocol(
         )
         return False
 
-    if st.session_state.get("_suite_page_user_nav"):
+    if st.session_state.get("_suite_page_user_nav") and not reapply:
         synced_key = _workspace_synced_key(app_id)
         already_synced = bool(st.session_state.get(synced_key))
         # Deep-link / refresh often sets user-nav from ?active_page= before the
@@ -890,6 +904,10 @@ def sync_workspace_protocol(
         local_dirty=False,
         cloud_first=cloud_first,
     )
+    if reapply and cloud_state and cloud_read.status == CLOUD_READ_OK and picked.source != "cloud":
+        from suite_cloud_state import RestorePickResult
+
+        picked = RestorePickResult(cloud_state, "cloud", "reapply_account_state", cloud_ts, disk_ts)
     if not picked.state:
         _record_workspace_sync_trace(
             st, app_id, cloud_state=cloud_state, cloud_ts=cloud_ts,
@@ -930,6 +948,8 @@ def sync_workspace_protocol(
     apply_reasons: list[str] = []
     if first_sync:
         apply_reasons.append("first_sync")
+    if reapply:
+        apply_reasons.append("reapply_account_state")
     if cloud_newer_than_applied:
         apply_reasons.append("cloud_newer_than_applied")
     if cloud_newer_than_disk:
@@ -956,6 +976,7 @@ def sync_workspace_protocol(
         picked.state
         and (
             first_sync
+            or reapply
             or cloud_newer_than_applied
             or cloud_newer_than_disk
             or page_mismatch_apply
@@ -963,6 +984,7 @@ def sync_workspace_protocol(
         )
     )
     apply_reason = ", ".join(apply_reasons) if apply_reasons else "none"
+    st.session_state.pop(wm.REAPPLY_KEY_PREFIX + app_id, None)
 
     if cloud_newer_than_disk and picked.source == "cloud":
         st.session_state.pop(synced_key, None)
@@ -987,8 +1009,46 @@ def sync_workspace_protocol(
         )
         return False
 
+    edits = wm.widget_edits_this_run()
+    to_apply = picked.state
+    local_contributed = False
+    base = wm.merge_base(st.session_state, app_id)
+    if picked.source == "cloud" and already_synced and base is not None and build_local is not None:
+        try:
+            local_now = build_local(st)
+        except Exception:
+            local_now = None
+        if isinstance(local_now, dict):
+            merged, conflicts = wm.three_way_merge(base, local_now, picked.state)
+            if wm.board_conflicted(conflicts):
+                # Leave this session as it is: its board saves stay refused as stale, and
+                # draft_board_reconcile asks which board to keep.
+                st.session_state[synced_key] = True
+                st.session_state["_suite_persist_restore_skip_reason"] = "board changed on both devices"
+                _record_workspace_sync_trace(
+                    st, app_id, cloud_state=cloud_state, cloud_ts=cloud_ts,
+                    disk_state=disk_state, disk_ts=disk_ts, winner=picked.source,
+                    reason="board conflict", applied=False,
+                )
+                return False
+            if st.session_state.pop(wm.RESOLUTION_KEY_PREFIX + app_id, None) == "remote":
+                for row in wm.open_conflicts(st.session_state, app_id):
+                    path = tuple(row.get("path") or ())
+                    if path:
+                        wm.set_path(merged, path, wm.get_path(picked.state, path))
+                st.session_state.pop(wm.CONFLICTS_KEY_PREFIX + app_id, None)
+            else:
+                if conflicts:
+                    wm.note_conflicts(st.session_state, app_id, conflicts, local_now, picked.state)
+                wm.keep_local_for_conflicts(st.session_state, app_id, merged, local_now)
+            local_contributed = wm.remote_contributed(picked.state, merged)
+            to_apply = merged
+            st.session_state["_suite_workspace_merge_trace"] = {
+                "local_kept": local_contributed,
+                "conflicts": [wm.conflict_label(p) for p in conflicts],
+            }
     try:
-        apply_state(st, picked.state)
+        apply_state(st, to_apply)
     except Exception as exc:
         reason = f"apply_state failed: {exc}"
         st.session_state["_suite_persist_restore_skip_reason"] = reason
@@ -1011,6 +1071,16 @@ def sync_workspace_protocol(
     st.session_state[dirty_key] = False
     st.session_state[_autosave_block_key(app_id)] = True
     st.session_state["_suite_autosave_block_reason"] = "post-restore cooldown"
+    reapplied = wm.reapply_widget_edits(st.session_state, edits)
+    if reapplied or local_contributed:
+        # This session holds work the account does not have yet; it must save, not cool down.
+        st.session_state[dirty_key] = True
+        st.session_state.pop(_autosave_block_key(app_id), None)
+        st.session_state[f"_suite_restore_reconciled::{app_id}"] = True  # the difference is real work
+        st.session_state["_suite_workspace_edits_kept_through_restore"] = sorted(reapplied)
+    if picked.source == "cloud":
+        wm.record_base(st.session_state, app_id, picked.state)
+        wm.release_merge_base(st.session_state, app_id)  # the merged state is what this session shows now
     st.session_state["_cloud_workspace_restored"] = picked.source == "cloud"
     st.session_state["_cloud_workspace_restored_this_run"] = picked.source == "cloud"
     st.session_state["_suite_persist_restore_applied"] = True

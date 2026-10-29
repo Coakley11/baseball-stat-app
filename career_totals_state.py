@@ -700,7 +700,7 @@ def flush_career_filter_edits(session: dict[str, Any], st_obj: Any = None, *, re
         session,
         filters={**prev, **current},
         reason=reason,
-        local_edit=True,
+        local_edit=pending,
         sync_widget_keys=False,
     )
     record_career_sync_trace(session, "phone_after_edit", flush_reason=reason)

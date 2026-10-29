@@ -14487,6 +14487,12 @@ try:
 except Exception:
     pass
 try:
+    from workspace_merge import render_workspace_conflicts
+
+    render_workspace_conflicts(st)
+except Exception:
+    pass
+try:
     from hof_case_resume import apply_hof_case_resume, enforce_hof_case_page_after_workspace
 
     apply_hof_case_resume(st)

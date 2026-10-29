@@ -1508,6 +1508,58 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         pass
 
 
+def _rebuild_merged_envelope(merged: dict[str, Any]) -> None:
+    import streamlit as st
+
+    merged["baseball_workspace_state"] = _build_workspace_envelope(st, merged, save_reason="rebase")
+
+
+try:
+    from workspace_merge import register_merge_finalizer
+
+    register_merge_finalizer(APP_ID, _rebuild_merged_envelope)
+except ImportError:
+    pass
+
+
+def _build_local_for_merge(st: Any) -> dict[str, Any]:
+    """This session's work as it stands, for a merge with the account's newer copy.
+
+    On a sidebar hop the page being left still has its widget values this rerun (Streamlit drops
+    them at the end of it): snapshot it first, or its last edits would not take part.
+    """
+    ss = st.session_state
+    prev = str(ss.get("_page_state_last_active") or "").strip()
+    store = ss.get("page_filter_state")
+    if prev and prev != str(ss.get("active_page") or "") and isinstance(store, dict):
+        try:
+            pg_state.save_page_state(ss, prev, store)
+        except Exception:
+            pass
+    return build_baseball_disk_state(st)
+
+
+def _note_cloud_moved_on_navigation(ss: Any) -> None:
+    """A page change asks the account (metadata only) whether another device saved since this
+    session last loaded or wrote; if so the workspace is merged in on this rerun."""
+    if not ss.get("_suite_page_user_nav"):
+        return
+    prev = str(ss.get("_page_state_last_active") or "").strip()
+    if not prev or prev == str(ss.get("active_page") or "").strip():
+        return
+    try:
+        import workspace_merge as wm
+        from suite_cloud_state import cloud_revision_moved
+        from suite_user_persistence import _workspace_synced_key
+
+        if not ss.get(_workspace_synced_key(APP_ID)) or wm.session_base(ss, APP_ID) is None:
+            return
+        if cloud_revision_moved(APP_ID, ss):
+            ss[wm.REAPPLY_KEY_PREFIX + APP_ID] = True
+    except Exception:
+        pass
+
+
 def apply_baseball_session_defaults(st: Any) -> None:
     ss = st.session_state
     for key in list(ss.keys()):
@@ -1604,12 +1656,15 @@ def prepare_baseball_workspace(st: Any) -> bool:
         ss["_suite_workspace_hard_clamp_error"] = f"{type(exc).__name__}: {exc}"
 
     warm_skip = False
+    _note_cloud_moved_on_navigation(ss)
     try:
         from suite_user_persistence import _workspace_synced_key
+        from workspace_merge import REAPPLY_KEY_PREFIX
 
         synced = bool(ss.get(_workspace_synced_key(APP_ID)))
         force = bool(
-            ss.get("_suite_workspace_force_sync")
+            ss.get(REAPPLY_KEY_PREFIX + APP_ID)
+            or ss.get("_suite_workspace_force_sync")
             or ss.get("_suite_workspace_refresh_needed")
             or ss.get("_suite_auth_just_signed_in")
             or ss.get("_suite_auth_just_logged_in")
@@ -1654,6 +1709,7 @@ def prepare_baseball_workspace(st: Any) -> bool:
                     APP_ID,
                     apply_state=lambda st_obj, s: apply_baseball_disk_state(st_obj, s),
                     cloud_first=_workspace_restore_cloud_first(ss),
+                    build_local=_build_local_for_merge,
                 )
         except ImportError:
             try:
@@ -1667,6 +1723,7 @@ def prepare_baseball_workspace(st: Any) -> bool:
                 APP_ID,
                 apply_state=lambda st_obj, s: apply_baseball_disk_state(st_obj, s),
                 cloud_first=_workspace_restore_cloud_first(ss),
+                build_local=_build_local_for_merge,
             )
             try:
                 from page_perf import perf_end

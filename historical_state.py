@@ -410,11 +410,14 @@ def flush_historical_filter_edits(session: dict[str, Any], st_obj: Any = None, *
     changed = current != prev
     if not pending and not changed:
         return False
+    # Only a widget callback (``pending``) is a user edit. The first render's defaults — e.g. while
+    # sign-in or the cloud restore is still under way — are captured but must not count as one,
+    # or the account's saved filters are refused when they arrive.
     write_canonical_historical_state(
         session,
         filters={**prev, **current},
         reason=reason,
-        local_edit=True,
+        local_edit=pending,
         sync_widget_keys=False,
     )
     if st_obj is not None:
