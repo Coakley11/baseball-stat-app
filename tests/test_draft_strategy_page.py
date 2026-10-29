@@ -122,3 +122,76 @@ class DraftStrategyPageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+PLAN_SCRIPT = '''
+import pandas as pd
+import streamlit as st
+from draft_strategy_ui import render_draft_strategy_page
+
+POOL = pd.DataFrame([
+    {"fullName": "Aaron Judge", "Primary Position": "OF", "Decision Score": 0.95, "ADP": 2, "proj_HR": 45},
+    {"fullName": "Bobby Witt", "Primary Position": "SS", "Decision Score": 0.93, "ADP": 3, "proj_SB": 35},
+    {"fullName": "Juan Soto", "Primary Position": "OF", "Decision Score": 0.90, "ADP": 5, "proj_HR": 36},
+    {"fullName": "Kyle Tucker", "Primary Position": "OF", "Decision Score": 0.85, "ADP": 9, "proj_HR": 30},
+])
+if "draft_queue" not in st.session_state:
+    st.session_state["draft_queue"] = list(st.session_state.get("_seed_queue") or [])
+render_draft_strategy_page(st, st.session_state, pool_fn=lambda: POOL)
+st.write("QUEUE=" + "|".join(st.session_state.get("draft_queue") or []))
+'''
+
+
+class StrategyQueueAndPlanTests(DraftStrategyPageTests):
+    """Working-queue controls, the loaded-strategy indicator and adding recommended targets."""
+
+    def _plan_app(self, queue: list[str]) -> AppTest:
+        at = AppTest.from_string(PLAN_SCRIPT, default_timeout=60)
+        at.session_state["_seed_queue"] = queue
+        at.run()
+        return at
+
+    def _icon_click(self, at: AppTest, key: str) -> None:
+        at.button(key=key).click()
+        at.run()
+
+    def test_reorder_move_to_top_and_remove(self) -> None:
+        at = self._plan_app(["Aaron Judge", "Juan Soto", "Bobby Witt"])
+        self._icon_click(at, "dsq_down_0_btn")
+        self.assertEqual(_queue(at), ["Juan Soto", "Aaron Judge", "Bobby Witt"])
+        self._icon_click(at, "dsq_top_2_btn")
+        self.assertEqual(_queue(at), ["Bobby Witt", "Juan Soto", "Aaron Judge"])
+        self._icon_click(at, "dsq_rm_1_btn")
+        self.assertEqual(_queue(at), ["Bobby Witt", "Aaron Judge"])
+        self.assertTrue(at.button(key="dsq_up_0_btn").disabled)
+
+    def test_recommended_targets_are_added_only_when_chosen(self) -> None:
+        at = self._plan_app(["Aaron Judge"])
+        self.assertEqual(_queue(at), ["Aaron Judge"])                       # nothing added by itself
+        labels = " ".join(str(m.value) for m in at.markdown)
+        self.assertIn("Bobby Witt", labels)
+        self.assertNotIn("1. Aaron Judge** · OF · ADP", labels)            # queued players are not re-recommended
+        self._icon_click(at, "dsq_add_Bobby Witt_btn")
+        self.assertEqual(_queue(at), ["Aaron Judge", "Bobby Witt"])
+
+    def test_loaded_strategy_indicator_and_independent_snapshots(self) -> None:
+        at = self._plan_app(["Aaron Judge", "Juan Soto"])
+        at.text_input(key="draft_strategy_new_name").input("Power")
+        _click(at, "Save strategy")
+        at.session_state["draft_queue"] = ["Bobby Witt"]
+        at.run()
+        at.text_input(key="draft_strategy_new_name").input("Speed")
+        _click(at, "Save strategy")
+        saved = {s["name"]: [p["name"] for p in s["players"]] for s in json.loads(self.path.read_text(encoding="utf-8")).values()}
+        self.assertEqual(saved, {"Power": ["Aaron Judge", "Juan Soto"], "Speed": ["Bobby Witt"]})
+        power_id = [sid for sid, s in json.loads(self.path.read_text(encoding="utf-8")).items() if s["name"] == "Power"][0]
+        self._icon_click(at, f"strategy_{power_id}_load_btn__ask_btn")
+        _click(at, "Replace queue")
+        self.assertEqual(_queue(at), ["Aaron Judge", "Juan Soto"])
+        captions = " ".join(str(c.value) for c in at.caption)
+        self.assertIn("Loaded from **Power** · unchanged", captions)
+        self._icon_click(at, "dsq_rm_0_btn")                                 # edit the working queue
+        captions = " ".join(str(c.value) for c in at.caption)
+        self.assertIn("edited since loading (the saved strategy is unchanged)", captions)
+        saved = {s["name"]: [p["name"] for p in s["players"]] for s in json.loads(self.path.read_text(encoding="utf-8")).values()}
+        self.assertEqual(saved, {"Power": ["Aaron Judge", "Juan Soto"], "Speed": ["Bobby Witt"]})  # snapshots intact

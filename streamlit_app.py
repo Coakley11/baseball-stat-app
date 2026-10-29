@@ -30800,7 +30800,14 @@ elif active_page == "Draft Strategy Assistant":
     )
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
-    render_draft_strategy_page(st, st.session_state)
+    def _strategy_pool():
+        # The same pool and roster-aware scoring the Draft Assistant uses, for the active team.
+        from active_team_context import resolve_active_team_context
+
+        _ctx = resolve_active_team_context(st.session_state)
+        return build_profile_draft_metrics_pool(sync_team=_ctx.active_team or None, fantasy_format=_ctx.fantasy_format)
+
+    render_draft_strategy_page(st, st.session_state, pool_fn=_strategy_pool)
     save_page_state(active_page)
     _render_consolidated_page_diagnostics(active_page)
     _page_perf_end(active_page)
