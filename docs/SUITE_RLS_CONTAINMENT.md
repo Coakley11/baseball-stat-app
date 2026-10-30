@@ -85,7 +85,9 @@ C3 and C4 are informational. Step 1 enforces the view, function, PUBLIC and memb
    - an HTTP 4xx (401 or 403, depending on the gateway) whose body carries code `42501` / "permission denied", and no rows;
    - a 200, even with an empty array, is **not** a pass.
 
-   This prints only the status and the error code:
+   **Easiest (Windows):** copy the anon public key, then run `python -I scripts/sql_tests/anon_rest_denial_check.py`. It reads the key from the clipboard (Ctrl+V does not paste into a hidden prompt in a Windows console), takes the project from the key, refuses service-role and secret keys before sending anything, checks the key with a control request, and prints only status and error codes.
+
+   The same check with curl prints only the status and the error code:
    ```
    curl -s -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
      -w "\nHTTP %{http_code}\n" "$SUPABASE_URL/rest/v1/suite_saved_items?select=id&limit=1" \
