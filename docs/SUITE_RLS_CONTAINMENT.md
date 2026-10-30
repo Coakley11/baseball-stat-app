@@ -71,8 +71,9 @@ C3 and C4 are informational. Step 1 enforces the view, function, PUBLIC and memb
 ## After execution: exact verification steps
 
 1. **Read the result.**
-   - `Step 1 applied: …` means it worked.
-   - `ABORTED, nothing changed: …` means nothing changed. Send me the reason.
+   - `Step 1 applied: …` means it worked. The SQL editor may not show notices; "Success. No rows returned" with no error is the same result. Steps 2–4 confirm it either way.
+   - `ABORTED, nothing changed: …` (or any other error) means nothing changed. Send me the reason.
+   - The SQL editor usually shows only the **last** result set. Run the preflight and verify sections (C1, C1b, C2, C6; V1–V3) **one at a time**.
 2. **Run `suite_rls_containment_verify.sql`** (read-only):
    - V1: `rls_enabled = true` for the three tables.
    - V2: for those three, anon and authenticated show `false` in every column, and service_role shows `true` in every column.
