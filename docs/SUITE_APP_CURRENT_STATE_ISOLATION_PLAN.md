@@ -10,6 +10,19 @@ Status: findings and a plan only. No SQL has been run and no row has been read o
 | RLS | Enabled, not forced |
 | Policies (`pg_policies`) | None |
 
+**Preflight Block 1 (P1–P3, P11), owner's run on 2026-10-30, read-only:**
+
+| Check | Result |
+|---|---|
+| Total rows | 14 |
+| Rows with no owner (`null_owner_rows`) | **0**: no blocker for a `NOT NULL` / primary-key `user_id` |
+| Rows whose owner has no profile (`orphan_owner_rows`) | **0** |
+| Distinct owners (`distinct_owners`) | **2**: two accounts own saved-state rows |
+| RLS enabled / forced / policies | true / false / 0 |
+| Tables referencing this one (`referenced_by`) | `(none)`: the key swap needs no extra care |
+| Roles that bypass RLS | `service_role` only; `anon`, `authenticated`, `authenticator` false |
+| `server_version`, `primary_key`, `other_constraints`, `indexes` | **Not yet reported.** Needed before any migration is proposed. |
+
 ## Answers
 
 ### 1. Which role and credentials the app uses
