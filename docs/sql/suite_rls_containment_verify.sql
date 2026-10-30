@@ -1,4 +1,4 @@
--- READ-ONLY verification after suite_rls_containment_DRAFT.sql. Every statement is a SELECT.
+-- READ-ONLY verification after suite_rls_containment_step1_DRAFT.sql (and step2). Every statement is a SELECT.
 
 -- V1. RLS is on for all six tables. Expect six rows, all true.
 select relname, relrowsecurity as rls_enabled

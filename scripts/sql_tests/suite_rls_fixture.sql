@@ -2,11 +2,18 @@
 -- 2026-10-30 inspection found them. Fake data only. Never run against a real project.
 
 -- Supabase's API roles. service_role bypasses RLS, as on Supabase.
-create role anon nologin noinherit;
-create role authenticated nologin noinherit;
-create role service_role nologin noinherit bypassrls;
-create role authenticator login noinherit;
-grant anon, authenticated, service_role to authenticator;
+-- Roles are cluster-wide, so they are created once and reused by every scenario database.
+do $$
+begin
+  if not exists (select 1 from pg_roles where rolname = 'anon') then
+    create role anon nologin noinherit;
+    create role authenticated nologin noinherit;
+    create role service_role nologin noinherit bypassrls;
+    create role authenticator login noinherit;
+    grant anon, authenticated, service_role to authenticator;
+  end if;
+end
+$$;
 grant usage on schema public to anon, authenticated, service_role;
 
 -- Tables, as created by the Command Center migrations 001 and 002.

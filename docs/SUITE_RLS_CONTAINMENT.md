@@ -1,140 +1,121 @@
 # Suite tables open to the anon role: containment
 
-Status: prepared and tested locally only. Nothing has been run on any Supabase project. Each step needs the owner's approval of the exact SQL.
+Status: Step 1 is ready for the owner's authorization. It has been tested locally only, and nothing has been run on any Supabase project. The token incident response is separate: `SUITE_AUTH_TOKEN_INCIDENT_RESPONSE.md`.
 
 ## Confirmed exposure (owner's read-only inspection, 2026-10-30)
 
 | Table | RLS | Policies | anon grants | Exposed to the anon key |
 |---|---|---|---|---|
-| `suite_users` | **off** | 0 | SELECT, INSERT, UPDATE, DELETE | **Yes**: read, change and delete every profile |
-| `suite_saved_items` | **off** | 0 | SELECT, INSERT, UPDATE, DELETE | **Yes**: read, change and delete every saved item |
-| `suite_user_settings` | **off** | 0 | SELECT, INSERT, UPDATE, DELETE | **Yes**: read, change and delete every account's settings |
-| `suite_activity_events` | on | 0 | granted | No: RLS with no policy denies anon every row |
-| `suite_app_current_state` | on | 0 | granted | No (same) |
-| `suite_resume_items` | on | 0 | granted | No (same) |
+| `suite_users` | **off** | 0 | SELECT, INSERT, UPDATE, DELETE | **Yes** |
+| `suite_saved_items` | **off** | 0 | SELECT, INSERT, UPDATE, DELETE | **Yes**, including every stored `access_token` / `refresh_token` |
+| `suite_user_settings` | **off** | 0 | SELECT, INSERT, UPDATE, DELETE | **Yes** |
+| `suite_activity_events`, `suite_app_current_state`, `suite_resume_items` | on | 0 | granted | No: RLS with no policy denies every row |
 
-**Severity is higher than a data exposure.**
-- `suite_saved_items` holds every signed-in user's Supabase `access_token` and `refresh_token` in plain text. These are the rows with `app = '_auth_browser'` and `item_type = 'browser_session'`, written by `save_browser_auth_session` / `enrich_bridge_payload` in every suite app.
-- Anyone holding the anon key could read a refresh token and sign in as that user, the owner included. With anon's UPDATE and DELETE, they could also change or delete any account's settings, saved items and profile rows.
-- The local fixture reproduces each of these.
+- **Who uses these tables.** Every suite app reaches them only server-side, with the service-role key. No browser code, Edge Function, view, RPC or anon-key client in the seven suite repos touches them.
+- **The anon key with a user token** is used only for billing tables.
+- **History.** No Supabase key is in the history of any of the seven repos, all of which are public on GitHub.
 
-**Data API exposure.**
-- Tables in `public` are served by the Data API (REST, and GraphQL if `pg_graphql` is on) whenever `public` is an exposed schema, which is the default.
-- Preflight C3e, or Dashboard → API settings, confirms the setting. V5 confirms it from outside with one HTTP request that returns a status code, not rows.
+## Step 1: the exact SQL
 
-**Who holds the anon key.**
-- Nothing in any suite repo sends it to a browser. It's used server-side only, for Supabase Auth sign-in and the billing readers' `/auth/v1/user` check.
-- No Supabase key, legacy JWT or new-format, appears in the history of any of the seven repos, all of which are **public** on GitHub. (One JWT-shaped string in `baseball-ami` is a test fixture with no Supabase issuer or role, in a local stash commit.)
-- The anon key is public by design, though, and is in every app's Streamlit secrets. Treat the exposure as real until the API logs (below) say otherwise for the retained period.
+The file is `docs/sql/suite_rls_containment_step1_DRAFT.sql`. It is **one statement** (a `DO` block), so it is atomic in any client, including the Supabase SQL editor: either all of it applies, or nothing does.
 
-## Which applications are affected by containment
-
-- **Every suite app reaches these tables only through its own server-side `suite_storage_supabase._request`**, which sends the `supabase_key` secret.
-  - Apps: Command Center, Baseball, Music, Investment, NBA, Future Lens and Applied Intelligence.
-  - No app sends the anon key or a user JWT to these tables. No browser code and no Edge Function in these repos touches them.
-- **The anon key with a user's token** is used only for billing tables: `subscriptions` (Baseball) and `billing_entitlements` (Music). Containment doesn't touch those.
-- **Repo migrations add no views, functions or RPCs over these tables.** The live database can have objects the repos don't record; preflight C3a–C3c check views, functions (and whether they are security definer), and the Realtime publication.
-- **Proof each live app uses an RLS-bypassing key.** `suite_app_current_state` and `suite_activity_events` already have RLS on with no policies, so only a bypassing key can write them. Any app with recent rows there (preflight C7) doesn't depend on anon access. An app with no recent rows must be checked in the API logs before Step 1.
-
-**Expected impact on the apps: none.**
-- `service_role` bypasses RLS and keeps its own grants. The revoke names only `anon` and `authenticated`.
-- Locally, every operation the apps perform on these tables still succeeds as `service_role` after containment:
-  - profile lookup and creation;
-  - saved-item upsert on `(user_id, app, item_type, item_key)`, insert through the identity sequence, and invalidate;
-  - settings upsert and read;
-  - state compare-and-set;
-  - event append;
-  - resume insert.
-
-## Containment SQL (`docs/sql/suite_rls_containment_DRAFT.sql`)
-
-**Step 1** closes the exposure: one transaction, with a 5-second lock timeout so it gives up instead of queuing.
-
+**The change itself:**
 ```sql
-begin;
-set local lock_timeout = '5s';
 alter table public.suite_users enable row level security;
 alter table public.suite_saved_items enable row level security;
 alter table public.suite_user_settings enable row level security;
 revoke all on table public.suite_users, public.suite_saved_items, public.suite_user_settings
   from anon, authenticated;
--- plus: revoke all on suite_saved_items' identity sequence from anon, authenticated
-commit;
+-- the identity sequence behind suite_saved_items.id, resolved with pg_get_serial_sequence():
+revoke all on sequence <suite_saved_items id sequence> from anon, authenticated;
 ```
 
-- Either change alone closes anon access: RLS with no policy denies every row, and without grants the role is refused outright. Doing both means one later mistake doesn't reopen it.
-- The sequence revoke stops anon from `setval()`-ing the saved-items id sequence, which would break every later insert.
+**Checks it makes first.** Each failure aborts with `ABORTED, nothing changed: <reason>`.
 
-**Step 2** is a separate approval and defense in depth. It revokes anon and authenticated on the other three tables and their sequences. RLS already blocks them there today.
+| # | Check | Why |
+|---|---|---|
+| 1 | `service_role` bypasses RLS and holds SELECT, INSERT, UPDATE and DELETE on all three tables | The apps keep working |
+| 2 | No grant to **PUBLIC** on the tables or the sequence | Every role inherits a PUBLIC grant; a revoke from anon wouldn't remove it |
+| 3 | anon / authenticated don't belong to any role with access to the tables | Inherited access would survive the revoke |
+| 4 | No **view** over the tables that anon / authenticated can use | An owner's view reads past both the grants and RLS |
+| 5 | No **SECURITY DEFINER function** naming the tables that anon / authenticated can call | It runs as its owner, past both |
 
-- **No row is read, changed or deleted.**
-- Locally, the per-table count and content fingerprints are identical before and after.
+**Proof it makes afterwards.** Any failure undoes the change.
+- RLS is on for all three tables.
+- anon and authenticated hold **no** table privilege (SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER), **no** column privilege, and **no** sequence privilege.
+- **Every service_role grant on every suite table and sequence is identical** to the snapshot taken before the change.
+
+**Other properties.**
+- It sets a 5-second lock timeout. If a long query holds a table, it gives up and changes nothing.
+- It reads no row content, changes or deletes no row, and does not touch the `auth` schema.
+- On success it prints: `Step 1 applied: RLS on and anon/authenticated access removed …; service_role grants unchanged.`
+
+**Limits of the checks.**
+- Check 5 matches function bodies by table name, so a function that builds the table name dynamically wouldn't be found. Preflight C3b lists every function for review.
+- Realtime and GraphQL are covered by the grants and RLS themselves: with both in place, neither serves these rows to anon.
+
+## Essential preflight before execution (`suite_rls_containment_preflight.sql`, read-only)
+
+Run the whole file. It returns catalog facts, counts and hashes only, never row content. Check these:
+
+| Result | What must be true | Save it? |
+|---|---|---|
+| **C1** | For the three tables: `rls_enabled = false`, and anon / authenticated show `true` (confirms the target state). **service_role shows `true` for all four privileges on all six tables.** | Yes |
+| **C1b** | `owner`, `grantor` and `running_as` are the same role, normally `postgres`. If a grantor differs, Step 1 still fails safe, but tell me before running so the revoke can be adjusted. | Yes |
+| **C2** | It lists `grant …` lines for anon / authenticated on the three tables and the sequence, and three `alter table … disable row level security;` lines. **This is the exact rollback.** | **Yes, verbatim** |
+| **C6** | A count and fingerprint per table. | **Yes**, to compare right after |
+| C7 (1 minute) | Recent `last_state_write` / `last_event_write` for each live app. Those tables already refuse the anon key, so recent writes prove the app uses the service-role key. | Optional |
+
+C3 and C4 are informational. Step 1 enforces the view, function, PUBLIC and membership checks itself.
+
+## After execution: exact verification steps
+
+1. **Read the result.**
+   - `Step 1 applied: …` means it worked.
+   - `ABORTED, nothing changed: …` means nothing changed. Send me the reason.
+2. **Run `suite_rls_containment_verify.sql`** (read-only):
+   - V1: `rls_enabled = true` for the three tables.
+   - V2: for those three, anon and authenticated show `false` in every column, and service_role shows `true` in every column.
+   - V3: `service_role | true`.
+3. **Run preflight C6 again** and compare with the saved output.
+   - `suite_users` should be identical unless someone signed up in between.
+   - `suite_saved_items` and `suite_user_settings` can differ only by the apps' own writes since then (for example, a sign-in rewrites its browser session row). Compare straight away.
+4. **From outside, with the anon key in an environment variable** (never pasted into a command or report), each of the three tables returns HTTP **401** with code `42501`:
+   ```
+   curl -s -o /dev/null -w "%{http_code}\n" -H "apikey: $SUPABASE_ANON_KEY" \
+     -H "Authorization: Bearer $SUPABASE_ANON_KEY" "$SUPABASE_URL/rest/v1/suite_saved_items?select=id&limit=1"
+   ```
+5. **In each live suite app:** sign in (this writes the browser session row), load a page that reads account settings, open a saved item or Continue card, then sign out and back in on a second browser.
+6. **Dashboard → Advisors → Security.** The "RLS disabled in public" findings for the three tables are gone.
 
 ## Rollback
 
-- **Preferred.** Before Step 1, run preflight C2 and save its output. It generates the exact `GRANT … ;` and `DISABLE ROW LEVEL SECURITY` statements from the live catalog ACLs. To roll back, run them in one transaction.
-  - Locally this restored every role's privileges on all six tables and three sequences exactly.
-  - The test caught and fixed one gap: `information_schema` doesn't report sequence SELECT/UPDATE, so C2 reads the catalog instead.
+- **How.** Run the saved C2 output, verbatim, in one transaction. Locally it restores every role's privileges and the RLS flags exactly, and changes no row.
 - **Fallback.** `docs/sql/suite_rls_containment_rollback_DRAFT.sql` matches the inspection as reported.
-- **Rolling back re-opens the exposure,** stored sign-in tokens included. Use it only if a legitimate client breaks, and prefer fixing that client.
+- **Rolling back re-opens the exposure,** stored sign-in tokens included. Use it only if a legitimate client breaks.
 
-## Verification (`docs/sql/suite_rls_containment_verify.sql`, read-only)
+## Step 2 (separate approval)
 
-| Check | Expected |
-|---|---|
-| V1 | RLS on for all six tables |
-| V2 | anon and authenticated hold no privilege; service_role holds SELECT, INSERT, UPDATE and DELETE |
-| V3 | service_role still bypasses RLS |
-| V4 | Rerun preflight C6: same counts and fingerprints |
-| V5 | An HTTP request with the anon key (read from an environment variable, never pasted) to each of the three tables returns 401 / code 42501 |
-| V6 | In each suite app, on Dev first: sign in, load settings, open a saved item or Continue card, and sign out and back in on a second browser |
+`docs/sql/suite_rls_containment_step2_DRAFT.sql` removes the unused anon / authenticated grants on the other three tables and their sequences. RLS already blocks those roles there, so this is defense in depth only.
 
-## Local test (isolated fixture)
+## Local test
 
-`scripts/sql_tests/suite_rls_containment_local_test.sh <empty dir>` runs against a throwaway PostgreSQL 17 cluster started in that directory on port 55432. It uses Supabase's roles (`anon`, `authenticated`, and `service_role` with BYPASSRLS), the six tables as the migrations create them, the grants and RLS state as found, and fake rows. Result: **53 passed, 0 failed.**
+`scripts/sql_tests/suite_rls_containment_local_test.sh <empty dir>` builds a throwaway PostgreSQL 17 cluster. It has Supabase's roles (`anon`, `authenticated`, and `service_role` with BYPASSRLS), the six tables as the migrations create them, the grants and RLS state as found, and fake rows. Result: **62 passed, 0 failed.**
 
-- The exposure as found: anon reads another account's stored refresh token, updates another account's settings and lists profiles.
-- The preflight and verify scripts run inside a read-only transaction.
-- After containment:
-  - anon and authenticated are refused SELECT and DELETE on all six tables, plus INSERT, UPDATE and `setval` where tested;
-  - every `service_role` operation the apps use still works;
-  - no row changed.
-- The generated rollback restores privileges and RLS flags exactly and changes no row.
-- Containment re-applies cleanly (idempotent).
-- **Not covered locally:** Supabase's own managed objects, the real PostgREST and GraphQL front ends, and the live database's actual views and functions. Preflight C3, V5 and V6 cover those.
-
-## Did anyone use the exposure? (Logs Explorer, read-only)
-
-Run in Dashboard → Logs → Logs Explorer. Retention depends on the plan, and the field names can differ between log versions.
-
-```sql
-select request.path, payload.role, count(*) as requests,
-       min(timestamp) as first_seen, max(timestamp) as last_seen
-from edge_logs
-  cross join unnest(metadata) as m
-  cross join unnest(m.request) as request
-  cross join unnest(request.sb) as sb
-  cross join unnest(sb.jwt) as jwt
-  cross join unnest(jwt.authorization) as auth
-  cross join unnest(auth.payload) as payload
-where request.path like '/rest/v1/suite_%' or request.path like '/graphql/v1%'
-group by request.path, payload.role
-order by requests desc
-```
-
-- Any `anon` or `authenticated` request to `/rest/v1/suite_saved_items`, `suite_users` or `suite_user_settings` means someone other than the suite apps' servers read or changed that data.
-
-## After containment (each a separate decision)
-
-1. **Sessions.** If the logs show anon reads of `suite_saved_items`, or can't cover the exposure period, revoke all users' sessions so every stored refresh token stops working (everyone signs in again). This isn't reversible, so it's the owner's call.
-2. **Stop storing raw tokens.** Store them encrypted with a server-side key, or keep only an opaque reference. This is a code change in every suite app.
-3. **Default privileges.** Supabase grants anon and authenticated on every new table in `public`. Every future suite migration must enable RLS and revoke those grants in the same file, or the same exposure returns.
-4. **C4.** Any other `public` table with RLS off and anon grants (for example a `baseball_*` table) gets the same treatment.
+- **The exposure as found:** anon reads another account's stored refresh token, updates another account's settings and lists profiles.
+- **Read-only scripts:** the preflight and verify files run inside read-only transactions.
+- **Step 1:**
+  - anon and authenticated are refused on all three tables, including insert, update and sequence `setval`;
+  - no row changed;
+  - every service_role grant is identical;
+  - the apps' own operations still work as service_role: profile lookup and creation, token-session read, saved-item upsert, insert through the identity sequence and invalidate, settings upsert and read, state compare-and-set, event append;
+  - re-running it is safe.
+- **Step 2:** applies; anon is refused on the other three tables; service_role still inserts.
+- **The C2 rollback:** restores privileges and RLS flags exactly and changes no row.
+- **Each bypass path makes Step 1 refuse, with nothing changed:** a PUBLIC grant, an anon-readable view, an anon-callable security-definer function, a role anon belongs to, a missing service_role grant, service_role without BYPASSRLS, and a busy table (it gave up at the 5-second lock timeout).
+  - The test also shows why these checks exist. After a plain revoke, anon still read through the PUBLIC grant. After RLS plus revoke, anon still read through the owner's view.
+- **Not covered locally:** Supabase's managed objects and the real PostgREST and GraphQL front ends. Verification steps 4–6 cover those.
 
 ## Independence from the primary-key migration
 
-**Containment can proceed on its own, safely.**
-- It changes no key, no data and no `service_role` grant.
-- It doesn't touch the `suite_app_current_state` plan (`SUITE_APP_CURRENT_STATE_ISOLATION_PLAN.md`), and that plan's phases are unaffected by it.
-
-**The one condition before Step 1:** preflight C7 (and the logs for any app without recent writes) shows that every live suite app writes through a bypassing key.
+Step 1 changes no key, no data and no service_role grant, so it can proceed now. The `suite_app_current_state` plan is unaffected.

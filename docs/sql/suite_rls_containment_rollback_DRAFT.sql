@@ -1,4 +1,4 @@
--- DRAFT rollback for suite_rls_containment_DRAFT.sql. NOT APPROVED. DO NOT RUN.
+-- DRAFT rollback for suite_rls_containment_step1_DRAFT.sql and step2_DRAFT.sql. NOT APPROVED. DO NOT RUN.
 -- Rolling back RE-OPENS the exposure (including stored sign-in tokens). Use it only if a
 -- legitimate client breaks, and prefer fixing that client to rolling back.
 --

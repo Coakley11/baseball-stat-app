@@ -1,4 +1,4 @@
--- READ-ONLY preflight for the suite RLS containment (suite_rls_containment_DRAFT.sql).
+-- READ-ONLY preflight for the suite RLS containment (suite_rls_containment_step1_DRAFT.sql, step2).
 -- Every statement is a SELECT. Nothing here writes, locks or alters, and no row content
 -- is returned: only catalog facts, counts and hashes.
 -- Save the output of C1, C2 and C6 before containment. C2 is the exact rollback.
@@ -29,6 +29,25 @@ from pg_class s
 cross join (values ('anon'), ('authenticated'), ('service_role')) as r(rolname)
 where s.relnamespace = 'public'::regnamespace and s.relkind = 'S' and s.relname like 'suite\_%'
 order by s.relname, r.rolname;
+
+-- C1b. Who owns the three tables and who granted anon / authenticated their access.
+-- REVOKE removes only grants made by the role running it (the owner, when run as owner or
+-- superuser). Expect owner = grantor = the role the SQL editor runs as (normally postgres).
+-- If a grantor differs, Step 1 still refuses safely after the change (its proof finds the
+-- leftover privilege and undoes everything); tell Claude, and the revoke is adjusted.
+select c.relname as table_name,
+       pg_get_userbyid(c.relowner) as owner,
+       pg_get_userbyid(a.grantor) as grantor,
+       case a.grantee when 0 then 'PUBLIC' else pg_get_userbyid(a.grantee) end as grantee,
+       string_agg(a.privilege_type, ', ' order by a.privilege_type) as privileges,
+       current_user as running_as
+from pg_class c
+cross join lateral aclexplode(c.relacl) a
+where c.oid in ('public.suite_users'::regclass, 'public.suite_saved_items'::regclass,
+                'public.suite_user_settings'::regclass)
+  and (a.grantee = 0 or pg_get_userbyid(a.grantee) in ('anon', 'authenticated'))
+group by c.relname, c.relowner, a.grantor, a.grantee
+order by c.relname, grantee;
 
 -- C2. The exact rollback, generated from today's catalog ACLs (every privilege, including
 -- sequence SELECT/UPDATE, which information_schema does not report). Save this output verbatim.
