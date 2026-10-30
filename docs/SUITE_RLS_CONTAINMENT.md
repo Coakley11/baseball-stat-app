@@ -1,6 +1,31 @@
 # Suite tables open to the anon role: containment
 
-Status: Step 1 is ready for the owner's authorization. It has been tested locally only, and nothing has been run on any Supabase project. The token incident response is separate: `SUITE_AUTH_TOKEN_INCIDENT_RESPONSE.md`.
+Status: **Step 1 was executed in Production on 2026-10-30 by the owner, and verified** (results below). Step 2 is not run. The token incident response is separate: `SUITE_AUTH_TOKEN_INCIDENT_RESPONSE.md`.
+
+## Production results (Daniel AI Suite, 2026-10-30)
+
+Run and reported by the owner. The project ref is left out of this file on purpose: the suite repositories are public.
+
+| Check | Result |
+|---|---|
+| Step 1 | Applied successfully |
+| V1: RLS on `suite_users`, `suite_saved_items`, `suite_user_settings` | true for all three |
+| V2: anon / authenticated SELECT, INSERT, UPDATE, DELETE on those three | false |
+| V2: service_role on those three | true |
+| Sequence behind `suite_saved_items.id` | anon / authenticated false; service_role true |
+| C6 row counts, before vs after, all six tables | all match |
+| C6 fingerprints, before vs after | **not yet compared** |
+| Anonymous REST test (`scripts/sql_tests/anon_rest_denial_check.py`, legacy anon key, project confirmed from the key) | control `/auth/v1/settings`: HTTP 200 (key accepted)<br>`suite_users`: HTTP 401, code 42501, PASS<br>`suite_saved_items`: HTTP 401, code 42501, PASS<br>`suite_user_settings`: HTTP 401, code 42501, PASS |
+
+**Conclusion.** The public anon key can no longer read or write the three tables through the Data API. The control request shows the key is valid, so the 401s are real permission denials, not a rejected key. The service role keeps every privilege the apps need.
+
+**Still open from the verification steps below:**
+- C6 fingerprint comparison (step 3);
+- each live suite app's sign-in, settings and saved-item flow (step 5);
+- Dashboard → Advisors → Security (step 6);
+- the gateway-log review (`docs/sql/suite_rls_containment_logs_readonly.sql`).
+
+Stored sign-in tokens may already have been read before containment, so the incident response still applies.
 
 ## Confirmed exposure (owner's read-only inspection, 2026-10-30)
 
@@ -95,6 +120,7 @@ C3 and C4 are informational. Step 1 enforces the view, function, PUBLIC and memb
    ```
 5. **In each live suite app:** sign in (this writes the browser session row), load a page that reads account settings, open a saved item or Continue card, then sign out and back in on a second browser.
 6. **Dashboard → Advisors → Security.** The "RLS disabled in public" findings for the three tables are gone.
+7. **Gateway logs (Logs Explorer, read-only).** Run `docs/sql/suite_rls_containment_logs_readonly.sql`. It aggregates requests to the three tables and to GraphQL by day, method, status and client tag. The gateway logs no role, and retention is plan-dependent, so it can show misuse inside the retained window but can't rule it out before that.
 
 ## Rollback
 

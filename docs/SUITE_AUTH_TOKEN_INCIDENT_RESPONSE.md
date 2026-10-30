@@ -13,9 +13,9 @@ Status: recommendation only. Nothing here has been run. Every action that change
 
 ## Order of operations
 
-### 1. Contain first
+### 1. Contain first (done 2026-10-30)
 
-Run Step 1 of `SUITE_RLS_CONTAINMENT.md`. Revoking sessions before containment would be pointless: the next sign-in would write fresh tokens into the same readable table.
+Step 1 of `SUITE_RLS_CONTAINMENT.md` ran in Production and was verified, including the anonymous REST test. Revoking sessions before containment would be pointless: the next sign-in would write fresh tokens into the same readable table.
 
 ### 2. Read-only assessment, immediately after
 
@@ -28,7 +28,7 @@ Run `docs/sql/suite_auth_token_exposure_readonly.sql`. It returns aggregates onl
 | T3 | Sessions grouped by user agent and by /16 network | Every suite app refreshes server-side, so normal sessions show the server's client library and cloud networks. Anything else needs a closer look. |
 | T4 | Auth actions over 90 days | `user_updated_password`, `user_modified` or `token_revoked` spikes (a burst of `token_revoked` points to refresh-token reuse) |
 
-- Also run the Logs Explorer query in `SUITE_RLS_CONTAINMENT.md` for anon requests to `/rest/v1/suite_saved_items`.
+- Also run `docs/sql/suite_rls_containment_logs_readonly.sql` in the Logs Explorer (requests to the three tables by day, method, status and client tag; the gateway logs no role, and retention limits how far back it reaches).
 - Neither check is needed before containment or before revocation. They decide whether more than revocation is needed.
 
 ### 3. Revoke refresh tokens (separate approval, Dev first)
