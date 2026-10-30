@@ -14,7 +14,7 @@ Run and reported by the owner. The project ref is left out of this file on purpo
 | V2: service_role on those three | true |
 | Sequence behind `suite_saved_items.id` | anon / authenticated false; service_role true |
 | C6 row counts, before vs after, all six tables | all match |
-| C6 fingerprints, before vs after | **not yet compared** |
+| C6 fingerprints, before vs after | **not yet compared.** The pre-Step-1 C2 and C6 exports are kept by the owner (downloaded 2026-10-30 14:05 and 14:08 UTC). The C2 export lists the three `disable row level security` lines, which it emits only while RLS is off, so it predates Step 1. |
 | Anonymous REST test (`scripts/sql_tests/anon_rest_denial_check.py`, legacy anon key, project confirmed from the key) | control `/auth/v1/settings`: HTTP 200 (key accepted)<br>`suite_users`: HTTP 401, code 42501, PASS<br>`suite_saved_items`: HTTP 401, code 42501, PASS<br>`suite_user_settings`: HTTP 401, code 42501, PASS |
 
 **Conclusion.** The public anon key can no longer read or write the three tables through the Data API. The control request shows the key is valid, so the 401s are real permission denials, not a rejected key. The service role keeps every privilege the apps need.
