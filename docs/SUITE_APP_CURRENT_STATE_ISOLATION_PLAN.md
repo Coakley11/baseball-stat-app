@@ -116,7 +116,7 @@ Each phase needs the owner's approval. Phases 0, 1, 2 and 3 change no existing r
 
 | Phase | What | Changes data? | Rollback |
 |---|---|---|---|
-| **0. Preflight** | Run `suite_app_current_state_preflight.sql` on the Daniel AI Suite project. Review P4, P6, P7, P8 and P9/P10 before going on. | No (SELECT only) | Not needed |
+| **0. Preflight** | Run `suite_app_current_state_preflight.sql` on the Daniel AI Suite project, one block at a time (see "Reading the preflight" below). Review every flag before going on. | No (SELECT only) | Not needed |
 | **Backup** | Export the table, and the suite tables P9 flags, from the dashboard (CSV, read-only). Confirm the project's backups or PITR window covers today. | No | Not needed |
 | **1. No takeover** | A `BEFORE UPDATE` trigger refuses any update that changes `user_id`. A colliding plain upsert fails visibly instead of replacing the row. Works on today's key, for every app at once. | No | Drop the trigger and the function |
 | **2. Per-account index** | `UNIQUE (user_id, app)`, built concurrently. It can't fail while `app` is unique. | No | Drop the index |
@@ -133,6 +133,21 @@ Each phase needs the owner's approval. Phases 0, 1, 2 and 3 change no existing r
 - any account state.
 
 Phase 4 only changes which columns form the key. Every row keeps its `app`, `user_id` and content.
+
+### Reading the preflight
+
+Six blocks, each one statement; the SQL editor shows only the last result set, so run them one at a time. Output is safe to share: no metrics, payloads, tokens, user ids or full emails. Profiles other than the presets appear as `acct_<6 hex>` (a pseudonym; the file has a private query to map them back). Tested locally with `scripts/sql_tests/suite_app_current_state_preflight_test.sh`: 36 checks, every block read-only, every flag raised by its case, nothing sensitive in the output.
+
+| Block | Shows | What decides the next step |
+|---|---|---|
+| **P1–P3, P11** | Version, primary key, indexes and constraints, tables referencing this one, RLS and policies, row / ownerless / orphan / owner counts, which roles bypass RLS | `null_owner_rows` and `orphan_owner_rows` must be 0 for alternative A. `referenced_by` must be `(none)`. |
+| **P4–P7, P14** | One line per row: key, the account the key belongs to, the row's owner, the owner stamp inside a saved live draft, size, and a `flag` | Every flag other than `ok` / `PRESET_HELD_BY_OWNER` is examined with the owner before any phase. `P6 KEY_OWNER_MISMATCH` on an unscoped key is a takeover of the owner's row. `P14 DRAFT_STAMP_MISMATCH` means the owner's row holds a draft another profile created. |
+| **P13** | For each state key, every account that wrote activity events or resume items under it, with first and last dates | `writer_is_row_owner = false` means another account wrote under that key. Their state saves would have gone into the same row. The dates bound when. |
+| **P8** | Sign-ins whose email contains "daniel" or "ariel" (masked), the profile the legacy rule gave them, and whether a profile records that email; every profile | A sign-in mapped to `daniel` with `(no profile records this email)` is a different person who shared the owner's account under the legacy rule. |
+| **P9–P10** | RLS, policies and anon / authenticated / service_role access on every suite and baseball table, exposed tables first | Any table with RLS off and anon or authenticated access is exposed like the three contained ones. |
+| **P12** | Per-row hashes and the table fingerprint (same formula as containment C6) | Saved before any phase and compared after it. |
+
+**What the preflight can't tell.** A takeover that the owner's next save reversed leaves the owner's `user_id` on the row; only P13's dates and the row's own content would show it. The live-draft stamp exists only when a live draft was saved. The device id in a saved session isn't used: on Streamlit Cloud it identifies the server, not the person.
 
 ### Tests
 
@@ -159,5 +174,5 @@ Phase 4 only changes which columns form the key. Every row keeps its `app`, `use
 |---|---|
 | Phase 1 | The trigger is listed on the table. A Dev-only, test-account-only update that changes `user_id` fails with 42501. |
 | Phase 2 | The index exists and is valid (`pg_index.indisvalid`). |
-| Phase 4 | P2 shows `PRIMARY KEY (user_id, app)`. P4 shows zero ownerless rows. The row count and the per-row `metrics` hash list are identical to the pre-migration export. |
+| Phase 4 | P1–P3 shows `PRIMARY KEY (user_id, app)` and zero ownerless rows. P12's row count and per-row `metrics` hashes are identical to the pre-migration export. |
 | Every phase | The owner's own rows still restore on the Dell and the phone: board, Saved Draft Library, queue and leagues (read-only spot check in the app). |
