@@ -225,12 +225,39 @@ Leaving Live Draft Room saved twice with the same content: `live_draft_setup_pag
 
 ## Integration with `feature/baseball-completion@7122f0b` (trial merge only)
 
-- **Scratch merge.** `7122f0b` was merged into `3b139b6` in a scratch detached worktree (`505578a`, kept local and not on any branch). The merge is textually clean.
+- **Scratch merge.** `7122f0b` was merged into `3b139b6` in a scratch detached worktree (`505578a`, kept local and not on any branch). The merge is textually clean. A second trial merge onto `fa4d79b` is also clean (89 files). The `sync_draft_queue` change does not conflict with 7122's queue changes.
 - **Files changed on both sides:** `baseball_persistent_state.py`, `draft_room_state.py`, `fantasy_context_source.py`, `streamlit_app.py`, `suite_auth.py` and `tests/test_league_setup_integrity.py`. None overlap in the same hunks.
 - **Semantic fit.**
   - Their `clear_queue_for_account_change` (on sign-out and on account switch) sits beside `clear_account_session_state`; both run, and the clearing is the same.
   - Their persisted `_draft_queue_consumed` merges per source, and `_simulator_board_epoch` takes the maximum.
   - A pick that consumes a queued player on one device removes him on the other through the base-relative removal rule.
+
+## Regression on the final code (`fa4d79b`)
+
+Every result here was run on `fa4d79b` itself. The baseline is an unchanged `f8ffbbe` checkout in a scratch worktree. Earlier runs on `5a09c4b` and `3b139b6` are not counted as evidence.
+
+- **Unit and integration tests.** These are all test files except the AppTest suites below, which fail spuriously under load when run inside the bulk run.
+  - Baseline `f8ffbbe`: 231 failed, 5 errors.
+  - `fa4d79b`: 227 failed, 5 errors, 5297 passed.
+  - **No failure is new.** Every failing test also fails on the baseline. These existing failures are mostly stale source-text assertions and missing helpers, such as `is_transient_supabase_error`, unrelated to persistence.
+  - **Fixed relative to the baseline:**
+    - `test_foreign_blob_restore…test_apply_state_does_not_crash_on_foreign_blob_check`;
+    - `test_live_draft_solo_timer_expire…test_four_expires_never_stuck_at_zero`;
+    - `test_live_draft_workspace_isolation…test_refresh_after_draft_completion_preserves_workspace`;
+    - `test_live_draft_workspace_isolation…test_restored_blob_with_daniel_workspace_rejected_for_cio11`.
+  - **Flaky.** `test_live_draft_timer_expiration…test_queue_does_not_override_configured_rule` fails on the baseline and here, and passed once on `3b139b6`. It depends on timing.
+- **AppTests (the real app, fake cloud).** 35 of 35 passed, in 1 h 45 min:
+  - `test_account_isolation_app`: 4;
+  - `test_queue_sync_app`: 3;
+  - `test_solo_hof_sync_app`: 2;
+  - `test_page_settings_sync`: 10;
+  - `test_cloud_restore_lifecycle`: 16.
+
+  Two of these were failing before `fa4d79b`:
+  - **HOF Case Mode.** It fails on `f8ffbbe` too (section 9).
+  - **Same setting changed on both devices.** It passes on `f8ffbbe` and failed on `5a09c4b` (section 8).
+
+  Both pass now.
 
 ## Risks and checks before Dev
 
