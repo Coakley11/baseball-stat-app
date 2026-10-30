@@ -219,6 +219,40 @@ P13 lists, per current state row, every account that wrote activity events or re
 - After the key change, the second account saving `music__coakley11` creates its own row `(acct_c3562d, music__coakley11)`. The owner's old row is kept and stays visible to `daniel`. Nothing is overwritten.
 - Reassigning any of the three P6 rows would make the owner's data vanish from `daniel`. This plan proposes no reassignment. A repair, if wanted, is a separate step that begins with a copy of the row, as in Phase 5.
 
+### Preflight P1b and P15 (owner's runs, 2026-10-30)
+
+**P1b, as reported by the owner:** PostgreSQL **17.6** (so `NULLS NOT DISTINCT`, alternative B, is available), `PRIMARY KEY (app)` (confirmed), `user_id` is a **nullable UUID**, and there is a **foreign key** from `user_id` to `suite_users(id)`. *Not reported:* the other indexes, the column defaults and any trigger. They are asked for before a migration is written.
+
+**P15 (14 rows):** `has_live_draft_state` and `has_live_draft_room` are false on every row, and every stamp is empty. No mismatch was found, but there was nothing to compare.
+
+**Why the stamps are empty.**
+- The live draft is a runtime object (`live_draft_state`, `live_draft_room`). It travels in the saved session only while a live draft is open. A cloud save sends the whole session, so a row saved with no live draft open has no stamp.
+- The rooms themselves are stored elsewhere: the shared table `baseball_shared_draft_rooms` (key `room_code`, host in `host_user_id`) and files under `data/draft_rooms/`. The state row is not their store.
+- So the fields are not unused. They are empty because no live draft was open at the last save of each row.
+- **What this does not cover.** Saved drafts (`draft_archive_teams`), verified recovery snapshots, queues and leagues carry **no owner stamp at all**. P15 could never have attributed them. Content-level attribution needs a separate check (P16, below).
+
+**Updated rows (P15's `updated_at`).** `baseball` 2026-10-30 05:49 and `music` 2026-10-30 20:11 are the owner's current rows. `baseball__coakley11` was last written 2026-07-20 01:46. The three `__coakley11` rows are still owned by `daniel`, last written 2026-07-04.
+
+### Remaining account-isolation risks
+
+| Risk | State |
+|---|---|
+| **`PRIMARY KEY (app)`** | Confirmed. Two accounts using one key still replace each other's row with a plain upsert. No cross-write is recorded since 2026-07-20, so the exposure is latent, not active. |
+| **A writer with no `user_id`** | Confirmed in P13 (`baseball`, 2026-07-05 to 07-17). It replaces row content without changing the owner, so a `BEFORE UPDATE` trigger on `user_id` would **not** stop it. Only a code change does. |
+| **Profile and workspace key crossing** | Confirmed pattern in July (answer 3). The cause is in the apps' identity code, not the database. |
+| **Other suite apps** | Still use the email substring rule. Not touched by this branch. |
+| **`baseball_shared_draft_rooms` and `baseball_shared_leagues`** | **Unverified, and possibly exposed.** The repository's SQL (`scripts/sql/baseball_shared_*.sql`) leaves RLS off (the statement is commented out), grants `anon` SELECT and `authenticated` full access. If it was run as written, the public anon key can read every shared draft room and league (including host ids and invites), and any signed-in user can edit them. Preflight P9–P10 shows the real state. |
+| **Content of the 14 rows** | Ownership known, content attribution not yet checked (P16). |
+
+### Remaining preflight checks
+
+1. **P9–P10** (run next): RLS and grants on every suite and baseball table, including the two above.
+2. **P8:** the sign-ins the legacy email rule maps onto preset profiles.
+3. **P12:** the per-row fingerprint, saved privately as the pre-migration baseline.
+4. **Indexes, defaults and triggers from P1b** (reported only in part).
+5. **P16 (to be prepared):** metadata-only comparison of saved-draft ids between the rows `baseball`, `baseball__coakley11`, `applied_intelligence` and `nba`: counts and hashed ids, no content. Shared ids between two accounts' rows would show content crossed.
+6. **A backup/export** of the table, and confirmation of the project's backup or point-in-time window.
+
 ### Reading the preflight
 
 Eight blocks (P1b and P15 follow P12), each one statement; the SQL editor shows only the last result set, so run them one at a time. Output is safe to share: no metrics, payloads, tokens, user ids or full emails. Profiles other than the presets appear as `acct_<6 hex>` (a pseudonym; the file has a private query to map them back). Tested locally with `scripts/sql_tests/suite_app_current_state_preflight_test.sh`: 48 checks, every block read-only, every flag raised by its case, nothing sensitive in the output.
