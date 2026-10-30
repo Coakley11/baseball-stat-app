@@ -276,6 +276,70 @@ class ConflictBookkeepingTests(unittest.TestCase):
         self.assertEqual(applying["page_filter_state"][HIST]["hist_HR_min"], 40)
 
 
+class HeldBaseAfterRebasedWriteTests(unittest.TestCase):
+    """After a rebased write the session holds its pre-rebase base until the merge is applied."""
+
+    def session(self, base, shown, written):
+        """``shown``: what this session held when it wrote; ``written``: the merged state it wrote."""
+        ss: dict = {}
+        wm.record_base(ss, "baseball", written)
+        wm.hold_merge_base(ss, "baseball", wm.compact_base(base), shown)
+        return ss
+
+    def merge(self, ss, local, remote):
+        return wm.three_way_merge(wm.merge_base(ss, "baseball", local), local, remote)
+
+    def test_a_value_this_device_wrote_takes_a_newer_explicit_choice_from_the_other(self) -> None:
+        mine = pf(**{HIST: {"hist_HR_min": 40}})
+        ss = self.session(base=pf(**{HIST: {"hist_HR_min": 0}}), shown=mine, written=mine)
+        merged, conflicts = self.merge(ss, mine, pf(**{HIST: {"hist_HR_min": 30}}))
+        self.assertEqual(conflicts, [])
+        self.assertEqual(merged["page_filter_state"][HIST]["hist_HR_min"], 30)
+
+    def test_the_other_devices_merged_in_addition_is_not_removed_by_the_stale_page(self) -> None:
+        J, S, B, W = "Aaron Judge", "Juan Soto", "Mookie Betts", "Bobby Witt Jr."
+        ss = self.session(base={"draft_queue": [J, S, B]}, shown={"draft_queue": [J, B, S]},  # Dell: B up
+                          written={"draft_queue": [J, B, S, W]})                           # + phone's W
+        merged, conflicts = self.merge(ss, {"draft_queue": [J, B, S]}, {"draft_queue": [J, B, S, W]})
+        self.assertEqual(conflicts, [])
+        self.assertEqual(merged["draft_queue"], [J, B, S, W])
+
+    def test_a_stale_pre_rebase_value_still_never_undoes_the_merge(self) -> None:
+        shown = pf(**{HIST: {"hist_HR_min": 0, "hist_2B_min": 0}})
+        written = pf(**{HIST: {"hist_HR_min": 0, "hist_2B_min": 25}})      # the rebase took the phone's 25
+        ss = self.session(base=shown, shown=shown, written=written)
+        merged, conflicts = self.merge(ss, shown, written)                 # this page still shows 0
+        self.assertEqual(conflicts, [])
+        self.assertEqual(merged["page_filter_state"][HIST]["hist_2B_min"], 25)
+        merged, conflicts = self.merge(ss, shown, pf(**{HIST: {"hist_HR_min": 0, "hist_2B_min": 31}}))
+        self.assertEqual(conflicts, [])
+        self.assertEqual(merged["page_filter_state"][HIST]["hist_2B_min"], 31)
+
+    def test_a_real_edit_since_the_write_is_still_a_conflict(self) -> None:
+        mine = pf(**{HIST: {"hist_HR_min": 40}})
+        ss = self.session(base=pf(**{HIST: {"hist_HR_min": 0}}), shown=mine, written=mine)
+        merged, conflicts = self.merge(ss, pf(**{HIST: {"hist_HR_min": 50}}), pf(**{HIST: {"hist_HR_min": 30}}))
+        self.assertEqual(conflicts, [("page_filter_state", HIST, "hist_HR_min")])
+
+    def test_saved_drafts_use_the_shown_entry_only_where_this_device_still_shows_it(self) -> None:
+        old = {"draft_id": "d1", "draft_name": "Old name"}
+        renamed = {"draft_id": "d1", "draft_name": "Phone rename"}
+        mine = {"draft_id": "d2", "draft_name": "Dell draft"}
+        ss = self.session(base={"draft_archive_teams": [old]}, shown={"draft_archive_teams": [old, mine]},
+                          written={"draft_archive_teams": [renamed, mine]})
+        merged, conflicts = self.merge(ss, {"draft_archive_teams": [old, mine]}, {"draft_archive_teams": [renamed, mine]})
+        self.assertEqual(conflicts, [])
+        self.assertEqual({d["draft_id"]: d["draft_name"] for d in merged["draft_archive_teams"]},
+                         {"d1": "Phone rename", "d2": "Dell draft"})
+
+    def test_without_local_state_the_held_base_is_returned_as_before(self) -> None:
+        ss = self.session(base=pf(**{HIST: {"hist_HR_min": 0}}), shown=pf(**{HIST: {"hist_HR_min": 40}}),
+                          written=pf(**{HIST: {"hist_HR_min": 40}}))
+        self.assertEqual(wm.merge_base(ss, "baseball"), wm.compact_base(pf(**{HIST: {"hist_HR_min": 0}})))
+        wm.release_merge_base(ss, "baseball")
+        self.assertEqual(wm.merge_base(ss, "baseball", {}), wm.compact_base(pf(**{HIST: {"hist_HR_min": 40}})))
+
+
 class StaleRevisionTests(unittest.TestCase):
     def test_a_newer_revision_in_the_same_second_is_stale(self) -> None:
         import suite_cloud_state as scs

@@ -244,9 +244,32 @@ class AccountChangeInOneBrowserTests(unittest.TestCase):
             "_suite_workspace_base::baseball": {"draft_queue": ["Aaron Judge"]},
             "_suite_cloud_revision_seen": "2026-10-29T10:00:00+00:00",
             "_account_fantasy_prefs_base_document": {"active_draft_id": "a1"},
+            # Copies outside the saved keys, as a real session holds them (the queue came back from these)
+            "_live_draft_queue_last_good": ["Aaron Judge"],
+            "_live_draft_queue_sidebar_mirror": ["Aaron Judge"],
+            "draft_state": {"queue": ["Aaron Judge"]},
+            "_draft_new_draft_workflow": {"queue": ["Aaron Judge"]},
+            "_suite_full_session_blob_baseball@qa_iso_a": {"draft_queue": ["Aaron Judge"]},
+            "_suite_full_session_ts_baseball@qa_iso_a": "2026-10-29T10:00:00+00:00",
+            "_suite_draft_archive_prewrite_backup": [{"draft_id": "a1", "draft_name": "A's league"}],
+            "_ami_context_by_page": {"Historical Explorer": {"question": "A's question"}},
+            # Unsaved-edit markers: left behind, the next restore keeps the empty queue and saves it
+            "_draft_queue_persist_dirty": True,
+            "_draft_queue_persist_dirty_ts": 1.0,
+            "draft_state_dirty": True,
+            "_draft_workflow_pending_sync": True,
+            "historical_state_last_local_edit_ts": 1.0,
+            "_suite_persist_local_dirty::baseball": True,
         })
         with mock.patch.object(suite_auth, "_auth_api", side_effect=RuntimeError("offline")):
             suite_auth.logout(ss)
+        for key, value in ss.items():
+            text = json.dumps(value, default=str)
+            for marker in ("Aaron Judge", "A's league", "A's question"):
+                self.assertNotIn(marker, f"{key} {text}", f"{key} still holds the signed-out account's {marker!r}")
+        self.assertFalse([k for k in ss if str(k).startswith("_suite_full_session_")])
+        self.assertFalse([k for k in ss if str(k).endswith(("_dirty", "_dirty_ts", "_pending_sync", "_last_local_edit_ts"))
+                          or str(k).startswith("_suite_persist_local_dirty")])
         for key in ("hist_HR_min", "page_filter_state", "historical_year_range_filter", "draft_queue",
                     "draft_archive_teams", "fantasy_league_context_state", "_ami_assistant_conversation",
                     "_suite_workspace_base::baseball", "_suite_cloud_revision_seen",

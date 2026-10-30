@@ -1524,12 +1524,24 @@ except ImportError:
 
 # Where the browser is, not the account's work: kept through a change of account.
 _KEPT_THROUGH_ACCOUNT_CHANGE = frozenset({"active_page", "main_sidebar_page"})
+# Copies of the account's work outside the saved keys: the queue's survival copies (the queue is
+# rebuilt from them), draft_state's write records, and the page context Ask AMI reads.
+_ACCOUNT_COPY_PREFIXES = ("_live_draft_queue_", "_draft_new_", "_draft_prev_", "_draft_last_write_")
+_ACCOUNT_COPY_KEYS = frozenset({"_draft_restored_workflow", "_ami_context_by_page"})
+# "Edited here, not saved yet" markers. Left behind without the work they mark, they make the
+# next restore keep the empty session copy (the queue) and the next save write it over the account.
+_LOCAL_EDIT_MARKER_SUFFIXES = ("_dirty", "_dirty_ts", "_pending_sync", "_last_local_edit_ts")
 
 
 def clear_baseball_account_workspace(session: Any) -> None:
     """Drop every key the account workspace carries, and the widget values its pages saved."""
     keys = set(_GLOBAL_KEYS) | set(_WORKFLOW_KEYS) | set(_INSIGHT_KEYS) | set(_HOF_HANDOFF_KEYS)
     keys |= set(_WORKSPACE_KEYS) | {"page_filter_state", "baseball_workspace_state", "live_draft_room"}
+    keys |= _ACCOUNT_COPY_KEYS | {
+        k for k in list(session.keys())
+        if str(k).startswith(_ACCOUNT_COPY_PREFIXES)
+        or (str(k).endswith(_LOCAL_EDIT_MARKER_SUFFIXES) and not str(k).startswith("_suite_auth"))
+    }
     store = session.get("page_filter_state")
     if isinstance(store, dict):
         for block in store.values():

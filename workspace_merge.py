@@ -432,22 +432,83 @@ def session_base(session: Any, app_id: str) -> dict[str, Any] | None:
 
 
 HELD_BASE_KEY_PREFIX = "_suite_workspace_held_base::"
+# What this session itself held when it made that rebased write (its pre-merge display).
+HELD_LOCAL_KEY_PREFIX = "_suite_workspace_held_local::"
 
 
-def merge_base(session: Any, app_id: str) -> dict[str, Any] | None:
+def merge_base(session: Any, app_id: str, local: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """The base to merge against. After a rebased write the session still shows its pre-merge
     values until the merged state is applied on the next rerun; until then the pre-rebase base is
-    held, so those stale values read as "unchanged here" and never as edits that undo the merge."""
+    held, so those stale values read as "unchanged here" and never as edits that undo the merge.
+
+    Given ``local``, that applies per field: a field that still shows what this session held when
+    it wrote is unchanged here; anything else is measured against what it wrote. (Measuring a
+    value it wrote itself against the pre-rebase base turned another device's newer explicit
+    choice into a conflict; measuring its pre-merge display against what it wrote turned the
+    other device's merged-in additions into removals.)"""
     try:
         held = session.get(HELD_BASE_KEY_PREFIX + app_id)
+        held_local = session.get(HELD_LOCAL_KEY_PREFIX + app_id)
     except Exception:
-        held = None
-    return held if isinstance(held, dict) else session_base(session, app_id)
+        held, held_local = None, None
+    written = session_base(session, app_id)
+    if not isinstance(held, dict):
+        return written
+    if isinstance(local, dict) and isinstance(written, dict) and isinstance(held_local, dict):
+        return _hold_aware_base(written, held_local, local)
+    return held
 
 
-def hold_merge_base(session: Any, app_id: str, base: dict[str, Any] | None) -> None:
+def _plain_dict(value: Any) -> bool:
+    return isinstance(value, dict) and value is not _MISSING and _FP not in value
+
+
+def _hold_aware_base(written: Any, shown: Any, local: Any, path: tuple[str, ...] = ()) -> Any:
+    """Per field: ``shown`` (the pre-merge display) where ``local`` still equals it, else ``written``."""
+    leaf = path[-1] if path else ""
+    if len(path) == 1 and leaf in KEYED_LISTS and isinstance(written, list):
+        if not isinstance(shown, list) or not isinstance(local, list):
+            return written
+        id_field = KEYED_LISTS[leaf]
+        shown_by_id = {str(e.get(_ID) or ""): e for e in shown if isinstance(e, dict)}
+        local_by_id = {str(e.get(id_field) or ""): e for e in local if isinstance(e, dict)}
+
+        def fp_of(entry: Any) -> Any:
+            return {_FP: entry[_FP]} if isinstance(entry, dict) and _FP in entry else _MISSING
+
+        out = []
+        for entry in written:
+            rid = str(entry.get(_ID) or "") if isinstance(entry, dict) else ""
+            mine, before = local_by_id.get(rid, _MISSING), shown_by_id.get(rid, _MISSING)
+            stale = before is not _MISSING and not _same(mine, fp_of(entry)) and _same(mine, fp_of(before))
+            out.append(before if stale else entry)
+        for rid, before in shown_by_id.items():  # a record the write dropped that this page still shows
+            if rid not in {str(e.get(_ID) or "") for e in written if isinstance(e, dict)}                     and _same(local_by_id.get(rid, _MISSING), fp_of(before)):
+                out.append(before)
+        return out
+    if path and _same(local, written):
+        return written
+    if _plain_dict(written) and _plain_dict(local):
+        shown_d = shown if _plain_dict(shown) else {}
+        out = {
+            key: _hold_aware_base(value, shown_d.get(key, _MISSING), local.get(key, _MISSING), path + (str(key),))
+            for key, value in written.items()
+        }
+        for key, value in shown_d.items():  # a field the write dropped that this page still shows
+            if key not in out and _same(local.get(key, _MISSING), value):
+                out[key] = value
+        return out
+    if shown is not _MISSING and local is not _MISSING and _same(local, shown):
+        return shown
+    return written
+
+
+def hold_merge_base(session: Any, app_id: str, base: dict[str, Any] | None,
+                    local: dict[str, Any] | None = None) -> None:
     if isinstance(base, dict) and HELD_BASE_KEY_PREFIX + app_id not in session:
         session[HELD_BASE_KEY_PREFIX + app_id] = base
+        if isinstance(local, dict):
+            session[HELD_LOCAL_KEY_PREFIX + app_id] = compact_base(local)
 
 
 def holding_merge_base(session: Any, app_id: str) -> bool:
@@ -460,6 +521,7 @@ def holding_merge_base(session: Any, app_id: str) -> bool:
 def release_merge_base(session: Any, app_id: str) -> None:
     try:
         session.pop(HELD_BASE_KEY_PREFIX + app_id, None)
+        session.pop(HELD_LOCAL_KEY_PREFIX + app_id, None)
     except Exception:
         pass
 

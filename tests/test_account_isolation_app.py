@@ -117,8 +117,11 @@ class AccountIsolationThroughTheApp(CloudRestoreHarness, unittest.TestCase):
     def test_signing_out_and_in_as_another_account_in_one_browser_inherits_nothing(self) -> None:
         from tests.cloud_restore_harness import auth_for
 
+        from tests.test_page_settings_sync import _Base
+
         a = self.on_hist("shared-browser")
         a.at.number_input(key="hist_HR_min").set_value(41).run()
+        _Base.add_to_queue(self, a, "Owner Queue Guy")
         a.go("Trend Value")
         self.assertEqual(((self.store.row(f"baseball@{self.account}") or {}).get("metrics") or {})
                          .get("full_session", {}).get("page_filter_state", {}).get(HIST, {}).get("hist_HR_min"), 41)
@@ -134,6 +137,7 @@ class AccountIsolationThroughTheApp(CloudRestoreHarness, unittest.TestCase):
         a.run()
         self.assertEqual(a.state().get("_suite_active_workspace_id"), other)
         self.assertNotEqual(a.state().get("hist_HR_min"), 41, "B's session shows A's filter")
+        self.assert_clean(a, "B on the shared browser")                   # nor A's queue, Library or room
         a.go("Trend Value")
         row = (self.store.row(f"baseball@{other}") or {}).get("metrics", {}).get("full_session", {})
         self.assertNotEqual(row.get("page_filter_state", {}).get(HIST, {}).get("hist_HR_min"), 41,
@@ -141,6 +145,31 @@ class AccountIsolationThroughTheApp(CloudRestoreHarness, unittest.TestCase):
         self.acting_as(self.account)
         mine = (self.store.row(f"baseball@{self.account}") or {}).get("metrics", {}).get("full_session", {})
         self.assertEqual(mine["page_filter_state"][HIST]["hist_HR_min"], 41)     # A's account untouched
+
+    def test_signing_out_and_back_in_as_the_same_account_brings_its_work_back_from_the_cloud(self) -> None:
+        from tests.cloud_restore_harness import auth_for
+        from tests.test_page_settings_sync import _Base
+
+        a = self.on_hist("shared-browser")
+        a.at.number_input(key="hist_HR_min").set_value(41).run()
+        _Base.add_to_queue(self, a, "Aaron Judge")
+        a.go("Trend Value")
+        self.log_out(a)
+        self.assertNotEqual(a.state().get("hist_HR_min"), 41, "the signed-out tab still shows the account's filter")
+        self.assertFalse(a.state().get("draft_queue"), "the signed-out tab still holds the account's queue")
+        for key, value in auth_for(self.account).items():               # the same account signs back in
+            a.at.session_state[key] = value
+        a.at.session_state["active_page"] = HIST
+        a.at.session_state["main_sidebar_page"] = HIST
+        a.run()
+        a.run()
+        self.assertEqual(a.state().get("_suite_active_workspace_id"), self.account)
+        self.assertEqual(a.state().get("hist_HR_min"), 41)
+        self.assertEqual(list(a.state().get("draft_queue") or []), ["Aaron Judge"])
+        mine = (self.store.row(f"baseball@{self.account}") or {}).get("metrics", {}).get("full_session", {})
+        self.assertEqual(mine["page_filter_state"][HIST]["hist_HR_min"], 41)
+        self.assertEqual(mine.get("draft_queue"), ["Aaron Judge"])
+        self.assertEqual((mine.get("draft_state") or {}).get("queue"), ["Aaron Judge"])  # never saved empty
 
 
 if __name__ == "__main__":

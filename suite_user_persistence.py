@@ -78,6 +78,7 @@ WORKSPACE_ACCESS_REFUSED_KEY = "_suite_workspace_access_refused"
 _ACCOUNT_BOOKKEEPING_PREFIXES = (
     "_suite_workspace_base::",
     "_suite_workspace_held_base::",
+    "_suite_workspace_held_local::",
     "_suite_workspace_conflicts::",
     "_suite_workspace_reapply::",
     "_suite_workspace_conflict_resolution::",
@@ -92,6 +93,10 @@ _ACCOUNT_BOOKKEEPING_PREFIXES = (
     "_account_fantasy_prefs_",
     "_library_manifest_",
     "_ami_assistant_",  # Ask AMI's conversation is session-only: it must not outlive its account
+    "_suite_full_session_",  # this session's cached copy of the account's cloud workspace
+    "_workflow_persist_cache",
+    "_suite_draft_archive_",  # Library backups and version history taken before a write
+    "_suite_cloud_draft_archive_",
 )
 _ACCOUNT_BOOKKEEPING_KEYS = (
     "_suite_cloud_revision_seen",
@@ -1154,7 +1159,9 @@ def sync_workspace_protocol(
         except Exception:
             local_now = None
         if isinstance(local_now, dict):
-            merged, conflicts = wm.three_way_merge(base, local_now, picked.state)
+            merged, conflicts = wm.three_way_merge(
+                wm.merge_base(st.session_state, app_id, local_now), local_now, picked.state
+            )
             if wm.board_conflicted(conflicts):
                 # Leave this session as it is: its board saves stay refused as stale, and
                 # draft_board_reconcile asks which board to keep.

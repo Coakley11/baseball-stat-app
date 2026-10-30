@@ -290,6 +290,7 @@ def test_stripe_checkout_requires_complete_authentication() -> None:
 
 
 def test_completed_handoff_logout_then_login_survives_ordinary_reruns() -> None:
+    import baseball_persistent_state  # noqa: F401 — registers the account clearer, as the app always does
     from suite_auth_bridge_handoff import HANDOFF_FREEZE_KEY, HANDOFF_FINAL_GENERATION_KEY
     from suite_auth_bridge_restore import RESTORE_FINAL_3B_KEY
     from suite_auth_browser import save_browser_auth_tokens
@@ -319,7 +320,9 @@ def test_completed_handoff_logout_then_login_survives_ordinary_reruns() -> None:
     assert HANDOFF_FREEZE_KEY not in session
     assert HANDOFF_FINAL_GENERATION_KEY not in session
     assert RESTORE_FINAL_3B_KEY not in session
-    assert session["draft_archive_teams"] == saved
+    # The Library leaves the browser session with its account; it is restored from the cloud on
+    # sign-in (tests/test_account_isolation_app.py), never handed to whoever signs in next.
+    assert "draft_archive_teams" not in session
     for _ in range(2):
         reset_sidebar_run_guards(session)
         assert claim_sidebar_render(session, GUARD_ACCOUNT)
@@ -360,7 +363,7 @@ def test_completed_handoff_logout_then_login_survives_ordinary_reruns() -> None:
     assert ok and message == "Signed in."
     assert auth_session_complete(session)
     assert session[BROWSER_PERSIST_RESULT_KEY]["persistence_succeeded"]
-    assert session["draft_archive_teams"] == saved
+    assert "draft_archive_teams" not in session
     for _ in range(2):
         reset_sidebar_run_guards(session)
         assert claim_sidebar_render(session, GUARD_ACCOUNT)

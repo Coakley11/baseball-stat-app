@@ -701,7 +701,7 @@ def save_cloud_full_session(
             if took_remote:
                 # The account held another device's newer work; show it here on the next rerun,
                 # and merge against the pre-rebase base until then (wm.merge_base).
-                wm.hold_merge_base(ss, app_id, merged_against)
+                wm.hold_merge_base(ss, app_id, merged_against, state)
                 ss[wm.REAPPLY_KEY_PREFIX + app_id] = True
         _record_cloud_write_error(None)
         return True
@@ -737,7 +737,7 @@ def _rebase_onto_cloud(
 
     if not session_state_writable(ss) or fresh.status != CLOUD_READ_OK:
         return None
-    base = wm.merge_base(ss, app_id)
+    base = wm.merge_base(ss, app_id, local)
     if base is None or not str(ss.get(CLOUD_REVISION_SEEN_KEY) or ""):
         return None
     merged, conflicts = wm.three_way_merge(base, local, fresh.state)

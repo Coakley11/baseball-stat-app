@@ -69,6 +69,34 @@ Each cause is fixed where it happens, and one chokepoint now enforces ownership.
 - **Repaired test fakes.** `test_live_draft_workspace_isolation` and `test_foreign_blob_restore` were failing on the base. Their fakes had no `query_params`, or no complete sign-in, so they never reached the isolation check. With the fakes repaired they now run and pass.
 - **Harness.** `cloud_restore_harness.start_cloud(real_workspace=True)` is available for other isolation tests.
 
+## 1b. Signing out, then in as another account on the same browser (fixed)
+
+- **What happened.** Logging out removed the identity but left the account's whole workspace in the browser session: page filters and widget values, queue, Library, leagues, the merge base, the revisions it had seen, and the Ask AMI conversation.
+- **Consequence.** The next account to sign in on that tab saw the previous account's filters (`test_signing_out_and_in_as_another_account_in_one_browser_inherits_nothing`: B's Historical Explorer showed A's HR filter). Its next save could put that data into its own account.
+- **The fix.**
+  - `suite_user_persistence.clear_account_session_state` runs on log out and when a different account signs in (`_persist_auth_session`, scope change).
+  - It clears every key the workspace persistence carries (registered by `baseball_persistent_state.clear_baseball_account_workspace`), the widget values those pages saved, the per-account bookkeeping and `_ami_assistant_*`.
+  - The current page is kept.
+  - A signed-out guest's own edits still carry into the account it signs in to, as Stage A requires.
+- **Copies outside the saved keys** (found by running the real app after the first fix):
+  - The queue was rebuilt from its survival copy (`_live_draft_queue_last_good`), so the signed-out tab still showed it.
+  - Other copies: `draft_state`'s write records (`_draft_new_*`), the session's cached copy of the cloud workspace (`_suite_full_session_blob_*`), the Library pre-write backups (`_suite_draft_archive_*`) and Ask AMI's page context (`_ami_context_by_page`).
+  - All of these are now cleared too.
+- **Unsaved-edit markers** (`*_dirty`, `*_pending_sync`, `*_last_local_edit_ts`) are cleared as well.
+  - Clearing the queue but leaving `_draft_queue_persist_dirty` made the restore after sign-in keep the empty session queue as a local edit ("local_dirty_or_pending").
+  - The next save then wrote `draft_state.queue = []` into the account. The real app showed this for the same account signing back in. Another account signing in on that tab could have its queue wiped the same way.
+  - Clearing the markers was not enough. The sidebar normalizes the queue on every run (`_workflow_normalize_draft_queue` → `draft_state.sync_draft_queue`), and that always marked a local edit, even empty → empty. So the signed-out runs set the marker again.
+    - This is harmless on a fresh device, where the first restore runs before the sidebar.
+    - It is not harmless on the same tab after logout.
+  - `sync_draft_queue` now marks an edit only when the queue changes. Add, Remove, reorder, and dropping a drafted player still mark one (`test_draft_state.QueueNormalizeIsNotAnEditTests`).
+  - The AppTest now checks the account's `draft_state.queue` is never saved empty.
+  - The unit test checks that no session value holds the previous account's queue, Library or Ask AMI text, and that no edit marker is left.
+- **The same account signing back in** gets its work from the cloud, not from a copy left in the tab. A copy kept in the session could put older work over newer edits made on another device in the meantime. `test_signing_out_and_back_in_as_the_same_account_brings_its_work_back_from_the_cloud` (AppTest) shows the filter and queue coming back.
+- **Tests.**
+  - `test_account_workspace_isolation.AccountChangeInOneBrowserTests` (unit).
+  - The two AppTests above, which press the real **Log out** button. The account-switch AppTest fails on `5a09c4b` and passes on `3b139b6`.
+- **An older test changed on purpose.** `test_baseball_auth_workspace_regression.test_completed_handoff_logout_then_login_survives_ordinary_reruns` asserted that `draft_archive_teams` stays in the session through logout. It only passed when `baseball_persistent_state` had not been imported yet; the app always imports it. It now imports that module, as the app does, and asserts the Library leaves the session. Its auth-handoff and rerun-guard checks are unchanged.
+
 ## 2. Queue, watchlists and tracked players: ordered, removal-aware
 
 Stage A merged these as sets. That honoured a removal relative to the base, but lost order: the result was always remote order plus local additions. The new rule is `workspace_merge._ordered_merge`, a three-way merge against the base:
@@ -163,6 +191,46 @@ Scoring format, projection style and research settings live in the league contex
 ## 7. Save volume
 
 Leaving Live Draft Room saved twice with the same content: `live_draft_setup_page_leave`, then `user_page_prefs:live_draft_setup`. The second is now skipped, but only when the first reached the account, so a failed write still retries. Tests: `test_rerun_save_cost.LiveDraftLeaveSaveTests`.
+
+## 8. A device's own saved value no longer conflicts with a newer explicit choice (regression fixed)
+
+- **Found by the final AppTest run.** `test_same_setting_changed_on_both_devices_keeps_both_until_the_user_chooses` passes on `f8ffbbe` and failed on `5a09c4b`.
+  - The phone pressed **Keep this device's version** (the account now holds 30).
+  - The stale Dell, which had written 40 itself, reported a new conflict and kept showing 40.
+- **Cause.**
+  - After a rebased write, the session holds its pre-rebase base until the merged state is applied (`workspace_merge.merge_base`). That keeps a value the page still shows from before the merge from reading as an edit.
+  - The whole held base was used, though. So the Dell's own written 40 was measured against the pre-rebase 0 and read as a fresh edit.
+  - 5a09c4b's merge changes made the Dell's first save a rebased write, which exposed this.
+- **Fix.**
+  - With the held base, the session now also holds what it itself showed when it made the rebased write (`_suite_workspace_held_local::`).
+  - `merge_base(session, app, local)` works per field:
+    - a field that still equals that pre-merge display is unchanged here, so the account's value wins;
+    - anything else is measured against what the session wrote.
+  - Saved drafts follow the same rule per record.
+  - Both merge sites pass this session's state: the restore merge and the rebase before a write.
+- **The first attempt was wrong.** It treated a field as stale only when it equalled the pre-rebase base. That fixed this test but broke `test_queue_sync_app.test_a_reorder_on_the_dell_and_an_addition_on_the_phone_both_survive`: the stale Dell's own reorder `[J, B, S]` equals neither the base nor what it wrote `[J, B, S, W]`, so the phone's merged-in W read as removed.
+  - Comparing with the session's own pre-merge display handles both cases.
+  - Both the queue case and the explicit-choice case are now unit tests.
+- **Tests.** `test_workspace_merge.HeldBaseAfterRebasedWriteTests` (6). The AppTests are listed under Regression below.
+
+## 9. Hall of Fame Case Mode survives leaving Career Totals (old defect, fixed)
+
+- **Symptom.** Case Mode and its target were lost on any trip away from Career Totals and back. A fresh phone then got the "off" value that the page wrote on return. This also fails on `f8ffbbe`, so it predates Stage A.
+- **Cause.**
+  - Sidebar navigation deliberately skips the generic page restore (`_skip_page_restore_for`). Each page restores its widgets from its own canonical state.
+  - Career Totals' restore covers only the career filters and minimums. The Case Mode checkbox and target are widget keys, so Streamlit dropped them off-page, and nothing brought them back before the checkbox rendered (as off).
+- **Fix.** `career_totals_state.prepare_career_totals_page` restores both from the Career Totals block when they are absent, before anything checks Case Mode. An edit on the page or a HOF resume is never overwritten.
+- **Limitation.** Case Mode toggled on Historical Explorer is saved only with that page's global keys. Going Historical → another page → Career Totals shows Career Totals' last saved value.
+- **Test.** `test_solo_hof_sync_app.test_hof_case_mode_and_target_follow_the_account`.
+
+## Integration with `feature/baseball-completion@7122f0b` (trial merge only)
+
+- **Scratch merge.** `7122f0b` was merged into `3b139b6` in a scratch detached worktree (`505578a`, kept local and not on any branch). The merge is textually clean.
+- **Files changed on both sides:** `baseball_persistent_state.py`, `draft_room_state.py`, `fantasy_context_source.py`, `streamlit_app.py`, `suite_auth.py` and `tests/test_league_setup_integrity.py`. None overlap in the same hunks.
+- **Semantic fit.**
+  - Their `clear_queue_for_account_change` (on sign-out and on account switch) sits beside `clear_account_session_state`; both run, and the clearing is the same.
+  - Their persisted `_draft_queue_consumed` merges per source, and `_simulator_board_epoch` takes the maximum.
+  - A pick that consumes a queued player on one device removes him on the other through the base-relative removal rule.
 
 ## Risks and checks before Dev
 
