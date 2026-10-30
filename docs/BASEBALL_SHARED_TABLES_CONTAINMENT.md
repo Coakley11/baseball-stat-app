@@ -74,6 +74,16 @@ Run one block at a time (the SQL editor shows one result set). Output is safe to
 
 Expected: D3 all zeros in its first four columns; D2 lists grants for anon and authenticated on both tables plus two `disable row level security` lines.
 
+### Production preflight results (owner's runs, 2026-10-30)
+
+| Block | Result |
+|---|---|
+| **D3** | **All seven columns 0:** `views_open_to_api_roles`, `definer_functions_open_to_api_roles`, `public_grants`, `serial_columns`, `functions_naming_tables`, `in_publications`, `user_triggers`. |
+
+D3 passed: no view, SECURITY DEFINER function, PUBLIC grant or serial column would let anon or authenticated bypass Step B's revoke, so none of Step B's checks 2, 4, 5 or 6 will refuse on those grounds. No function names the tables, so no hidden database path to them exists. Nothing is published to Realtime, and no trigger touches them. This also supports the access audit above: the only reader is the app's service-role path.
+
+Still to run: D1, D1b, D2 (save verbatim), D4 (save), D5. Step B check 1 (service_role BYPASSRLS and CRUD) and check 3 (role membership) are confirmed by D1 and Step B itself.
+
 ## Post-containment verification (`baseball_shared_containment_verify.sql`)
 
 1. **VB1:** both tables `rls_enabled = true`, not forced, 0 policies.
