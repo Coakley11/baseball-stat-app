@@ -37,7 +37,7 @@ On Streamlit Cloud every session of the app shares one server `data/` directory.
 | Server-local files treated as account data | Yes. Fixed. |
 | One user's active-workspace pointer affecting another user's session | Yes, the global pointer. Fixed. |
 | One account's draft, league or settings loaded into another account | Yes. Fixed. Observed: the Live Draft room and the Saved Draft Library. The queue and watchlist ride in the same file. |
-| Uploaded to Supabase | Yes, but into the receiving account's **own** row. Every query is filtered by that account's `user_id`, so no account's row was written by another account. |
+| Uploaded to Supabase | Yes. **Corrected 2026-10-30.** This said leaked data went only into the receiving account's own row. That holds for this branch's compare-and-set saves. The confirmed key of `suite_app_current_state` is `app` alone, though, and the deployed code saves with a plain upsert. So a write under the owner's unscoped key (`baseball`) by another account would have replaced the owner's row and taken over its `user_id`. Whether that happened needs the read-only preflight in `SUITE_APP_CURRENT_STATE_ISOLATION_PLAN.md`. |
 | Production-style startup or only the test fixture | Production style. The real `streamlit_app.py`, with the real session proxy, reproduces it (see `trace_leak` below). It needs the owner's files on the same server disk. |
 | AMI data | **The history tables were not exposed.** Question history, Continue cards and saved insights are in Supabase tables keyed by `user_id`. **The workspace-file copies were.** The pending insight, return context and dismissed ids are stored in the workspace file, so they rode the same path as the Library. |
 
@@ -261,10 +261,12 @@ Every result here was run on `fa4d79b` itself. The baseline is an unchanged `f8f
 
 ## Risks and checks before Dev
 
-- **`suite_app_current_state` key (verify on the Dev project).**
-  - The Command Center migrations create the table with `app text primary key`.
-  - The composite `(user_id, app)` key is commented out as "optional later", and RLS is disabled on the account tables.
-  - If Dev or Production still has `app` as the key, the `user_id` filters in the app code are the only separation between accounts. A non-CAS upsert on a key that two accounts can reach would overwrite the row. One such key is the owner's unscoped `baseball`, which the old clamp briefly used for every account.
-  - This needs checking on the real project. Nothing here touched Supabase.
-- **Own-data split.** During the old clamp window, an account could have written its own data under the unscoped `baseball` key: still that account's own `user_id`, but not its usual `baseball__<ws>` row. A read-only check of a test account's rows on Dev would show whether this happened.
-- The fake cloud (`FileStore`) keys rows by account, so it cannot detect the schema risk above.
+- **`suite_app_current_state` key: confirmed 2026-10-30, and a release blocker.**
+  - The owner's read-only check found:
+    - the primary key is `app` alone;
+    - RLS is on, not forced, with no policies.
+  - The app's service-role key bypasses RLS, so the `user_id` filters in the code are the only separation between accounts.
+  - A plain upsert on a key that two accounts can reach replaces the row and takes over its `user_id`.
+  - Findings, the read-only preflight and the phased plan are in `SUITE_APP_CURRENT_STATE_ISOLATION_PLAN.md`.
+- **Possible takeover during the old clamp window.** An account resolved to `daniel` and saving with the deployed plain upsert would have replaced the owner's `baseball` row; it isn't a separate row. Preflight P6 and P7 show whether this happened.
+- **The fake cloud (`FileStore`) keys rows by account**, so it can't detect this. The plan adds a test fake keyed by `app`.
