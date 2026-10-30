@@ -14,13 +14,32 @@ Run and reported by the owner. The project ref is left out of this file on purpo
 | V2: service_role on those three | true |
 | Sequence behind `suite_saved_items.id` | anon / authenticated false; service_role true |
 | C6 row counts, before vs after, all six tables | all match |
-| C6 fingerprints, before vs after | **not yet compared.** The pre-Step-1 C2 and C6 exports are kept by the owner (downloaded 2026-10-30 14:05 and 14:08 UTC). The C2 export lists the three `disable row level security` lines, which it emits only while RLS is off, so it predates Step 1. |
+| C6 fingerprints, before vs after | Compared 2026-10-30 against the pre-Step-1 export (downloaded 14:08 UTC; the C2 export downloaded at 14:05 still listed `disable row level security` for the three tables, so it predates Step 1). **No INVESTIGATE verdict.** See the table below. |
 | Anonymous REST test (`scripts/sql_tests/anon_rest_denial_check.py`, legacy anon key, project confirmed from the key) | control `/auth/v1/settings`: HTTP 200 (key accepted)<br>`suite_users`: HTTP 401, code 42501, PASS<br>`suite_saved_items`: HTTP 401, code 42501, PASS<br>`suite_user_settings`: HTTP 401, code 42501, PASS |
+
+
+**C6 comparison** (owner's run, 2026-10-30; read-only, counts and hashes only):
+
+| Table | Rows before → now | Fingerprint | Rows written since 13:49 UTC | Verdict |
+|---|---|---|---|---|
+| `suite_users` | 6 → 6 | **exact match** | 0 | **unchanged** |
+| `suite_user_settings` | 8 → 8 | **exact match** | 0 | **unchanged** |
+| `suite_saved_items` | 2438 → 2439 | changed | 8 | consistent with normal app writes |
+| `suite_activity_events` | 6594 → 6595 | changed | 3 | consistent with normal app writes |
+| `suite_app_current_state` | 14 → 14 | changed | 1 | consistent with normal app writes |
+| `suite_resume_items` | 1015 → 1017 | changed | 3 | consistent with normal app writes |
+
+- **Exact matches.** `suite_users` and `suite_user_settings` are byte-for-byte what they were before Step 1.
+  - `suite_users` is the strict check: the apps only insert into it, never update, so any difference would have needed explaining.
+  - These are two of the three tables Step 1 changed.
+- **Changed, consistent with app writes.** The other four changed only where rows carry a write time after the baseline, and no row count fell.
+  - Since Step 1 only the service-role key, which only the apps hold, can write to `suite_saved_items`. `suite_activity_events`, `suite_app_current_state` and `suite_resume_items` already refused the anon key before Step 1.
+  - The written-since counts start at 13:49 UTC, a few minutes before the baseline, so they can exceed the change in row count (updates, plus writes just before the baseline).
+- **Limit.** A changed fingerprint can't show what changed in a row. "Consistent with app writes" means every change is explained by a timestamped write, not that each write was inspected. Step 1 contains no statement that changes rows, so none was expected from it.
 
 **Conclusion.** The public anon key can no longer read or write the three tables through the Data API. The control request shows the key is valid, so the 401s are real permission denials, not a rejected key. The service role keeps every privilege the apps need.
 
 **Still open from the verification steps below:**
-- C6 fingerprint comparison (step 3);
 - each live suite app's sign-in, settings and saved-item flow (step 5);
 - Dashboard → Advisors → Security (step 6);
 - the gateway-log review (`docs/sql/suite_rls_containment_logs_readonly.sql`).

@@ -1,113 +1,184 @@
 -- READ-ONLY preflight for the suite_app_current_state ownership migration.
--- Every statement is a SELECT or SHOW. Nothing here writes, locks or alters.
--- See docs/SUITE_APP_CURRENT_STATE_ISOLATION_PLAN.md for what each result means.
+-- Every statement is a SELECT. Nothing here writes, locks or alters. See
+-- docs/SUITE_APP_CURRENT_STATE_ISOLATION_PLAN.md for what each result means.
+--
+-- How to run: the Supabase SQL editor shows only the LAST result set, so run the six blocks
+-- one at a time (highlight one block and run it, or paste it alone). Each block is one statement.
+--
+-- Safe to share: no metrics, session payloads, tokens, user ids or full emails are returned.
+-- Profiles appear as labels: the preset names (daniel, default, ariel, guest, test_user,
+-- health_probe, user_unidentified) as they are, any other profile as acct_<6 hex>. That is a
+-- pseudonym, not encryption: it hides the profile name in a shared report, nothing more.
+-- To map labels back privately (do not share the output):
+--   select external_id, 'acct_' || left(md5(external_id), 6) as label from public.suite_users;
 
--- P1. Postgres version (P15+ allows a NULLS NOT DISTINCT unique index, alternative B).
-show server_version;
+-- P1-P3, P11. Schema facts, in one row: version (15+ allows NULLS NOT DISTINCT, alternative B),
+-- the primary key, other constraints and indexes, tables referencing this one (must be none for
+-- the key swap), RLS, policies, row and owner counts, and which roles bypass RLS.
+select current_setting('server_version') as server_version,
+       (select pg_get_constraintdef(oid) from pg_constraint
+         where conrelid = 'public.suite_app_current_state'::regclass and contype = 'p') as primary_key,
+       (select coalesce(string_agg(conname || ' ' || pg_get_constraintdef(oid), ' | ' order by conname), '(none)')
+          from pg_constraint
+         where conrelid = 'public.suite_app_current_state'::regclass and contype <> 'p') as other_constraints,
+       (select string_agg(indexname || ': ' || indexdef, ' | ' order by indexname)
+          from pg_indexes where schemaname = 'public' and tablename = 'suite_app_current_state') as indexes,
+       (select coalesce(string_agg(conrelid::regclass::text || '.' || conname, ', '), '(none)')
+          from pg_constraint where confrelid = 'public.suite_app_current_state'::regclass) as referenced_by,
+       c.relrowsecurity as rls_enabled,
+       c.relforcerowsecurity as rls_forced,
+       (select count(*) from pg_policies where schemaname = 'public' and tablename = 'suite_app_current_state') as policies,
+       (select count(*) from public.suite_app_current_state) as total_rows,
+       (select count(*) from public.suite_app_current_state where user_id is null) as null_owner_rows,
+       (select count(*) from public.suite_app_current_state s
+         where s.user_id is not null and not exists (select 1 from public.suite_users u where u.id = s.user_id)) as orphan_owner_rows,
+       (select count(distinct user_id) from public.suite_app_current_state) as distinct_owners,
+       (select string_agg(rolname || '=' || rolbypassrls, ', ' order by rolname) from pg_roles
+         where rolname in ('anon', 'authenticated', 'service_role', 'authenticator')) as bypass_rls
+from pg_class c
+where c.oid = 'public.suite_app_current_state'::regclass;
 
--- P2. Constraints and indexes on the table.
-select conname, contype, pg_get_constraintdef(oid) as definition
-from pg_constraint
-where conrelid = 'public.suite_app_current_state'::regclass;
+-- P4-P7, P14. Every row: its key, the account the key belongs to, the account that owns the row,
+-- and the owner stamp a live draft carries inside the saved session. Metadata only.
+-- flag (the first problem found per row; anything but 'ok' or 'PRESET_HELD_BY_OWNER' needs a look):
+--   P4 NULL_OWNER            no user_id: blocks a (user_id, app) primary key
+--   ORPHAN_OWNER             user_id with no suite_users row
+--   SHARED_KEY               health_probe / user_unidentified: one key for every account, by design
+--   P6 KEY_OWNER_MISMATCH    an unscoped key not owned by daniel/default, or a scoped key "<app>__<ws>"
+--                            not owned by profile <ws> (daniel holding a preset is allowed)
+--   P14 DRAFT_STAMP_MISMATCH the saved live draft says another profile created it
+-- Unscoped rows (the owner's: P7) come first, newest first.
+with u as (
+  select id, external_id,
+         case when external_id in ('daniel', 'default', 'ariel', 'guest', 'test_user', 'health_probe', 'user_unidentified')
+              then external_id else 'acct_' || left(md5(external_id), 6) end as label
+  from public.suite_users
+), s as (
+  select st.app, st.updated_at, st.user_id,
+         nullif(split_part(st.app, '__', 2), '') as key_ws,
+         u.external_id as owner_ext, u.label as owner_label,
+         octet_length(st.metrics::text) as metrics_bytes,
+         coalesce(jsonb_typeof(st.metrics -> 'full_session') = 'object', false) as has_full_session,
+         nullif(coalesce(st.metrics #>> '{full_session,live_draft_state,owner_external_id}',
+                         st.metrics #>> '{full_session,live_draft_room,owner_external_id}'), '') as stamp_ext
+  from public.suite_app_current_state st
+  left join u on u.id = st.user_id
+)
+select app,
+       case when key_ws is null then '(unscoped)'
+            when key_ws in ('daniel', 'default', 'ariel', 'guest', 'test_user', 'health_probe', 'user_unidentified') then key_ws
+            else 'acct_' || left(md5(key_ws), 6) end as key_workspace,
+       coalesce(owner_label, case when user_id is null then '(no owner)' else '(orphan id)' end) as row_owner,
+       case when stamp_ext is null then ''
+            when stamp_ext in ('daniel', 'default', 'ariel', 'guest', 'test_user', 'health_probe', 'user_unidentified') then stamp_ext
+            else 'acct_' || left(md5(stamp_ext), 6) end as draft_owner_stamp,
+       updated_at, metrics_bytes, has_full_session,
+       case
+         when user_id is null then 'P4 NULL_OWNER'
+         when owner_ext is null then 'ORPHAN_OWNER'
+         when key_ws in ('health_probe', 'user_unidentified') then 'SHARED_KEY'
+         when key_ws is null and owner_ext not in ('daniel', 'default') then 'P6 KEY_OWNER_MISMATCH'
+         when key_ws is not null and owner_ext <> key_ws
+              and not (owner_ext = 'daniel' and key_ws in ('ariel', 'guest', 'test_user')) then 'P6 KEY_OWNER_MISMATCH'
+         when stamp_ext is not null and stamp_ext <> owner_ext
+              and not (owner_ext = 'default' and stamp_ext = 'daniel')
+              and not (stamp_ext = 'daniel' and key_ws in ('ariel', 'guest', 'test_user')) then 'P14 DRAFT_STAMP_MISMATCH'
+         when owner_ext = 'daniel' and key_ws in ('ariel', 'guest', 'test_user') then 'PRESET_HELD_BY_OWNER'
+         else 'ok'
+       end as flag
+from s
+order by (key_ws is null) desc, updated_at desc;
 
-select indexname, indexdef
-from pg_indexes
-where schemaname = 'public' and tablename = 'suite_app_current_state';
+-- P13. Who else wrote under each state key. Activity events and resume items store the same
+-- scoped key with the writer's user_id, and their rows are never taken over, so they keep a
+-- history the state row lost. writer_is_row_owner = false means another account wrote under
+-- that key; with the key on app alone, that account's state saves went into this same row.
+with u as (
+  select id,
+         case when external_id in ('daniel', 'default', 'ariel', 'guest', 'test_user', 'health_probe', 'user_unidentified')
+              then external_id else 'acct_' || left(md5(external_id), 6) end as label
+  from public.suite_users
+), w as (
+  select app, user_id, 'activity_events' as source, count(*) as n, min("timestamp") as first_write, max("timestamp") as last_write
+  from public.suite_activity_events group by app, user_id
+  union all
+  select app, user_id, 'resume_items', count(*), min(updated_at), max(updated_at)
+  from public.suite_resume_items group by app, user_id
+)
+select st.app,
+       coalesce(o.label, case when st.user_id is null then '(no owner)' else '(orphan id)' end) as row_owner,
+       coalesce(wu.label, case when w.user_id is null then '(no user)' else '(orphan id)' end) as writer,
+       w.user_id is not distinct from st.user_id as writer_is_row_owner,
+       w.source, w.n, w.first_write, w.last_write
+from public.suite_app_current_state st
+join w on w.app = st.app
+left join u o on o.id = st.user_id
+left join u wu on wu.id = w.user_id
+order by st.app, writer_is_row_owner, w.last_write desc;
 
--- P3. Anything that references this table (must be empty, or the PK swap needs more care).
-select conrelid::regclass as referencing_table, conname
-from pg_constraint
-where confrelid = 'public.suite_app_current_state'::regclass;
+-- P8. Sign-ins the legacy email rule could have mapped onto a preset profile, and every profile.
+-- Before 2026-10-27 (and still in the other suite apps) any email containing "daniel" or "ariel"
+-- became that profile and shared its suite_users id. Emails are masked to first letter + domain.
+with u as (
+  select id, email, created_at,
+         case when external_id in ('daniel', 'default', 'ariel', 'guest', 'test_user', 'health_probe', 'user_unidentified')
+              then external_id else 'acct_' || left(md5(external_id), 6) end as label
+  from public.suite_users
+)
+select 'auth sign-in' as kind,
+       left(a.email, 1) || '***@' || split_part(a.email, '@', 2) as masked_email,
+       case when a.email ilike '%daniel%' then 'daniel' else 'ariel' end as legacy_rule_profile,
+       coalesce((select string_agg(u.label, ', ') from u where lower(u.email) = lower(a.email)),
+                '(no profile records this email)') as profile_with_this_email,
+       a.created_at, a.last_sign_in_at
+from auth.users a
+where a.email ilike '%daniel%' or a.email ilike '%ariel%'
+union all
+select 'suite profile',
+       case when coalesce(u.email, '') = '' then '(no email)'
+            else left(u.email, 1) || '***@' || split_part(u.email, '@', 2) end,
+       null, u.label, u.created_at, null
+from u
+order by kind, created_at;
 
--- P4. Rows with no owner. Must be 0 before the primary key can include user_id.
-select count(*) filter (where user_id is null) as null_owner_rows,
-       count(*) as total_rows
-from public.suite_app_current_state;
-
-select app, updated_at
-from public.suite_app_current_state
-where user_id is null
-order by updated_at desc;
-
--- P5. Who owns each row. Metadata only: no metrics or session payloads.
-select s.app,
-       u.external_id as owner_profile,
-       s.user_id,
-       s.updated_at,
-       octet_length(s.metrics::text) as metrics_bytes,
-       (s.metrics ? 'full_session') as has_full_session
-from public.suite_app_current_state s
-left join public.suite_users u on u.id = s.user_id
-order by s.app;
-
--- P6. Rows whose owner does not match the account the key belongs to.
--- An unscoped key ("baseball", "investment", ...) belongs to the owner's profile ("daniel";
--- "default" is the original single-user backfill). A scoped key "<app>__<ws>" belongs to
--- profile <ws>; the owner (daniel) may also hold the demo presets ariel, guest, test_user.
--- Every row returned here needs a human look before anything else happens.
-select s.app,
-       split_part(s.app, '__', 2) as key_workspace,
-       u.external_id as owner_profile,
-       s.updated_at
-from public.suite_app_current_state s
-left join public.suite_users u on u.id = s.user_id
-where (position('__' in s.app) = 0
-       and coalesce(u.external_id, '') not in ('daniel', 'default'))
-   or (position('__' in s.app) > 0
-       and coalesce(u.external_id, '') <> split_part(s.app, '__', 2)
-       and not (u.external_id = 'daniel'
-                and split_part(s.app, '__', 2) in ('ariel', 'guest', 'test_user')))
-order by s.app;
-
--- P7. The owner's unscoped rows, newest first, to compare against the dates the
--- account-isolation bug was live and the dates other accounts were active.
-select s.app, u.external_id as owner_profile, s.updated_at
-from public.suite_app_current_state s
-left join public.suite_users u on u.id = s.user_id
-where position('__' in s.app) = 0
-order by s.updated_at desc;
-
--- P8. Profiles and the sign-ins that could have been mapped onto a preset profile.
--- Before 2026-10-27 (and still in the other suite apps) any email containing
--- "daniel" or "ariel" became that profile, sharing its suite_users id.
-select external_id, email, created_at
-from public.suite_users
-order by created_at;
-
-select id, email, created_at, last_sign_in_at
-from auth.users
-where email ilike '%daniel%' or email ilike '%ariel%'
-order by created_at;
-
--- P9. RLS state and policies for every suite and baseball table, not only this one.
+-- P9-P10. RLS, policies and anon / authenticated / service_role privileges on every suite and
+-- baseball table. Any row with rls_enabled = false and anon or authenticated access is exposed
+-- to the public anon key. Exposed tables sort first.
 select c.relname as table_name,
        c.relrowsecurity as rls_enabled,
        c.relforcerowsecurity as rls_forced,
-       (select count(*) from pg_policies p
-         where p.schemaname = 'public' and p.tablename = c.relname) as policy_count
+       (select count(*) from pg_policies p where p.schemaname = 'public' and p.tablename = c.relname) as policies,
+       has_table_privilege('anon', c.oid, 'SELECT') as anon_read,
+       has_table_privilege('anon', c.oid, 'INSERT') or has_table_privilege('anon', c.oid, 'UPDATE')
+         or has_table_privilege('anon', c.oid, 'DELETE') as anon_write,
+       has_table_privilege('authenticated', c.oid, 'SELECT') as authenticated_read,
+       has_table_privilege('authenticated', c.oid, 'INSERT') or has_table_privilege('authenticated', c.oid, 'UPDATE')
+         or has_table_privilege('authenticated', c.oid, 'DELETE') as authenticated_write,
+       has_table_privilege('service_role', c.oid, 'SELECT') and has_table_privilege('service_role', c.oid, 'INSERT')
+         and has_table_privilege('service_role', c.oid, 'UPDATE') and has_table_privilege('service_role', c.oid, 'DELETE') as service_role_full
 from pg_class c
 where c.relnamespace = 'public'::regnamespace
-  and c.relkind = 'r'
+  and c.relkind in ('r', 'p')
   and (c.relname like 'suite\_%' or c.relname like 'baseball\_%')
-order by c.relname;
+order by (c.relrowsecurity
+          or not (has_table_privilege('anon', c.oid, 'SELECT') or has_table_privilege('authenticated', c.oid, 'SELECT'))),
+         c.relname;
 
--- P10. What the public (anon) and signed-in (authenticated) roles are granted.
--- With RLS off on a table, these grants are all that stands between the anon key and every row.
-select table_name, grantee, string_agg(privilege_type, ', ' order by privilege_type) as privileges
-from information_schema.role_table_grants
-where table_schema = 'public'
-  and grantee in ('anon', 'authenticated')
-  and (table_name like 'suite\_%' or table_name like 'baseball\_%')
-group by table_name, grantee
-order by table_name, grantee;
-
--- P12. Fingerprint of every row, saved before any phase and compared after it.
--- Hashes only; no content is returned.
-select app, user_id, updated_at, md5(metrics::text) as metrics_md5
-from public.suite_app_current_state
-order by app, user_id;
-
--- P11. Which roles bypass RLS (service_role is expected here).
-select rolname, rolbypassrls
-from pg_roles
-where rolname in ('anon', 'authenticated', 'service_role', 'postgres', 'authenticator');
+-- P12. Fingerprint of every row. Save this output before any migration phase and compare after
+-- it. Hashes only. table_fp uses the same formula as containment C6.
+with u as (
+  select id,
+         case when external_id in ('daniel', 'default', 'ariel', 'guest', 'test_user', 'health_probe', 'user_unidentified')
+              then external_id else 'acct_' || left(md5(external_id), 6) end as label
+  from public.suite_users
+)
+select st.app,
+       coalesce(u.label, case when st.user_id is null then '(no owner)' else '(orphan id)' end) as row_owner,
+       st.updated_at,
+       md5(st.metrics::text) as metrics_md5,
+       md5(st.page || '|' || st.summary) as page_summary_md5,
+       (select md5(coalesce(string_agg(md5(x::text), ',' order by md5(x::text)), ''))
+          from public.suite_app_current_state x) as table_fp
+from public.suite_app_current_state st
+left join u on u.id = st.user_id
+order by st.app;
