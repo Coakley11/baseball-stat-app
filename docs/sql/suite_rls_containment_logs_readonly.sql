@@ -37,3 +37,32 @@ where source = 'edge_logs'
   and log_attributes['request.path'] like '/graphql/v1%'
 group by day, status, client
 order by day desc, requests desc;
+
+-- L3. Requests to the two shared Baseball tables per day, path, method, status and client tag.
+-- The gateway does not log the key or the role, so an anon request and the app's own service-role
+-- request to the same path look alike. Signals: a client tag other than the app's, unusual methods
+-- (DELETE, POST on /rest/v1/baseball_shared_draft_rooms without the app running), bursts at odd hours.
+-- Note the app's health probe creates and deletes a probe room, so some POST/DELETE is normal.
+select toDate(timestamp) as day,
+       splitByChar('?', log_attributes['request.path'])[1] as path,
+       log_attributes['request.method'] as method,
+       toInt32OrZero(log_attributes['response.status_code']) as status,
+       log_attributes['request.headers.x_client_info'] as client,
+       count() as requests
+from logs
+where source = 'edge_logs'
+  and (log_attributes['request.path'] like '/rest/v1/baseball_shared_draft_rooms%'
+    or log_attributes['request.path'] like '/rest/v1/baseball_shared_leagues%')
+group by day, path, method, status, client
+order by day desc, requests desc;
+
+-- L4. Whether anything outside the app's usual client reached any table at all, by client tag.
+-- Browser libraries identify themselves (for example supabase-js); the Streamlit apps' server
+-- calls normally send no such tag. Counts only.
+select log_attributes['request.headers.x_client_info'] as client, count() as requests,
+       min(timestamp) as first_seen, max(timestamp) as last_seen
+from logs
+where source = 'edge_logs' and log_attributes['request.path'] like '/rest/v1/%'
+group by client
+order by requests desc;
+

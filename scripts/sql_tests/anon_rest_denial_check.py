@@ -1,4 +1,4 @@
-"""Read-only check that the public anon key can no longer reach the three contained suite tables.
+"""Read-only check that the public anon key cannot reach the contained suite and shared-Baseball tables.
 
 Run (Windows, after copying the project's anon public key):
     python -I scripts/sql_tests/anon_rest_denial_check.py
@@ -28,6 +28,8 @@ TABLES = {  # table -> one harmless column to select (suite_user_settings has no
     "suite_users": "id",
     "suite_saved_items": "id",
     "suite_user_settings": "user_id",
+    "baseball_shared_draft_rooms": "room_code",  # contained by baseball_shared_containment_stepB_DRAFT.sql
+    "baseball_shared_leagues": "league_id",
 }
 _BASE64URL = re.compile(r"[A-Za-z0-9_-]+")
 _PROJECT_URL = re.compile(r"https://([a-z0-9]{20})\.supabase\.co")
@@ -200,9 +202,9 @@ def main(argv: list[str] | None = None) -> int:
             failures += 1
         detail = f" code={code}" if code else ""
         detail += f" body={rows}" if rows else ""
-        print(f"{table:22} HTTP {status}{detail}  -> {verdict}")
+        print(f"{table:28} HTTP {status}{detail}  -> {verdict}")
     key = ""
-    print("All three denied." if failures == 0 else f"{failures} table(s) need investigation (see above).")
+    print(f"All {len(TABLES)} denied." if failures == 0 else f"{failures} table(s) need investigation (see above).")
     return 0 if failures == 0 else 1
 
 

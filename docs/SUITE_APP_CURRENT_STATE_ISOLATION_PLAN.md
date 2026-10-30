@@ -241,7 +241,7 @@ P13 lists, per current state row, every account that wrote activity events or re
 | **A writer with no `user_id`** | Confirmed in P13 (`baseball`, 2026-07-05 to 07-17). It replaces row content without changing the owner, so a `BEFORE UPDATE` trigger on `user_id` would **not** stop it. Only a code change does. |
 | **Profile and workspace key crossing** | Confirmed pattern in July (answer 3). The cause is in the apps' identity code, not the database. |
 | **Other suite apps** | Still use the email substring rule. Not touched by this branch. |
-| **`baseball_shared_draft_rooms` and `baseball_shared_leagues`** | **Unverified, and possibly exposed.** The repository's SQL (`scripts/sql/baseball_shared_*.sql`) leaves RLS off (the statement is commented out), grants `anon` SELECT and `authenticated` full access. If it was run as written, the public anon key can read every shared draft room and league (including host ids and invites), and any signed-in user can edit them. Preflight P9–P10 shows the real state. |
+| **`baseball_shared_draft_rooms` and `baseball_shared_leagues`** | **Confirmed exposed (P9–P10, owner's run 2026-10-30):** RLS off, 0 policies, `anon` and `authenticated` can read and write both; `service_role` has full access. Not part of the account-isolation migration. Containment is planned separately in `BASEBALL_SHARED_TABLES_CONTAINMENT.md`; the isolation migration and the combined Baseball deployment wait for it. |
 | **Content of the 14 rows** | Ownership known, content attribution not yet checked (P16). |
 
 ### Remaining preflight checks
@@ -252,6 +252,14 @@ P13 lists, per current state row, every account that wrote activity events or re
 4. **Indexes, defaults and triggers from P1b** (reported only in part).
 5. **P16 (to be prepared):** metadata-only comparison of saved-draft ids between the rows `baseball`, `baseball__coakley11`, `applied_intelligence` and `nba`: counts and hashed ids, no content. Shared ids between two accounts' rows would show content crossed.
 6. **A backup/export** of the table, and confirmation of the project's backup or point-in-time window.
+
+### Preflight P9–P10 (owner's run, 2026-10-30)
+
+| Table | RLS | Policies | anon | authenticated | service_role |
+|---|---|---|---|---|---|
+| `baseball_shared_draft_rooms`, `baseball_shared_leagues` | **off** | 0 | read + write | read + write | full |
+| `suite_users`, `suite_saved_items`, `suite_user_settings` | on | n/a | none | none | full (Step 1, done) |
+| `suite_activity_events`, `suite_app_current_state`, `suite_resume_items` | on | 0 | grants remain | grants remain | full (Step 2, not run; RLS already blocks them) |
 
 ### Reading the preflight
 
