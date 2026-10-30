@@ -1613,7 +1613,8 @@ def simulator_roster_view_team_options(
 
 def _forget_saved_mock_draft(session: dict[str, Any]) -> None:
     """A new board is a new mock draft: its first save must not overwrite the last one saved."""
-    session.pop("_simulator_session_library_draft_id", None)
+    from saved_mock_resume import release_mock_edit
+    release_mock_edit(session)
 
 
 def rebuild_simulator_board_for_teams(session: dict[str, Any]) -> pd.DataFrame:
@@ -2779,6 +2780,10 @@ def table_to_persist_dict(table: Any, *, settings: dict[str, Any] | None = None)
         out["table_records"] = []
         out["table_columns"] = []
     out["pick_count"] = table_pick_count(out)
+    mock_id = (table.attrs.get("saved_mock_draft_id") if is_runtime_table(table)
+               else table.get("saved_mock_draft_id") if isinstance(table, dict) else None)
+    if mock_id:
+        out["saved_mock_draft_id"] = str(mock_id)
     if settings:
         for key in DRAFT_ROOM_SETTINGS_KEYS:
             if key in settings:
@@ -2800,6 +2805,8 @@ def table_from_persist_dict(data: dict[str, Any] | None) -> pd.DataFrame | None:
         ordered = [c for c in columns if c in df.columns]
         extras = [c for c in df.columns if c not in ordered]
         df = df[ordered + extras]
+    if data.get("saved_mock_draft_id"):
+        df.attrs["saved_mock_draft_id"] = str(data["saved_mock_draft_id"])
     return df
 
 
@@ -3071,8 +3078,12 @@ def write_canonical_draft_room_state(
     local_edit: bool = False,
 ) -> dict[str, Any]:
     settings = _room_settings_from_session(session)
+    if is_runtime_table(table) and session.get("saved_mock_edit_draft_id"):
+        table.attrs["saved_mock_draft_id"] = session["saved_mock_edit_draft_id"]
     blob = table_to_persist_dict(table, settings=settings)
     blob["last_write_reason"] = reason or None
+    if session.get("saved_mock_edit_draft_id"):
+        blob["saved_mock_draft_id"] = session["saved_mock_edit_draft_id"]
     _attach_board_ownership(session, blob, table)
     meta = get_canonical_draft_meta(session)
     if meta:
@@ -3228,6 +3239,11 @@ def _resolve_richest_draft_board(session: dict[str, Any]) -> tuple[pd.DataFrame,
         ("seed", session.get(DRAFT_ROOM_EDITOR_SEED_KEY)),
         ("blob", _draft_room_from_blob(session)),
     ):
+        owner = str(session.get("saved_mock_edit_draft_id") or "")
+        marker = (raw.attrs.get("saved_mock_draft_id") if is_runtime_table(raw)
+                  else raw.get("saved_mock_draft_id") if isinstance(raw, dict) else None)
+        if owner and marker != owner:
+            continue
         if is_runtime_table(raw):
             table = normalize_board_table(raw)
         elif isinstance(raw, dict) and raw.get("table_records") is not None:
@@ -3241,6 +3257,8 @@ def _resolve_richest_draft_board(session: dict[str, Any]) -> tuple[pd.DataFrame,
             best_table = table
             best_count = count
             best_name = name
+    if best_table is None and session.get("saved_mock_edit_draft_id"):
+        raise ValueError("No board matches the resumed Mock Draft; reopen it before saving.")
     if best_table is None:
         best_table = ensure_runtime_draft_board(session)
         best_count = table_pick_count(best_table)
@@ -4428,6 +4446,8 @@ def _save_draft_board_now_impl(
     trace["saved_pick_count"] = pick_count
     trace["active_board_source"] = session.get("_draft_room_active_board_source")
     record_board_editor_diagnostics(session, board, editor_key=wkey)
+    from saved_mock_resume import save_resumed_mock_board
+    trace["saved_mock_draft_id"] = save_resumed_mock_board(session, board)
     sync_board_to_session_keys(session, board, local_edit=True, reason="manual_save_prepare")
 
     save_trace = commit_draft_room_table(st, session, board, reason="manual_save", editor_key=wkey)
@@ -4497,7 +4517,10 @@ def _save_draft_board_now_impl(
 
         # Board save persists draft_room_table only. Saved Draft Library entries are
         # created only from explicit Save Draft actions on the Rosters tab / library UI.
-        trace["library_sync_skipped"] = "explicit_library_save_required"
+        if trace.get("saved_mock_draft_id"):
+            trace["library_sync"] = True
+        else:
+            trace["library_sync_skipped"] = "explicit_library_save_required"
 
     if trace.get("saved") and pick_count > 0:
         sync_editor_seed(session, board, force_reset=True)

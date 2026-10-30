@@ -276,6 +276,14 @@ def should_skip_workspace_restore_for_resume(
     Session-only ``_suite_resume_launch_*`` / ``_ami_insight_return_preserve`` flags
     must not block cross-device page sync.
     """
+    # These Baseball resources are applied after workspace hydration. Skipping it
+    # creates a partial session whose next save can erase parked drafts/queues.
+    if _normalize_resume_app_key(app_key) == "baseball" and not any(
+        _qp_get(st, key) for key in ("suite_ami_insight", "suite_ai_question_id", "suite_holdings_fp")
+    ):
+        resource = _qp_get(st, "suite_resume")
+        if resource.startswith(("bb:saved_draft:", "compare:", "trend:")) or _qp_get(st, "suite_saved_draft"):
+            return False
     if ami_return_resume_consumed(st, app_key):
         if reconcile_first:
             reconcile_stale_resume_session_flags(st, app_key)

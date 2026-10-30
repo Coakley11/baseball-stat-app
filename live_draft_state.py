@@ -1454,6 +1454,8 @@ def check_manual_commit_overwrite(session: dict[str, Any], *, source: str = "") 
 
 def prepare_live_draft_state(session: dict[str, Any]) -> dict[str, Any] | None:
     """Hydrate runtime room from canonical blob before Live Draft Room renders."""
+    if session.get("saved_mock_edit_draft_id") and not isinstance(session.get("live_draft_room"), dict):
+        return None  # A parked room is resumed explicitly, not over a saved Mock edit.
     try:
         from live_draft_perf import PHASE_PREPARE_STATE, live_draft_perf_action
 

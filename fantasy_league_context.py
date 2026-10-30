@@ -1095,6 +1095,12 @@ def resolve_canonical_save_ids(
     if not fingerprint:
         return (str(draft_id).strip() or None, str(league_context_id).strip() or None, "")
 
+    # Explicit resumed edits keep their ID even if another Mock has identical content.
+    if draft_id and str(session.get("saved_mock_edit_draft_id") or "") == str(draft_id):
+        from saved_mock_resume import resumed_mock_save_owner
+        owner = resumed_mock_save_owner(session)
+        entry = get_draft_archive(session, owner)
+        return owner, str(entry.get("league_context_id") or context_id_for_archive(owner)), fingerprint
     existing_archive = find_archive_by_draft_fingerprint(session, fingerprint)
     if existing_archive:
         draft_id = str(existing_archive.get("draft_id") or draft_id or "").strip() or None
@@ -1940,6 +1946,9 @@ def save_simulator_league_context(
     cfg = dict(config or session.get("draft_shared_settings") or {})
     league_rosters = build_league_rosters_from_simulator_board(board_df, my_team)
     label = str(draft_name or "").strip() or f"Simulator — {my_team}"
+    if reuse_session_draft_id and not draft_id and session.get("saved_mock_edit_draft_id"):
+        from saved_mock_resume import resumed_mock_save_owner
+        draft_id = resumed_mock_save_owner(session)
     if reuse_session_draft_id and not draft_id:
         if save_only:
             # Save Draft must not mutate the currently active simulator league.

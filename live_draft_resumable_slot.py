@@ -622,6 +622,8 @@ def continue_saved_draft(
         }
 
     # Always enter paused — shared drafts open Resume Lobby until everyone rejoins.
+    from saved_mock_resume import release_mock_edit
+    release_mock_edit(session)
     # Keep timer frozen; do not invent a deadline.
     room["status"] = "paused"
     room["paused"] = True

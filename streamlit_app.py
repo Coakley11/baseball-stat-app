@@ -14534,9 +14534,28 @@ try:
 except ImportError:
     pass
 
+from saved_mock_resume import apply_pending_saved_mock_resume
+_mock_resume_result = apply_pending_saved_mock_resume(st.session_state)
+if _mock_resume_result.get("error"):
+    st.error(_mock_resume_result["error"])
+elif _mock_resume_result.get("applied"):
+    from draft_archive_ui import _persist_archive
+    from draft_archive_state import get_draft_archive
+    if _persist_archive(st.session_state, st, reason="league_context_activated",
+                        entry=get_draft_archive(st.session_state, _mock_resume_result["draft_id"])):
+        st.rerun()
+    else:
+        st.error("The saved Mock could not be persisted. Reopen it before making changes.")
+
+from suite_resume_launch import apply_pending_baseball_analysis_resume
+_analysis_resume = st.session_state.get("_suite_pending_analysis_resume") or {}
+if apply_pending_baseball_analysis_resume(st.session_state):
+    _analysis_save_reason = "comparison_edit" if "comparison_players" in _analysis_resume else "trend_edit"
+    if not force_save_baseball_state(st, reason=_analysis_save_reason):
+        st.warning("The restored selection could not be saved. Reopen the resource before editing it.")
+
 try:
     from suite_resume_launch import finalize_ami_return_restore
-
     finalize_ami_return_restore(st, "baseball")
 except Exception:
     pass
@@ -20924,6 +20943,8 @@ elif active_page == "Draft Assistant Simulator":
 
 
 elif active_page == "Draft Room Simulator":
+    if st.session_state.get("saved_mock_edit_draft_id"):
+        st.caption(f"Saved Mock Draft: {st.session_state.get('_simulator_library_draft_name', '')} · {st.session_state['saved_mock_edit_draft_id']}")
     _maybe_render_account_pref_sync(active_page)
     _page_perf_start(active_page)
     import draft_tools
@@ -21414,6 +21435,8 @@ elif active_page == "Draft Room Simulator":
 
             st.markdown("**Save draft board**")
             st.caption(
+                "Save changes to this saved Mock Draft, keeping its draft identity."
+                if st.session_state.get("saved_mock_edit_draft_id") else
                 "**Save Draft Board Now** keeps this working board (including an applied import) "
                 "through refreshes. Standings, Lineup and Waivers use a **Saved Draft**: add this board "
                 "with **Set Active Draft** on the *Rosters & grades* tab."
@@ -21422,7 +21445,8 @@ elif active_page == "Draft Room Simulator":
                 "Save Draft Board Now",
                 key=MANUAL_SAVE_BUTTON_KEY,
                 type="primary",
-                help="Save the working board shown above. It does not add it to your Saved Draft Library.",
+                help=("Update this saved Mock Draft's board." if st.session_state.get("saved_mock_edit_draft_id")
+                      else "Save the working board shown above. It does not add it to your Saved Draft Library."),
                 on_click=_on_manual_save_click,
             )
             if save_clicked:

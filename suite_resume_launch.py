@@ -256,6 +256,24 @@ def _apply_music(st: Any, resume: str, page: str) -> None:
         st.session_state["studio_page"] = target
 
 
+def apply_pending_baseball_analysis_resume(session: dict[str, Any]) -> bool:
+    """Apply the explicit resource after workspace restore consumes old pending aliases."""
+    payload = session.pop("_suite_pending_analysis_resume", None)
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("comparison_players"):
+        from comparison_state import clear_comparison_local_edit, write_canonical_comparison_state
+        clear_comparison_local_edit(session)
+        write_canonical_comparison_state(session, payload["comparison_players"], reason="suite_resource_resume", local_edit=True)
+    if payload.get("trend_player"):
+        from trend_state import clear_trend_local_edit, write_canonical_trend_state
+        clear_trend_local_edit(session)
+        write_canonical_trend_state(session, chart_player=payload["trend_player"],
+            players_multi=payload.get("trend_players"), update_players_multi="trend_players" in payload,
+            reason="suite_resource_resume", local_edit=True)
+    return True
+
+
 def _apply_baseball(st: Any, resume: str, page: str) -> None:
     try:
         from draft_lab_resume import capture_pending_resume_query, schedule_draft_lab_resume_navigation
@@ -281,6 +299,8 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
         else:
             st.session_state.pop("pending_sig_player_b", None)
         st.session_state["pending_compare_players"] = players
+        if resume.startswith("compare:"):
+            st.session_state["_suite_pending_analysis_resume"] = {"comparison_players": players}
     target_page = page.strip()
     for prefix, fixed_page in _BASEBALL_FIXED_RESUME_PAGES:
         if resume.startswith(prefix):
@@ -413,6 +433,7 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
     if not saved_draft and resume.startswith("bb:saved_draft:"):
         saved_draft = resume.split(":", 2)[-1].strip()
     if saved_draft:
+        st.session_state["_suite_resume_saved_draft_id"] = saved_draft
         try:
             from draft_archive_state import activate_draft_archive
 
@@ -449,6 +470,11 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
             st.session_state["pending_trend_players"] = labels
             st.session_state["trend_force_multi_labels"] = labels[:3]
             st.session_state["trend_players_multi"] = labels[:3]
+    if resume.startswith("trend:") and trend_player:
+        payload = {"trend_player": trend_player}
+        if trend_players_raw and labels:
+            payload["trend_players"] = labels[:3]
+        st.session_state["_suite_pending_analysis_resume"] = payload
     if target_page:
         try:
             if resume.startswith("bb:hof_case:"):

@@ -33,6 +33,14 @@ def _import_baseball_app():
 
 
 def _your_team(session: dict[str, Any], *, live_room: dict[str, Any] | None = None) -> str:
+    # Streamlit removes page-owned widget keys when leaving the Simulator.
+    # A bound local Mock's saved team remains authoritative across those pages.
+    if live_room is None and session.get("saved_mock_edit_draft_id"):
+        from saved_mock_resume import resumed_mock_save_owner
+        from draft_archive_state import get_draft_archive
+
+        owner = resumed_mock_save_owner(session)
+        return str((get_draft_archive(session, owner) or {}).get("team_name") or "").strip()
     try:
         from draft_room_context import active_participant_team, is_multiplayer_draft_active
 
@@ -1535,6 +1543,12 @@ def draft_player(
         result["message"] = "Select a player first."
         return result
 
+    from saved_mock_resume import resumed_mock_save_owner
+    try:
+        resumed_mock_save_owner(session)
+    except ValueError as exc:
+        result.update(error="saved_mock_owner_mismatch", message=str(exc))
+        return result
     ctx = draft_action_context(session)
     try:
         from draft_room_state import ACTIVE_DRAFT_SOURCE_LIVE, resolve_active_draft_source

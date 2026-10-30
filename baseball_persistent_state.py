@@ -129,6 +129,11 @@ _WORKSPACE_KEYS = (
 )
 
 _WORKFLOW_KEYS = (
+    "saved_mock_edit_draft_id",
+    "saved_mock_board_draft_id",
+    "saved_mock_workflows",
+    "_simulator_session_library_draft_id",
+    "_simulator_library_draft_name",
     "draft_queue",
     "watchlist_focus",
     "watchlist_favorites",
