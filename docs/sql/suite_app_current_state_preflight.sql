@@ -2,8 +2,8 @@
 -- Every statement is a SELECT. Nothing here writes, locks or alters. See
 -- docs/SUITE_APP_CURRENT_STATE_ISOLATION_PLAN.md for what each result means.
 --
--- How to run: the Supabase SQL editor shows only the LAST result set, so run the six blocks
--- one at a time (highlight one block and run it, or paste it alone). Each block is one statement.
+-- How to run: the Supabase SQL editor shows only the LAST result set, so run the blocks
+-- (P1-P3 ... P12, then P1b and P15) one at a time (highlight one block and run it, or paste it alone). Each block is one statement.
 --
 -- Safe to share: no metrics, session payloads, tokens, user ids or full emails are returned.
 -- Profiles appear as labels: the preset names (daniel, default, ariel, guest, test_user,
@@ -182,3 +182,61 @@ select st.app,
 from public.suite_app_current_state st
 left join u on u.id = st.user_id
 order by st.app;
+
+-- P1b. The schema definitions, one line per item: version, columns (type, null, default), every
+-- constraint (the primary key included), every index, and every user trigger on the table.
+-- Definitions only: no row content. Needed before a migration is proposed.
+select 'version' as kind, '' as name, current_setting('server_version') as definition
+union all
+select 'column', a.attname,
+       format_type(a.atttypid, a.atttypmod) || case when a.attnotnull then ' not null' else ' nullable' end
+       || coalesce(' default ' || pg_get_expr(d.adbin, d.adrelid), '')
+from pg_attribute a
+left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
+where a.attrelid = 'public.suite_app_current_state'::regclass and a.attnum > 0 and not a.attisdropped
+union all
+select 'constraint', conname, pg_get_constraintdef(oid)
+from pg_constraint where conrelid = 'public.suite_app_current_state'::regclass
+union all
+select 'index', indexname, indexdef
+from pg_indexes where schemaname = 'public' and tablename = 'suite_app_current_state'
+union all
+select 'trigger', tgname, pg_get_triggerdef(oid)
+from pg_trigger where tgrelid = 'public.suite_app_current_state'::regclass and not tgisinternal
+order by 1, 2;
+
+-- P15. Who a saved live draft says it belongs to, for every row: the profile and workspace stamps
+-- inside metrics.full_session.live_draft_state / live_draft_room. Labels only (preset names as they
+-- are, any other profile as acct_<6 hex>); no draft content. A row with no live draft has empty stamps.
+-- stamp_vs_owner: 'same' when the stamp names the row's owner; 'DIFFERENT' when it names another
+-- profile (the owner's row holds a draft that profile created); '' when there is no stamp.
+with u as (
+  select id, external_id from public.suite_users
+), s as (
+  select st.app, st.updated_at, st.user_id, u.external_id as owner_ext,
+         jsonb_typeof(st.metrics #> '{full_session,live_draft_state}') = 'object' as has_live_draft_state,
+         jsonb_typeof(st.metrics #> '{full_session,live_draft_room}') = 'object' as has_live_draft_room,
+         nullif(coalesce(st.metrics #>> '{full_session,live_draft_state,owner_external_id}',
+                         st.metrics #>> '{full_session,live_draft_room,owner_external_id}'), '') as stamp_ext,
+         nullif(coalesce(st.metrics #>> '{full_session,live_draft_state,owner_workspace_id}',
+                         st.metrics #>> '{full_session,live_draft_room,owner_workspace_id}'), '') as stamp_ws
+  from public.suite_app_current_state st
+  left join u on u.id = st.user_id
+)
+select app,
+       case when owner_ext is null then '(no owner)'
+            when owner_ext in ('daniel', 'default', 'ariel', 'guest', 'test_user', 'health_probe', 'user_unidentified') then owner_ext
+            else 'acct_' || left(md5(owner_ext), 6) end as row_owner,
+       coalesce(has_live_draft_state, false) as has_live_draft_state,
+       coalesce(has_live_draft_room, false) as has_live_draft_room,
+       case when stamp_ext is null then ''
+            when stamp_ext in ('daniel', 'default', 'ariel', 'guest', 'test_user', 'health_probe', 'user_unidentified') then stamp_ext
+            else 'acct_' || left(md5(stamp_ext), 6) end as stamp_external_id,
+       case when stamp_ws is null then ''
+            when stamp_ws in ('daniel', 'default', 'ariel', 'guest', 'test_user', 'health_probe', 'user_unidentified') then stamp_ws
+            else 'acct_' || left(md5(stamp_ws), 6) end as stamp_workspace_id,
+       case when stamp_ext is null then ''
+            when stamp_ext = owner_ext then 'same' else 'DIFFERENT' end as stamp_vs_owner,
+       updated_at
+from s
+order by app;

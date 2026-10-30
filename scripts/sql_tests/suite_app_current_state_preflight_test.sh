@@ -50,7 +50,7 @@ insert into public.suite_users (id, external_id, email) values
   ('00000000-0000-0000-0000-0000000000e1', 'john', 'john@example.invalid');
 insert into public.suite_app_current_state (app, user_id, metrics) values
   ('baseball', '00000000-0000-0000-0000-0000000000d1',
-     '{"full_session": {"secret_board": "CONTENT-MUST-NOT-PRINT", "live_draft_state": {"owner_external_id": "daniel"}}}'),
+     '{"full_session": {"secret_board": "CONTENT-MUST-NOT-PRINT", "live_draft_state": {"owner_external_id": "daniel", "owner_workspace_id": "coakley11"}}}'),
   ('investment', '00000000-0000-0000-0000-0000000000e1', '{}'),
   ('music', '00000000-0000-0000-0000-0000000000d1',
      '{"full_session": {"live_draft_room": {"owner_external_id": "john"}}}'),
@@ -119,6 +119,24 @@ out=$(block "-- P12.") && ok "runs read-only" || bad "runs read-only" "$(cat "$W
 ALL="$ALL$out"
 c6=$(pg -c "select md5(coalesce(string_agg(md5(x::text), ',' order by md5(x::text)), '')) from public.suite_app_current_state x")
 [ "$(echo "$out" | head -1 | cut -d'|' -f6)" = "$c6" ] && ok "table_fp equals the C6 fingerprint" || bad "table_fp equals the C6 fingerprint"
+[ "$(echo "$out" | wc -l)" -eq 9 ] && ok "one line per row" || bad "one line per row"
+
+echo "P1b: schema definitions"
+out=$(block "-- P1b.") && ok "runs read-only" || bad "runs read-only" "$(cat "$WORK/err.txt")"
+ALL="$ALL$out"
+has "$out" "^version\|\|[0-9]+" "version"
+has "$out" "^column\|user_id\|uuid nullable" "user_id is nullable"
+has "$out" "^column\|app\|text not null" "app column"
+has "$out" "^constraint\|suite_app_current_state_pkey\|PRIMARY KEY \(app\)" "primary key definition"
+has "$out" "^index\|suite_app_current_state_pkey\|CREATE UNIQUE INDEX" "index definition"
+if echo "$out" | grep -q "^trigger"; then bad "no trigger on the fixture"; else ok "no trigger on the fixture (none listed)"; fi
+
+echo "P15: live-draft owner stamps"
+out=$(block "-- P15.") && ok "runs read-only" || bad "runs read-only" "$(cat "$WORK/err.txt")"
+ALL="$ALL$out"
+has "$out" "^baseball\|daniel\|t\|f\|daniel\|acct_[0-9a-f]{6}\|same\|" "stamp names the owner: same"
+has "$out" "^music\|daniel\|f\|t\|acct_[0-9a-f]{6}\|\|DIFFERENT\|" "stamp names another profile: DIFFERENT"
+has "$out" "^nba\|\(no owner\)\|f\|f\|\|\|\|" "no live draft: empty stamps"
 [ "$(echo "$out" | wc -l)" -eq 9 ] && ok "one line per row" || bad "one line per row"
 
 echo "Nothing sensitive in any output"

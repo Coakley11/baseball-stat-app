@@ -162,9 +162,66 @@ Each phase needs the owner's approval. Phases 0, 1, 2 and 3 change no existing r
 
 Phase 4 only changes which columns form the key. Every row keeps its `app`, `user_id` and content.
 
+### Preflight Block 3 (P13): who wrote under each state key (owner's run, 2026-10-30, 44 lines)
+
+P13 lists, per current state row, every account that wrote activity events or resume items under that key. Those tables keep their own `user_id` per row, so they preserve a history the state row lost. **They are a lower bound:** a state save that logged no event or resume item leaves no trace here.
+
+**Profile labels.** `acct_c3562d` is the profile `coakley11`. `default` is the original single-user backfill. `(no user)` is a write with no `user_id`.
+
+**Keys with no cross-writer at all (clean):** `applied_intelligence__ariel`, `baseball__guest`, `future_lens`, `future_lens__ariel`, `nba__ariel`, and the three P6 keys (below). The `*__ariel` and `*__guest` keys held by `daniel` are the allowed preset case.
+
+**Cross-writers, every case:**
+
+| Key | Row owner now | Other writer | What they wrote | When (UTC) | Reading |
+|---|---|---|---|---|---|
+| `baseball`, `investment`, `music` | daniel | `default` | 1–14 events, 1–3 resume items per key | 2026-06-02 only | Legacy: `default` was the single-user profile before accounts. `daniel` is the same owner. Not a contamination. |
+| `baseball` | daniel | `acct_c3562d` | 17 events, 16 resume items | 2026-06-25 to 2026-07-20 01:38 | Another profile wrote the owner's unscoped key. Confirmed cross-account writes. |
+| `applied_intelligence` | daniel | `acct_c3562d` | 17 events, 6 resume items | 2026-07-15 13:55 to 14:05 | Same, ten minutes. |
+| `nba` | daniel | `acct_c3562d` | 1 event, 1 resume item | 2026-07-04 05:03 | Same, one write. |
+| `baseball` | daniel | `(no user)` | 5 events, 5 resume items | 2026-07-05 to 2026-07-17 | A writer with no `user_id`. With the plain upsert it replaces the row's content and keeps the old `user_id`. Confirmed that such a writer exists. |
+| `baseball__coakley11` | acct_c3562d | `daniel` | 8 events, 8 resume items | 2026-06-25 20:46 to 2026-07-20 01:40 | The owner's profile wrote the other account's key. Confirmed cross-account writes. |
+
+**The three P6 keys** (`applied_intelligence__coakley11`, `music__coakley11`, `nba__coakley11`, owned by `daniel`):
+- **Every** recorded writer is `daniel`, and `acct_c3562d` never wrote under them.
+- All writes fall on 2026-07-03 23:29 to 2026-07-04 06:01: one event each for applied_intelligence and nba, three for music, and one resume item each.
+- So these rows were **not taken from** the second account. They were created by the owner's profile under the second account's workspace key.
+
+**The pattern.**
+- **Mirror image on 2026-07-04.** Within one hour (05:00 to 05:44):
+  - `daniel` wrote `applied_intelligence__coakley11`;
+  - `acct_c3562d` wrote the unscoped `nba`;
+  - `daniel` wrote `nba__coakley11`.
+- **Minutes apart on 2026-07-20.** Between 01:38 and 01:41:
+  - `acct_c3562d` wrote the unscoped `baseball`;
+  - `daniel` wrote `baseball__coakley11`;
+  - `acct_c3562d` wrote `baseball__coakley11`.
+- **Reading.** The profile (`user_id`) and the workspace key were crossed. For some sessions the workspace key said one account and the profile said the other. That is the account-isolation bug in `suite_account` and the legacy email mapping (answer 3), not two unrelated people writing at random.
+- **Not shown by the data.** Whether `coakley11` and `daniel` are the same person.
+
+**Last cross-write: 2026-07-20 01:40 UTC.** None is recorded in the 102 days since. Today's activity under every key (`daniel` through 2026-10-30) is by the row owner only.
+
+**Confirmed, uncertain, and ruled out.**
+
+| | |
+|---|---|
+| **Confirmed** | Cross-account writes occurred, in both directions, on `baseball`, `baseball__coakley11`, `applied_intelligence` and `nba`. They stopped by 2026-07-20. |
+| **Confirmed** | The three P6 rows are the owner's profile writing under the second account's key, on one day (2026-07-03/04). They are not takeovers of the second account's rows. |
+| **Confirmed** | A writer with no `user_id` wrote `baseball` between 2026-07-05 and 2026-07-17. The `NOT NULL` step needs that writer handled first. |
+| **Confirmed** | The legacy `default` rows are the same owner, not contamination. |
+| **Uncertain** | Whether the content of `baseball` (daniel), `baseball__coakley11` (acct_c3562d), `applied_intelligence` or `nba` now contains the other account's state. Ownership shows who wrote last, not whose content it is. The draft-owner stamps (P15) and, if you agree, a content comparison answer this. |
+| **Uncertain** | Whether `coakley11` is the owner's own second sign-in. Only the owner knows. |
+| **Uncertain** | State saves that logged no event. |
+| **Ruled out** | Any third account writing under these keys. Only `daniel`, `acct_c3562d`, `default` and `(no user)` appear. |
+| **Ruled out** | Cross-writes since 2026-07-20 (by the events and resume items). |
+
+**Implication for the migration (no data change proposed).**
+- The 14 existing rows already satisfy `(user_id, app)`: no ownerless rows, no orphans (Block 1), and `app` is unique, so no pair repeats.
+- After the key change, the second account saving `music__coakley11` creates its own row `(acct_c3562d, music__coakley11)`. The owner's old row is kept and stays visible to `daniel`. Nothing is overwritten.
+- Reassigning any of the three P6 rows would make the owner's data vanish from `daniel`. This plan proposes no reassignment. A repair, if wanted, is a separate step that begins with a copy of the row, as in Phase 5.
+
 ### Reading the preflight
 
-Six blocks, each one statement; the SQL editor shows only the last result set, so run them one at a time. Output is safe to share: no metrics, payloads, tokens, user ids or full emails. Profiles other than the presets appear as `acct_<6 hex>` (a pseudonym; the file has a private query to map them back). Tested locally with `scripts/sql_tests/suite_app_current_state_preflight_test.sh`: 36 checks, every block read-only, every flag raised by its case, nothing sensitive in the output.
+Eight blocks (P1b and P15 follow P12), each one statement; the SQL editor shows only the last result set, so run them one at a time. Output is safe to share: no metrics, payloads, tokens, user ids or full emails. Profiles other than the presets appear as `acct_<6 hex>` (a pseudonym; the file has a private query to map them back). Tested locally with `scripts/sql_tests/suite_app_current_state_preflight_test.sh`: 48 checks, every block read-only, every flag raised by its case, nothing sensitive in the output.
 
 | Block | Shows | What decides the next step |
 |---|---|---|
@@ -174,6 +231,8 @@ Six blocks, each one statement; the SQL editor shows only the last result set, s
 | **P8** | Sign-ins whose email contains "daniel" or "ariel" (masked), the profile the legacy rule gave them, and whether a profile records that email; every profile | A sign-in mapped to `daniel` with `(no profile records this email)` is a different person who shared the owner's account under the legacy rule. |
 | **P9–P10** | RLS, policies and anon / authenticated / service_role access on every suite and baseball table, exposed tables first | Any table with RLS off and anon or authenticated access is exposed like the three contained ones. |
 | **P12** | Per-row hashes and the table fingerprint (same formula as containment C6) | Saved before any phase and compared after it. |
+| **P1b** | One line each: version, columns (type, null, default), constraints, indexes, user triggers | The primary-key and index definitions the migration is written against. |
+| **P15** | Per row: the profile and workspace stamps inside a saved live draft, and whether they name the row's owner | `DIFFERENT` means the row holds a draft another profile created. |
 
 **What the preflight can't tell.** A takeover that the owner's next save reversed leaves the owner's `user_id` on the row; only P13's dates and the row's own content would show it. The live-draft stamp exists only when a live draft was saved. The device id in a saved session isn't used: on Streamlit Cloud it identifies the server, not the person.
 
