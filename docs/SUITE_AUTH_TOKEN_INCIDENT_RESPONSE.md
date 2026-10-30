@@ -40,18 +40,17 @@ Run `docs/sql/suite_auth_token_exposure_readonly.sql`. It returns aggregates onl
 
 The current restore path should behave this way: a failed `set_session` is caught, recorded and leaves the session signed out. The rehearsal is what proves it.
 
-**Then choose one option for Production:**
+**Revocation goes through Supabase's supported Auth interfaces only.** Per the owner's 2026-10-30 instruction, nothing writes directly to the managed `auth` schema. The earlier "mark refresh tokens revoked with SQL" option is withdrawn.
 
-| | **Option A: global sign-out** | **Option B: mark refresh tokens revoked** |
-|---|---|---|
-| Effect on stored refresh tokens | All stop working | All stop working |
-| Effect on access tokens | Endpoints that check the session (`/auth/v1/user`, so also password and email changes) refuse them immediately. JWT-only checks (PostgREST) accept them until expiry. | Still valid until expiry everywhere |
-| Auth records | **Deletes** the users' `auth.sessions` rows; refresh tokens cascade | Keeps every session and token row (audit trail intact); sets the same `revoked` flag Supabase Auth sets itself |
-| How | Supabase's global sign-out (`POST /auth/v1/logout?scope=global`) needs each user's own access token. In bulk, deleting the users' `auth.sessions` rows is the same operation. | `update auth.refresh_tokens set revoked = true, updated_at = now() where not revoked;`, optionally limited to the accounts in T1 |
-| Supported path? | Supabase's own sign-out mechanism | A direct write to the Supabase-managed `auth` schema; not an official API |
-
-- **My recommendation: Option B.** It preserves every Auth record, you asked that sessions not be deleted, and it closes the long-lived risk (refresh tokens). The access tokens then expire on their own within the JWT expiry.
-- **Choose A only if** T4 or the logs show password or email changes you didn't make. A also stops those Auth-API changes immediately.
+- **Global sign-out** is Supabase's supported mechanism: `POST /auth/v1/logout?scope=global`, which is `auth.sign_out(scope="global")` in the client libraries.
+  - It ends every session of that user, so every refresh token stops working.
+  - Endpoints that check the session (`/auth/v1/user`, and with it password and email changes) refuse that user's access tokens at once.
+  - JWT-only checks (PostgREST) accept them until expiry.
+  - Supabase Auth removes the user's session records itself. That is the supported behaviour, and it's why this needs separate approval.
+- **The procedure** is prepared separately and verified against Supabase's current documentation before use, with a Dev rehearsal on a test account. It needs a way to call it for each affected account. Options to evaluate:
+  - each user signs out of all devices;
+  - an admin call, if the current Admin API offers one per user id;
+  - a coordinated rotation of the signing key, which alone ends access tokens but **not** refresh tokens.
 - **Scope.** All accounts with a stored browser session (T1). Users sign in again once.
 - **Leave the stored rows alone.** Don't change or delete the `suite_saved_items` token rows: once revoked they're useless, and the apps overwrite them on the next sign-in. Clearing them is part of the long-term change below.
 

@@ -80,10 +80,15 @@ C3 and C4 are informational. Step 1 enforces the view, function, PUBLIC and memb
 3. **Run preflight C6 again** and compare with the saved output.
    - `suite_users` should be identical unless someone signed up in between.
    - `suite_saved_items` and `suite_user_settings` can differ only by the apps' own writes since then (for example, a sign-in rewrites its browser session row). Compare straight away.
-4. **From outside, with the anon key in an environment variable** (never pasted into a command or report), each of the three tables returns HTTP **401** with code `42501`:
+4. **From outside, with the anon key in an environment variable** (never pasted into a command or report), each of the three tables gives a **confirmed access denial**:
+   - an HTTP 4xx (401 or 403, depending on the gateway) whose body carries code `42501` / "permission denied", and no rows;
+   - a 200, even with an empty array, is **not** a pass.
+
+   This prints only the status and the error code:
    ```
-   curl -s -o /dev/null -w "%{http_code}\n" -H "apikey: $SUPABASE_ANON_KEY" \
-     -H "Authorization: Bearer $SUPABASE_ANON_KEY" "$SUPABASE_URL/rest/v1/suite_saved_items?select=id&limit=1"
+   curl -s -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+     -w "\nHTTP %{http_code}\n" "$SUPABASE_URL/rest/v1/suite_saved_items?select=id&limit=1" \
+     | grep -oE '"code":"[^"]*"|HTTP [0-9]+'
    ```
 5. **In each live suite app:** sign in (this writes the browser session row), load a page that reads account settings, open a saved item or Continue card, then sign out and back in on a second browser.
 6. **Dashboard → Advisors → Security.** The "RLS disabled in public" findings for the three tables are gone.

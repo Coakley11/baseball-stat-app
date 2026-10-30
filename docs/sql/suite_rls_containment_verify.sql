@@ -31,11 +31,13 @@ select rolname, rolbypassrls from pg_roles where rolname = 'service_role';
 --     for the tables nobody was using at that moment.)
 
 -- V5. From outside the database (HTTP), with the anon key in an environment variable so it
--- never appears in shell history or the report. Expect HTTP 401 with code 42501
--- ("permission denied") for each of the three tables; no body rows.
---   curl -s -o /dev/null -w "%{http_code}\n" \
---     -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
---     "$SUPABASE_URL/rest/v1/suite_saved_items?select=id&limit=1"
+-- never appears in shell history or the report. Expect a confirmed access denial for each of
+-- the three tables: an HTTP 4xx (401 or 403, depending on the gateway) whose JSON body has
+-- code "42501" / "permission denied", and no rows. A 200, or a 200 with an empty array, is
+-- NOT a pass. The command prints only the status line and the error code, never data:
+--   curl -s -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+--     -w "\nHTTP %{http_code}\n" "$SUPABASE_URL/rest/v1/suite_saved_items?select=id&limit=1" \
+--     | grep -oE '"code":"[^"]*"|HTTP [0-9]+'
 --   (repeat for suite_users and suite_user_settings)
 --
 -- V6. In each suite app (Dev first): sign in, open a page that loads account settings,
