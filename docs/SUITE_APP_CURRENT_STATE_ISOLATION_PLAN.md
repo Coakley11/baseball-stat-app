@@ -23,6 +23,21 @@ Status: findings and a plan only. No SQL has been run and no row has been read o
 | Roles that bypass RLS | `service_role` only; `anon`, `authenticated`, `authenticator` false |
 | `server_version`, `primary_key`, `other_constraints`, `indexes` | **Not yet reported.** Needed before any migration is proposed. |
 
+**Preflight Block 2 (P4–P7, P14), owner's run on 2026-10-30, read-only, all 14 rows:**
+
+| Result | Detail |
+|---|---|
+| `ok` or `PRESET_HELD_BY_OWNER` | 11 rows, including the Baseball row of the second account (`baseball__<acct_c3562d>`), which is owned by that account |
+| **`P6 KEY_OWNER_MISMATCH`** | **3 rows**: `applied_intelligence__<acct_c3562d>`, `music__<acct_c3562d>`, `nba__<acct_c3562d>`. Each key belongs to the second account's workspace, and each row is owned by `daniel`. |
+| `P14 DRAFT_STAMP_MISMATCH` | None reported. A row already flagged P6 is not tested for P14 (first problem wins), so the draft stamp on those three rows was reported separately. |
+| `P4 NULL_OWNER`, `ORPHAN_OWNER` | None |
+
+**What the three P6 rows are, and are not.**
+- They are not Baseball rows. The Baseball row is correctly owned.
+- They match the identity-level problem in answer 3: the other suite apps still map a sign-in onto a preset profile by email, so a second account's key can carry the owner's `user_id`.
+- Whether that is another person or the owner signing in under a second account is not visible here. P8 (the identity mapping) and P13 (who wrote under each key, and when) decide it.
+- No row has been reassigned. Phase 5 stays report-only.
+
 ## Answers
 
 ### 1. Which role and credentials the app uses
