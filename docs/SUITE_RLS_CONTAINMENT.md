@@ -103,7 +103,7 @@ C3 and C4 are informational. Step 1 enforces the view, function, PUBLIC and memb
    - V1: `rls_enabled = true` for the three tables.
    - V2: for those three, anon and authenticated show `false` in every column, and service_role shows `true` in every column.
    - V3: `service_role | true`.
-3. **Run preflight C6 again** and compare with the saved output.
+3. **Run preflight C6 again** and compare with the saved output. If a fingerprint differs, verify query V4b (with Step 1's execution time) counts the rows the apps wrote since then; counts only.
    - `suite_users` should be identical unless someone signed up in between.
    - `suite_saved_items` and `suite_user_settings` can differ only by the apps' own writes since then (for example, a sign-in rewrites its browser session row). Compare straight away.
 4. **From outside, with the anon key in an environment variable** (never pasted into a command or report), each of the three tables gives a **confirmed access denial**:

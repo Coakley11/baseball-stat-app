@@ -30,6 +30,23 @@ select rolname, rolbypassrls from pg_roles where rolname = 'service_role';
 --     (Apps keep writing while you compare, so compare immediately, or compare per table
 --     for the tables nobody was using at that moment.)
 
+-- V4b. Only if a C6 fingerprint differs: how many rows each table gained or rewrote since Step 1
+-- ran. Replace the timestamp with the time Step 1 was executed (UTC). Counts only, no content.
+-- Rows written by the apps since then explain a changed fingerprint for that table. suite_users has
+-- no updated_at, so for it a difference with no new rows needs a closer look.
+select 'suite_users' as t, count(*) filter (where created_at >= ts) as created_since, null::bigint as written_since
+from public.suite_users, (select timestamptz '2026-10-30 00:00:00+00' as ts) p
+union all select 'suite_saved_items', null, count(*) filter (where updated_at >= ts)
+from public.suite_saved_items, (select timestamptz '2026-10-30 00:00:00+00' as ts) p
+union all select 'suite_user_settings', null, count(*) filter (where updated_at >= ts)
+from public.suite_user_settings, (select timestamptz '2026-10-30 00:00:00+00' as ts) p
+union all select 'suite_activity_events', count(*) filter (where "timestamp" >= ts), null
+from public.suite_activity_events, (select timestamptz '2026-10-30 00:00:00+00' as ts) p
+union all select 'suite_app_current_state', null, count(*) filter (where updated_at >= ts)
+from public.suite_app_current_state, (select timestamptz '2026-10-30 00:00:00+00' as ts) p
+union all select 'suite_resume_items', null, count(*) filter (where updated_at >= ts)
+from public.suite_resume_items, (select timestamptz '2026-10-30 00:00:00+00' as ts) p;
+
 -- V5. From outside the database (HTTP), with the anon key in an environment variable so it
 -- never appears in shell history or the report. Expect a confirmed access denial for each of
 -- the three tables: an HTTP 4xx (401 or 403, depending on the gateway) whose JSON body has
