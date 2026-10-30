@@ -95,24 +95,26 @@ def _record(
         _LAST_ACTIVITY["error"] = str(exc)
 
 def log_player_comparison(
-    player_a: str,
-    player_b: str,
+    player_a: str = "",
+    player_b: str = "",
     *,
+    players: list[str] | None = None,
     extra: str | None = None,
 ) -> None:
-    a = str(player_a or "").strip()
-    b = str(player_b or "").strip()
-    if not a or not b:
+    from suite_deep_links import comparison_players, comparison_resume_key
+
+    selected = comparison_players({"players": players} if players is not None else {"player_a": player_a, "player_b": player_b})
+    if len(selected) < 2:
         return
-    pair = f"{a} vs {b}"
+    label = " vs ".join(selected)
     _record(
         "player_comparison",
         page="Comparison Tool",
-        metrics={"player_a": a, "player_b": b, "player": a},
-        summary=f"Compared {pair}",
-        resume_key=f"compare:{a}:{b}",
+        metrics={"players": selected, "player_a": selected[0], "player_b": selected[1], "player": selected[0]},
+        summary=f"Compared {label}",
+        resume_key=comparison_resume_key(selected),
         resume_title="Continue player comparison",
-        resume_subtitle=pair,
+        resume_subtitle=label,
     )
 
 

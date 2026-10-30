@@ -19,6 +19,7 @@ Query params (read by suite_resume_launch in each app):
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import Any
@@ -178,6 +179,30 @@ def _normalize_music_page(page: str, resume_key: str) -> str:
     return "practice"
 
 
+def comparison_players(metrics: dict[str, Any] | None = None, resume_key: str = "") -> list[str]:
+    """Canonical Comparison Tool identities, with legacy pair-key compatibility."""
+    m = metrics if isinstance(metrics, dict) else {}
+    raw = m.get("players")
+    if not isinstance(raw, list):
+        raw = [m.get("player_a"), m.get("player_b")]
+        if not any(raw) and str(resume_key).startswith("compare:"):
+            raw = str(resume_key).split(":")[1:]
+    players: list[str] = []
+    for value in raw:
+        if not isinstance(value, str):
+            continue
+        name = value.strip()
+        if name and name not in players:
+            players.append(name)
+        if len(players) == 3:
+            break
+    return players
+
+
+def comparison_resume_key(players: list[str]) -> str:
+    return "compare:" + ":".join(comparison_players({"players": players}))
+
+
 def _parse_compare_resume(resume_key: str) -> tuple[str, str]:
     rk = str(resume_key or "").strip()
     if rk.startswith("trendcompare:"):
@@ -187,7 +212,7 @@ def _parse_compare_resume(resume_key: str) -> tuple[str, str]:
         return "", ""
     if not rk.startswith("compare:"):
         return "", ""
-    parts = rk.split(":", 2)
+    parts = rk.split(":")
     if len(parts) < 3:
         return "", ""
     return parts[1].strip(), parts[2].strip()
@@ -289,6 +314,13 @@ def build_resume_action_url(
             params["suite_player_a"] = pa[:120]
         if pb:
             params["suite_player_b"] = pb[:120]
+        if rk.startswith("compare:"):
+            players = comparison_players(m, rk)
+            if players:
+                params["suite_players"] = json.dumps(players, ensure_ascii=False)
+                params["suite_player_a"] = players[0]
+                if len(players) > 1:
+                    params["suite_player_b"] = players[1]
         trend_player = str(m.get("player") or "").strip()
         if not trend_player and rk.startswith("trend:"):
             trend_player = rk.split(":", 1)[-1].strip()
@@ -476,6 +508,7 @@ def resume_metrics_from_item_key(app: str, item_key: str, *, subtitle: str = "")
         page = _normalize_music_page(page, key)
     elif app_key == "baseball":
         if key.startswith("compare:"):
+            metrics["players"] = comparison_players(resume_key=key)
             pa, pb = _parse_compare_resume(key)
             if pa:
                 metrics["player_a"] = pa

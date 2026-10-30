@@ -15405,10 +15405,10 @@ def compare_top_changed():
         try:
             from baseball_activity import log_player_comparison
 
-            sig = tuple(sorted(selected[:2]))
+            sig = tuple(sorted(selected[:3]))
             if st.session_state.get("_cc_compare_activity_sig") != sig:
                 st.session_state["_cc_compare_activity_sig"] = sig
-                log_player_comparison(selected[0], selected[1])
+                log_player_comparison(players=selected[:3])
         except Exception:
             pass
 

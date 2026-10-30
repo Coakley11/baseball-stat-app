@@ -263,19 +263,24 @@ def _apply_baseball(st: Any, resume: str, page: str) -> None:
         capture_pending_resume_query(st, "baseball")
     except ImportError:
         pass
+    import json
+    from suite_deep_links import comparison_players
+
     pa = _qp_get(st, "suite_player_a")
     pb = _qp_get(st, "suite_player_b")
-    if not pa and resume.startswith("compare:"):
-        parts = resume.split(":", 2)
-        if len(parts) >= 3:
-            pa, pb = parts[1].strip(), parts[2].strip()
-    if pa and pb:
-        st.session_state["pending_sig_player_a"] = pa
-        st.session_state["pending_sig_player_b"] = pb
-        st.session_state["pending_compare_players"] = [pa, pb]
-    elif pa:
-        st.session_state["pending_sig_player_a"] = pa
-        st.session_state["pending_compare_players"] = [pa]
+    try:
+        raw_players = json.loads(_qp_get(st, "suite_players"))
+    except (ValueError, TypeError):
+        raw_players = None
+    metrics = {"players": raw_players} if isinstance(raw_players, list) else {"player_a": pa, "player_b": pb}
+    players = comparison_players(metrics, resume)
+    if players:
+        st.session_state["pending_sig_player_a"] = players[0]
+        if len(players) > 1:
+            st.session_state["pending_sig_player_b"] = players[1]
+        else:
+            st.session_state.pop("pending_sig_player_b", None)
+        st.session_state["pending_compare_players"] = players
     target_page = page.strip()
     for prefix, fixed_page in _BASEBALL_FIXED_RESUME_PAGES:
         if resume.startswith(prefix):
