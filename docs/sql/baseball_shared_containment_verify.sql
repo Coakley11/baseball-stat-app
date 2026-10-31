@@ -17,6 +17,9 @@ select c.relname as table_name, r.rolname as role,
        has_table_privilege(r.rolname, c.oid, 'UPDATE') as upd,
        has_table_privilege(r.rolname, c.oid, 'DELETE') as del,
        has_table_privilege(r.rolname, c.oid, 'TRUNCATE') as trunc,
+       has_table_privilege(r.rolname, c.oid, 'REFERENCES') as refs,
+       has_table_privilege(r.rolname, c.oid, 'TRIGGER') as trg,
+       has_table_privilege(r.rolname, c.oid, 'MAINTAIN') as maint,
        has_any_column_privilege(r.rolname, c.oid, 'SELECT,INSERT,UPDATE,REFERENCES') as any_column
 from pg_class c
 cross join (values ('anon'), ('authenticated'), ('service_role')) as r(rolname)

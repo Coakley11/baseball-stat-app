@@ -57,7 +57,7 @@ With RLS on and no policy, anon and authenticated are refused; `service_role` by
 | 5 | No **SECURITY DEFINER function** naming the tables callable by them | It runs as its owner |
 | 6 | No serial / identity column | Its sequence would need revoking too |
 
-**Proof afterwards (any failure undoes the change):** RLS is on; anon and authenticated hold no table, column privilege; every service_role grant on all suite and shared-Baseball tables is identical to the snapshot taken before. It sets a 5-second lock timeout.
+**Proof afterwards (any failure undoes the change):** RLS is on; anon and authenticated hold none of the eight PostgreSQL 17 table privileges (including MAINTAIN) and no column privilege; check 3 (role membership) tests all eight too; every service_role grant on all suite and shared-Baseball tables is identical to the snapshot taken before. It sets a 5-second lock timeout.
 
 ## Read-only preflight (`baseball_shared_containment_preflight.sql`)
 

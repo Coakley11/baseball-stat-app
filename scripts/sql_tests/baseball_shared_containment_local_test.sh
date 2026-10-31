@@ -136,9 +136,9 @@ else bad "verify script runs read-only" "$(cat "$WORK/last_err.txt")"; fi
 VB1="$(psql_as - "$(sed -n '/^-- VB1\./,/^-- VB2\./p' "$VERIFY" | grep -v '^--')" | tr -d '\r')"
 equals "$VB1" "$(printf 'baseball_shared_draft_rooms|t|f|0\nbaseball_shared_leagues|t|f|0')" "VB1: RLS on, not forced, no policies"
 VB2="$(psql_as - "$(sed -n '/^-- VB2\./,/^-- VB3\./p' "$VERIFY" | grep -v '^--')")"
-equals "$(echo "$VB2" | grep -c '|anon|f|f|f|f|f|f$')" "2" "VB2: anon holds nothing on both tables"
-equals "$(echo "$VB2" | grep -c '|authenticated|f|f|f|f|f|f$')" "2" "VB2: authenticated holds nothing on both tables"
-equals "$(echo "$VB2" | grep -c '|service_role|t|t|t|t|t|t$')" "2" "VB2: service_role holds everything"
+equals "$(echo "$VB2" | grep -c '|anon|f|f|f|f|f|f|f|f|f$')" "2" "VB2: anon holds nothing on both tables"
+equals "$(echo "$VB2" | grep -c '|authenticated|f|f|f|f|f|f|f|f|f$')" "2" "VB2: authenticated holds nothing on both tables"
+equals "$(echo "$VB2" | grep -c '|service_role|t|t|t|t|t|t|t|t|t$')" "2" "VB2: service_role holds everything"
 
 echo "Re-running Step B is safe"
 run_file "$STEP" && ok "Step B applies a second time (idempotent)" || bad "Step B idempotent" "$(cat "$WORK/last_err.txt")"
@@ -180,6 +180,11 @@ fresh_db
 psql_as - "create role leaky nologin; grant select on public.baseball_shared_leagues to leaky; grant leaky to anon" >/dev/null
 step_must_abort "role membership" "belong to roles with access"
 psql_as - "revoke leaky from anon; drop owned by leaky; drop role leaky" >/dev/null
+
+fresh_db
+psql_as - "create role maint nologin; revoke all on public.baseball_shared_leagues from public; grant maintain on public.baseball_shared_leagues to maint; grant maint to anon" >/dev/null
+step_must_abort "role membership holding only MAINTAIN" "belong to roles with access"
+psql_as - "revoke maint from anon; drop owned by maint; drop role maint" >/dev/null
 
 fresh_db
 psql_as - "revoke delete on public.baseball_shared_draft_rooms from service_role" >/dev/null

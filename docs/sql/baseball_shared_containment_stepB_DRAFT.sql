@@ -55,7 +55,7 @@ begin
   from member_of
   where exists (
     select 1 from unnest(tables) as x(tbl)
-    where has_table_privilege(role_oid, x.tbl, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE')
+    where has_table_privilege(role_oid, x.tbl, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
   );
   if problem is not null then
     raise exception 'ABORTED, nothing changed: anon/authenticated belong to roles with access: %', problem;
@@ -126,7 +126,11 @@ begin
   end if;
   foreach r in array api_roles loop
     foreach t in array tables loop
-      foreach p in array array['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'] loop
+      -- All eight table privileges of PostgreSQL 17 (production is 17.6), including MAINTAIN.
+      foreach p in array array[
+        'SELECT', 'INSERT', 'UPDATE', 'DELETE',
+        'TRUNCATE', 'REFERENCES', 'TRIGGER', 'MAINTAIN'
+      ] loop
         if has_table_privilege(r, t, p) then
           raise exception 'ABORTED, nothing changed: % still has % on %', r, p, t;
         end if;
