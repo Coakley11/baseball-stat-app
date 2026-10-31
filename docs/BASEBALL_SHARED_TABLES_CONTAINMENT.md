@@ -78,11 +78,14 @@ Expected: D3 all zeros in its first four columns; D2 lists grants for anon and a
 
 | Block | Result |
 |---|---|
+| **D1** | Six rows (two tables x anon, authenticated, service_role), as expected. Both tables: `rls_enabled = false`, `rls_forced = false`, `policies = 0`. `anon`, `authenticated` and `service_role` each hold all seven checked privileges (SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER). |
 | **D3** | **All seven columns 0:** `views_open_to_api_roles`, `definer_functions_open_to_api_roles`, `public_grants`, `serial_columns`, `functions_naming_tables`, `in_publications`, `user_triggers`. |
 
 D3 passed: no view, SECURITY DEFINER function, PUBLIC grant or serial column would let anon or authenticated bypass Step B's revoke, so none of Step B's checks 2, 4, 5 or 6 will refuse on those grounds. No function names the tables, so no hidden database path to them exists. Nothing is published to Realtime, and no trigger touches them. This also supports the access audit above: the only reader is the app's service-role path.
 
-Still to run: D1, D1b, D2 (save verbatim), D4 (save), D5. Step B check 1 (service_role BYPASSRLS and CRUD) and check 3 (role membership) are confirmed by D1 and Step B itself.
+D1 confirms the exposure exactly as P9–P10 found it (anon and signed-in users can read, write, delete and even TRUNCATE both tables) and that `service_role` holds every privilege Step B's check 1 requires. The BYPASSRLS half of check 1 and the role-membership check (3) are made by Step B itself.
+
+Still to run: D1b, D2 (save verbatim), D4 (save), D5.
 
 ## Post-containment verification (`baseball_shared_containment_verify.sql`)
 
