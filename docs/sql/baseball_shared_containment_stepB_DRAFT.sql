@@ -1,4 +1,4 @@
--- STEP B CONTAINMENT. DRAFT. DO NOT RUN until the owner authorizes this exact text.
+-- STEP B CONTAINMENT. All preflight (D1-D5) passed. DO NOT RUN until the owner approves this exact text.
 -- Closes anon / authenticated access to baseball_shared_draft_rooms and baseball_shared_leagues.
 --
 -- One statement (a DO block), so it is atomic in any client, including the Supabase SQL editor:

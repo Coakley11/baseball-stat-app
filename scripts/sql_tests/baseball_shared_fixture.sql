@@ -28,3 +28,7 @@ insert into public.baseball_shared_draft_rooms (room_code, host_user_id, shared_
   ('FAKE-ROOM-3', '', '{"picks": ["outsider"]}', 1, 'not_started');
 insert into public.baseball_shared_leagues (league_id, draft_fingerprint, shared_league_json, revision) values
   ('FAKE-LEAGUE-1', 'fp1', '{"team_ownership": {"t1": "fake"}, "league_invites": ["fake-invite"]}', 2);
+
+-- Stand-in for the managed auth.users table (D4b only compares ids; the real one is never touched).
+create schema if not exists auth;
+create table if not exists auth.users (id uuid primary key);
