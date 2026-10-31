@@ -80,13 +80,29 @@ Expected: D3 all zeros in its first four columns; D2 lists grants for anon and a
 |---|---|
 | **D1** | Six rows (two tables x anon, authenticated, service_role), as expected. Both tables: `rls_enabled = false`, `rls_forced = false`, `policies = 0`. `anon`, `authenticated` and `service_role` each hold all seven checked privileges (SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER). |
 | **D1b** | **Passed, 8 rows.** Both tables: `owner`, `grantor` and `running_as` are all `postgres`; grantees `anon`, `authenticated`, `postgres`, `service_role`, each with all eight PostgreSQL 17 privileges (including MAINTAIN). No PUBLIC grant, no grantor mismatch, so Step B's revoke (run as `postgres`) removes every grant anon and authenticated hold. |
+| **D2** | **Passed, exactly six statements** (saved verbatim in the next section). |
 | **D3** | **All seven columns 0:** `views_open_to_api_roles`, `definer_functions_open_to_api_roles`, `public_grants`, `serial_columns`, `functions_naming_tables`, `in_publications`, `user_triggers`. |
 
 D3 passed: no view, SECURITY DEFINER function, PUBLIC grant or serial column would let anon or authenticated bypass Step B's revoke, so none of Step B's checks 2, 4, 5 or 6 will refuse on those grounds. No function names the tables, so no hidden database path to them exists. Nothing is published to Realtime, and no trigger touches them. This also supports the access audit above: the only reader is the app's service-role path.
 
 D1 confirms the exposure exactly as P9–P10 found it (anon and signed-in users can read, write, delete and even TRUNCATE both tables) and that `service_role` holds every privilege Step B's check 1 requires. The BYPASSRLS half of check 1 and the role-membership check (3) are made by Step B itself.
 
-Still to run: D2 (save verbatim), D4 (save), D5.
+Still to run: D4 (save), D5.
+
+### Saved rollback (D2 output, production, 2026-10-30)
+
+Generated from the live ACLs before containment. Run all six in one transaction, only if a legitimate client breaks and after approval. It reopens the exposure.
+
+```sql
+begin;
+grant DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE on table public.baseball_shared_draft_rooms to anon;
+grant DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE on table public.baseball_shared_draft_rooms to authenticated;
+grant DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE on table public.baseball_shared_leagues to anon;
+grant DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE on table public.baseball_shared_leagues to authenticated;
+alter table public.baseball_shared_draft_rooms disable row level security;
+alter table public.baseball_shared_leagues disable row level security;
+commit;
+```
 
 ## Post-containment verification (`baseball_shared_containment_verify.sql`)
 
