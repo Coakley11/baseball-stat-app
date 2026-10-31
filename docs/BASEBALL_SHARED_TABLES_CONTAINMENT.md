@@ -113,6 +113,12 @@ D1 confirms the exposure exactly as P9–P10 found it (anon and signed-in users 
 - **Timing.** The oldest room was created 2026-06-24, the day after the repo SQL that opened the table (2026-06-23); the oldest league 2026-07-08, the day after its SQL (2026-07-07). Nothing in either table predates its exposure. The newest room is 2026-07-20 and nothing has been written to rooms since; the newest league update is 2026-10-26.
 - **29 of 29 rooms show "(unknown id)". This is not yet evidence of outsiders.** D4 matched `host_user_id` only against `suite_users.id`, but the code stores three different things there: the Supabase Auth user UUID or, for visitors without one, the participant id (`draft_room_context.py:835`), and the suite account id from `get_account_user_id()` (`draft_room_shared_state.py:1075`, `draft_room_supabase_store.py:21`). An all-unmatched result is what Auth UUIDs or participant ids would produce. D4b separates these cases. A room created by an outsider would also have an unmatched id, so D4b alone cannot prove the rooms are the owner's. It narrows it to format and to whether the id is a real Auth user.
 
+### Final baseline check and approval (2026-10-31)
+
+The owner re-ran the unchanged D4 immediately before Step B. Result identical to the saved baseline: rooms n=29, newest update 2026-07-20 18:58:43+00, max revision 36, fp `a0aa14fd3db62c269e6834aa152a72ac`; leagues n=4, newest update 2026-10-26 19:20:11+00, max revision 10, fp `17433c461b691670d851809252117526`. Nothing was written between the first D4 and Step B.
+
+The owner approved, for manual execution in the production SQL Editor, exactly `docs/sql/baseball_shared_containment_stepB_DRAFT.sql` at commit `bf8d8a8`, checksum (md5 of the file) `eb76886367c38ba61cc00bb14ff35429`. The approval covers only enabling RLS and revoking anon and authenticated access on the two tables as written. The account-isolation migration, session revocation, any deployment, and any further production change need separate approval.
+
 ### Saved rollback (D2 output, production, 2026-10-30)
 
 Generated from the live ACLs before containment. Run all six in one transaction, only if a legitimate client breaks and after approval. It reopens the exposure.
