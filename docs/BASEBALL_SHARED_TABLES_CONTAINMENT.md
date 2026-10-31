@@ -1,6 +1,6 @@
 # Shared Baseball tables open to the anon and signed-in roles: containment
 
-Status: **ready for the owner's approval; nothing has been run on any Supabase project.** Tested locally only (72 checks). The account-isolation migration for `suite_app_current_state` and the combined Baseball deployment stay on hold until this exposure is closed and verified.
+Status: **Step B executed in production 2026-10-31; VB1-VB3 passed. VB4 (REST) and VB5 (app test) pending.** Tested locally (74 checks). The account-isolation migration for `suite_app_current_state` and the combined Baseball deployment stay on hold until this exposure is closed and verified.
 
 ## Confirmed exposure (owner's read-only P9–P10 run, 2026-10-30)
 
@@ -118,6 +118,18 @@ D1 confirms the exposure exactly as P9–P10 found it (anon and signed-in users 
 The owner re-ran the unchanged D4 immediately before Step B. Result identical to the saved baseline: rooms n=29, newest update 2026-07-20 18:58:43+00, max revision 36, fp `a0aa14fd3db62c269e6834aa152a72ac`; leagues n=4, newest update 2026-10-26 19:20:11+00, max revision 10, fp `17433c461b691670d851809252117526`. Nothing was written between the first D4 and Step B.
 
 The owner approved, for manual execution in the production SQL Editor, exactly `docs/sql/baseball_shared_containment_stepB_DRAFT.sql` at commit `bf8d8a8`, checksum (md5 of the file) `eb76886367c38ba61cc00bb14ff35429`. The approval covers only enabling RLS and revoking anon and authenticated access on the two tables as written. The account-isolation migration, session revocation, any deployment, and any further production change need separate approval.
+
+### Step B executed in production (owner, 2026-10-31) and verified
+
+The owner ran `baseball_shared_containment_stepB_DRAFT.sql` at `bf8d8a8` (md5 `eb76886367c38ba61cc00bb14ff35429`) once, manually, in the production SQL Editor. It completed without an abort.
+
+| Check | Result |
+|---|---|
+| **VB3** (D4 re-run) | **Passed.** All 29 rooms and 4 leagues kept their original content fingerprints. |
+| **VB1** | **Passed.** Both tables: RLS enabled, not forced, 0 policies. |
+| **VB2** | **Passed.** `anon` and `authenticated`: all eight PostgreSQL 17 table privileges false on both tables. `service_role`: all eight true on both tables. |
+
+Still to do: the anonymous REST denial check (VB4, five tables), the two-browser app test (VB5), Dashboard → Advisors → Security, and the gateway logs L3 and L4. The rollback above remains available and has not been used.
 
 ### Saved rollback (D2 output, production, 2026-10-30)
 
