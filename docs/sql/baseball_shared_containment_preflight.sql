@@ -140,3 +140,23 @@ select m.table_name, m.month::date as month, m.rows_last_updated,
          where e.app like 'baseball%' and date_trunc('month', e."timestamp") = m.month) as baseball_events_that_month
 from m
 order by m.table_name, m.month;
+
+-- D4b. What identity format does host_user_id hold, and does it match any known account? READ-ONLY, counts only.
+-- The app writes host_user_id from one of three places: the Supabase Auth user UUID (auth.users.id), the suite
+-- account id (suite_users.id), or the participant id of an anonymous visitor. D4 only matched suite_users.id, so
+-- "(unknown id)" can simply mean an Auth UUID or a participant id. This classifies each room by format and by
+-- which identity set it matches. It selects only ids from auth.users to compare them and returns no id, code,
+-- email or content.
+select case when r.host_user_id = '' then 'empty'
+            when r.host_user_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then 'uuid-shaped'
+            else 'other text, ' || length(r.host_user_id) || ' chars' end as host_format,
+       exists (select 1 from public.suite_users u where u.id::text = r.host_user_id) as matches_suite_users_id,
+       exists (select 1 from public.suite_users u where u.external_id = r.host_user_id) as matches_suite_external_id,
+       exists (select 1 from auth.users a where a.id::text = r.host_user_id) as matches_auth_user_id,
+       r.host_user_id = coalesce(r.shared_room_json->>'host_participant_id', '') as equals_host_participant_id,
+       to_char(r.created_at, 'YYYY-MM') as created_month,
+       r.status,
+       count(*) as rooms
+from public.baseball_shared_draft_rooms r
+group by 1, 2, 3, 4, 5, 6, 7
+order by created_month, rooms desc;

@@ -81,13 +81,31 @@ Expected: D3 all zeros in its first four columns; D2 lists grants for anon and a
 | **D1** | Six rows (two tables x anon, authenticated, service_role), as expected. Both tables: `rls_enabled = false`, `rls_forced = false`, `policies = 0`. `anon`, `authenticated` and `service_role` each hold all seven checked privileges (SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER). |
 | **D1b** | **Passed, 8 rows.** Both tables: `owner`, `grantor` and `running_as` are all `postgres`; grantees `anon`, `authenticated`, `postgres`, `service_role`, each with all eight PostgreSQL 17 privileges (including MAINTAIN). No PUBLIC grant, no grantor mismatch, so Step B's revoke (run as `postgres`) removes every grant anon and authenticated hold. |
 | **D2** | **Passed, exactly six statements** (saved verbatim in the next section). |
+| **D4** | **Baseline saved** (below). |
 | **D3** | **All seven columns 0:** `views_open_to_api_roles`, `definer_functions_open_to_api_roles`, `public_grants`, `serial_columns`, `functions_naming_tables`, `in_publications`, `user_triggers`. |
 
 D3 passed: no view, SECURITY DEFINER function, PUBLIC grant or serial column would let anon or authenticated bypass Step B's revoke, so none of Step B's checks 2, 4, 5 or 6 will refuse on those grounds. No function names the tables, so no hidden database path to them exists. Nothing is published to Realtime, and no trigger touches them. This also supports the access audit above: the only reader is the app's service-role path.
 
 D1 confirms the exposure exactly as P9–P10 found it (anon and signed-in users can read, write, delete and even TRUNCATE both tables) and that `service_role` holds every privilege Step B's check 1 requires. The BYPASSRLS half of check 1 and the role-membership check (3) are made by Step B itself.
 
-Still to run: D4 (save), D5.
+Still to run: D4b, D5.
+
+### Saved D4 baseline (production, 2026-10-30, before containment)
+
+| | `baseball_shared_draft_rooms` | `baseball_shared_leagues` |
+|---|---|---|
+| n | 29 | 4 |
+| oldest created | 2026-06-24 04:28:28+00 | 2026-07-08 17:18:27+00 |
+| newest created | 2026-07-20 01:36:30+00 | 2026-07-14 19:55:58+00 |
+| newest update | 2026-07-20 18:58:43+00 | 2026-10-26 19:20:11+00 |
+| max revision | 36 | 10 |
+| JSON bytes min / max | 46426 / 987829 | 6107 / 41370 |
+| detail | closed=4, complete=12, deleted=4, in_progress=5, not_started=4 | distinct_draft_fingerprints=4 |
+| hosts | (unknown id)=29 | n/a |
+| **fp (compare after Step B)** | `a0aa14fd3db62c269e6834aa152a72ac` | `17433c461b691670d851809252117526` |
+
+- **Timing.** The oldest room was created 2026-06-24, the day after the repo SQL that opened the table (2026-06-23); the oldest league 2026-07-08, the day after its SQL (2026-07-07). Nothing in either table predates its exposure. The newest room is 2026-07-20 and nothing has been written to rooms since; the newest league update is 2026-10-26.
+- **29 of 29 rooms show "(unknown id)". This is not yet evidence of outsiders.** D4 matched `host_user_id` only against `suite_users.id`, but the code stores three different things there: the Supabase Auth user UUID or, for visitors without one, the participant id (`draft_room_context.py:835`), and the suite account id from `get_account_user_id()` (`draft_room_shared_state.py:1075`, `draft_room_supabase_store.py:21`). An all-unmatched result is what Auth UUIDs or participant ids would produce. D4b separates these cases. A room created by an outsider would also have an unmatched id, so D4b alone cannot prove the rooms are the owner's. It narrows it to format and to whether the id is a real Auth user.
 
 ### Saved rollback (D2 output, production, 2026-10-30)
 
