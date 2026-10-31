@@ -1,6 +1,6 @@
 # Shared Baseball tables open to the anon and signed-in roles: containment
 
-Status: **Step B executed in production 2026-10-31; VB1-VB3 passed. VB4 (REST) and VB5 (app test) pending.** Tested locally (74 checks). The account-isolation migration for `suite_app_current_state` and the combined Baseball deployment stay on hold until this exposure is closed and verified.
+Status: **Step B executed in production 2026-10-31; VB1-VB3 passed. VB4 (REST, five tables) passed. VB5 (app test) pending.** Tested locally (74 checks). The account-isolation migration for `suite_app_current_state` and the combined Baseball deployment stay on hold until this exposure is closed and verified.
 
 ## Confirmed exposure (owner's read-only P9–P10 run, 2026-10-30)
 
@@ -130,6 +130,20 @@ The owner ran `baseball_shared_containment_stepB_DRAFT.sql` at `bf8d8a8` (md5 `e
 | **VB2** | **Passed.** `anon` and `authenticated`: all eight PostgreSQL 17 table privileges false on both tables. `service_role`: all eight true on both tables. |
 
 Still to do: the anonymous REST denial check (VB4, five tables), the two-browser app test (VB5), Dashboard → Advisors → Security, and the gateway logs L3 and L4. The rollback above remains available and has not been used.
+
+### Anonymous REST denial check (VB4) passed (owner, 2026-10-31)
+
+Run from Windows PowerShell with the project's publishable key (`sb_publishable_`, sent as `apikey` only) and `--url`; the key was never printed or stored. Key type publishable; the control request to `/auth/v1/settings` returned HTTP 200, so the key was accepted by the project. Then:
+
+| Table | Result |
+|---|---|
+| suite_users | HTTP 401, code 42501: PASS |
+| suite_saved_items | HTTP 401, code 42501: PASS |
+| suite_user_settings | HTTP 401, code 42501: PASS |
+| baseball_shared_draft_rooms | HTTP 401, code 42501: PASS |
+| baseball_shared_leagues | HTTP 401, code 42501: PASS |
+
+Final line: "All 5 denied." The two Baseball tables were open to the same key before Step B (D1: anon and authenticated held all privileges, RLS off), so this is the before/after proof from outside the database.
 
 ### Saved rollback (D2 output, production, 2026-10-30)
 
