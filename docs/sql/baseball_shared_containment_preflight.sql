@@ -160,3 +160,15 @@ select case when r.host_user_id = '' then 'empty'
 from public.baseball_shared_draft_rooms r
 group by 1, 2, 3, 4, 5, 6, 7
 order by created_month, rooms desc;
+
+-- D4c. Diagnostic for D4b: why would a 36-character host id that equals an auth.users id not match the
+-- uuid-shaped pattern? READ-ONLY, counts only; no id is returned. Every column should equal total.
+select count(*) as total,
+       count(*) filter (where host_user_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') as regex_match,
+       count(*) filter (where host_user_id ~ '^[0-9a-f-]+$') as lowercase_hex_and_dash_only,
+       count(*) filter (where host_user_id ~ '^[ -~]+$') as printable_ascii_only,
+       count(*) filter (where octet_length(host_user_id) = 36) as bytes_36,
+       count(*) filter (where substr(host_user_id, 9, 1) = '-' and substr(host_user_id, 14, 1) = '-'
+                          and substr(host_user_id, 19, 1) = '-' and substr(host_user_id, 24, 1) = '-') as dashes_in_place,
+       count(*) filter (where host_user_id = lower(btrim(host_user_id))) as already_lower_trimmed
+from public.baseball_shared_draft_rooms;

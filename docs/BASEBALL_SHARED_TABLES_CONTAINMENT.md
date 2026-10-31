@@ -82,13 +82,18 @@ Expected: D3 all zeros in its first four columns; D2 lists grants for anon and a
 | **D1b** | **Passed, 8 rows.** Both tables: `owner`, `grantor` and `running_as` are all `postgres`; grantees `anon`, `authenticated`, `postgres`, `service_role`, each with all eight PostgreSQL 17 privileges (including MAINTAIN). No PUBLIC grant, no grantor mismatch, so Step B's revoke (run as `postgres`) removes every grant anon and authenticated hold. |
 | **D2** | **Passed, exactly six statements** (saved verbatim in the next section). |
 | **D4** | **Baseline saved** (below). |
+| **D4b** | **7 grouped rows covering all 29 rooms.** Every group: `other text, 36 chars`, `matches_suite_users_id = false`, `matches_suite_external_id = false`, **`matches_auth_user_id = true`**, **`equals_host_participant_id = true`**. 29/29 hosts are existing Supabase Auth users; none empty, none unmatched. Statuses: 12 complete, 5 in progress, 4 not started, 4 closed, 4 deleted. |
 | **D3** | **All seven columns 0:** `views_open_to_api_roles`, `definer_functions_open_to_api_roles`, `public_grants`, `serial_columns`, `functions_naming_tables`, `in_publications`, `user_triggers`. |
 
 D3 passed: no view, SECURITY DEFINER function, PUBLIC grant or serial column would let anon or authenticated bypass Step B's revoke, so none of Step B's checks 2, 4, 5 or 6 will refuse on those grounds. No function names the tables, so no hidden database path to them exists. Nothing is published to Realtime, and no trigger touches them. This also supports the access audit above: the only reader is the app's service-role path.
 
 D1 confirms the exposure exactly as P9–P10 found it (anon and signed-in users can read, write, delete and even TRUNCATE both tables) and that `service_role` holds every privilege Step B's check 1 requires. The BYPASSRLS half of check 1 and the role-membership check (3) are made by Step B itself.
 
-Still to run: D4b, D5.
+Still to run: D5 (and the optional diagnostic D4c).
+
+**D4b resolves the D4 concern.** The "(unknown id)" hosts are Supabase Auth user ids, which `suite_users.id` never holds, so the match failed by design. All 29 rooms were created by existing Auth users, and each room's host equals its stored host participant id. No room has an empty or unmatched host, so nothing in the rooms looks like an outsider's. This does not rule out reads, or edits to a room by someone who knew its code. The limits in "Can past access or modification be established?" still apply.
+
+**Open oddity.** D4b labelled the ids `other text, 36 chars`, though they equal `auth.users.id` text and so must be 8-4-4-4-12 hex. The pattern is correct and gave `uuid-shaped` on test data locally. The conclusion does not depend on it (matching is by exact string equality), and the label is cosmetic. Optional read-only diagnostic D4c in the preflight file counts, without returning any id, how many ids pass each character test, to find which test fails (for example a query mangled in transit).
 
 ### Saved D4 baseline (production, 2026-10-30, before containment)
 
