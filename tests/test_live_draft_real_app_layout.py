@@ -107,6 +107,22 @@ class SharedDraftingScreenTests(_RealAppCase):
             for later in ("control_center", "chat", "queue", "board", "rec_cards"):
                 self.assertLess(marks.index("team_needs"), marks.index(later), marks)
 
+    def test_cards_and_manual_pick_follow_team_needs_like_solo(self) -> None:
+        """Step 3: full-width cards (Solo settings) and Manual Pick directly under Team Needs."""
+        order = ["clock", "team_needs", "rec_cards", "manual_pick", "control_center"]
+        for at in (self.host, self.guest):
+            marks = harness.landmarks(at)
+            self.assertEqual([m for m in marks if m in order], order, marks)
+            for later in ("chat", "queue", "board"):
+                self.assertLess(marks.index("manual_pick"), marks.index(later), marks)
+            self.assertEqual(harness.count(at, 'body: "##### Recommended Players"'), 1)
+            self.assertEqual(harness.count(at, 'class="ld-rec-summary-banner'), 0)  # as in Solo
+            cards = harness.count(at, 'class="ld-rec-card-header')
+            self.assertTrue(1 <= cards <= 6, cards)
+            queue_buttons = [b for b in at.button if str(b.key or "").startswith("rec_card_queue_")]
+            self.assertEqual(len(queue_buttons), cards)  # Add to Queue on every card
+            self.assertEqual(harness.count(at, 'body: "Manual Draft"'), 1)
+
     def test_team_needs_once_with_category_outlook(self) -> None:
         for at in (self.host, self.guest):
             panels = [

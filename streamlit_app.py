@@ -793,6 +793,32 @@ def _ldr_m_hook(key: str):
         return nullcontext()
 
 
+def _ldr_top_slot(slot):
+    """Draw into a top-of-page Live Draft slot on a full run. A fragment rerun cannot draw outside
+    its own container, so there (and without a slot) the caller draws in place as before."""
+    from contextlib import nullcontext
+
+    if slot is None:
+        return nullcontext()
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        ctx = get_script_run_ctx(suppress_warning=True)
+        if ctx is None or ctx.fragment_ids_this_run:
+            return nullcontext()
+    except Exception:
+        return nullcontext()
+    return slot
+
+
+def _shared_top_card_kwargs(slot) -> dict:
+    """Solo's card settings (full width, 6 horizontal cards, no summary banner) for the Shared
+    drafting screen's top slot; the rec-column defaults otherwise."""
+    if slot is None:
+        return {}
+    return {"dense": False, "layout": "horizontal", "max_cards_override": 6, "skip_summary_banner": True}
+
+
 st.markdown("""
 <style>
 .block-container {padding-top: 1.2rem; padding-bottom: 2rem; padding-left: 2rem; padding-right: 2rem;}
@@ -26910,7 +26936,9 @@ elif active_page == "Live Draft Room":
         # Shared drafting screen: the synchronized clock and Team Needs open the page, as in Solo.
         # The clock keeps its call site (after timer sync / expired-pick handling) and draws into
         # this slot; Team Needs paints here and the rec column skips its copy (per-run flag).
-        _shared_top_clock = None
+        # The recommendation cards and Manual Pick follow in their own slots (filled from their
+        # call sites in the rec column, after the cards are prepared for this pick).
+        _shared_top_clock = _shared_top_cards = _shared_top_manual = None
         if _shared_drafting_view and not _solo_recs_here:
             _shared_top_clock = st.container()
             if str(user_team or "").strip() not in ("", "—"):
@@ -26921,6 +26949,9 @@ elif active_page == "Live Draft Room":
                     st.session_state["_live_draft_team_needs_rendered"] = True
                 except Exception:
                     st.session_state.pop("_live_draft_team_needs_rendered", None)
+            st.markdown("##### Recommended Players")
+            _shared_top_cards = st.container()
+            _shared_top_manual = st.container()
         if _solo_recs_here:
             # Warm recommendation cache before painting Solo chrome. Scoring after
             # the clock mounts is fine now that the browser owns the visual countdown
@@ -28614,18 +28645,21 @@ elif active_page == "Live Draft Room":
                                     st.session_state.get("_live_draft_rec_cards_early_viewport")
                                 )
                                 if not _solo_early_recs_done:
-                                    st.markdown("##### Recommendations")
-                                    # Name the team these cards were scored for (``_rec_team``, the team
-                                    # on the clock — as in Solo's early view), so a Shared viewer waiting
-                                    # on another team does not read them as scored for their own roster.
-                                    _scored_team = str(_rec_team or "").strip()
-                                    if _scored_team and _scored_team != str(user_team or "").strip():
-                                        st.caption(
-                                            f"**{_scored_team}** is on the clock — these are {_scored_team}'s "
-                                            "best options. Add players to your Queue for your next pick."
-                                        )
-                                    elif _scored_team:
-                                        st.caption(f"Scored for **{_scored_team}** — your pick.")
+                                    # Shared drafting screen: under the top "Recommended Players" heading.
+                                    with _ldr_top_slot(_shared_top_cards):
+                                        if _shared_top_cards is None:
+                                            st.markdown("##### Recommendations")
+                                        # Name the team these cards were scored for (``_rec_team``, the team
+                                        # on the clock — as in Solo's early view), so a Shared viewer waiting
+                                        # on another team does not read them as scored for their own roster.
+                                        _scored_team = str(_rec_team or "").strip()
+                                        if _scored_team and _scored_team != str(user_team or "").strip():
+                                            st.caption(
+                                                f"**{_scored_team}** is on the clock — these are {_scored_team}'s "
+                                                "best options. Add players to your Queue for your next pick."
+                                            )
+                                        elif _scored_team:
+                                            st.caption(f"Scored for **{_scored_team}** — your pick.")
                                 _rec_err = str(st.session_state.pop("_live_draft_recommendations_error", "") or "").strip()
                                 _rec_diag = dict(st.session_state.get("_recommendation_schema_diag") or {})
                                 if _rec_err or str(_rec_diag.get("status") or "") in (
@@ -28634,25 +28668,27 @@ elif active_page == "Live Draft Room":
                                     "scoring_module_unavailable",
                                     "missing_after_score",
                                 ):
-                                    try:
-                                        from recommendation_schema import USER_REC_UNAVAILABLE
+                                    with _ldr_top_slot(_shared_top_cards):
+                                        try:
+                                            from recommendation_schema import USER_REC_UNAVAILABLE
 
-                                        st.info(USER_REC_UNAVAILABLE)
-                                    except ImportError:
-                                        st.info(
-                                            "Recommendations could not be loaded right now. "
-                                            "You can continue drafting from the available-player list."
-                                        )
-                                    if developer_mode_enabled():
-                                        with st.expander("Recommendation diagnostics (admin)", expanded=False):
-                                            st.code(_rec_err or str(_rec_diag.get("exception") or "schema issue"))
-                                            st.json(_rec_diag)
+                                            st.info(USER_REC_UNAVAILABLE)
+                                        except ImportError:
+                                            st.info(
+                                                "Recommendations could not be loaded right now. "
+                                                "You can continue drafting from the available-player list."
+                                            )
+                                        if developer_mode_enabled():
+                                            with st.expander("Recommendation diagnostics (admin)", expanded=False):
+                                                st.code(_rec_err or str(_rec_diag.get("exception") or "schema issue"))
+                                                st.json(_rec_diag)
                                 try:
                                     from live_draft_roster_enforcement import resolve_on_clock_enforcement
 
                                     _enf = resolve_on_clock_enforcement(room, on_clock_team=str(on_clock_team or ""))
                                     if _enf.get("active") and _enf.get("message"):
-                                        st.warning(str(_enf["message"]))
+                                        with _ldr_top_slot(_shared_top_cards):
+                                            st.warning(str(_enf["message"]))
                                 except ImportError:
                                     pass
                                 try:
@@ -28701,22 +28737,24 @@ elif active_page == "Live Draft Room":
                                         multiplayer=_multiplayer_draft,
                                     )
                                     if _defer_recs and (top_rec is None or getattr(top_rec, "empty", True)):
-                                        st.caption("Loading recommendations…")
+                                        with _ldr_top_slot(_shared_top_cards):
+                                            st.caption("Loading recommendations…")
                                     elif not _solo_early_recs_done:
-                                        try:
-                                            from live_draft_ux import FANTASY_EDGE_TOOLTIP, ROSTER_FIT_TOOLTIP
+                                        with _ldr_top_slot(_shared_top_cards):
+                                            try:
+                                                from live_draft_ux import FANTASY_EDGE_TOOLTIP, ROSTER_FIT_TOOLTIP
 
-                                            st.markdown(
-                                                f'**Fantasy Edge** <span title="{FANTASY_EDGE_TOOLTIP}">ⓘ</span> · '
-                                                f'**Roster Fit** <span title="{ROSTER_FIT_TOOLTIP}">ⓘ</span> — '
-                                                "Tap **Why Recommended** on any card for category impact, scarcity, and fit details.",
-                                                unsafe_allow_html=True,
-                                            )
-                                        except ImportError:
-                                            st.caption(
-                                                "**Fantasy Edge** shows value vs market; **Roster Fit** adjusts for your open slots. "
-                                                "Tap **Why Recommended** on any card for category impact, scarcity, and fit details."
-                                            )
+                                                st.markdown(
+                                                    f'**Fantasy Edge** <span title="{FANTASY_EDGE_TOOLTIP}">ⓘ</span> · '
+                                                    f'**Roster Fit** <span title="{ROSTER_FIT_TOOLTIP}">ⓘ</span> — '
+                                                    "Tap **Why Recommended** on any card for category impact, scarcity, and fit details.",
+                                                    unsafe_allow_html=True,
+                                                )
+                                            except ImportError:
+                                                st.caption(
+                                                    "**Fantasy Edge** shows value vs market; **Roster Fit** adjusts for your open slots. "
+                                                    "Tap **Why Recommended** on any card for category impact, scarcity, and fit details."
+                                                )
                                     if not (
                                         _defer_recs and (top_rec is None or getattr(top_rec, "empty", True))
                                     ):
@@ -28744,7 +28782,8 @@ elif active_page == "Live Draft Room":
                                             )
 
                                             # Phone CSS hook (M3): card rows become swipe strips.
-                                            with _ldr_m_hook("ldr-m-recs"):
+                                            # Shared drafting screen: full-width Solo cards in the top slot.
+                                            with _ldr_top_slot(_shared_top_cards), _ldr_m_hook("ldr-m-recs"):
                                                 _inline_ok = bool(
                                                     render_rec_interactive_widgets(
                                                         st,
@@ -28752,6 +28791,7 @@ elif active_page == "Live Draft Room":
                                                         room,
                                                         fmt_rate_4=fmt_rate_4,
                                                         fmt_int=fmt_int,
+                                                        **_shared_top_card_kwargs(_shared_top_cards),
                                                     )
                                                 )
                                             st.session_state["_live_draft_rec_cards_inline"] = _inline_ok
@@ -29089,15 +29129,17 @@ elif active_page == "Live Draft Room":
                     try:
                         from live_draft_rec_live_paint import render_rec_interactive_widgets
 
-                        return bool(
-                            render_rec_interactive_widgets(
-                                st,
-                                st.session_state,
-                                room,
-                                fmt_rate_4=fmt_rate_4,
-                                fmt_int=fmt_int,
+                        with _ldr_top_slot(_shared_top_cards):
+                            return bool(
+                                render_rec_interactive_widgets(
+                                    st,
+                                    st.session_state,
+                                    room,
+                                    fmt_rate_4=fmt_rate_4,
+                                    fmt_int=fmt_int,
+                                    **_shared_top_card_kwargs(_shared_top_cards),
+                                )
                             )
-                        )
                     except ImportError:
                         return False
                     except Exception as _paint_interactive_exc:
@@ -29176,7 +29218,8 @@ elif active_page == "Live Draft Room":
                 # skip the duplicate widget tree (StreamlitDuplicateElementKey).
                 if not bool(st.session_state.get("_live_draft_manual_panel_early")):
                     # Phone CSS hook (M3): primary draft action raised under the clock.
-                    with _ldr_m_hook("ldr-m-action"):
+                    # Shared drafting screen: directly under the cards, in the top slot.
+                    with _ldr_top_slot(_shared_top_manual), _ldr_m_hook("ldr-m-action"):
                         if render_live_manual_draft_panel(
                             st,
                             st.session_state,
