@@ -1132,6 +1132,45 @@ def render_roster_tracker_panel(
     )
 
 
+def render_team_needs_for_team(st: Any, room: dict[str, Any], team: str) -> None:
+    """Team Needs for ``team`` (roster slots, category needs, category outlook), computed from the
+    room. The top-of-page Team Needs for Solo and for the Shared drafting screen."""
+    from draft_needs import infer_hitter_category_need_levels
+    from live_draft_roster_tracker import build_team_roster_tracker, roster_df_for_team
+    from live_draft_state import live_draft_get_available
+
+    cfg = dict(room.get("config") or {})
+    tracker = build_team_roster_tracker(room, team)
+    roster = roster_df_for_team(room, team)
+    available = live_draft_get_available(room)
+    levels = infer_hitter_category_need_levels(
+        roster,
+        available,
+        fantasy_format=str(cfg.get("fantasy_format") or cfg.get("scoring_type") or "5x5 Roto"),
+    )
+    outlook: dict[str, Any] = {}
+    try:
+        from live_draft_category_outlook import compute_category_outlook
+
+        outlook = compute_category_outlook(
+            roster,
+            available,
+            config=cfg,
+            roster_gaps=list(tracker.get("gaps") or []),
+        )
+    except Exception:
+        outlook = {}
+    render_roster_tracker_panel(
+        st,
+        tracker,
+        category_needs=[str(d.get("label") or "") for d in levels if d.get("label")],
+        category_levels={
+            str(d.get("label") or "").upper(): str(d.get("level") or "Low") for d in levels if d.get("label")
+        },
+        category_outlook=outlook,
+    )
+
+
 def render_category_outlook_panel(st: Any, outlook: dict[str, Any]) -> None:
     bars = outlook.get("bars") or []
     if not bars:

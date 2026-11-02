@@ -99,6 +99,27 @@ class SharedDraftingScreenTests(_RealAppCase):
             self.assertTrue(any("#### Draft Status Summary" in t for t in inside))
             self.assertTrue(any("Claimed Teams" in t for t in inside))
 
+    def test_clock_then_team_needs_open_the_drafting_screen(self) -> None:
+        """Step 2: synchronized clock at the top, Team Needs directly below (Solo order)."""
+        for at in (self.host, self.guest):
+            marks = harness.landmarks(at)
+            self.assertLess(marks.index("clock"), marks.index("team_needs"), marks)
+            for later in ("control_center", "chat", "queue", "board", "rec_cards"):
+                self.assertLess(marks.index("team_needs"), marks.index(later), marks)
+
+    def test_team_needs_once_with_category_outlook(self) -> None:
+        for at in (self.host, self.guest):
+            panels = [
+                str(n.proto).replace('\\"', '"')
+                for n in harness._walk(at.main)
+                if 'class="ld-team-needs-panel' in str(getattr(n, "proto", "")).replace('\\"', '"')
+            ]
+            self.assertEqual(len(panels), 1)
+            self.assertTrue(
+                "ld-cat-bar-row" in panels[0] or "outlook updates after your first pick" in panels[0],
+                panels[0][:400],
+            )
+
     def test_commissioner_controls_follow_permissions(self) -> None:
         host_pause = _button(self.host, "live_draft_pause")
         guest_pause = _button(self.guest, "live_draft_pause")
@@ -108,6 +129,27 @@ class SharedDraftingScreenTests(_RealAppCase):
         # Park / delete for everyone are commissioner-only.
         self.assertIsNotNone(_button(self.host, "live_draft_discard_btn"))
         self.assertIsNone(_button(self.guest, "live_draft_discard_btn"))
+
+
+class SharedPickRerunTests(_RealAppCase):
+    def test_commissioner_pick_then_reruns_keep_the_layout_for_both_browsers(self) -> None:
+        code, host_seed, guest_seed = harness.shared_seeds()
+        host = harness.run_page(host_seed)
+        guest = harness.run_page(guest_seed)
+        draft = [b for b in host.button if str(b.key or "").startswith("rec_card_draft_") and not b.disabled]
+        self.assertTrue(draft, "commissioner (Team A, on the clock) has no enabled Draft button")
+        draft[0].click().run()
+        host.run()
+        self.assertEqual(_errors(host), [])
+        self.assertEqual(len(host.session_state["live_draft_room"].get("draft_board") or []), 1)
+        guest.run()  # the guest's next run polls the shared room
+        self.assertEqual(_errors(guest), [])
+        self.assertEqual(len(guest.session_state["live_draft_room"].get("draft_board") or []), 1)
+        for at in (host, guest):
+            self.assertEqual(_duplicate_widget_keys(at), [])
+            marks = harness.landmarks(at)
+            self.assertLess(marks.index("clock"), marks.index("team_needs"), marks)
+            self.assertLess(marks.index("team_needs"), marks.index("control_center"), marks)
 
 
 class TeamNeedsAfterSoloTests(_RealAppCase):

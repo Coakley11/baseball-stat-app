@@ -42,6 +42,26 @@ _MARKERS: tuple[tuple[str, str], ...] = (
 )
 
 
+_WORKSPACE_SEQ = [0]
+
+
+def fresh_workspace() -> str:
+    """Point the app at a new, empty workspace (removed at exit). The app saves page state per
+    workspace and restores it on the next boot: a shared one let an earlier test's draft replace
+    the seeded one (the page opened on Draft Setup)."""
+    import atexit
+    import shutil
+    import time
+
+    from suite_workspace import workspace_dir
+
+    _WORKSPACE_SEQ[0] += 1
+    workspace_id = f"ldrparity{os.getpid()}t{int(time.time())}n{_WORKSPACE_SEQ[0]}"
+    os.environ["SUITE_WORKSPACE_ID"] = workspace_id
+    atexit.register(shutil.rmtree, str(workspace_dir(workspace_id)), ignore_errors=True)
+    return workspace_id
+
+
 def isolate_environment() -> Path:
     """Process-wide isolation for an in-process AppTest. Returns the temporary room-store root."""
     import sys
@@ -55,18 +75,7 @@ def isolate_environment() -> Path:
             pass
     os.environ["SUITE_STORAGE_ISOLATED"] = "1"
     os.environ["BASEBALL_SHARED_DRAFT_ROOM_BACKEND"] = "local"
-    # A throwaway workspace per process: the default workspace keeps saved page state between
-    # runs, and restoring it replaced the seeded draft with Draft Setup on a fresh process.
-    if not os.environ.get("SUITE_WORKSPACE_ID", "").startswith("ldrparity"):
-        import atexit
-        import shutil
-        import time
-
-        workspace_id = f"ldrparity{os.getpid()}t{int(time.time())}"
-        os.environ["SUITE_WORKSPACE_ID"] = workspace_id
-        from suite_workspace import workspace_dir
-
-        atexit.register(shutil.rmtree, str(workspace_dir(workspace_id)), ignore_errors=True)
+    fresh_workspace()
     import draft_room_shared_state as shared_state
 
     root = Path(tempfile.mkdtemp(prefix="ldr_parity_rooms_"))
@@ -157,6 +166,7 @@ def shared_seeds() -> tuple[str, dict[str, Any], dict[str, Any]]:
 def run_page(seed: dict[str, Any], *, timeout: int = 900):
     from streamlit.testing.v1 import AppTest
 
+    fresh_workspace()
     cwd = os.getcwd()
     os.chdir(ROOT)
     try:

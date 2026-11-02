@@ -26907,6 +26907,20 @@ elif active_page == "Live Draft Room":
                 )
             except ImportError:
                 _solo_recs_here = bool(_solo_compact_viewport) and not bool(_draft_is_complete)
+        # Shared drafting screen: the synchronized clock and Team Needs open the page, as in Solo.
+        # The clock keeps its call site (after timer sync / expired-pick handling) and draws into
+        # this slot; Team Needs paints here and the rec column skips its copy (per-run flag).
+        _shared_top_clock = None
+        if _shared_drafting_view and not _solo_recs_here:
+            _shared_top_clock = st.container()
+            if str(user_team or "").strip() not in ("", "—"):
+                try:
+                    from live_draft_room_ui import render_team_needs_for_team
+
+                    render_team_needs_for_team(st, room, str(user_team).strip())
+                    st.session_state["_live_draft_team_needs_rendered"] = True
+                except Exception:
+                    st.session_state.pop("_live_draft_team_needs_rendered", None)
         if _solo_recs_here:
             # Warm recommendation cache before painting Solo chrome. Scoring after
             # the clock mounts is fine now that the browser owns the visual countdown
@@ -27178,47 +27192,9 @@ elif active_page == "Live Draft Room":
                         _tn_used_snap = True
                         _sp_mark("team_needs_snap")
                     if not _tn_used_snap and _tn_team:
-                        from live_draft_roster_tracker import build_team_roster_tracker, roster_df_for_team
-                        from draft_needs import infer_hitter_category_need_levels
-                        from live_draft_state import live_draft_get_available
+                        from live_draft_room_ui import render_team_needs_for_team
 
-                        _tn_tracker = build_team_roster_tracker(room, _tn_team)
-                        _tn_roster = roster_df_for_team(room, _tn_team)
-                        _tn_avail = live_draft_get_available(room)
-                        _tn_levels = infer_hitter_category_need_levels(
-                            _tn_roster,
-                            _tn_avail,
-                            fantasy_format=str(
-                                (room.get("config") or {}).get("fantasy_format")
-                                or (room.get("config") or {}).get("scoring_type")
-                                or "5x5 Roto"
-                            ),
-                        )
-                        _tn_cats = [str(d.get("label") or "") for d in _tn_levels if d.get("label")]
-                        _tn_level_map = {
-                            str(d.get("label") or "").upper(): str(d.get("level") or "Low")
-                            for d in _tn_levels
-                            if d.get("label")
-                        }
-                        _tn_outlook = {}
-                        try:
-                            from live_draft_category_outlook import compute_category_outlook
-
-                            _tn_outlook = compute_category_outlook(
-                                _tn_roster,
-                                _tn_avail,
-                                config=dict(room.get("config") or {}),
-                                roster_gaps=list(_tn_tracker.get("gaps") or []),
-                            )
-                        except Exception:
-                            _tn_outlook = {}
-                        render_roster_tracker_panel(
-                            st,
-                            _tn_tracker,
-                            category_needs=_tn_cats,
-                            category_levels=_tn_level_map,
-                            category_outlook=_tn_outlook,
-                        )
+                        render_team_needs_for_team(st, room, _tn_team)
                         st.session_state["_live_draft_team_needs_rendered"] = True
                         _sp_mark("team_needs_compute")
                 except Exception:
@@ -28194,13 +28170,17 @@ elif active_page == "Live Draft Room":
                                 st.session_state["_live_draft_arm_clock_this_run"] = True
                             except Exception:
                                 pass
-                            render_live_on_clock_banner(
-                                st,
-                                st.session_state,
-                                room,
-                                slot,
-                                next_pick=next_user_pick,
-                            )
+                            from contextlib import nullcontext as _clock_slot_null
+
+                            # Shared drafting screen: same call, drawn in the top-of-page slot.
+                            with (_shared_top_clock if _shared_top_clock is not None else _clock_slot_null()):
+                                render_live_on_clock_banner(
+                                    st,
+                                    st.session_state,
+                                    room,
+                                    slot,
+                                    next_pick=next_user_pick,
+                                )
                         if developer_mode_enabled():
                             try:
                                 from live_draft_solo_timer import VISIBLE_TIMER_COUNT_KEY
