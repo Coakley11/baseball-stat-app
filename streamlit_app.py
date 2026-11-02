@@ -26859,6 +26859,9 @@ elif active_page == "Live Draft Room":
         # fills a 768px laptop viewport and hides the cards.
         st.session_state.pop("_live_draft_rec_cards_early_viewport", None)
         st.session_state.pop("_live_draft_manual_panel_early", None)
+        # Per-run like the two flags above: set only when Team Needs paints early in this
+        # run. Left over from an earlier Solo run, it hid Team Needs in a later Shared draft.
+        st.session_state.pop("_live_draft_team_needs_rendered", None)
         # Fragment path: keep early latch across ScriptRuns so remounting
         # ``st.fragment`` does not destroy the clock. Live-clock path: clear so each
         # full ScriptRun remounts the keyed component once with fresh props.
