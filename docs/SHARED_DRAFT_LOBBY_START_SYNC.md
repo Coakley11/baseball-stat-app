@@ -115,6 +115,20 @@ These are stale or environment-sensitive tests, not caused by this change. Examp
   - Without it, the hosted app keeps reporting the old marker.
 - **Not included:** the UI work and any other branch (`ami/*`, the integration candidates, `bb-restore` docs). This deploy is these two files only.
 
+## Pre-deployment verification (owner, 2026-11-02)
+
+- **Stored JSON paths (SQL, read-only).** The test room `eddef3` has revision 8, `room->>status = in_progress`, `room->current_pick_index = 1`, `room->timer_deadline = 1793625199.554084`, and `live_room` null. The other two rooms are complete.
+- **The exact PostgREST head projection (REST, read-only, publishable key).** The `select` was taken from `SupabaseSharedRoomStore.load_head` on this branch.
+
+  | Request | Result |
+  |---|---|
+  | Exact select | HTTP 401, 42501: parsed, columns exist, refused by the Step B containment, no rows |
+  | Control with broken syntax | 400 PGRST100 |
+  | Control with a misspelled column | 400 42703 |
+
+  The projection is valid and no room content was returned.
+- **Approval.** The owner approved deploying this fix only to `dev`, with the deploy-marker commit.
+
 ## Pre-deployment check (read-only, owner runs in the SQL editor)
 
 This confirms the JSON paths the new probe reads exist in stored rooms. It returns no room codes and no content.
