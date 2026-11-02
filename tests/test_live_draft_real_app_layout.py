@@ -84,6 +84,21 @@ class SharedDraftingScreenTests(_RealAppCase):
             marks = harness.landmarks(at)
             self.assertEqual(SHARED_SECTIONS - set(marks), set(), marks)
 
+    def test_header_is_one_compact_caption_and_one_room_code(self) -> None:
+        """Step 1: Solo-style header. League header, room header card, badges and the duplicate
+        status summary are gone; the summary is kept once, collapsed under "Room & managers"."""
+        for at in (self.host, self.guest):
+            captions = [c.value for c in at.caption]
+            self.assertTrue(any("· Shared ·" in c and "On clock:" in c for c in captions), captions[:8])
+            self.assertEqual(harness.count(at, 'body: "### Parity League"'), 0)
+            self.assertEqual(harness.count(at, 'class="ld-room-header"'), 0)
+            self.assertEqual(harness.count(at, 'class="live-draft-status-badges"'), 0)
+            self.assertEqual(harness.count(at, 'class="ld-room-code-panel"'), 1)
+            self.assertEqual(harness.count(at, 'body: "#### Draft Status Summary"'), 1)
+            inside = harness.expander_texts(at, "👥 Room & managers")
+            self.assertTrue(any("#### Draft Status Summary" in t for t in inside))
+            self.assertTrue(any("Claimed Teams" in t for t in inside))
+
     def test_commissioner_controls_follow_permissions(self) -> None:
         host_pause = _button(self.host, "live_draft_pause")
         guest_pause = _button(self.guest, "live_draft_pause")

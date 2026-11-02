@@ -26341,13 +26341,21 @@ elif active_page == "Live Draft Room":
                         )
                     except ImportError:
                         pass
-                    render_draft_status_summary_card(
-                        st,
-                        st.session_state,
-                        room,
-                        on_clock_team=_lobby_on_clock,
-                        pick_label=_lobby_pick,
-                    )
+                    try:
+                        from live_draft_safe_mode import live_draft_is_in_progress as _ldr_in_progress
+
+                        _summary_below = bool(_ldr_in_progress(room))
+                    except ImportError:
+                        _summary_below = False
+                    # While drafting, the summary sits once under the caption ("Room & managers").
+                    if not _summary_below:
+                        render_draft_status_summary_card(
+                            st,
+                            st.session_state,
+                            room,
+                            on_clock_team=_lobby_on_clock,
+                            pick_label=_lobby_pick,
+                        )
             elif is_solo_lobby(st.session_state, room=room):
                 # Process Start Draft FIRST — never bury the click behind pool warm.
                 render_solo_draft_ready_card(
@@ -26690,6 +26698,9 @@ elif active_page == "Live Draft Room":
             )
         except ImportError:
             pass
+        # The Shared drafting screen (after Start, before the last pick) follows the Solo layout:
+        # one compact caption instead of the league header, room header, badges and summary stack.
+        _shared_drafting_view = bool(_multiplayer_draft and _draft_in_progress and not _shared_lobby_view)
         if not _shared_lobby_view:
             _hdr_pick = (_paint.get("current_pick") if isinstance(_paint, dict) else None) or (
                 slot.get("Pick") if isinstance(slot, dict) else None
@@ -26720,6 +26731,11 @@ elif active_page == "Live Draft Room":
                 # Compact Solo status — full league header pushes cards below the fold.
                 st.caption(
                     f"**{cfg.get('league_name', 'League')}** · Solo · "
+                    f"{pick_label} · Round {round_no} · On clock: {on_clock_team}"
+                )
+            elif _shared_drafting_view:
+                st.caption(
+                    f"**{cfg.get('league_name', 'League')}** · Shared · "
                     f"{pick_label} · Round {round_no} · On clock: {on_clock_team}"
                 )
             else:
@@ -26768,7 +26784,7 @@ elif active_page == "Live Draft Room":
             )
         except ImportError:
             _solo_compact_viewport = False
-        if not _shared_lobby_view and not _solo_compact_viewport:
+        if not _shared_lobby_view and not _solo_compact_viewport and not _shared_drafting_view:
             try:
                 from live_draft_room_ui import render_live_draft_room_header
 
@@ -26816,7 +26832,7 @@ elif active_page == "Live Draft Room":
                             st.warning("Room code missing — shared draft may not be joinable.")
         # Compact Solo already painted one league/status caption above; do not
         # duplicate with a second "Solo Draft · Team · Pick · On clock" line.
-        if not _shared_lobby_view and _multiplayer_draft:
+        if not _shared_lobby_view and _multiplayer_draft and not _shared_drafting_view:
             try:
                 from live_draft_room_ui import render_live_draft_status_badges
 
@@ -26834,15 +26850,17 @@ elif active_page == "Live Draft Room":
                 from live_draft_setup_ui import render_draft_status_summary_card
 
                 # Phone CSS hook (M3): this second summary repeats the lobby-section card.
+                # The drafting screen keeps the room/manager details one click away instead.
                 with _ldr_m_hook("ldr-m-dup-summary"):
-                    render_draft_status_summary_card(
-                        st,
-                        st.session_state,
-                        room,
-                        on_clock_team=on_clock_team,
-                        pick_label=pick_label,
-                        round_no=round_no,
-                    )
+                    with st.expander("👥 Room & managers", expanded=False):
+                        render_draft_status_summary_card(
+                            st,
+                            st.session_state,
+                            room,
+                            on_clock_team=on_clock_team,
+                            pick_label=pick_label,
+                            round_no=round_no,
+                        )
             except ImportError:
                 pass
         try:

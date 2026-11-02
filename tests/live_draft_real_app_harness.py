@@ -194,6 +194,28 @@ def landmarks(at: Any) -> list[str]:
     return seen
 
 
+def count(at: Any, needle: str) -> int:
+    """How many rendered elements contain ``needle`` (protobuf text, quotes unescaped)."""
+    total = 0
+    for node in _walk(at.main):
+        if type(node).__name__ in ("Block", "SpecialBlock", "ElementTree"):
+            continue
+        if needle in str(getattr(node, "proto", "") or "").replace('\\"', '"'):
+            total += 1
+    return total
+
+
+def expander_texts(at: Any, label: str) -> list[str]:
+    """Protobuf text of every element inside the expander(s) labelled ``label``."""
+    out: list[str] = []
+    for exp in at.expander:
+        if exp.label == label:
+            for node in _walk(exp):
+                if type(node).__name__ not in ("Block", "SpecialBlock", "ElementTree", "Expander"):
+                    out.append(str(getattr(node, "proto", "") or "").replace('\\"', '"'))
+    return out
+
+
 def hook_keys(at: Any) -> list[str]:
     """Phone-layout hook containers (``ldr-m-*``) in render order."""
     keys: list[str] = []
