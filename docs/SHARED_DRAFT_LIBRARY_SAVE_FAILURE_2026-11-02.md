@@ -28,6 +28,21 @@
 - **Cause A is also possible** if another tab or device on the same account and workspace wrote at 18:42. Owner to confirm whether one was open.
 - **Cause C (never hydrated)** is unlikely for a tab that saved earlier in the session.
 
+## Owner clarification and follow-up checks (2026-11-02)
+
+- **Browsers were separate accounts.** Browser A was signed in to the owner's account; Browser B to Barry's separate account. Each account writes its own workspace record (`baseball` vs `baseball__<workspace>`), so Browser B could not have advanced the owner's workspace revision. That makes **cause B** (own write, then a failed revision re-read) more plausible.
+- **Cause A is not yet ruled out:** another tab or device on the owner's own account could still have written.
+  - **Check (read-only):** the owner's Baseball activity events by 5-minute bucket, page and event, from 18:00 to 21:30 UTC. Activity on another page at the same time suggests a second tab.
+  - **Limit:** events carry no browser or device marker, so this can suggest but not prove a second writer.
+  - **Gateway logs** can show write timing to `suite_app_current_state`. All requests come from the app server, so they cannot tell browsers apart either.
+- **Pick identities:** only the room's pick count (4 of 4) has been compared with the export so far. The individual picks have not; a read-only query lists the stored board for that one room.
+
+### Added to the Stage B candidate's required tests
+- Two separate accounts in the same Shared Draft cannot change each other's workspace revision or Saved Draft Library, including when both save at once.
+- Per-workspace revision tracking: the seen revision is stored per cloud record (`app` key), never shared across records.
+- End-to-end stale-save recovery for a Library save: refused, rebased onto the fresh copy, saved; and a successful own write whose re-read fails.
+- A visible warning when autosaves are being refused.
+
 ## Handling
 - **No change to production:** the completed room and the existing Library entries are left untouched.
 - **Separate persistence issue:** the Library save failure is tracked on its own. The fix candidate reuses Stage B's merge-on-stale (`fix/cloud-restore-hydration`, `5a09c4b` / `fa4d79b`, `workspace_merge.py`).
