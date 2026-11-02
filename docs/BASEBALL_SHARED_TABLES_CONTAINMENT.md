@@ -1,6 +1,6 @@
 # Shared Baseball tables open to the anon and signed-in roles: containment
 
-Status: **Step B executed in production 2026-10-31; VB1-VB3 passed. VB4 (REST, five tables) passed. VB5 (app test) pending.** Tested locally (74 checks). The account-isolation migration for `suite_app_current_state` and the combined Baseball deployment stay on hold until this exposure is closed and verified.
+Status: **Step B executed in production 2026-10-31; VB1-VB3 passed. VB4 (REST, five tables) passed. VB5 partly evidenced (create, join and full draft pass).** Tested locally (74 checks). The account-isolation migration for `suite_app_current_state` and the combined Baseball deployment stay on hold until this exposure is closed and verified.
 
 ## Confirmed exposure (owner's read-only P9–P10 run, 2026-10-30)
 
@@ -144,6 +144,19 @@ Run from Windows PowerShell with the project's publishable key (`sb_publishable_
 | baseball_shared_leagues | HTTP 401, code 42501: PASS |
 
 Final line: "All 5 denied." The two Baseball tables were open to the same key before Step B (D1: anon and authenticated held all privileges, RLS off), so this is the before/after proof from outside the database.
+
+### Two-browser app test (VB5): partly evidenced (owner, 2026-11-02, build `bc74759`)
+
+| VB5 step | Result |
+|---|---|
+| Create a shared room (commissioner) | **Passed** |
+| Join it from a second browser | **Passed** |
+| Start, make picks across browsers, reach completion | **Passed.** This needed the separate lobby-start sync fix (`bc74759`); it was not a containment issue. |
+| Open an existing room | Not yet evidenced |
+| Open a shared league page and a pending invite | Not yet evidenced |
+| Dashboard → Advisors → Security findings cleared | Not yet evidenced |
+
+Room creation, joining and every pick wrote and read the two contained tables through the service role after Step B. This is the functional proof that containment did not break the app's access. A separate client-side defect, Browser B occasionally leaving the Live Draft page, is under investigation and is not a permission error.
 
 ### Saved rollback (D2 output, production, 2026-10-30)
 
