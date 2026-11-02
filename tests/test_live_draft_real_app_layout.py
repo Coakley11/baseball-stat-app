@@ -123,6 +123,22 @@ class SharedDraftingScreenTests(_RealAppCase):
             self.assertEqual(len(queue_buttons), cards)  # Add to Queue on every card
             self.assertEqual(harness.count(at, 'body: "Manual Draft"'), 1)
 
+    def test_slim_control_bar_and_chat_below_the_board(self) -> None:
+        """Step 4: Pause / Resume / Auto Pick in a slim bar, the rest under "More draft controls";
+        live chat in a collapsible panel below the board."""
+        full = ["clock", "team_needs", "rec_cards", "manual_pick", "control_center", "queue", "board", "chat"]
+        for at, extra_key in ((self.host, "live_draft_reset_timer"), (self.guest, "live_draft_leave_this_room_btn")):
+            marks = harness.landmarks(at)
+            self.assertEqual([m for m in marks if m in full], full, marks)
+            self.assertEqual(harness.count(at, 'body: "### Draft Control Center"'), 0)
+            for key in ("live_draft_pause", "live_draft_resume", "live_draft_auto_now"):
+                self.assertIsNotNone(_button(at, key), key)
+            more = harness.expander_texts(at, "More draft controls")
+            self.assertTrue(any(f"-{extra_key}" in t for t in more), extra_key)
+            chat = harness.expander_texts(at, "💬 Live Draft Chat")
+            self.assertTrue(any('class="ld-aim-root' in t for t in chat))
+        self.assertIsNone(_button(self.guest, "live_draft_reset_timer"))  # still commissioner-only
+
     def test_team_needs_once_with_category_outlook(self) -> None:
         for at in (self.host, self.guest):
             panels = [

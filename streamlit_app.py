@@ -27893,6 +27893,7 @@ elif active_page == "Live Draft Room":
                 try:
                     from live_draft_control_center_ui import render_control_center_with_live_chat
 
+                    # Shared drafting screen: slim commissioner bar here; chat below the board.
                     _cc = render_control_center_with_live_chat(
                         st,
                         st.session_state,
@@ -27900,6 +27901,7 @@ elif active_page == "Live Draft Room":
                         cfg=cfg,
                         persist_room=lambda r, reason: _persist_live_draft_room(r, reason=reason),
                         developer_mode=bool(developer_mode_enabled()),
+                        chat_inline=not _shared_drafting_view,
                     )
                     return (
                         bool((_cc or {}).get("is_commissioner")),
@@ -28159,6 +28161,14 @@ elif active_page == "Live Draft Room":
                 ldr_section_done(st.session_state, "room_board_column", st=st)
             except ImportError:
                 pass
+            # Shared drafting screen: live chat in a collapsible panel below the board.
+            if _shared_drafting_view:
+                try:
+                    from live_draft_control_center_ui import render_live_draft_chat_section
+
+                    render_live_draft_chat_section(st, st.session_state)
+                except ImportError:
+                    pass
 
         with rec_col:
             try:

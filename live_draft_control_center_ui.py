@@ -71,8 +71,13 @@ def render_live_draft_control_center(
     persist_room: Callable[[dict[str, Any], str], None],
     developer_mode: bool = False,
     show_heading: bool = True,
+    layout: str = "grid",
 ) -> dict[str, Any]:
     """Compact live controls only (Pause / Resume / Auto Pick / Reset Timer) in a 2×2 grid.
+
+    ``layout="bar"`` (Shared drafting screen): Pause / Resume / Auto Pick in one slim row, and
+    Reset Timer (commissioner) or Leave Room (guest) under "More draft controls". Same buttons,
+    keys, permissions and handlers either way.
 
     Park/delete commissioner actions live near Team Rosters — not here.
     Historical library save is unavailable until the draft finishes naturally.
@@ -108,7 +113,11 @@ def render_live_draft_control_center(
     except ImportError:
         pass
 
-    top1, top2 = st.columns(2)
+    if layout == "bar":
+        top1, top2, bot1 = st.columns(3)
+        bot2 = st.expander("More draft controls", expanded=False)
+    else:
+        top1, top2 = st.columns(2)
     with top1:
         _pause_return = st.button(
             "⏸ Pause Draft",
@@ -253,7 +262,8 @@ def render_live_draft_control_center(
             except ImportError:
                 st.rerun()
 
-    bot1, bot2 = st.columns(2)
+    if layout != "bar":
+        bot1, bot2 = st.columns(2)
     with bot1:
         if st.button(
             "⚡ Auto Pick Now",
@@ -364,8 +374,24 @@ def _paint_control_center_with_live_chat(
     cfg: dict[str, Any],
     persist_room: Callable[[dict[str, Any], str], None],
     developer_mode: bool = False,
+    chat_inline: bool = True,
 ) -> dict[str, Any]:
-    """Paint Control Center + chat once inside a stable container tree."""
+    """Paint Control Center + chat once inside a stable container tree.
+
+    ``chat_inline=False`` (Shared drafting screen): the slim control bar only; the page paints the
+    chat in its own panel below the board (render_live_draft_chat_section).
+    """
+    if not chat_inline:
+        return render_live_draft_control_center(
+            st,
+            session,
+            room,
+            cfg=cfg,
+            persist_room=persist_room,
+            developer_mode=developer_mode,
+            show_heading=False,
+            layout="bar",
+        )
     try:
         from live_draft_chat_ui import render_live_draft_chat_panel
     except ImportError:
@@ -402,8 +428,12 @@ def render_control_center_with_live_chat(
     cfg: dict[str, Any],
     persist_room: Callable[[dict[str, Any], str], None],
     developer_mode: bool = False,
+    chat_inline: bool = True,
 ) -> dict[str, Any]:
-    """Control Center (left) + Live Chat (right), above the On-the-Clock timer card."""
+    """Control Center (left) + Live Chat (right), above the On-the-Clock timer card.
+
+    ``chat_inline=False``: the slim control bar only (see _paint_control_center_with_live_chat).
+    """
     fragment = getattr(st, "fragment", None)
     if fragment is None:
         return _paint_control_center_with_live_chat(
@@ -413,6 +443,7 @@ def render_control_center_with_live_chat(
             cfg=cfg,
             persist_room=persist_room,
             developer_mode=developer_mode,
+            chat_inline=chat_inline,
         )
 
     @fragment
@@ -469,9 +500,24 @@ def render_control_center_with_live_chat(
             cfg=cfg,
             persist_room=persist_room,
             developer_mode=developer_mode,
+            chat_inline=chat_inline,
         )
 
     return _control_center_fragment()
+
+
+def render_live_draft_chat_section(st: Any, session: dict[str, Any]) -> None:
+    """Live chat in its own collapsible panel (Shared drafting screen, below the board).
+    Same chat panel, fragment and commissioner tools as before; only its place changed."""
+    try:
+        from live_draft_chat_ui import render_live_draft_chat_panel
+    except ImportError:
+        return
+    with st.expander("💬 Live Draft Chat", expanded=False):
+        try:
+            render_live_draft_chat_panel(st, session)
+        except Exception as exc:
+            st.caption(f"Draft chat unavailable: {type(exc).__name__}")
 
 
 def render_commissioner_draft_actions(
