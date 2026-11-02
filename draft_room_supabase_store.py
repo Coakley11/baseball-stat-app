@@ -88,6 +88,28 @@ def row_to_document(row: dict[str, Any] | None) -> dict[str, Any] | None:
     return doc
 
 
+def _head_live_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """room_status / current_pick_index / timer_deadline from a head row, like
+    ``extract_live_head_fields`` does for the local store: the ``room`` blob, else legacy ``live_room``."""
+    prefix = "room_"
+    if all(row.get(f"room_{k}") is None for k in ("status", "pick_index", "timer_deadline")):
+        prefix = "legacy_"
+    try:
+        idx = int(row.get(f"{prefix}pick_index") or 0)
+    except (TypeError, ValueError):
+        idx = 0
+    deadline = row.get(f"{prefix}timer_deadline")
+    try:
+        deadline_f = float(deadline) if deadline is not None else None
+    except (TypeError, ValueError):
+        deadline_f = None
+    return {
+        "room_status": str(row.get(f"{prefix}status") or ""),
+        "current_pick_index": idx,
+        "timer_deadline": deadline_f,
+    }
+
+
 class SupabaseSharedRoomStore:
     """Cross-device shared draft room persistence via PostgREST."""
 
@@ -137,7 +159,17 @@ class SupabaseSharedRoomStore:
                     "GET",
                     _TABLE,
                     params={
-                        "select": "room_code,revision,status,updated_at",
+                        # Plus the live-room fields the poller compares, projected out of the
+                        # JSON (same keys as the local store's head) so the probe stays small.
+                        "select": (
+                            "room_code,revision,status,updated_at,"
+                            "room_status:shared_room_json->room->>status,"
+                            "room_pick_index:shared_room_json->room->current_pick_index,"
+                            "room_timer_deadline:shared_room_json->room->timer_deadline,"
+                            "legacy_status:shared_room_json->live_room->>status,"
+                            "legacy_pick_index:shared_room_json->live_room->current_pick_index,"
+                            "legacy_timer_deadline:shared_room_json->live_room->timer_deadline"
+                        ),
                         "room_code": f"eq.{code}",
                         "limit": "1",
                     },
@@ -149,6 +181,7 @@ class SupabaseSharedRoomStore:
             return None
         row = rows[0]
         return {
+            **_head_live_fields(row),
             "room_code": str(row.get("room_code") or code).upper(),
             "revision": int(row.get("revision") or 1),
             "status": str(row.get("status") or ""),

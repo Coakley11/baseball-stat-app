@@ -354,6 +354,10 @@ def prepare_global_draft_context(session: dict[str, Any]) -> dict[str, Any]:
 
 
 _SHARED_DRAFT_SYNC_RUN_KEY = "_shared_draft_sync_run"
+# Last head that triggered a same-revision full load, and how long before the same head may
+# trigger another (bounds egress when the local room stays different after the load).
+_HEAD_DIVERGE_LOAD_KEY = "_shared_head_diverge_full_load"
+HEAD_DIVERGE_RELOAD_SEC = 30.0
 
 
 def reset_shared_draft_sync_gate(session: dict[str, Any]) -> None:
@@ -467,12 +471,32 @@ def sync_shared_draft_room(
                 head_diverged = _shared_head_live_fields_diverge(
                     head, local_room if isinstance(local_room, dict) else None
                 )
+                skipped_reason = "remote_rev_not_newer"
+                if remote_rev <= local_rev and head_diverged:
+                    # Same revision but status / pick / deadline differs (a guest still in the lobby
+                    # after Start, or a timer write that kept the revision). Full-load it, but at most
+                    # once per distinct remote head per HEAD_DIVERGE_RELOAD_SEC, so a local room that
+                    # stays different (e.g. a locally armed clock) cannot cost a full load every poll.
+                    signature = (
+                        f"{remote_rev}|{head.get('room_status')}|{head.get('current_pick_index')}"
+                        f"|{head.get('timer_deadline')}"
+                    )
+                    prior = session.get(_HEAD_DIVERGE_LOAD_KEY)
+                    if (
+                        isinstance(prior, dict)
+                        and prior.get("signature") == signature
+                        and time.time() - float(prior.get("at") or 0) < HEAD_DIVERGE_RELOAD_SEC
+                    ):
+                        head_diverged = False
+                        skipped_reason = "head_diverge_reload_throttled"
+                    else:
+                        session[_HEAD_DIVERGE_LOAD_KEY] = {"signature": signature, "at": time.time()}
                 if remote_rev <= local_rev and not head_diverged:
                     session[_SHARED_DRAFT_SYNC_RUN_KEY] = True
                     _trace(
                         last_poll_finished_at=time.time(),
                         last_poll_result="no_change_head",
-                        poll_skipped_reason="remote_rev_not_newer",
+                        poll_skipped_reason=skipped_reason,
                     )
                     return False
 
@@ -691,17 +715,23 @@ def refresh_shared_lobby_authority(
     applied_newer = False
     if remote_rev > local_rev:
         try:
-            publish_shared_room_runtime(session, document, reason="lobby_authority_refresh")
-            applied_newer = True
+            applied_newer = (
+                publish_shared_room_runtime(session, document, reason="lobby_authority_refresh") is not None
+            )
         except Exception:
-            pass
-    # Always re-bind meta from the authoritative document so lobby rows / Start
-    # Draft never keep a stale session revision when participants advanced.
+            applied_newer = False
+    # Re-bind meta from the authoritative document so lobby rows / Start Draft never keep a
+    # stale session revision when participants advanced — but only once the session room
+    # matches that revision. Advancing the revision over a room that failed to apply would
+    # make every later poll see "no change" and leave a guest in the lobby after Start.
+    session_rev = int((session.get(SHARED_ROOM_META_KEY) or {}).get("revision") or 0)
+    revision_consistent = applied_newer or remote_rev <= max(local_rev, session_rev)
     try:
         meta = dict(session.get(SHARED_ROOM_META_KEY) or {})
-        meta["revision"] = remote_rev
+        if revision_consistent:
+            meta["revision"] = remote_rev
+            meta["updated_at"] = str(document.get("updated_at") or meta.get("updated_at") or "")
         meta["room_code"] = room_code
-        meta["updated_at"] = str(document.get("updated_at") or meta.get("updated_at") or "")
         meta["host_participant_id"] = str(
             document.get("host_participant_id") or meta.get("host_participant_id") or ""
         )
@@ -717,6 +747,7 @@ def refresh_shared_lobby_authority(
         "session_revision_before": local_rev,
         "backend_revision": remote_rev,
         "applied_newer_revision": applied_newer,
+        "session_revision_advanced": revision_consistent,
         "participant_ids": sorted(str(k) for k in dict(document.get("participants") or {})),
         "joined_participants": list(document.get("joined_participants") or []),
     }
