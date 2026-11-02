@@ -176,6 +176,8 @@ class LiveDraftSharedLeagueOriginVisibilityTests(unittest.TestCase):
                 user_id="user:coakley",
                 external_id="coakley11",
                 workspace_id="coakley11",
+                # Matched on the full verified address: a bare local part is not identity.
+                email="coakley11@aol.com",
             )
         )
         shared_doc = {

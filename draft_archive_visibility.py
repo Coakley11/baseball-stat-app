@@ -125,7 +125,7 @@ def _has_shared_league_membership(
                 return False
             try:
                 from fantasy_league_invites import INVITE_STATUS_ACCEPTED
-                from fantasy_shared_league_startup_sync import _record_matches_account, _resolve_startup_identity
+                from fantasy_shared_league_startup_sync import _record_matches_account, _resolve_startup_identity, session_auth_email
 
                 uid, external, workspace = _resolve_startup_identity(session)
                 for invite in list(shared.get("league_invites") or []):
@@ -138,6 +138,7 @@ def _has_shared_league_membership(
                         user_id=uid or user_id,
                         external_id=external,
                         workspace_id=workspace,
+                        email=session_auth_email(session),
                     ):
                         return True
             except ImportError:

@@ -62,7 +62,7 @@ def is_league_member_or_invitee(session: MutableMapping[str, Any], document: dic
         return False
     if is_league_commissioner(session, document):
         return True
-    from fantasy_shared_league_startup_sync import _record_matches_account
+    from fantasy_shared_league_startup_sync import _record_matches_account, session_auth_email
 
     uid, external, workspace = _identity(session)
     records: list[Any] = list((document.get("team_ownership") or {}).values()) + list(
@@ -70,7 +70,9 @@ def is_league_member_or_invitee(session: MutableMapping[str, Any], document: dic
     )
     return any(
         isinstance(record, dict)
-        and _record_matches_account(record, user_id=uid, external_id=external, workspace_id=workspace)
+        and _record_matches_account(
+            record, user_id=uid, external_id=external, workspace_id=workspace, email=session_auth_email(session)
+        )
         for record in records
     )
 

@@ -27,13 +27,31 @@ def _resolve_startup_identity(session: dict[str, Any]) -> tuple[str, str, str]:
     return uid, external, workspace
 
 
+def session_auth_email(session: Any) -> str:
+    """This account's verified sign-in email (empty when signed out)."""
+    try:
+        from suite_auth import current_auth_email
+
+        return str(current_auth_email(session) or "").strip().lower()
+    except Exception:
+        return ""
+
+
 def _record_matches_account(
     record: dict[str, Any],
     *,
     user_id: str,
     external_id: str,
     workspace_id: str,
+    email: str = "",
 ) -> bool:
+    """True when ``record`` (a team-ownership record or an invite) names this account.
+
+    Identity is the account user id, its sign-in-bound profile id (``external_id``, unique per
+    account), its owned workspace id, or its verified sign-in ``email`` compared in full. An email
+    local part is never identity on its own: a new account may claim a readable id equal to the
+    local part of someone else's address at another domain.
+    """
     if not isinstance(record, dict):
         return False
     stored = str(record.get("user_id") or record.get("account_user_id") or "").strip()
@@ -47,14 +65,14 @@ def _record_matches_account(
     # Only THIS account's identifiers on one side and only the RECORD's on the other. The old
     # version put the session's own values (and the record's email) on both sides, so every
     # signed-in account matched every ownership record and accepted invite.
-    account_aliases = {
-        str(x).strip().lower()
-        for x in (external_id, workspace_id)
-        if _usable_account_alias(x)
-    }
+    account_aliases = {str(external_id).strip().lower()} if _usable_account_alias(external_id) else set()
+    if _usable_account_alias(workspace_id) and str(workspace_id).strip().lower() not in _FALLBACK_WORKSPACES:
+        account_aliases.add(str(workspace_id).strip().lower())
+    account_email = str(email or "").strip().lower()
+    if "@" in account_email:
+        account_aliases.add(account_email)
     if not account_aliases:
         return False
-    email = str(record.get("email") or "").strip().lower()
     display = str(record.get("display_name") or "").strip().lower()
     record_aliases = {
         str(x).strip().lower()
@@ -62,14 +80,12 @@ def _record_matches_account(
             record.get("external_id"),
             record.get("invitee_external_id"),
             record.get("invitee_username"),
-            record.get("invitee_email"),
             record.get("accepted_by_external_id"),
             record.get("invitee_workspace_id"),
             record.get("accepted_by_workspace_id"),
-            email,
-            email.split("@", 1)[0] if "@" in email else "",
-            display,
-            display.split("@", 1)[0] if "@" in display else "",
+            record.get("email"),
+            record.get("invitee_email"),
+            display if "@" in display else "",  # a full address only, never a free-text name
         )
         if str(x or "").strip()
     }
@@ -78,6 +94,9 @@ def _record_matches_account(
 
 # Workspace / external ids that several people can resolve to; never proof of who someone is.
 _SHARED_ALIASES = frozenset({"default", "guest", "guest_unscoped", "user_unidentified", "local", "demo"})
+# "daniel" is also the fallback WORKSPACE for an unresolved id, so as a workspace it cannot prove
+# identity; its real owner still matches by user id or by the bound "daniel" profile id.
+_FALLBACK_WORKSPACES = frozenset({"daniel"})
 
 
 def _usable_account_alias(value: Any) -> bool:
@@ -127,6 +146,7 @@ def discover_shared_league_memberships_for_session(session: dict[str, Any]) -> l
                     user_id=uid,
                     external_id=external,
                     workspace_id=workspace,
+                    email=session_auth_email(session),
                 ):
                     owned_teams.add(str(team or "").strip())
                     reasons.append("team_ownership")
@@ -142,6 +162,7 @@ def discover_shared_league_memberships_for_session(session: dict[str, Any]) -> l
                     user_id=uid,
                     external_id=external,
                     workspace_id=workspace,
+                    email=session_auth_email(session),
                 ):
                     reasons.append("accepted_invite")
                     claimed = str(invite.get("claimed_team") or "").strip()
@@ -241,6 +262,7 @@ def apply_workspace_member_identity_from_shared(
                     user_id=uid,
                     external_id=external,
                     workspace_id=workspace,
+                    email=session_auth_email(session),
                 ):
                     continue
                 meta["joined_via_invite"] = True

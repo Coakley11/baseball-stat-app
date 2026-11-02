@@ -50,9 +50,29 @@ class MembershipMatcherTests(unittest.TestCase):
     def test_real_members_still_match(self) -> None:
         self.assertTrue(_record_matches_account(OWNER, user_id="uuid-owner", external_id="", workspace_id=""))
         legacy = {"user_id": "auth-uuid", "display_name": "coakley11@aol.com"}  # Auth UUID + email only
-        self.assertTrue(_record_matches_account(legacy, user_id="user:coakley", external_id="coakley11", workspace_id=""))
+        self.assertTrue(
+            _record_matches_account(legacy, user_id="user:coakley", external_id="coakley11", workspace_id="", email="coakley11@aol.com")
+        )
         invite = {"invitee_user_id": "", "invitee_username": "barry"}
         self.assertTrue(_record_matches_account(invite, user_id="uuid-b", external_id="barry", workspace_id=""))
+
+    def test_a_matching_email_local_part_at_another_domain_is_not_identity(self) -> None:
+        record = {"display_name": "victim@gmail.com", "email": "victim@gmail.com"}
+        self.assertFalse(
+            _record_matches_account(record, user_id="uuid-x", external_id="victim", workspace_id="victim", email="victim@yahoo.com")
+        )
+        self.assertTrue(_record_matches_account(record, user_id="uuid-x", external_id="", workspace_id="", email="victim@gmail.com"))
+
+    def test_the_fallback_daniel_workspace_is_not_identity_but_the_bound_profile_is(self) -> None:
+        record = {"invitee_workspace_id": "daniel", "external_id": "daniel"}
+        self.assertFalse(_record_matches_account(record, user_id="uuid-x", external_id="stranger_ab12cd34", workspace_id="daniel"))
+        self.assertTrue(_record_matches_account(record, user_id="uuid-owner", external_id="daniel", workspace_id="daniel"))
+
+    def test_after_an_account_switch_the_previous_accounts_league_no_longer_matches(self) -> None:
+        session = _session("uuid-member", "member", "member_ws")
+        self.assertTrue(authz.is_league_member_or_invitee(session, LEAGUE))
+        session.update(_session("uuid-attacker", "attacker", "attacker_ws"))  # the next account signs in
+        self.assertFalse(authz.is_league_member_or_invitee(session, LEAGUE))
 
     def test_discovery_gives_an_unrelated_account_no_leagues(self) -> None:
         with patch("fantasy_shared_league_startup_sync.list_shared_league_documents", return_value=[LEAGUE]):
@@ -81,6 +101,36 @@ class LeagueWriteAuthorizationTests(unittest.TestCase):
         out = authz.authorize_league_write(_session("uuid-member"), incoming, LEAGUE)
         self.assertEqual((out["commissioner_user_id"], out["league_name"], out["draft_id"]), ("uuid-owner", "Owner League", "draft-1"))
         self.assertEqual(out["league_rosters"], {"Team 2": {}})  # members' own saves (trades, claims) still go through
+
+    def test_team_owner_and_invitee_cannot_become_commissioner_by_editing_the_document(self) -> None:
+        for session in (_session("uuid-member"), _session("uuid-invitee", "invitee")):
+            out = authz.authorize_league_write(session, {**LEAGUE, "commissioner_user_id": session["_suite_auth_user_id"]}, LEAGUE)
+            self.assertEqual(out["commissioner_user_id"], "uuid-owner")
+            self.assertFalse(authz.is_league_commissioner(session, out))
+
+    def test_a_member_push_cannot_reassign_another_owners_firm_team(self) -> None:
+        from fantasy_shared_league_store import push_league_context_to_shared
+
+        store = MagicMock()
+        stored = {
+            **LEAGUE,
+            "team_ownership": {
+                "Team 1": {**OWNER, "claim_status": "firm"},
+                "Team 2": {"user_id": "uuid-member", "email": "member@example.com"},
+            },
+        }
+        store.load.return_value = stored
+        store.save.side_effect = lambda doc: doc
+        context = {
+            "metadata": {"league_id": "league:abc"},
+            "team_ownership": {"Team 1": {"user_id": "uuid-member", "claim_status": "firm"}},
+            "league_rosters": {},
+        }
+        with patch.object(authz, "current_session", return_value=_session("uuid-member", "member")), patch(
+            "fantasy_shared_league_store._anonymous_guest", return_value=False
+        ), patch("fantasy_league_context.upsert_league_context", return_value=None):
+            saved = push_league_context_to_shared({}, context, store=store)
+        self.assertEqual(saved["team_ownership"]["Team 1"]["user_id"], "uuid-owner")
 
     def test_an_invitee_may_answer_and_the_commissioner_may_change_anything(self) -> None:
         self.assertTrue(authz.authorize_league_write(_session("uuid-invitee", "invitee"), dict(LEAGUE), LEAGUE))
