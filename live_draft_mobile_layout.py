@@ -218,15 +218,22 @@ def live_draft_mobile_css() -> str:
        beat the action rule — caught live).
        Two clock surfaces exist in the stabilized build and both must hoist:
          Solo   -> declared component in its own keyed container ({_CLOCK_BOX})
-         Shared -> components.html banner, matched via its srcdoc iframe
+         Shared -> components.html banner, matched via its srcdoc iframe (in the rec
+                   column of the flattened block, or in the Shared drafting screen's
+                   top-of-page slot, a direct child of the page column)
        The old `.live-draft-on-clock` page-level match is gone because Solo no
        longer emits that markup in-page. */
     {_PAGE} > *:has({_CLOCK_BOX}),
-    {_PAGE} > {_CLOCK_BOX} {{ order: {ORDER_CLOCK}; }}
+    {_PAGE} > {_CLOCK_BOX},
+    {_PAGE} > *:has({_CLOCK_IFRAME}) {{ order: {ORDER_CLOCK}; }}
     {_REC_ITEMS}:has({_CLOCK_BOX}),
     {_REC_ITEMS}:has({_CLOCK_IFRAME}) {{ order: {ORDER_CLOCK}; }}
     {_PAGE} > *:has(> {_ACTIONS}),
+    {_PAGE} > *:has({_ACTIONS}):not(:has({_RECS})),
     {_REC_ITEMS}:has(> {_ACTIONS}) {{ order: {ORDER_ACTION}; }}
+    /* The middle selector is the Shared drafting screen's Manual Pick slot (the action hook
+       one container deeper), raised under the clock as Solo's is. The desktop columns block
+       also holds the action, but always with the cards, so it is excluded. */
 
     /* 4. Recommendation cards: each 3-card row becomes a swipe strip (all cards and
        their Draft / Queue buttons stay rendered; peek of the next card signals more). */

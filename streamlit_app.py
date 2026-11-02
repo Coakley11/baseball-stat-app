@@ -27940,8 +27940,12 @@ elif active_page == "Live Draft Room":
                     _is_commissioner, _doc_h = _paint_live_draft_control_center()
             else:
                 # Phone CSS hook (M3): host controls ordered under the draft action,
-                # live chat (2nd column) ordered with supporting context.
-                with _ldr_m_hook("ldr-m-controls"):
+                # live chat (2nd column) ordered with supporting context. The Shared drafting
+                # screen is already in phone order (like Solo), so its slim bar takes no tier:
+                # the hook would lift the bar above Team Needs and the cards on a phone.
+                from contextlib import nullcontext as _ctrl_hook_null
+
+                with (_ldr_m_hook("ldr-m-controls") if not _shared_drafting_view else _ctrl_hook_null()):
                     _is_commissioner, _doc_h = _paint_live_draft_control_center()
             try:
                 from live_draft_render_checkpoints import note_active_page_receipt
