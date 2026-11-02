@@ -313,9 +313,17 @@ def list_shared_league_documents(*, store: SharedLeagueStore | None = None) -> l
 
 
 def save_shared_league(document: dict[str, Any], *, store: SharedLeagueStore | None = None) -> dict[str, Any]:
+    """Write a Shared League document. Raises SharedLeagueWriteRefused (a RuntimeError) when the
+    signed-in account may not change this league (fantasy_shared_league_authz)."""
+    from fantasy_shared_league_authz import authorize_league_write, current_session
+
     backend = store or get_shared_league_store()
+    league_id = str((document or {}).get("league_id") or "").strip()
+    session = current_session()
+    if session is not None:
+        document = authorize_league_write(session, document, backend.load(league_id) if league_id else None)
     saved = backend.save(document)
-    invalidate_shared_league_doc_cache(str((document or {}).get("league_id") or "").strip())
+    invalidate_shared_league_doc_cache(league_id)
     return saved
 
 
@@ -879,6 +887,12 @@ def push_season_ledger_to_shared(
     document = copy.deepcopy(existing)
     document["season_ledger"] = merge_season_ledgers(local, existing.get("season_ledger"))
     document["revision"] = int(existing.get("revision") or 0) + 1
+    from fantasy_shared_league_authz import SharedLeagueWriteRefused, authorize_league_write, current_session
+
+    try:
+        document = authorize_league_write(current_session(), document, existing)
+    except SharedLeagueWriteRefused:
+        return None
     saved = backend.save(document)
     invalidate_shared_league_doc_cache(league_id)
     return saved
@@ -935,6 +949,15 @@ def push_league_context_to_shared(
             existing.get("league_activity") or [],
             document.get("league_activity") or [],
         )
+    from fantasy_shared_league_authz import SharedLeagueWriteRefused, authorize_league_write, current_session
+
+    try:
+        # Decided against the stored league, not this caller's local copy.
+        document = authorize_league_write(
+            current_session(), document, existing if isinstance(existing, dict) else None
+        )
+    except SharedLeagueWriteRefused:
+        return None
     saved = backend.save(document)
     invalidate_shared_league_doc_cache(league_id)
     if isinstance(session, dict):

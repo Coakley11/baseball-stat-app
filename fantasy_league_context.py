@@ -2788,6 +2788,15 @@ def repair_canonical_shared_doc_origin_in_place(
     repaired_meta["creation_origin"] = CREATION_ORIGIN_LIVE_DRAFT_ROOM
     repaired["metadata"] = repaired_meta
     backend = get_shared_league_store()
+    from fantasy_shared_league_authz import SharedLeagueWriteRefused, authorize_league_write, current_session
+
+    # Same authorization as every other Shared League write: not this account's league, no repair.
+    try:
+        repaired = authorize_league_write(
+            current_session(), repaired, backend.load(str(repaired.get("league_id") or "").strip())
+        )
+    except SharedLeagueWriteRefused:
+        return None
     saved = backend.save(repaired)
     trace = dict(session.get("_draft_origin_repair_diag") or {})
     trace["canonical_origin_before"] = before

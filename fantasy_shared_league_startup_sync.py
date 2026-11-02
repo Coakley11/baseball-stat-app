@@ -39,47 +39,50 @@ def _record_matches_account(
     stored = str(record.get("user_id") or record.get("account_user_id") or "").strip()
     if stored and user_id and account_user_ids_match(stored, user_id):
         return True
-    email = str(record.get("email") or "").strip().lower()
-    display = str(record.get("display_name") or "").strip().lower()
-    display_local = display.split("@", 1)[0] if "@" in display else display
-    email_local = email.split("@", 1)[0] if email else ""
-    if not email and "@" in display:
-        email = display
-        email_local = display_local
-    aliases = {
-        x.lower()
-        for x in (
-            user_id,
-            external_id,
-            workspace_id,
-            str(record.get("external_id") or "").strip(),
-            email,
-            email_local,
-            display,
-            display_local,
-            str(record.get("invitee_external_id") or "").strip(),
-            str(record.get("invitee_workspace_id") or "").strip(),
-            str(record.get("accepted_by_external_id") or "").strip(),
-            str(record.get("accepted_by_workspace_id") or "").strip(),
-        )
-        if x
-    }
     invite_uid = str(record.get("invitee_user_id") or "").strip()
     if invite_uid and user_id and account_user_ids_match(invite_uid, user_id):
         return True
-    for candidate in (
-        external_id,
-        workspace_id,
-        email,
-        email_local,
-        str(record.get("invitee_external_id") or "").strip().lower(),
-        str(record.get("invitee_workspace_id") or "").strip(),
-        str(record.get("accepted_by_external_id") or "").strip().lower(),
-        str(record.get("accepted_by_workspace_id") or "").strip(),
-    ):
-        if candidate and candidate.lower() in aliases:
-            return True
-    return False
+    # (A user-id mismatch alone is not proof: records may hold the Auth UUID while the session
+    # identifies the same person as user:<external>, so the account's own names still count.)
+    # Only THIS account's identifiers on one side and only the RECORD's on the other. The old
+    # version put the session's own values (and the record's email) on both sides, so every
+    # signed-in account matched every ownership record and accepted invite.
+    account_aliases = {
+        str(x).strip().lower()
+        for x in (external_id, workspace_id)
+        if _usable_account_alias(x)
+    }
+    if not account_aliases:
+        return False
+    email = str(record.get("email") or "").strip().lower()
+    display = str(record.get("display_name") or "").strip().lower()
+    record_aliases = {
+        str(x).strip().lower()
+        for x in (
+            record.get("external_id"),
+            record.get("invitee_external_id"),
+            record.get("invitee_username"),
+            record.get("invitee_email"),
+            record.get("accepted_by_external_id"),
+            record.get("invitee_workspace_id"),
+            record.get("accepted_by_workspace_id"),
+            email,
+            email.split("@", 1)[0] if "@" in email else "",
+            display,
+            display.split("@", 1)[0] if "@" in display else "",
+        )
+        if str(x or "").strip()
+    }
+    return bool(account_aliases & record_aliases)
+
+
+# Workspace / external ids that several people can resolve to; never proof of who someone is.
+_SHARED_ALIASES = frozenset({"default", "guest", "guest_unscoped", "user_unidentified", "local", "demo"})
+
+
+def _usable_account_alias(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return bool(text) and text not in _SHARED_ALIASES and not text.startswith(("guest_", "anonymous:"))
 
 
 def _pending_trade_involves_account(

@@ -214,10 +214,10 @@ def render_live_draft_control_center(
             session["_live_draft_resume_button_commissioner"] = bool(is_commissioner)
         except Exception:
             pass
-        if _resume_return:
-            # Enabled Resume is already commissioner-gated via disabled=. Do not
-            # re-check is_commissioner on the return-value path — a same-run
-            # membership flake would drop the only Resume delivery.
+        # disabled= is not enforced by the server (a crafted widget message still delivers a
+        # click), so the commissioner check is repeated here, as for Pause. A same-run membership
+        # flake now costs one press of Resume, which is preferable to a guest unpausing the room.
+        if _resume_return and is_commissioner:
             from live_draft_timer_logic import live_draft_resume_timer
 
             try:
@@ -264,7 +264,8 @@ def render_live_draft_control_center(
                 "Guest: only when your claimed team is on the clock."
             ),
             use_container_width=True,
-        ):
+        ) and may_auto and status in ("in_progress", "paused"):
+            # Re-checked on the server: disabled= alone does not stop a crafted click.
             from live_draft_autopick import live_draft_auto_pick
 
             if room.get("status") == "paused":
