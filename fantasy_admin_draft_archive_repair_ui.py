@@ -36,14 +36,16 @@ def _secrets_repair_token(st: Any) -> str:
 
 
 def _authorized_repair_token(st: Any) -> str:
-    secret_token = _secrets_repair_token(st)
-    if secret_token:
-        return secret_token
-    return DEFAULT_REPAIR_LEAGUE_ID
+    """The configured secret, or "" (repair disabled). There is no fallback: the old fallback was
+    DEFAULT_REPAIR_LEAGUE_ID, a value in the source, so without the secret anyone could run the
+    repair from a URL, before sign-in."""
+    return _secrets_repair_token(st)
 
 
 def _parse_repair_request(st: Any) -> tuple[str, bool, bool] | None:
     """Return (league_id, dry_run, force) when query requests repair; else None."""
+    if not _authorized_repair_token(st):
+        return None
     token = _query_repair_token(st)
     if not token:
         return None
