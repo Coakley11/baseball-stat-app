@@ -961,7 +961,22 @@ def get_active_league_context(
     active_id = str(store.get("active_league_context_id") or "").strip()
     if not active_id:
         return None
-    return get_league_context(session, active_id)
+    context = get_league_context(session, active_id)
+    if respect_source_priority and active_league_copy_hidden(session, context):
+        # Fantasy pages see no active league. The stored selection is left exactly as it is;
+        # Library selection flows (respect_source_priority=False) are not changed.
+        return None
+    return context
+
+
+def active_league_copy_hidden(session: dict[str, Any], context: dict[str, Any] | None) -> bool:
+    """A stored Shared League copy this account may not see (fantasy_shared_league_authz)."""
+    try:
+        from fantasy_shared_league_authz import league_copy_hidden
+
+        return league_copy_hidden(session, context)
+    except ImportError:
+        return False
 
 
 def fingerprint_payload_for_archive_save(
@@ -1308,6 +1323,9 @@ def pop_league_context_save_flash(session: dict[str, Any]) -> dict[str, Any] | N
 def schedule_active_context_resync(session: dict[str, Any]) -> bool:
     """Re-apply active league context aliases before fantasy page navigation."""
     migrate_legacy_archives_to_contexts(session)
+    stored_active = get_active_league_context(session, respect_source_priority=False)
+    if active_league_copy_hidden(session, stored_active):
+        return False  # hidden copy: never re-activate it (or its archive) from here
     context = get_active_league_context(session)
     if context:
         archive_id = str((context.get("metadata") or {}).get("source_draft_id") or "").strip()
@@ -1325,6 +1343,8 @@ def schedule_active_context_resync(session: dict[str, Any]) -> bool:
         active = None
     if active:
         draft_id = str(active.get("draft_id") or "").strip()
+        if draft_id and active_league_copy_hidden(session, get_league_context_for_archive(session, active)):
+            return False
         if draft_id:
             schedule_league_context_activation(session, context_id_for_archive(draft_id), archive_id=draft_id)
             return True
@@ -2793,7 +2813,7 @@ def repair_canonical_shared_doc_origin_in_place(
     # Same authorization as every other Shared League write: not this account's league, no repair.
     try:
         repaired = authorize_league_write(
-            current_session(), repaired, backend.load(str(repaired.get("league_id") or "").strip())
+            current_session(), repaired, backend.load(str(repaired.get("league_id") or "").strip()), store=backend
         )
     except SharedLeagueWriteRefused:
         return None
@@ -3060,6 +3080,8 @@ def repair_archive_draft_types_from_contexts(session: dict[str, Any]) -> int:
         ctx = get_league_context(session, linked_id) if linked_id else None
         if not isinstance(ctx, dict):
             ctx = get_league_context(session, context_id_for_archive(draft_id))
+        if isinstance(ctx, dict) and active_league_copy_hidden(session, ctx):
+            continue  # a Shared League copy this account may not see: never repaired or rewritten
         shared_doc = None
         league_id = ""
         if isinstance(ctx, dict):

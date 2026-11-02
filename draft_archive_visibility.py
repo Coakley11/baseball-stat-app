@@ -186,6 +186,25 @@ def list_visible_draft_archives(session: dict[str, Any]) -> list[dict[str, Any]]
     ]
 
 
+def archive_hidden_from_display(session: dict[str, Any], entry: dict[str, Any] | None) -> bool:
+    """A Library entry whose Shared League this account may not see. Display only: retention,
+    pruning and selection repair use is_saved_draft_visible_to_session and are not affected, so a
+    hidden entry is never deleted, tombstoned or rewritten because it is hidden."""
+    if not isinstance(entry, dict):
+        return False
+    try:
+        from fantasy_league_context import get_league_context_for_archive
+        from fantasy_shared_league_authz import league_copy_hidden
+    except ImportError:
+        return False
+    return league_copy_hidden(session, get_league_context_for_archive(session, entry))
+
+
+def list_library_cards_for_display(session: dict[str, Any]) -> list[dict[str, Any]]:
+    """The Saved Draft Library cards to show: visible entries minus hidden Shared League copies."""
+    return [entry for entry in list_visible_draft_archives(session) if not archive_hidden_from_display(session, entry)]
+
+
 def count_visible_draft_archives_in_blob(
     session: dict[str, Any],
     blob: dict[str, Any] | None,
@@ -244,6 +263,15 @@ def _record_removed_context_tombstones(session: dict[str, Any], removed_context_
     store["deleted_context_ids"] = sorted(deleted)
 
 
+def _copy_hidden(session: dict[str, Any], ctx: dict[str, Any] | None) -> bool:
+    try:
+        from fantasy_shared_league_authz import league_copy_hidden
+
+        return league_copy_hidden(session, ctx)
+    except ImportError:
+        return False
+
+
 def _repair_invitee_identities(session: dict[str, Any]) -> None:
     """Backfill membership metadata for owned teams before visibility prune."""
     try:
@@ -258,6 +286,8 @@ def _repair_invitee_identities(session: dict[str, Any]) -> None:
     for ctx in list_league_contexts(session):
         if str(ctx.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
             continue
+        if _copy_hidden(session, ctx):
+            continue  # never rewritten (owner decision 2026-11-02)
         meta = dict(ctx.get("metadata") or {})
         if meta.get("joined_via_invite") or meta.get("joined_via_live_draft"):
             continue
@@ -287,6 +317,8 @@ def _repair_league_context_identities(session: dict[str, Any]) -> None:
     for ctx in list_league_contexts(session):
         if str(ctx.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
             continue
+        if _copy_hidden(session, ctx):
+            continue  # never rewritten (owner decision 2026-11-02)
         ctx, _ = repair_commissioner_identity(ctx, session)
         meta = dict(ctx.get("metadata") or {})
         if str(meta.get("created_from") or "") == CREATED_FROM_LIVE_DRAFT and uid:
@@ -330,7 +362,9 @@ def prune_invisible_shared_league_state(session: dict[str, Any]) -> dict[str, in
     kept_archives: list[dict[str, Any]] = []
     for entry in list_draft_archives(session):
         ctx = get_league_context_for_archive(session, entry)
-        if is_saved_draft_visible_to_session(session, entry, context=ctx):
+        # A Shared League copy hidden from this account is never removed here (owner decision
+        # 2026-11-02): hiding is display only; clean-up is a separate, explicit decision.
+        if _copy_hidden(session, ctx) or is_saved_draft_visible_to_session(session, entry, context=ctx):
             kept_archives.append(entry)
         else:
             archives_removed += 1
@@ -359,7 +393,7 @@ def prune_invisible_shared_league_state(session: dict[str, Any]) -> dict[str, in
             if not auth_scope:
                 kept_ctx[context_id] = ctx
                 continue
-            if _has_shared_league_membership(session, stub, context=ctx, user_id=uid):
+            if _copy_hidden(session, ctx) or _has_shared_league_membership(session, stub, context=ctx, user_id=uid):
                 kept_ctx[context_id] = ctx
             else:
                 contexts_removed += 1

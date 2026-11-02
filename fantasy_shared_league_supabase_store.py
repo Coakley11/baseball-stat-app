@@ -91,6 +91,33 @@ class SupabaseSharedLeagueStore:
             return None
         return row_to_document(rows[0])
 
+    def load_checked(self, league_id: str) -> tuple[str, dict[str, Any] | None]:
+        """Like load(), but a failed request is "error", not "missing" (authorization needs it)."""
+        lid = str(league_id or "").strip()
+        if not lid:
+            return "missing", None
+        try:
+            from suite_storage_supabase import get_cloud_config
+
+            if get_cloud_config() is None:
+                return "missing", None  # no cloud store configured: there are no Shared Leagues
+        except Exception:
+            return "error", None
+        try:
+            rows = _request(
+                "GET",
+                _TABLE,
+                params={"select": "*", "league_id": f"eq.{lid}", "limit": "1"},
+                prefer="return=representation",
+            )
+        except Exception:
+            return "error", None
+        if not isinstance(rows, list):
+            return "error", None
+        if not rows:
+            return "missing", None
+        return "found", row_to_document(rows[0])
+
     def save(self, document: dict[str, Any]) -> dict[str, Any]:
         league_id = str(document.get("league_id") or "").strip()
         if not league_id:

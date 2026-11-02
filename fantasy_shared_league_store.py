@@ -189,6 +189,16 @@ class LocalFileSharedLeagueStore:
     def exists(self, league_id: str) -> bool:
         return self._path(league_id).is_file()
 
+    def load_checked(self, league_id: str) -> tuple[str, dict[str, Any] | None]:
+        path = self._path(league_id)
+        if not path.is_file():
+            return "missing", None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return "error", None
+        return ("found", raw) if isinstance(raw, dict) else ("error", None)
+
     def load(self, league_id: str) -> dict[str, Any] | None:
         path = self._path(league_id)
         if not path.is_file():
@@ -321,7 +331,9 @@ def save_shared_league(document: dict[str, Any], *, store: SharedLeagueStore | N
     league_id = str((document or {}).get("league_id") or "").strip()
     session = current_session()
     if session is not None:
-        document = authorize_league_write(session, document, backend.load(league_id) if league_id else None)
+        document = authorize_league_write(
+            session, document, backend.load(league_id) if league_id else None, store=backend
+        )
     saved = backend.save(document)
     invalidate_shared_league_doc_cache(league_id)
     return saved
@@ -753,6 +765,15 @@ def build_team_ownership_sync_diagnostics(
     }
 
 
+def _may_read_shared(session: Any, shared: dict[str, Any] | None) -> bool:
+    from fantasy_shared_league_authz import may_read_league
+
+    try:
+        return may_read_league(session, shared)
+    except Exception:
+        return False
+
+
 def sync_context_with_shared_store(
     session: dict[str, Any],
     context: dict[str, Any],
@@ -803,6 +824,8 @@ def sync_context_with_shared_store(
         and isinstance(prev.get("shared"), dict)
     ):
         shared_cached = prev["shared"]
+        if not _may_read_shared(session, shared_cached):
+            return context
         # Still merge ownership/proposals from cached shared doc (no network).
         merged_fast = merge_shared_into_context(context, shared_cached)
         merged_fast = overlay_workspace_team_on_context(
@@ -818,6 +841,10 @@ def sync_context_with_shared_store(
 
     shared = load_shared_league(league_id, store=store)
     if not isinstance(shared, dict):
+        return context
+    if not _may_read_shared(session, shared):
+        # Not this account's league: no fresh league data, and the stored copy is returned as is
+        # (not merged, not rewritten, not deleted).
         return context
     pre_merge_team = str(context.get("my_team_name") or "").strip()
     merged = merge_shared_into_context(context, shared)
@@ -890,7 +917,7 @@ def push_season_ledger_to_shared(
     from fantasy_shared_league_authz import SharedLeagueWriteRefused, authorize_league_write, current_session
 
     try:
-        document = authorize_league_write(current_session(), document, existing)
+        document = authorize_league_write(current_session(), document, existing, store=backend)
     except SharedLeagueWriteRefused:
         return None
     saved = backend.save(document)
@@ -954,7 +981,7 @@ def push_league_context_to_shared(
     try:
         # Decided against the stored league, not this caller's local copy.
         document = authorize_league_write(
-            current_session(), document, existing if isinstance(existing, dict) else None
+            current_session(), document, existing if isinstance(existing, dict) else None, store=backend
         )
     except SharedLeagueWriteRefused:
         return None

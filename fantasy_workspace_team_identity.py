@@ -631,7 +631,17 @@ def apply_account_team_identity_to_session(
     except ImportError:
         pass
 
-    if isinstance(context, dict) and not temporary_live:
+    def _hidden(ctx: Any) -> bool:
+        # A Shared League copy this account may not see is never rewritten from here (owner
+        # decision 2026-11-02: hidden, not modified, until the clean-up decision).
+        try:
+            from fantasy_league_context import active_league_copy_hidden
+
+            return active_league_copy_hidden(session, ctx)
+        except ImportError:
+            return False
+
+    if isinstance(context, dict) and not temporary_live and not _hidden(context):
         shared_doc = _load_shared_doc_for_context(context)
         updated = overlay_workspace_team_on_context(
             session,
@@ -656,7 +666,7 @@ def apply_account_team_identity_to_session(
             entry = get_active_draft_archive(session)
             if isinstance(entry, dict):
                 ctx_for_archive = get_league_context_for_archive(session, entry)
-                if isinstance(ctx_for_archive, dict):
+                if isinstance(ctx_for_archive, dict) and not _hidden(ctx_for_archive):
                     ctx_for_archive = overlay_workspace_team_on_context(
                         session,
                         ctx_for_archive,

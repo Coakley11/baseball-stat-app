@@ -57,6 +57,15 @@ def repair_incorrect_creation_origin(
     if not draft_id or not origin:
         trace["skipped"] = "missing_draft_id_or_origin"
         return trace
+    try:
+        from fantasy_league_context import active_league_copy_hidden
+
+        if active_league_copy_hidden(session, get_league_context(session, context_id_for_archive(draft_id))):
+            # A Shared League copy this account may not see: never rewritten (owner decision).
+            trace["skipped"] = "shared_league_copy_hidden_from_account"
+            return trace
+    except ImportError:
+        pass
 
     is_import = origin == CREATION_ORIGIN_VALIDATED_IMPORT
     target_draft_type = DRAFT_TYPE_IMPORTED if is_import else DRAFT_TYPE_LIVE

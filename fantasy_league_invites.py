@@ -1879,11 +1879,15 @@ def commissioner_invite_context(session: dict[str, Any]) -> dict[str, Any] | Non
     except ImportError:
         pass
     uid = _resolve_user_id(session)
+    from fantasy_league_context import active_league_copy_hidden
+
     for raw in candidates:
         league_context_id = str(raw.get("league_context_id") or "").strip()
         context = get_league_context(session, league_context_id) if league_context_id else raw
         if not isinstance(context, dict):
             continue
+        if active_league_copy_hidden(session, context):
+            continue  # a Shared League copy this account may not see: no invite panel for it
         context, _ = repair_commissioner_identity(context, session)
         if is_league_commissioner(context, uid):
             return context

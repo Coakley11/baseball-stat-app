@@ -77,10 +77,43 @@ def is_league_member_or_invitee(session: MutableMapping[str, Any], document: dic
     )
 
 
+LOAD_FOUND = "found"
+LOAD_MISSING = "missing"
+LOAD_ERROR = "error"
+
+
+def checked_load(league_id: str, store: Any = None) -> tuple[str, dict[str, Any] | None]:
+    """(found | missing | error, document). The stores' load() returns None both for "no such
+    league" and for a failed request, and an authorization decision must not mistake one for the
+    other."""
+    lid = str(league_id or "").strip()
+    if not lid:
+        return LOAD_MISSING, None
+    if store is None:
+        from fantasy_shared_league_store import get_shared_league_store
+
+        store = get_shared_league_store()
+    loader = getattr(store, "load_checked", None)
+    if callable(loader):
+        try:
+            result = loader(lid)
+        except Exception:
+            return LOAD_ERROR, None
+        if isinstance(result, tuple) and len(result) == 2 and result[0] in (LOAD_FOUND, LOAD_MISSING, LOAD_ERROR):
+            return result
+    try:
+        doc = store.load(lid)
+    except Exception:
+        return LOAD_ERROR, None
+    return (LOAD_FOUND, doc) if isinstance(doc, dict) else (LOAD_MISSING, None)
+
+
 def authorize_league_write(
     session: MutableMapping[str, Any] | None,
     incoming: dict[str, Any],
     existing: dict[str, Any] | None,
+    *,
+    store: Any = None,
 ) -> dict[str, Any]:
     """The document to write, or raise SharedLeagueWriteRefused."""
     if session is None:
@@ -89,6 +122,15 @@ def authorize_league_write(
     if not uid:
         raise _refuse(session, incoming, "not_signed_in")
     if not isinstance(existing, dict):
+        # "No stored league" must be confirmed: a failed load is not permission to create, and the
+        # store's own save may still find and update the existing row.
+        status, _stored = checked_load(str((incoming or {}).get("league_id") or ""), store)
+        if status == LOAD_ERROR:
+            raise _refuse(session, incoming, "league_unverifiable")
+        if status == LOAD_FOUND:
+            # The caller built its document without the stored league (its read failed), so it
+            # would drop other members' proposals, ownership and invites. Write nothing.
+            raise _refuse(session, incoming, "stored_league_not_merged")
         return incoming  # creating a new league
     if not is_league_member_or_invitee(session, existing):
         raise _refuse(session, incoming, "not_a_league_member")
@@ -99,6 +141,68 @@ def authorize_league_write(
         if field in existing:
             out[field] = copy.deepcopy(existing[field])
     return out
+
+
+# --- Reads of an existing league copy (owner decision 2026-11-02) ---------------------------------
+# A copy of a Shared League stored in an account's workspace is shown, and refreshed from the
+# shared league, only for a member or invitee of that league. A copy that fails is HIDDEN and not
+# refreshed, but never deleted, tombstoned or rewritten: what to do with stored copies is the
+# owner's separate clean-up decision.
+COPY_NOT_SHARED = "not_shared"  # not a Shared League copy (local league, mock, simulator): unchanged
+COPY_ALLOWED = "allowed"
+COPY_REFUSED = "refused"  # the stored league does not list this account
+COPY_UNVERIFIED = "unverified"  # the stored league could not be read: neither shown nor refreshed
+
+_COPY_DECISION_TTL_S = 12.0
+_COPY_DECISIONS: dict[tuple[str, str, str], tuple[float, str]] = {}
+
+
+def may_read_league(session: MutableMapping[str, Any], document: dict[str, Any] | None) -> bool:
+    """A signed-in member or invitee of this stored league."""
+    uid, _external, _workspace = _identity(session)
+    return bool(uid) and is_league_member_or_invitee(session, document)
+
+
+def league_copy_access(session: MutableMapping[str, Any] | None, context: dict[str, Any] | None) -> str:
+    if session is None or not isinstance(context, dict):
+        return COPY_NOT_SHARED
+    try:
+        from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE
+        from fantasy_league_identity import resolve_canonical_league_id
+        from fantasy_shared_league_store import _anonymous_guest
+    except ImportError:
+        return COPY_NOT_SHARED
+    if str(context.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
+        return COPY_NOT_SHARED
+    league_id = str(resolve_canonical_league_id(context) or "").strip()
+    if not league_id or _anonymous_guest():
+        return COPY_NOT_SHARED
+    uid, external, _workspace = _identity(session)
+    key = (league_id, uid, external)
+    import time
+
+    now = time.monotonic()
+    hit = _COPY_DECISIONS.get(key)
+    if hit is not None and now - hit[0] < _COPY_DECISION_TTL_S:
+        return hit[1]
+    status, doc = checked_load(league_id)
+    if status == LOAD_MISSING:
+        decision = COPY_NOT_SHARED
+    elif status == LOAD_ERROR:
+        decision = COPY_UNVERIFIED
+    else:
+        decision = COPY_ALLOWED if may_read_league(session, doc) else COPY_REFUSED
+    _COPY_DECISIONS[key] = (now, decision)
+    return decision
+
+
+def league_copy_hidden(session: MutableMapping[str, Any] | None, context: dict[str, Any] | None) -> bool:
+    """True when this stored league copy must not be shown to (or refreshed for) this account."""
+    return league_copy_access(session, context) in (COPY_REFUSED, COPY_UNVERIFIED)
+
+
+def clear_league_copy_decisions() -> None:
+    _COPY_DECISIONS.clear()
 
 
 def _refuse(session: MutableMapping[str, Any], incoming: dict[str, Any], reason: str) -> SharedLeagueWriteRefused:

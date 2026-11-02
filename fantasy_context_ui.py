@@ -595,10 +595,22 @@ def render_fantasy_context_activation_prompt(
 
     active_archive = get_active_draft_archive(session)
     active_context = get_active_league_context(session, respect_source_priority=False)
-    if active_archive or active_context:
+    hidden = False
+    try:
+        from fantasy_league_context import active_league_copy_hidden, get_league_context_for_archive
+
+        hidden = active_league_copy_hidden(session, active_context) or bool(
+            active_archive and active_league_copy_hidden(session, get_league_context_for_archive(session, active_archive))
+        )
+    except ImportError:
+        hidden = False
+    if (active_archive or active_context) and not hidden:
         return True
 
-    st.info(no_active_context_message())
+    if hidden:
+        st.info("Your active draft isn't available to this account. Choose another draft in the Saved Draft Library.")
+    else:
+        st.info(no_active_context_message())
     nav1, nav2 = st.columns(2)
     with nav1:
         st.button(

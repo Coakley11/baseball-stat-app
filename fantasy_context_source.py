@@ -172,6 +172,20 @@ def _get_saved_active_league_context(session: dict[str, Any]) -> dict[str, Any] 
         return None
 
 
+def _get_saved_active_league_context_for_pages(session: dict[str, Any]) -> dict[str, Any] | None:
+    """The saved Active Draft context for fantasy pages; None when it is a Shared League copy this
+    account may not see. The stored selection is not changed (Library flows read it unfiltered)."""
+    context = _get_saved_active_league_context(session)
+    try:
+        from fantasy_shared_league_authz import league_copy_hidden
+
+        if league_copy_hidden(session, context):
+            return None
+    except ImportError:
+        pass
+    return context
+
+
 def _looks_ephemeral_draft_label(label: str) -> bool:
     """True when a label describes a temporary workspace board, not a saved Active Draft."""
     low = str(label or "").strip().lower()
@@ -572,6 +586,9 @@ def fantasy_context_using_display(session: dict[str, Any]) -> dict[str, str]:
 
     if source.kind == SOURCE_ACTIVE_DRAFT:
         saved = _get_saved_active_league_context(session)
+        if saved is not None and _get_saved_active_league_context_for_pages(session) is None:
+            # A Shared League copy this account may not see: name neither the league nor a team.
+            return {"kind": "generic", "draft_name": "", "board_label": "", "team": ""}
         name = _active_draft_label(session, saved or {})
         heading = _active_context_heading(session, saved or {})
         return {
@@ -805,7 +822,8 @@ def get_effective_fantasy_context(
 
     source = resolve_fantasy_context_source(session)
     if source.kind == SOURCE_ACTIVE_DRAFT:
-        return _restore_saved_context_team(session, _get_saved_active_league_context(session))
+        saved = _get_saved_active_league_context_for_pages(session)
+        return _restore_saved_context_team(session, saved) if saved is not None else None
     if source.kind == SOURCE_GENERIC:
         return None
 
@@ -815,13 +833,13 @@ def get_effective_fantasy_context(
             create_league_context_from_simulator_board,
         )
     except ImportError:
-        return _get_saved_active_league_context(session)
+        return _get_saved_active_league_context_for_pages(session)
 
     my_team = _resolve_my_team_for_ephemeral(session, source=source)
     if source.kind == SOURCE_LIVE_DRAFT:
         room = _resolve_live_room(session)
         if not isinstance(room, dict):
-            return _get_saved_active_league_context(session)
+            return _get_saved_active_league_context_for_pages(session)
         cfg = dict(room.get("config") or {})
         label = str(cfg.get("league_name") or "Live Draft Room").strip() or "Live Draft Room"
         return create_league_context_from_live_room(

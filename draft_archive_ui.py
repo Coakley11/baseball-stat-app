@@ -4914,7 +4914,12 @@ def _render_saved_draft_library_page_body(
     except ImportError:
         pass
 
-    archives = list_visible_draft_archives(session)
+    # Cards shown: visible entries minus Shared League copies this account may not see. Display
+    # only: the retention check below and the selection repair keep using the unfiltered rules, so
+    # a hidden copy is never deleted, cleared or re-pointed because it is hidden.
+    from draft_archive_visibility import archive_hidden_from_display, list_library_cards_for_display
+
+    archives = list_library_cards_for_display(session)
 
     focus_draft_id = str(session.get("_saved_draft_library_focus_draft_id") or "").strip()
     if focus_draft_id:
@@ -4953,6 +4958,12 @@ def _render_saved_draft_library_page_body(
         active_id = str((active or {}).get("draft_id") or "")
         active_context_id = str((active_context or {}).get("league_context_id") or "")
         selection = None
+
+    from fantasy_league_context import active_league_copy_hidden
+
+    if archive_hidden_from_display(session, active) or active_league_copy_hidden(session, active_context):
+        # Shown as "no active draft"; the stored selection is left as it is.
+        active, active_context, active_id, active_context_id = None, None, "", ""
 
     _render_library_answer(
         st, session, archives=archives, active=active, active_context=active_context, page_label_fn=page_label_fn

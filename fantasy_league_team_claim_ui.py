@@ -110,6 +110,10 @@ def render_active_league_team_claim(st: Any, session: dict[str, Any], **kwargs: 
     context = get_active_league_context(session, respect_source_priority=False)
     if not isinstance(context, dict):
         return False
+    from fantasy_league_context import active_league_copy_hidden
+
+    if active_league_copy_hidden(session, context):
+        return False  # not this account's Shared League: no claim panel
     league_context_id = str(context.get("league_context_id") or "").strip()
     if league_context_id:
         refreshed = get_league_context(session, league_context_id)

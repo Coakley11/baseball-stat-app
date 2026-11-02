@@ -111,6 +111,10 @@ def hydrate_lineup_format_from_shared(
         shared = load_shared_league(league_id)
         if not isinstance(shared, dict):
             return context
+        from fantasy_shared_league_store import _may_read_shared
+
+        if not _may_read_shared(session, shared):
+            return context  # not this account's league: no fresh data, copy left as stored
         shared_settings = shared.get("roster_settings") or {}
         if not isinstance(shared_settings, dict) or not shared_settings.get("lineup_format"):
             return context

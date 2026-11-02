@@ -153,7 +153,11 @@ def _collect_fantasy_league_context_rows(
         target_key = normalize_player_key(target)
         if not target_key:
             return
+        from fantasy_league_context import active_league_copy_hidden
+
         for ctx in list_league_contexts(session):
+            if active_league_copy_hidden(session, ctx):
+                continue  # a Shared League copy this account may not see
             ownership = ctx.get("ownership_map") or {}
             if not isinstance(ownership, dict):
                 continue
@@ -240,9 +244,12 @@ def collect_player_roster_contexts(session: dict[str, Any], player_name: str) ->
 
     try:
         from draft_archive_state import draft_type_display, list_draft_archives
+        from draft_archive_visibility import archive_hidden_from_display
         from fantasy_league_context import context_id_for_archive
 
         for entry in list_draft_archives(session):
+            if archive_hidden_from_display(session, entry):
+                continue  # a Shared League copy this account may not see
             archive_team = str(entry.get("team_name") or "").strip()
             players = entry.get("players") or []
             found = False
