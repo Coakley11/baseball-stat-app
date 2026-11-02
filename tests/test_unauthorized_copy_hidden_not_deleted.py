@@ -83,10 +83,18 @@ def _stored(session) -> dict:
     return snap
 
 
+def _sign_in_enabled():
+    """The hosted configuration: sign-in on, so separate accounts exist."""
+    return patch.dict("os.environ", {"SUITE_AUTH_ENABLED": "1"})
+
+
 class _Base(unittest.TestCase):
     VARIANT = "imported"
 
     def setUp(self) -> None:
+        self._auth = _sign_in_enabled()
+        self._auth.start()
+        self.addCleanup(self._auth.stop)
         authz.clear_league_copy_decisions()
         self.owner, self.other, self.shared = _league_and_sessions(self.VARIANT)
         self._found = patch.object(authz, "checked_load", return_value=(authz.LOAD_FOUND, self.shared))
@@ -129,6 +137,14 @@ class AccessDecisionTests(_Base):
 
 
 class RefreshRefusedTests(_Base):
+    def setUp(self) -> None:
+        super().setUp()
+        # A unit test has no Streamlit session, which the existing guest check treats as a
+        # signed-out guest (and returns before any refresh). These are signed-in accounts.
+        guest = patch("fantasy_shared_league_store._anonymous_guest", return_value=False)
+        guest.start()
+        self.addCleanup(guest.stop)
+
     def test_unrelated_account_gets_no_fresh_league_data(self) -> None:
         from fantasy_shared_league_store import sync_context_with_shared_store
 
@@ -250,7 +266,8 @@ class LibraryPageTests(unittest.TestCase):
         for key, value in session.items():
             at.session_state[key] = copy.deepcopy(value)
         at.session_state["_fx_shared"] = copy.deepcopy(shared)
-        at.run()
+        with _sign_in_enabled():
+            at.run()
         self.assertFalse(at.exception, [str(e.value)[:300] for e in at.exception])
         return at
 
@@ -290,6 +307,19 @@ class LibraryPageTests(unittest.TestCase):
 
 class StoredDataUntouchedLiveDraftCopyTests(StoredDataUntouchedTests):
     VARIANT = "live_no_invite"
+
+
+class SignInOffTests(unittest.TestCase):
+    """With sign-in off the app has one configured account: nothing is hidden from it."""
+
+    def test_nothing_hidden_when_there_are_no_separate_accounts(self) -> None:
+        authz.clear_league_copy_decisions()
+        _owner, other, shared = _league_and_sessions()
+        with patch.dict("os.environ", {"SUITE_AUTH_ENABLED": ""}), patch.object(
+            authz, "checked_load", return_value=(authz.LOAD_FOUND, shared)
+        ), patch("suite_auth.is_auth_enabled", return_value=False):
+            self.assertFalse(authz.league_copy_hidden(other, list_league_contexts(other)[0]))
+            self.assertTrue(authz.may_read_league(other, shared))
 
 
 class WritesRefusedServerSideTests(_Base):

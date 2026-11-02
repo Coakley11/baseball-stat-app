@@ -157,26 +157,39 @@ _COPY_DECISION_TTL_S = 12.0
 _COPY_DECISIONS: dict[tuple[str, str, str], tuple[float, str]] = {}
 
 
+def _separate_accounts() -> bool:
+    """True when sign-in is enabled (hosted). With sign-in off the app runs as its one configured
+    account, so no other account exists to hide a league from."""
+    try:
+        from suite_auth import is_auth_enabled
+
+        return bool(is_auth_enabled())
+    except ImportError:
+        return True
+
+
 def may_read_league(session: MutableMapping[str, Any], document: dict[str, Any] | None) -> bool:
-    """A signed-in member or invitee of this stored league."""
+    """A signed-in member or invitee of this stored league (anyone, when sign-in is off)."""
+    if not _separate_accounts():
+        return True
     uid, _external, _workspace = _identity(session)
     return bool(uid) and is_league_member_or_invitee(session, document)
 
 
 def league_copy_access(session: MutableMapping[str, Any] | None, context: dict[str, Any] | None) -> str:
-    if session is None or not isinstance(context, dict):
+    if session is None or not isinstance(context, dict) or not _separate_accounts():
         return COPY_NOT_SHARED
     try:
         from fantasy_league_context import CONTEXT_TYPE_REAL_LEAGUE
         from fantasy_league_identity import resolve_canonical_league_id
-        from fantasy_shared_league_store import _anonymous_guest
     except ImportError:
         return COPY_NOT_SHARED
     if str(context.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
         return COPY_NOT_SHARED
     league_id = str(resolve_canonical_league_id(context) or "").strip()
-    if not league_id or _anonymous_guest():
+    if not league_id:
         return COPY_NOT_SHARED
+    # A signed-out guest has no account id, so may_read_league refuses it below: never an exemption.
     uid, external, _workspace = _identity(session)
     key = (league_id, uid, external)
     import time
