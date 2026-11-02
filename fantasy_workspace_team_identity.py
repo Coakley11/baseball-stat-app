@@ -173,7 +173,9 @@ def _claimed_team_from_accepted_invite(
     shared_doc: dict[str, Any] | None,
 ) -> str:
     from fantasy_league_invites import INVITE_STATUS_ACCEPTED
-    from fantasy_shared_league_startup_sync import _record_matches_account, session_auth_email
+    # The overlay writes this team into the stored copy (or clears it), so it keeps the pre-fix
+    # matching until the owner's clean-up decision (see that function).
+    from fantasy_shared_league_startup_sync import _legacy_record_matches_account_for_existing_copies
 
     if not isinstance(shared_doc, dict):
         return ""
@@ -186,12 +188,11 @@ def _claimed_team_from_accepted_invite(
             continue
         if str(invite.get("status") or "").strip() != INVITE_STATUS_ACCEPTED:
             continue
-        if not _record_matches_account(
+        if not _legacy_record_matches_account_for_existing_copies(
             invite,
             user_id=uid,
             external_id=external,
             workspace_id=workspace,
-            email=session_auth_email(session),
         ):
             continue
         return str(invite.get("claimed_team") or "").strip()

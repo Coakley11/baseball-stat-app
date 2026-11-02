@@ -104,6 +104,69 @@ def _usable_account_alias(value: Any) -> bool:
     return bool(text) and text not in _SHARED_ALIASES and not text.startswith(("guest_", "anonymous:"))
 
 
+def _legacy_record_matches_account_for_existing_copies(
+    record: dict[str, Any],
+    *,
+    user_id: str,
+    external_id: str,
+    workspace_id: str,
+) -> bool:
+    """The matcher as deployed before the 2026-11-02 security fix, kept verbatim for one purpose only.
+
+    The Saved Draft Library prune (draft_archive_visibility) and the team overlay
+    (fantasy_workspace_team_identity) DELETE or REWRITE an account's stored league copies when this
+    match fails. With the strict matcher every copy held by a non-member would be removed or
+    changed on that account's next sign-in, which is the clean-up the owner decides separately
+    after the exposure audit. Until then those two paths keep today's behaviour, so this release
+    changes no stored workspace data. Never use this for authorization, discovery or writes."""
+    if not isinstance(record, dict):
+        return False
+    stored = str(record.get("user_id") or record.get("account_user_id") or "").strip()
+    if stored and user_id and account_user_ids_match(stored, user_id):
+        return True
+    email = str(record.get("email") or "").strip().lower()
+    display = str(record.get("display_name") or "").strip().lower()
+    display_local = display.split("@", 1)[0] if "@" in display else display
+    email_local = email.split("@", 1)[0] if email else ""
+    if not email and "@" in display:
+        email = display
+        email_local = display_local
+    aliases = {
+        x.lower()
+        for x in (
+            user_id,
+            external_id,
+            workspace_id,
+            str(record.get("external_id") or "").strip(),
+            email,
+            email_local,
+            display,
+            display_local,
+            str(record.get("invitee_external_id") or "").strip(),
+            str(record.get("invitee_workspace_id") or "").strip(),
+            str(record.get("accepted_by_external_id") or "").strip(),
+            str(record.get("accepted_by_workspace_id") or "").strip(),
+        )
+        if x
+    }
+    invite_uid = str(record.get("invitee_user_id") or "").strip()
+    if invite_uid and user_id and account_user_ids_match(invite_uid, user_id):
+        return True
+    for candidate in (
+        external_id,
+        workspace_id,
+        email,
+        email_local,
+        str(record.get("invitee_external_id") or "").strip().lower(),
+        str(record.get("invitee_workspace_id") or "").strip(),
+        str(record.get("accepted_by_external_id") or "").strip().lower(),
+        str(record.get("accepted_by_workspace_id") or "").strip(),
+    ):
+        if candidate and candidate.lower() in aliases:
+            return True
+    return False
+
+
 def _pending_trade_involves_account(
     proposal: dict[str, Any],
     *,
