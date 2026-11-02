@@ -28751,8 +28751,14 @@ elif active_page == "Live Draft Room":
                                         multiplayer=_multiplayer_draft,
                                     )
                                     if _defer_recs and (top_rec is None or getattr(top_rec, "empty", True)):
-                                        with _ldr_top_slot(_shared_top_cards):
-                                            st.caption("Loading recommendations…")
+                                        # Only while nothing can be shown: the cards also paint from the
+                                        # cached recommendations, and "Loading…" above painted cards misled.
+                                        _cached_top = (
+                                            _rec_entry_paint.get("top_rec") if isinstance(_rec_entry_paint, dict) else None
+                                        )
+                                        if _cached_top is None or getattr(_cached_top, "empty", True):
+                                            with _ldr_top_slot(_shared_top_cards):
+                                                st.caption("Loading recommendations…")
                                     elif not _solo_early_recs_done:
                                         with _ldr_top_slot(_shared_top_cards):
                                             try:

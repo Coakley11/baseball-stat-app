@@ -184,6 +184,38 @@ class SharedPickRerunTests(_RealAppCase):
             self.assertLess(marks.index("team_needs"), marks.index("control_center"), marks)
 
 
+class ManualDraftAddToQueueTests(_RealAppCase):
+    def test_waiting_guest_queues_from_manual_draft_without_touching_the_room(self) -> None:
+        """Manual Draft offers ⭐ Add to Queue while another team is on the clock; it changes only
+        this participant's queue (no pick, no board change, no room revision, host unaffected)."""
+        import draft_room_shared_state as shared_state
+
+        code, host_seed, guest_seed = harness.shared_seeds()
+        host = harness.run_page(host_seed)
+        guest = harness.run_page(guest_seed)  # Team B waits: Team A is on the clock
+        on_clock = [b for b in host.button if str(b.key or "").startswith("manual_draft_queue_") and b.key != "manual_draft_queue_waiting"]
+        self.assertTrue(on_clock, "on-the-clock Manual Draft lost its Add to Queue")
+        self.assertIsNotNone(_button(host, "draft_btn_live_draft_room_live_manual"))
+        queue_btn = _button(guest, "manual_draft_queue_waiting")
+        self.assertIsNotNone(queue_btn, "waiting Manual Draft has no Add to Queue")
+        self.assertFalse(queue_btn.disabled)
+        self.assertIn("⭐", queue_btn.label)
+        self.assertTrue(_button(guest, "draft_btn_live_draft_room_live_manual_waiting").disabled)
+        before = shared_state.get_shared_room_store().load(code)
+        target = str(guest.selectbox(key="live_draft_player_view_only").value)
+        queue_btn.click().run()
+        self.assertEqual(_errors(guest), [])
+        self.assertIn(target, list(guest.session_state["draft_queue"]))
+        after = shared_state.get_shared_room_store().load(code)
+        self.assertEqual(int(after["revision"]), int(before["revision"]))
+        self.assertEqual(len(guest.session_state["live_draft_room"].get("draft_board") or []), 0)
+        _button(guest, "manual_draft_queue_waiting").click().run()  # again: no duplicate
+        self.assertEqual(list(guest.session_state["draft_queue"]).count(target), 1)
+        host.run()
+        host_queue = list(host.session_state["draft_queue"]) if "draft_queue" in host.session_state else []
+        self.assertNotIn(target, host_queue)
+
+
 class TeamNeedsAfterSoloTests(_RealAppCase):
     def test_shared_draft_after_a_solo_draft_still_shows_team_needs(self) -> None:
         """The Solo early viewport sets _live_draft_team_needs_rendered; it must not leak."""

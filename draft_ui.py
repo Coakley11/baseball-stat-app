@@ -2569,14 +2569,44 @@ def render_live_manual_draft_panel(
             }
         )
 
+    def _manual_add_to_queue_button(*, name_key: str, fallback_name: str, button_key: str) -> None:
+        """⭐ Add to Queue for the Manual Draft selection: the same queue mutation as the
+        recommendation cards (duplicates skipped, order kept). It never makes a pick; in a
+        Shared draft it changes only this participant's own queue."""
+
+        # on_click runs before the ScriptRun paints the sidebar, so one run shows the
+        # player in both Queue surfaces. Handling the return value mid-page needed a
+        # second full rerun to refresh the already-painted sidebar.
+        def _on_manual_queue_add() -> None:
+            name = str(session.get(name_key) or fallback_name or "").strip()
+            if not name:
+                return
+            try:
+                from draft_state import add_player_to_draft_queue
+
+                _q, _added = add_player_to_draft_queue(session, name)
+                session["_live_draft_queue_sidebar_mirror"] = list(_q)
+                session["_live_draft_queue_last_good"] = list(_q)
+            except Exception:
+                pass
+
+        st.button(
+            "⭐ Add to Queue",
+            key=button_key,
+            use_container_width=True,
+            disabled=not bool(fallback_name),
+            help="Add the selected Manual Draft player to the Draft Queue (same queue as recommendation cards).",
+            on_click=_on_manual_queue_add,
+        )
+
     if not should_render or paused or not draft_in_progress:
         wait_msg = _waiting_status_message()
         st.info(wait_msg)
+        # Selectable while waiting: a player can be queued now and drafted on your turn.
         st.selectbox(
             "Available players",
             player_options,
             key="live_draft_player_view_only",
-            disabled=True,
         )
         disable_reason = turn_disable_reason or (
             "Draft is paused" if paused else "Not your turn"
@@ -2602,6 +2632,11 @@ def render_live_manual_draft_panel(
                 disabled=True,
                 use_container_width=True,
                 help=wait_msg.replace("**", "")[:200],
+            )
+            _manual_add_to_queue_button(
+                name_key="live_draft_player_view_only",
+                fallback_name=str(session.get("live_draft_player_view_only") or (player_options or [""])[0] or ""),
+                button_key="manual_draft_queue_waiting",
             )
         return _finish(diag_base)
 
@@ -2692,31 +2727,10 @@ def render_live_manual_draft_panel(
             st.caption(reason_txt)
 
         # Same canonical queue mutation as recommendation cards.
-        _manual_queue_key = f"manual_draft_queue_{str((room or {}).get('id') or 'solo')[:12]}_{visible_id or visible_name}"
-
-        # on_click runs before the ScriptRun paints the sidebar, so one run shows the
-        # player in both Queue surfaces. Handling the return value mid-page needed a
-        # second full rerun to refresh the already-painted sidebar.
-        def _on_manual_queue_add() -> None:
-            name = str(session.get(widget_key) or visible_name or "").strip()
-            if not name:
-                return
-            try:
-                from draft_state import add_player_to_draft_queue
-
-                _q, _added = add_player_to_draft_queue(session, name)
-                session["_live_draft_queue_sidebar_mirror"] = list(_q)
-                session["_live_draft_queue_last_good"] = list(_q)
-            except Exception:
-                pass
-
-        st.button(
-            "⭐ Add to Queue",
-            key=_manual_queue_key,
-            use_container_width=True,
-            disabled=not bool(visible_name),
-            help="Add the selected Manual Draft player to the Draft Queue (same queue as recommendation cards).",
-            on_click=_on_manual_queue_add,
+        _manual_add_to_queue_button(
+            name_key=widget_key,
+            fallback_name=str(visible_name or ""),
+            button_key=f"manual_draft_queue_{str((room or {}).get('id') or 'solo')[:12]}_{visible_id or visible_name}",
         )
 
         pending = session.get(PENDING_MANUAL_PICK_KEY)
