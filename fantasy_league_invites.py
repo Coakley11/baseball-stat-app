@@ -108,6 +108,24 @@ def _resolve_workspace_id(session: dict[str, Any] | None = None) -> str:
         return ""
 
 
+def _strict_invitee_of(session: Any, shared: dict[str, Any] | None) -> bool:
+    """The stored league lists this signed-in account (commissioner, owner, or invitee), decided
+    with the session's own ids only (fantasy_shared_league_authz). _invite_matches_user is more
+    tolerant (it accepts the "daniel" fallback workspace and helper-resolved ids), so with sign-in
+    on nothing in an invite flow reads league contents unless this also holds. Sign-in off: one
+    account, no restriction."""
+    try:
+        from fantasy_shared_league_authz import _separate_accounts, may_read_league
+    except ImportError:
+        return True
+    if not _separate_accounts():
+        return True
+    try:
+        return bool(may_read_league(session, shared))
+    except Exception:
+        return False
+
+
 def _inbox_path(workspace_id: str) -> Path:
     from suite_workspace import workspace_dir
 
@@ -632,13 +650,17 @@ def build_invite_flow_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _enrich_pending_invite(invite_ref: dict[str, Any], *, user_id: str, external_id: str, workspace_id: str) -> dict[str, Any] | None:
+def _enrich_pending_invite(
+    invite_ref: dict[str, Any], *, user_id: str, external_id: str, workspace_id: str, session: Any = None
+) -> dict[str, Any] | None:
     league_id = str(invite_ref.get("league_id") or "").strip()
     invite_id = str(invite_ref.get("invite_id") or "").strip()
     if not league_id or not invite_id:
         return None
     shared = load_shared_league(league_id)
     if not isinstance(shared, dict):
+        return None
+    if session is not None and not _strict_invitee_of(session, shared):
         return None
     invites = shared.get("league_invites") or []
     if not isinstance(invites, list):
@@ -710,6 +732,8 @@ def scan_pending_invites_from_disk_workflow_hints(
     for league_id in sorted(league_ids):
         shared = load_shared_league(league_id)
         if not isinstance(shared, dict):
+            continue
+        if not _strict_invitee_of(session, shared):
             continue
         invites = shared.get("league_invites") or []
         if not isinstance(invites, list):
@@ -805,6 +829,8 @@ def scan_pending_invites_from_shared_leagues(
     seen: set[str] = set()
     for doc in list_shared_league_documents():
         if not isinstance(doc, dict):
+            continue
+        if not _strict_invitee_of(session, doc):
             continue
         league_id = str(doc.get("league_id") or "").strip()
         invites = doc.get("league_invites") or []
@@ -923,7 +949,7 @@ def list_pending_invites_for_session(session: dict[str, Any]) -> list[dict[str, 
     pending: list[dict[str, Any]] = []
     seen: set[str] = set()
     for ref in refs:
-        enriched = _enrich_pending_invite(ref, user_id=uid, external_id=ext, workspace_id=ws)
+        enriched = _enrich_pending_invite(ref, user_id=uid, external_id=ext, workspace_id=ws, session=session)
         if not enriched:
             continue
         key = f"{enriched.get('league_id')}::{enriched.get('invite_id')}"
@@ -1013,7 +1039,7 @@ def join_shared_league_from_invite(
         user_id=uid,
         external_id=_resolve_external_id(),
         workspace_id=_resolve_workspace_id(session),
-    ):
+    ) or not _strict_invitee_of(session, shared):
         return None, None, "This invite was sent to a different account."
 
     league_rosters = shared.get("league_rosters") or {}
@@ -1333,7 +1359,7 @@ def decline_league_invite(
         user_id=uid,
         external_id=_resolve_external_id(),
         workspace_id=_resolve_workspace_id(session),
-    ):
+    ) or not _strict_invitee_of(session, shared):
         return False, "This invite was sent to a different account."
     if str(invite.get("status") or "") != INVITE_STATUS_PENDING:
         return False, "This invite is no longer pending."
