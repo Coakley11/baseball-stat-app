@@ -31,4 +31,4 @@ with patch("baseball_persistent_state.force_save_baseball_state", side_effect=_s
 ), patch("fantasy_league_team_ownership._resolve_user_id", return_value=uid), patch(
     "suite_user_persistence.save_user_state", side_effect=_disk
 ):
-    render_saved_draft_library_page(st, st.session_state)
+    render_saved_draft_library_page(st, st.session_state, developer_mode=bool(st.session_state.get("_fx_developer_mode")))

@@ -1889,6 +1889,17 @@ def save_live_draft_league_context(
     my_team = str(my_team_name or "").strip()
     league_rosters = build_league_rosters_from_live_room(room, my_team)
     cfg = dict(room.get("config") or {})
+    # Safety net for every caller: with sign-in on, a multi-team Live Draft entry is never created
+    # without a verified owner (it would be an ownerless entry that the account cannot see).
+    owner_uid = str(session.get("_suite_cloud_user_id") or session.get("_suite_auth_user_id") or "").strip()
+    try:
+        from suite_auth import is_auth_enabled
+
+        sign_in_on = bool(is_auth_enabled())
+    except ImportError:
+        sign_in_on = False
+    if sign_in_on and len(league_rosters) >= 2 and not (owner_uid and my_team and my_team in league_rosters):
+        raise ValueError("This draft can't be saved until your account and team are confirmed.")
     label = str(draft_name or "").strip() or f"{cfg.get('league_name', 'Live Draft')} — {my_team}"
     draft_id, league_context_id, _fp = resolve_canonical_save_ids(
         session,
@@ -1929,7 +1940,6 @@ def save_live_draft_league_context(
     # without a signed-in id, so no fallback identity can become an owner.
     # The account's own external id is recorded too: the team overlay looks the account up by its
     # Auth id first, the Library visibility check by its cloud id, so the record matches both.
-    owner_uid = str(session.get("_suite_cloud_user_id") or session.get("_suite_auth_user_id") or "").strip()
     if owner_uid and my_team:
         from fantasy_league_team_ownership import assign_team_owner_to_context
 

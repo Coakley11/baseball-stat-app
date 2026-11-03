@@ -1797,7 +1797,9 @@ def _resolve_live_draft_save_team_name(
                 return str(active_participant_team(session) or "").strip()
         except ImportError:
             pass
-    if isinstance(session, dict):
+    if isinstance(session, dict) and not _sign_in_enabled():
+        # Single-account mode only: this general resolver ends in a first-team fallback. (A Streamlit
+        # SessionStateProxy is not a dict, so the hosted app never took this branch.)
         try:
             from fantasy_workspace_team_identity import resolve_current_account_team_for_live_draft_and_league
 
@@ -1810,10 +1812,67 @@ def _resolve_live_draft_save_team_name(
     resolved = str(team_name or "").strip()
     if not resolved or resolved == "—":
         resolved = str(cfg.get("user_team") or cfg.get("your_team") or "").strip()
-    if not resolved or resolved == "—":
+    if (not resolved or resolved == "—") and not _sign_in_enabled():
+        # Single-account mode only. With sign-in on, a team is never guessed: the save would record
+        # this account as that team's owner.
         teams = [str(t).strip() for t in (room.get("teams") or cfg.get("teams") or []) if str(t).strip()]
         resolved = teams[0] if teams else ""
-    return resolved
+    return "" if resolved == "—" else resolved
+
+
+def _sign_in_enabled() -> bool:
+    try:
+        from suite_auth import is_auth_enabled
+
+        return bool(is_auth_enabled())
+    except ImportError:
+        return False
+
+
+def live_draft_save_identity_problem(session: Any, room: dict[str, Any], team: str) -> str:
+    """Why this Live Draft can't be saved to this account's Library, or "" when it can.
+
+    With sign-in on, a Library entry records its saving account as the owner of its team, so the
+    account and the team must both be verified first: a signed-in account id from this session, and
+    a team that is this account's seat (Shared Draft) or the draft's own team (Solo). No fallback
+    account and no guessed team."""
+    if not _sign_in_enabled():
+        return ""
+    try:
+        from suite_auth import is_anonymous_guest
+
+        if is_anonymous_guest(session):
+            return "Sign in to save this draft to your Saved Draft Library."
+    except ImportError:
+        pass
+    account = str(session.get("_suite_cloud_user_id") or session.get("_suite_auth_user_id") or "").strip()
+    if not account:
+        return "Your account couldn't be confirmed, so the draft wasn't saved. Reload the page, sign in again, and save."
+    shared = False
+    try:
+        from draft_room_context import resolve_shared_room_code
+
+        shared = bool(str(resolve_shared_room_code(session) or "").strip())
+    except ImportError:
+        shared = False
+    if shared:
+        seat = ""
+        try:
+            from draft_room_participant_state import active_participant_team
+
+            seat = str(active_participant_team(session) or "").strip()
+        except ImportError:
+            seat = ""
+        if not seat:
+            return "Your seat in this Shared Draft couldn't be confirmed, so the draft wasn't saved. Reload the room and save again."
+        if str(team or "").strip() != seat:
+            return f"You're seated as '{seat}' in this Shared Draft, so it can only be saved as '{seat}'."
+    if not str(team or "").strip():
+        return "Your team in this draft couldn't be determined, so the draft wasn't saved."
+    teams = [str(t).strip() for t in (room.get("teams") or (room.get("config") or {}).get("teams") or []) if str(t).strip()]
+    if teams and team not in teams:
+        return f"'{team}' isn't a team in this draft, so the draft wasn't saved."
+    return ""
 
 
 def _execute_live_draft_save(
@@ -1977,20 +2036,21 @@ def _execute_live_draft_save_click(
     except Exception:
         pass
 
-    if not save_team:
+    identity_problem = live_draft_save_identity_problem(session, room, save_team)
+    if not save_team or identity_problem:
         try:
             if record_save_failure_trace is not None:
                 record_save_failure_trace(
                     session,
                     reason="live_draft_league_context_saved",
-                    error="Could not determine fantasy team for save",
+                    error=identity_problem or "Could not determine fantasy team for save",
                 )
         except Exception:
             pass
         _set_draft_save_ui_flash(
             session,
             level="error",
-            message="Could not determine your fantasy team for saving this draft.",
+            message=identity_problem or "Could not determine your fantasy team for saving this draft.",
         )
         return
 
@@ -3491,10 +3551,27 @@ def _process_live_draft_shared_league_create_request(
             )
             return
 
+        identity_problem = live_draft_save_identity_problem(session, room, my_team)
+        if identity_problem:
+            # Nothing is written: no partial, ownerless league entry.
+            _mark_create_request_status(session, raw, status="failed", error=identity_problem)
+            session["_live_draft_shared_league_flash"] = {"level": "error", "message": identity_problem}
+            st.error(identity_problem)
+            _merge_shared_league_diag(session, create_error=identity_problem, create_request_status="failed")
+            return
+
         _merge_shared_league_diag(session, save_call_started=True)
         entry: dict[str, Any] = {}
         context: dict[str, Any] = {}
         shared_push_ok = False
+        # If creation fails part-way, put the Library and league contexts back exactly as they were,
+        # so no partial entry is left to be saved later.
+        import copy as _copy
+
+        from draft_archive_state import DRAFT_ARCHIVE_KEY as _LIBRARY_KEY
+
+        library_before = _copy.deepcopy(session.get(_LIBRARY_KEY))
+        contexts_before = _copy.deepcopy(session.get("fantasy_league_context_state"))
         try:
             entry, context = save_live_draft_shared_league_context(
                 session,
@@ -3517,6 +3594,11 @@ def _process_live_draft_shared_league_create_request(
                 activation_ok=False,
             )
         except Exception as exc:
+            for key, value in ((_LIBRARY_KEY, library_before), ("fantasy_league_context_state", contexts_before)):
+                if value is None:
+                    session.pop(key, None)
+                else:
+                    session[key] = value
             err = f"{type(exc).__name__}: {exc}"
             _mark_create_request_status(session, raw, status="failed", error=err)
             session["_live_draft_shared_league_flash"] = {
@@ -5150,7 +5232,7 @@ def _render_saved_draft_library_page_body(
 
     st.markdown("##### Saved Drafts")
     st.metric("Saved drafts", len(archives))
-    if raw_archive_count > len(archives):
+    if developer_mode and raw_archive_count > len(archives):  # internal filter counts: developers only
         st.caption(
             f"Session has **{raw_archive_count}** archive(s); **{len(archives)}** visible after shared-league membership filter."
         )

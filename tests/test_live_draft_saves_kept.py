@@ -47,7 +47,7 @@ def core(state: dict) -> dict:
         "contexts": {cid: {"my_team_name": c.get("my_team_name"), "ownership": get_team_ownership(c),
                            "league_rosters": c.get("league_rosters")}
                      for cid, c in (store.get("contexts") or {}).items()},
-        "active": (state.get(ACTIVE_DRAFT_ARCHIVE_KEY), store.get("active_league_context_id")),
+        "active": (state.get(ACTIVE_DRAFT_ARCHIVE_KEY) or None, store.get("active_league_context_id") or None),
         "markers": state.get(DELETED_DRAFT_ARCHIVE_IDS_KEY),
     }
 
@@ -98,9 +98,13 @@ class NewSavesTests(_SignedIn):
             sanitize_workflow_library_for_account(session, persist_cleanup=False)
             self.assertEqual([e["draft_id"] for e in list_visible_draft_archives(session)], [entry["draft_id"]])
 
-    def test_without_a_signed_in_id_no_owner_is_recorded(self) -> None:
+    def test_with_sign_in_off_no_owner_is_recorded_and_no_fallback_account_is_used(self) -> None:
+        # Single-account mode (sign-in off): the save works as before and records no owner; the
+        # deployment's configured account is never written as one.
         session = {}
-        with _as_user("user:configured-default"):  # the deployment's fallback account must not become owner
+        with mock.patch.dict("os.environ", {"SUITE_AUTH_ENABLED": ""}), mock.patch(
+            "suite_auth.is_auth_enabled", return_value=False
+        ), _as_user("user:configured-default"):
             entry, _ = save_live_draft_league_context(session, _live_room_fixture(), my_team_name="Daniel", save_only=True)
         self.assertEqual(get_team_ownership(get_league_context_for_archive(session, entry)), {})
 
@@ -283,7 +287,7 @@ class SaveButtonPathTests(_SignedIn):
         session = self.shared("barry", None)  # seat not known: no first-team fallback
         self.click_save(session, team_name="")
         self.assertEqual(list_draft_archives(session), [])
-        self.assertIn("Could not determine your fantasy team", str(session.get("_draft_save_ui_flash")))
+        self.assertIn("Your seat in this Shared Draft couldn't be confirmed", str(session.get("_draft_save_ui_flash")))
 
 
 class ContinuousUseTests(_SignedIn):
@@ -333,6 +337,7 @@ class ContinuousUseTests(_SignedIn):
         text = " ".join(str(getattr(el, "value", "")) for el in list(at.markdown) + list(at.caption) + list(at.info))
         self.assertIn(legit["draft_name"], text)
         self.assertNotIn("Old ownerless", text)
+        self.assertNotIn("visible after shared-league membership filter", text)  # developer-only caption
 
     def test_sign_in_cleanup_with_saving_on_writes_and_removes_nothing(self) -> None:
         session, _legit, _ownerless = self.library()
@@ -400,6 +405,101 @@ class ContinuousUseTests(_SignedIn):
             prune_invisible_shared_league_state(barry)
             sanitize_workflow_library_for_account(barry, persist_cleanup=False)
         self.assertEqual(stored(danny), danny_before)  # separate account state: Danny's is untouched
+
+
+class NoUnverifiedLibraryEntriesTests(SaveButtonPathTests):
+    """A signed-in Live Draft is never saved as a multi-team entry with missing or ambiguous
+    ownership: the save is refused with a clear message, and no first team or fallback account is
+    used. (Owner request 2026-11-02.)"""
+
+    def assert_refused(self, session: dict, message: str) -> None:
+        self.assertEqual(list_draft_archives(session), [])
+        self.assertIn(message, str(session.get("_draft_save_ui_flash")))
+
+    def test_a_signed_out_visitor_is_refused(self) -> None:
+        session = {"live_draft_room": _room(["Danny", "CPU 1"])}
+        with mock.patch("suite_auth.is_authenticated", return_value=False):
+            self.click_save_plain(session, team_name="Danny")
+        self.assert_refused(session, "Sign in to save this draft")
+
+    def test_a_session_without_a_confirmed_account_id_is_refused(self) -> None:
+        session = {"_suite_auth_session": True, "live_draft_room": _room(["Danny", "CPU 1"])}
+        self.click_save_plain(session, team_name="Danny")
+        self.assert_refused(session, "Your account couldn't be confirmed")
+
+    def test_a_solo_draft_with_no_known_team_is_refused_not_given_the_first_team(self) -> None:
+        session = signed_in("danny")
+        room = _room(["Danny", "CPU 1"])
+        room["config"].pop("user_team")
+        session["live_draft_room"] = room
+        self.click_save(session, team_name="")
+        self.assert_refused(session, "Your team in this draft couldn't be determined")
+
+    def test_a_team_that_is_not_in_the_draft_is_refused(self) -> None:
+        session = signed_in("danny")
+        session["live_draft_room"] = _room(["Danny", "CPU 1"])
+        self.click_save(session, team_name="Somebody else")
+        self.assert_refused(session, "isn't a team in this draft")
+
+    def test_a_shared_draft_without_a_readable_seat_is_refused(self) -> None:
+        session = self.shared("barry", None)
+        self.click_save(session, team_name="Danny")  # the button's team is not trusted without a seat
+        self.assert_refused(session, "Your seat in this Shared Draft couldn't be confirmed")
+
+    def test_the_save_function_itself_never_creates_an_unowned_entry(self) -> None:
+        session = {"_suite_auth_session": True}  # signed in, but no account id in the session
+        with self.assertRaises(ValueError):
+            save_live_draft_league_context(session, _room(["Danny", "Barry"]), my_team_name="Danny", save_only=True)
+        self.assertEqual(list_draft_archives(session), [])
+        session = signed_in("danny")
+        with self.assertRaises(ValueError):
+            save_live_draft_league_context(session, _room(["Danny", "Barry"]), my_team_name="", save_only=True)
+        self.assertEqual(list_draft_archives(session), [])
+
+    def click_save_plain(self, session: dict, *, team_name: str = "") -> None:
+        from draft_archive_ui import _execute_live_draft_save_click
+
+        st = mock.MagicMock()
+        st.session_state = session
+        with _as_user(""), mock.patch("baseball_persistent_state.force_save_baseball_state", return_value=True):
+            _execute_live_draft_save_click(st, session, team_name=team_name, key_prefix="t", defer_activation=True)
+
+
+class CreateSharedLeagueTests(SaveButtonPathTests):
+    """The Create Shared League path writes nothing without a verified account and seat, and leaves
+    nothing behind when creation fails part-way."""
+
+    def run_create(self, session: dict, team: str, **patches) -> mock.MagicMock:
+        from draft_archive_ui import SHARED_LEAGUE_CREATE_REQUEST_KEY, _process_live_draft_shared_league_create_request
+
+        session[SHARED_LEAGUE_CREATE_REQUEST_KEY] = {"status": "pending", "request_id": "req-1", "my_team_name": team}
+        st = mock.MagicMock()
+        st.session_state = session
+        with self.acting(session), mock.patch("baseball_persistent_state.force_save_baseball_state", return_value=True), \
+                contextlib.ExitStack() as stack:
+            for target, value in patches.items():
+                stack.enter_context(mock.patch(target.replace("__", "."), **value))
+            _process_live_draft_shared_league_create_request(st, session, session["live_draft_room"])
+        return st
+
+    def test_no_readable_seat_writes_nothing(self) -> None:
+        session = self.shared("barry", None)
+        before = core(stored(session))
+        st = self.run_create(session, "Barry")
+        self.assertEqual(core(stored(session)), before)
+        self.assertIn("Your seat in this Shared Draft couldn't be confirmed", str(st.error.call_args))
+
+    def test_a_failure_part_way_leaves_no_partial_entry(self) -> None:
+        session = self.shared("danny", "Danny")
+        before = core(stored(session))
+
+        def half_then_fail(sess, room, **kw):
+            sess.setdefault("draft_archive_teams", []).append({"draft_id": "partial", "draft_name": "Half-made"})
+            raise ValueError("assignment failed")
+
+        self.run_create(session, "Danny", live_draft_shared_league__save_live_draft_shared_league_context={"side_effect": half_then_fail})
+        self.assertEqual(core(stored(session)), before)
+        self.assertNotIn("partial", str(session.get("draft_archive_teams")))
 
 
 if __name__ == "__main__":
