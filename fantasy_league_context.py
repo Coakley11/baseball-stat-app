@@ -1923,6 +1923,15 @@ def save_live_draft_league_context(
         league_context_id=league_context_id,
         source_draft_id=draft_id,
     )
+    # Record the saving account as the owner of its own team. Without it a signed-in account's
+    # multi-team Live Draft entry fails Library visibility (draft_archive_visibility). Session ids
+    # only, the cloud account id first (the id the visibility check compares); nothing is recorded
+    # without a signed-in id, so no fallback identity can become an owner.
+    owner_uid = str(session.get("_suite_cloud_user_id") or session.get("_suite_auth_user_id") or "").strip()
+    if owner_uid and my_team:
+        from fantasy_league_team_ownership import assign_team_owner_to_context
+
+        context = assign_team_owner_to_context(context, my_team, user_id=owner_uid)
     context = upsert_league_context(session, context)
     if save_only:
         session.pop(PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY, None)
@@ -3082,6 +3091,13 @@ def repair_archive_draft_types_from_contexts(session: dict[str, Any]) -> int:
             ctx = get_league_context(session, context_id_for_archive(draft_id))
         if isinstance(ctx, dict) and active_league_copy_hidden(session, ctx):
             continue  # a Shared League copy this account may not see: never repaired or rewritten
+        try:
+            from draft_archive_visibility import is_saved_draft_visible_to_session
+
+            if not is_saved_draft_visible_to_session(session, entry, context=ctx):
+                continue  # kept but hidden from this account: left exactly as stored
+        except ImportError:
+            pass
         shared_doc = None
         league_id = ""
         if isinstance(ctx, dict):

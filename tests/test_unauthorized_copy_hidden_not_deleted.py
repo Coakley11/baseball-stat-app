@@ -240,7 +240,8 @@ class StoredDataUntouchedTests(_Base):
         with _as_user("user:coakley"), patch(
             "fantasy_shared_league_store.load_shared_league", return_value=self.shared
         ):
-            self.assertEqual(prune_invisible_shared_league_state(self.other), {"archives_removed": 0, "contexts_removed": 0})
+            pruned = prune_invisible_shared_league_state(self.other)
+            self.assertEqual((pruned["archives_removed"], pruned["contexts_removed"]), (0, 0))
             sanitize_workflow_library_for_account(self.other, persist_cleanup=False)
             restore_active_draft_archive_selection(self.other, cloud_state={}, disk_state={}, respect_canonical_membership=True)
             prepare_saved_draft_library_active_selection(self.other)

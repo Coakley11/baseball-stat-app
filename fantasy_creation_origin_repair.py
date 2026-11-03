@@ -64,6 +64,12 @@ def repair_incorrect_creation_origin(
             # A Shared League copy this account may not see: never rewritten (owner decision).
             trace["skipped"] = "shared_league_copy_hidden_from_account"
             return trace
+        from draft_archive_visibility import is_saved_draft_visible_to_session
+
+        archived = get_draft_archive(session, draft_id)
+        if isinstance(archived, dict) and not is_saved_draft_visible_to_session(session, archived):
+            trace["skipped"] = "saved_draft_hidden_from_account"  # kept as stored, never rewritten
+            return trace
     except ImportError:
         pass
 
