@@ -482,11 +482,16 @@ def sync_draft_queue(
                 "queue_change",
             }
         )
+    # Only a change is a local edit. The sidebar normalizes the queue on every run; marking that
+    # as an edit made a signed-out tab's empty queue win over the account's at the next sign-in.
+    current = (canonical_draft_workflow(session) or {}).get("queue")
+    if current is None:
+        current = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
     write_canonical_draft_state(
         session,
         queue=q,
         reason=reason_s,
-        local_edit=True,
+        local_edit=q != current,
         sync_participant=bool(sync_participant),
     )
     # Prefer post-write session layers — empty overwrite may have been blocked, leaving

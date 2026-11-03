@@ -70,6 +70,116 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+WORKSPACE_ACCESS_REFUSED_KEY = "_suite_workspace_access_refused"
+
+
+# Session bookkeeping that belongs to the account it was recorded for (merge base, revisions seen,
+# fingerprints, preference and manifest revisions). Never carried over to another account.
+_ACCOUNT_BOOKKEEPING_PREFIXES = (
+    "_suite_workspace_base::",
+    "_suite_workspace_held_base::",
+    "_suite_workspace_held_local::",
+    "_suite_workspace_conflicts::",
+    "_suite_workspace_reapply::",
+    "_suite_workspace_conflict_resolution::",
+    _WORKSPACE_SYNCED_PREFIX,
+    _SESSION_RESTORED_PREFIX,
+    _AUTOSAVE_BLOCK_PREFIX,
+    _LOCAL_DIRTY_PREFIX,
+    _APPLIED_CLOUD_TS_PREFIX,
+    _RESTORED_FP_PREFIX,
+    "_suite_autosave_fp::",
+    "_suite_restore_reconciled::",
+    "_account_fantasy_prefs_",
+    "_library_manifest_",
+    "_ami_assistant_",  # Ask AMI's conversation is session-only: it must not outlive its account
+    "_suite_full_session_",  # this session's cached copy of the account's cloud workspace
+    "_workflow_persist_cache",
+    "_suite_draft_archive_",  # Library backups and version history taken before a write
+    "_suite_cloud_draft_archive_",
+)
+_ACCOUNT_BOOKKEEPING_KEYS = (
+    "_suite_cloud_revision_seen",
+    "_suite_cloud_confirmed_empty",
+    "_suite_cloud_reconciled",
+    "_suite_cloud_read_failed",
+    _CLOUD_WORKSPACE_RESTORED,
+    WORKSPACE_ACCESS_REFUSED_KEY,
+)
+_ACCOUNT_STATE_CLEARERS: dict[str, Callable[[Any], None]] = {}
+
+
+def register_account_state_clearer(app_id: str, fn: Callable[[Any], None]) -> None:
+    """``fn(session)`` drops an app's account workspace (its saved keys and widget values)."""
+    _ACCOUNT_STATE_CLEARERS[app_id] = fn
+
+
+def clear_account_session_state(session: Any) -> None:
+    """The signed-in account changed: log out, or another account signed in on this browser.
+
+    Everything the previous account's workspace put in this session goes, so the next account
+    (or the signed-out guest) starts like a fresh browser and can neither see nor save it.
+    A guest's own edits are not touched by signing in (they carry into that account by design).
+    """
+    for fn in list(_ACCOUNT_STATE_CLEARERS.values()):
+        try:
+            fn(session)
+        except Exception:
+            pass
+    for key in list(session.keys()):
+        sk = str(key)
+        if sk.startswith(_ACCOUNT_BOOKKEEPING_PREFIXES) or sk in _ACCOUNT_BOOKKEEPING_KEYS:
+            session.pop(key, None)
+    session["_suite_workspace_force_sync"] = True
+
+
+def _signed_in_script_session() -> Any | None:
+    """The running script's session while a signed-in account uses it; None outside a run."""
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        if get_script_run_ctx(suppress_warning=True) is None:
+            return None
+        import streamlit as st
+
+        from suite_auth import is_auth_enabled, is_authenticated
+
+        ss = st.session_state
+        return ss if is_auth_enabled() and is_authenticated(ss) else None
+    except Exception:
+        return None
+
+
+def _resolved_workspace(workspace_id: str | None) -> str:
+    from suite_workspace import resolve_workspace_id
+
+    return resolve_workspace_id(explicit=workspace_id) if workspace_id else resolve_workspace_id()
+
+
+def workspace_disk_access_allowed(app_id: str, workspace_id: str | None, *, op: str) -> bool:
+    """Server-local workspace files are shared by every session on this server.
+
+    A signed-in account may only read, write or reset the workspaces it owns; anything else is
+    refused here and recorded, whatever workspace id a caller passed or a session key held.
+    """
+    ss = _signed_in_script_session()
+    if ss is None:
+        return True
+    try:
+        from suite_workspace_registry import workspace_access_allowed
+
+        ws = _resolved_workspace(workspace_id)
+        if workspace_access_allowed(ws, session_state=ss):
+            return True
+    except Exception:
+        ws = str(workspace_id or "")
+    try:
+        ss[WORKSPACE_ACCESS_REFUSED_KEY] = {"app_id": app_id, "workspace_id": ws, "op": op, "at": _utc_now_iso()}
+    except Exception:
+        pass
+    return False
+
+
 def state_file_path(app_id: str, workspace_id: str | None = None) -> Path:
     from suite_workspace import migrate_legacy_app_state_to_daniel, normalize_workspace_id, resolve_workspace_id, workspace_dir
 
@@ -110,6 +220,10 @@ def _write_json(path: Path, payload: dict[str, Any]) -> bool:
 
 
 def _migrate_legacy_combined(app_id: str) -> dict[str, Any] | None:
+    from suite_workspace import DEFAULT_WORKSPACE_ID
+
+    if _resolved_workspace(None) != DEFAULT_WORKSPACE_ID:
+        return None  # the pre-workspace single-user file is the owner's, never a new account's
     combined = _read_json(_LEGACY_COMBINED_FILE)
     if not combined:
         return None
@@ -132,9 +246,11 @@ def _load_raw(
         # A signed-out guest keeps its state in the browser session only; it never reads a
         # saved workspace (including the owner's, which explicit "daniel" paths would reach).
         return {}, None, None
+    if not workspace_disk_access_allowed(app_id, workspace_id, op="load"):
+        return {}, None, None
     path = state_file_path(app_id, workspace_id)
     raw = _read_json(path)
-    if raw is None:
+    if raw is None and not workspace_id:
         raw = _migrate_legacy_combined(app_id)
     if raw is None:
         return {}, None, None
@@ -173,6 +289,8 @@ def save_user_state(app_id: str, state: dict[str, Any], *, workspace_id: str | N
         return False
     if _anonymous_guest():
         return False  # persistent saves need a signed-in account
+    if not workspace_disk_access_allowed(app_id, workspace_id, op="save"):
+        return False
     payload = {
         "version": STATE_VERSION,
         "app": app_id,
@@ -185,6 +303,8 @@ def save_user_state(app_id: str, state: dict[str, Any], *, workspace_id: str | N
 def reset_user_state(app_id: str, *, workspace_id: str | None = None) -> bool:
     if _anonymous_guest():
         return False  # a guest has no saved workspace, and must never reset someone else's
+    if not workspace_disk_access_allowed(app_id, workspace_id, op="reset"):
+        return False
     path = state_file_path(app_id, workspace_id)
     try:
         if path.is_file():
@@ -220,6 +340,16 @@ def _fingerprint_state(state: dict[str, Any]) -> str:
 
     blob = json.dumps(state, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
+
+
+def _note_restored_board_from_cloud(session: Any, state: dict[str, Any]) -> None:
+    """The Simulator board just applied came from the account copy: it is verified as saved."""
+    try:
+        from draft_room_state import mark_board_cloud_verified
+
+        mark_board_cloud_verified(session, cloud_state=state)
+    except Exception:
+        pass
 
 
 def _lock_fingerprint_after_restore(st: Any, app_id: str, state: dict[str, Any]) -> None:
@@ -339,6 +469,19 @@ _RENDER_SNAPSHOT_SAVE_REASONS = frozenset({
     "career_edit",
     "fantasy_in_season_snapshot",
 })
+# Leaving Live Draft Room saved twice in a row (the setup flush, then its page preferences) with
+# the same content. The second is skipped only when the first reached the account.
+_LEAVE_RESAVE_REASONS = frozenset({"live_draft_setup_page_leave"})
+
+
+def _unchanged_resave(st: Any, app_id: str, reason: str, fp: str) -> bool:
+    if st.session_state.get(f"_suite_autosave_fp::{app_id}") != fp:
+        return False
+    if reason in _RENDER_SNAPSHOT_SAVE_REASONS:
+        return True
+    if reason in _LEAVE_RESAVE_REASONS or reason.startswith("user_page_prefs:"):
+        return bool(st.session_state.get("_suite_persist_last_save_cloud")) or _cloud_storage_disabled()
+    return False
 
 
 def _cloud_autosave_blocked_reason(
@@ -664,6 +807,7 @@ def sync_workspace_protocol(
     *,
     apply_state: Callable[[Any, dict[str, Any]], None],
     cloud_first: bool = True,
+    build_local: Callable[[Any], dict[str, Any]] | None = None,
 ) -> bool:
     """
     Authoritative workspace sync before sidebar widgets.
@@ -671,7 +815,15 @@ def sync_workspace_protocol(
     On first sync per browser session, apply the picked cloud/disk blob atomically,
     block autosave for this rerun, and lock the restore fingerprint so stale local
     state is not written back to cloud on startup.
+
+    A later apply over a session that already holds the account's work (another device saved,
+    or a refused save was rebased) merges instead: what this session changed since it last
+    loaded or saved is kept (``workspace_merge``). Widget edits that arrived with this rerun are
+    re-applied after any restore, so the edit that caused the rerun is never reverted.
     """
+    import workspace_merge as wm
+
+    reapply = bool(st.session_state.get(wm.REAPPLY_KEY_PREFIX + app_id))
     st.session_state["_suite_persist_app_id"] = app_id
     st.session_state["_suite_workspace_sync_attempted"] = True
     st.session_state.pop("_suite_persist_restore_skip_reason", None)
@@ -794,10 +946,15 @@ def sync_workspace_protocol(
         )
         return False
 
-    if failure is not None and not st.session_state.get(CLOUD_RECONCILED_KEY):
+    if (
+        failure is not None
+        and not st.session_state.get(CLOUD_RECONCILED_KEY)
+        and wm.merge_base(st.session_state, app_id) is None
+    ):
         # The store answered after a failure, but this session never loaded the saved data.
         # Whatever it holds now (edits made during the outage included) must not reach the cloud:
-        # restore from the saved copy as a first sync.
+        # restore from the saved copy as a first sync. (A session that did load it has a base, so
+        # its outage edits are real work: they are saved, or merged if the account moved on.)
         st.session_state.pop(dirty_key, None)
         st.session_state.pop(_workspace_synced_key(app_id), None)
 
@@ -805,7 +962,7 @@ def sync_workspace_protocol(
     disk_epoch = parse_persist_timestamp(disk_ts)
     cloud_newer_than_disk = bool(cloud_ts and cloud_epoch > disk_epoch)
 
-    if st.session_state.get(dirty_key) and not cloud_newer_than_disk:
+    if st.session_state.get(dirty_key) and not cloud_newer_than_disk and not reapply:
         reason = "local unsaved edits — workspace sync skipped"
         st.session_state["_suite_persist_restore_skip_reason"] = reason
         if st.session_state.get(CLOUD_RECONCILED_KEY):
@@ -820,7 +977,7 @@ def sync_workspace_protocol(
         )
         return False
 
-    if st.session_state.get("_suite_page_user_nav"):
+    if st.session_state.get("_suite_page_user_nav") and not reapply:
         synced_key = _workspace_synced_key(app_id)
         already_synced = bool(st.session_state.get(synced_key))
         # Deep-link / refresh often sets user-nav from ?active_page= before the
@@ -856,10 +1013,17 @@ def sync_workspace_protocol(
             # (With cloud storage a failed read also looks empty, so keep the guard there.)
             st.session_state["_suite_workspace_sync_skipped_no_apply"] = True
         elif cloud_read.status == CLOUD_READ_NOT_FOUND:
-            # Authenticated read answered and the account row has no saved session.
+            # The signed-in account's read answered: no saved session, and this device has no copy
+            # of the account's own workspace either. A brand-new account has nothing to protect, so
+            # its first edits and first picks autosave (they used to sit in the browser session only
+            # until Save Draft Board Now). A write here is create-only: the save re-reads first, and
+            # if the other device created the account's row meanwhile, the write is refused as
+            # stale and merged against this empty base (both first boards go to the board prompt).
             mark_cloud_reconciled(st.session_state)
             note_cloud_revision_seen(st.session_state, cloud_ts, confirmed_empty=True)
-            _mark_workspace_sync_skipped(st, app_id, reason)
+            wm.record_base(st.session_state, app_id, {})
+            st.session_state[_workspace_synced_key(app_id)] = True
+            st.session_state["_suite_persist_restore_skip_reason"] = "new account — nothing saved yet"
         else:
             reason = "cloud read inconclusive — saved data not loaded; cloud saves paused"
             st.session_state["_suite_persist_restore_skip_reason"] = reason
@@ -880,6 +1044,10 @@ def sync_workspace_protocol(
         local_dirty=False,
         cloud_first=cloud_first,
     )
+    if reapply and cloud_state and cloud_read.status == CLOUD_READ_OK and picked.source != "cloud":
+        from suite_cloud_state import RestorePickResult
+
+        picked = RestorePickResult(cloud_state, "cloud", "reapply_account_state", cloud_ts, disk_ts)
     if not picked.state:
         _record_workspace_sync_trace(
             st, app_id, cloud_state=cloud_state, cloud_ts=cloud_ts,
@@ -920,6 +1088,8 @@ def sync_workspace_protocol(
     apply_reasons: list[str] = []
     if first_sync:
         apply_reasons.append("first_sync")
+    if reapply:
+        apply_reasons.append("reapply_account_state")
     if cloud_newer_than_applied:
         apply_reasons.append("cloud_newer_than_applied")
     if cloud_newer_than_disk:
@@ -946,6 +1116,7 @@ def sync_workspace_protocol(
         picked.state
         and (
             first_sync
+            or reapply
             or cloud_newer_than_applied
             or cloud_newer_than_disk
             or page_mismatch_apply
@@ -953,6 +1124,7 @@ def sync_workspace_protocol(
         )
     )
     apply_reason = ", ".join(apply_reasons) if apply_reasons else "none"
+    st.session_state.pop(wm.REAPPLY_KEY_PREFIX + app_id, None)
 
     if cloud_newer_than_disk and picked.source == "cloud":
         st.session_state.pop(synced_key, None)
@@ -977,8 +1149,48 @@ def sync_workspace_protocol(
         )
         return False
 
+    edits = wm.widget_edits_this_run()
+    to_apply = picked.state
+    local_contributed = False
+    base = wm.merge_base(st.session_state, app_id)
+    if picked.source == "cloud" and already_synced and base is not None and build_local is not None:
+        try:
+            local_now = build_local(st)
+        except Exception:
+            local_now = None
+        if isinstance(local_now, dict):
+            merged, conflicts = wm.three_way_merge(
+                wm.merge_base(st.session_state, app_id, local_now), local_now, picked.state
+            )
+            if wm.board_conflicted(conflicts):
+                # Leave this session as it is: its board saves stay refused as stale, and
+                # draft_board_reconcile asks which board to keep.
+                st.session_state[synced_key] = True
+                st.session_state["_suite_persist_restore_skip_reason"] = "board changed on both devices"
+                _record_workspace_sync_trace(
+                    st, app_id, cloud_state=cloud_state, cloud_ts=cloud_ts,
+                    disk_state=disk_state, disk_ts=disk_ts, winner=picked.source,
+                    reason="board conflict", applied=False,
+                )
+                return False
+            if st.session_state.pop(wm.RESOLUTION_KEY_PREFIX + app_id, None) == "remote":
+                for row in wm.open_conflicts(st.session_state, app_id):
+                    path = tuple(row.get("path") or ())
+                    if path:
+                        wm.set_path(merged, path, wm.get_path(picked.state, path))
+                st.session_state.pop(wm.CONFLICTS_KEY_PREFIX + app_id, None)
+            else:
+                if conflicts:
+                    wm.note_conflicts(st.session_state, app_id, conflicts, local_now, picked.state)
+                wm.keep_local_for_conflicts(st.session_state, app_id, merged, local_now)
+            local_contributed = wm.remote_contributed(picked.state, merged)
+            to_apply = merged
+            st.session_state["_suite_workspace_merge_trace"] = {
+                "local_kept": local_contributed,
+                "conflicts": [wm.conflict_label(p) for p in conflicts],
+            }
     try:
-        apply_state(st, picked.state)
+        apply_state(st, to_apply)
     except Exception as exc:
         reason = f"apply_state failed: {exc}"
         st.session_state["_suite_persist_restore_skip_reason"] = reason
@@ -1001,6 +1213,16 @@ def sync_workspace_protocol(
     st.session_state[dirty_key] = False
     st.session_state[_autosave_block_key(app_id)] = True
     st.session_state["_suite_autosave_block_reason"] = "post-restore cooldown"
+    reapplied = wm.reapply_widget_edits(st.session_state, edits)
+    if reapplied or local_contributed:
+        # This session holds work the account does not have yet; it must save, not cool down.
+        st.session_state[dirty_key] = True
+        st.session_state.pop(_autosave_block_key(app_id), None)
+        st.session_state[f"_suite_restore_reconciled::{app_id}"] = True  # the difference is real work
+        st.session_state["_suite_workspace_edits_kept_through_restore"] = sorted(reapplied)
+    if picked.source == "cloud":
+        wm.record_base(st.session_state, app_id, picked.state)
+        wm.release_merge_base(st.session_state, app_id)  # the merged state is what this session shows now
     st.session_state["_cloud_workspace_restored"] = picked.source == "cloud"
     st.session_state["_cloud_workspace_restored_this_run"] = picked.source == "cloud"
     st.session_state["_suite_persist_restore_applied"] = True
@@ -1012,6 +1234,7 @@ def sync_workspace_protocol(
         st.session_state[applied_key] = cloud_ts or _utc_now_iso()
         save_user_state(app_id, picked.state)
         st.session_state[_SESSION_CLOUD_BANNER_KEY] = True
+        _note_restored_board_from_cloud(st.session_state, picked.state)
     elif picked.source == "disk":
         st.session_state[applied_key] = disk_ts or _utc_now_iso()
         st.session_state[_SESSION_BANNER_KEY] = "Loaded your last session"
@@ -1226,6 +1449,7 @@ def restore_once(
 
     if from_cloud:
         st.session_state[_SESSION_CLOUD_BANNER_KEY] = True
+        _note_restored_board_from_cloud(st.session_state, state)
     else:
         st.session_state[_SESSION_BANNER_KEY] = "Loaded your last session"
     return True
@@ -1475,6 +1699,7 @@ def sync_cloud_workspace_before_sidebar(
 
     save_user_state(app_id, picked.state)
     st.session_state[_SESSION_CLOUD_BANNER_KEY] = True
+    _note_restored_board_from_cloud(st.session_state, picked.state)
     return True
 
 
@@ -1557,7 +1782,7 @@ def force_autosave(
             state = _preserve_cloud_widget_fields_on_page_change(app_id, state)
         blob = json.dumps(state, sort_keys=True, default=str)
         fp = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:20]
-        if reason in _RENDER_SNAPSHOT_SAVE_REASONS and st.session_state.get(f"_suite_autosave_fp::{app_id}") == fp:
+        if _unchanged_resave(st, app_id, reason, fp):
             # A page re-saving its own render snapshot: nothing changed since the last save,
             # so skip the disk write and the cloud read + write (as autosave_if_changed does).
             st.session_state["_suite_force_save_skipped_unchanged"] = reason

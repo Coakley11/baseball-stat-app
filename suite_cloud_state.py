@@ -430,6 +430,11 @@ def _full_session_cache_keys(app_key: str) -> tuple[str, str]:
     return f"_suite_full_session_ts_{app_key}", f"_suite_full_session_blob_{app_key}"
 
 
+def _is_session(ss: Any) -> bool:
+    """A dict or Streamlit's SessionStateProxy (which is not a dict)."""
+    return ss is not None and hasattr(ss, "get")
+
+
 def _streamlit_session() -> Any | None:
     try:
         import streamlit as st  # noqa: WPS433
@@ -626,50 +631,139 @@ def save_cloud_full_session(
                 else "sign in to save to your account"
             )
             return False
-        prior_snapshot = _metrics_snapshot(storage, app_id)
-        plan = prepare_cloud_full_session_write(
-            state,
-            session=ss if session_state_writable(ss) else None,
-            read_status=fresh.status,
-            cloud_state=fresh.state,
-            cloud_updated_at=fresh.updated_at,
-            save_reason=save_reason,
-            prior_snapshot=prior_snapshot,
-            allow_empty=allow_empty,
-        )
-        if not plan.allowed:
-            if ss is not None:
-                ss[CLOUD_WRITE_BLOCKED_KEY] = {"reason": plan.reason}
-            _record_cloud_write_error(plan.reason or "cloud_write_refused")
-            return False
-        metrics: dict[str, Any] = {FULL_SESSION_KEY: copy.deepcopy(plan.state)}
-        if plan.include_snapshot and isinstance(plan.snapshot, dict):
-            metrics[VERIFIED_BOARD_SNAPSHOT_KEY] = plan.snapshot
-        wrote = _save_guarded_state(
-            storage,
-            app_key,
-            page=page or "",
-            summary=summary or "Last session",
-            metrics=metrics,
-            skip_metrics_merge_read=skip_metrics_merge_read,
-            expected_updated_at="" if plan.expected_updated_at is None else str(plan.expected_updated_at),
-        )
-        if wrote is False:
-            _record_cloud_write_error("cloud_revision_conflict")
-            return False
+        import workspace_merge as wm
+
+        writable = session_state_writable(ss)
+        outgoing = state
+        merged_against = wm.merge_base(ss, app_id) if writable else None
+        took_remote = False
+        if writable and fresh.status == CLOUD_READ_OK and wm.holding_merge_base(ss, app_id):
+            # A rebased write is not yet applied here: this session still shows pre-merge values,
+            # which must not be written back over the other device's work. Merge again.
+            rebased = _rebase_onto_cloud(app_id, ss, outgoing, fresh, save_reason=save_reason)
+            if rebased is not None:
+                outgoing, took_remote = rebased
+        if writable and fresh.status == CLOUD_READ_OK and wm.open_conflicts(ss, app_id):
+            outgoing = copy.deepcopy(outgoing)
+            wm.pin_conflicts_to_remote(ss, app_id, outgoing, fresh.state)
+        for attempt in range(2):
+            prior_snapshot = _metrics_snapshot(storage, app_id)
+            plan = prepare_cloud_full_session_write(
+                outgoing,
+                session=ss if writable else None,
+                read_status=fresh.status,
+                cloud_state=fresh.state,
+                cloud_updated_at=fresh.updated_at,
+                save_reason=save_reason,
+                prior_snapshot=prior_snapshot,
+                allow_empty=allow_empty,
+            )
+            if not plan.allowed and plan.reason == "stale_or_unhydrated_cloud_revision":
+                rebased = _rebase_onto_cloud(app_id, ss, outgoing, fresh, save_reason=save_reason)
+                if rebased is not None:
+                    outgoing, from_remote = rebased
+                    took_remote = took_remote or from_remote
+                    plan = prepare_cloud_full_session_write(
+                        outgoing,
+                        session=ss,
+                        read_status=fresh.status,
+                        cloud_state=fresh.state,
+                        cloud_updated_at=fresh.updated_at,
+                        save_reason=save_reason,
+                        prior_snapshot=prior_snapshot,
+                        allow_empty=allow_empty,
+                    )
+            if not plan.allowed:
+                if ss is not None:
+                    ss[CLOUD_WRITE_BLOCKED_KEY] = {"reason": plan.reason}
+                _record_cloud_write_error(plan.reason or "cloud_write_refused")
+                return False
+            metrics: dict[str, Any] = {FULL_SESSION_KEY: copy.deepcopy(plan.state)}
+            if plan.include_snapshot and isinstance(plan.snapshot, dict):
+                metrics[VERIFIED_BOARD_SNAPSHOT_KEY] = plan.snapshot
+            wrote = _save_guarded_state(
+                storage,
+                app_key,
+                page=page or "",
+                summary=summary or "Last session",
+                metrics=metrics,
+                skip_metrics_merge_read=skip_metrics_merge_read,
+                expected_updated_at="" if plan.expected_updated_at is None else str(plan.expected_updated_at),
+            )
+            if wrote is not False:
+                break
+            # Another write landed between our read and our write: read again and merge once more.
+            fresh = load_cloud_full_session_status(app_id, force=True)
+            if attempt or fresh.status != CLOUD_READ_OK or wm.merge_base(ss, app_id) is None:
+                _record_cloud_write_error("cloud_revision_conflict")
+                return False
         invalidate_cloud_full_session_cache(app_id)
         observed = load_cloud_full_session_status(app_id, force=True)
-        if session_state_writable(ss) and observed.status in (CLOUD_READ_OK, CLOUD_READ_NOT_FOUND):
+        if writable and observed.status in (CLOUD_READ_OK, CLOUD_READ_NOT_FOUND):
             note_cloud_revision_seen(
                 ss,
                 observed.updated_at,
                 confirmed_empty=observed.status == CLOUD_READ_NOT_FOUND,
             )
+            wm.record_base(ss, app_id, plan.state)
+            if took_remote:
+                # The account held another device's newer work; show it here on the next rerun,
+                # and merge against the pre-rebase base until then (wm.merge_base).
+                wm.hold_merge_base(ss, app_id, merged_against, state)
+                ss[wm.REAPPLY_KEY_PREFIX + app_id] = True
         _record_cloud_write_error(None)
         return True
     except Exception as exc:
         _record_cloud_write_error(exc)
         return False
+
+
+def _rebase_onto_cloud(
+    app_id: str,
+    ss: Any,
+    local: dict[str, Any],
+    fresh: CloudRead,
+    *,
+    save_reason: str = "",
+) -> tuple[dict[str, Any], bool] | None:
+    """Merge this session's changes onto the account's newer copy (``workspace_merge``).
+
+    Only for a session that has loaded or written the account before (it has a base and has
+    seen a revision): an unhydrated session is still refused, so it can never erase saved work.
+    A board both sides changed, or a board save (pick, undo, Save Draft Board Now) whose board
+    the merge would not write as-is, is refused too: ``draft_board_reconcile`` owns that choice.
+    Returns ``(merged, took_anything_from_the_cloud)`` or None when a merge is not possible.
+    """
+    import workspace_merge as wm
+    from workspace_cloud_guard import (
+        BOARD_MUTATION_REASONS,
+        CLOUD_REVISION_SEEN_KEY,
+        _reason_base,
+        note_cloud_revision_seen,
+        session_state_writable,
+    )
+
+    if not session_state_writable(ss) or fresh.status != CLOUD_READ_OK:
+        return None
+    base = wm.merge_base(ss, app_id, local)
+    if base is None or not str(ss.get(CLOUD_REVISION_SEEN_KEY) or ""):
+        return None
+    merged, conflicts = wm.three_way_merge(base, local, fresh.state)
+    if wm.board_conflicted(conflicts):
+        return None
+    if _reason_base(save_reason) in BOARD_MUTATION_REASONS and any(
+        not wm.same_value(merged.get(key), local.get(key)) for key in wm.BOARD_KEYS
+    ):
+        return None
+    if conflicts:
+        wm.note_conflicts(ss, app_id, conflicts, local, fresh.state)
+    wm.finalize_merged(app_id, merged)
+    note_cloud_revision_seen(ss, fresh.updated_at)
+    ss["_suite_workspace_rebase_trace"] = {
+        "revision": fresh.updated_at,
+        "conflicts": [wm.conflict_label(p) for p in conflicts],
+    }
+    return merged, wm.remote_contributed(local, merged)
 
 
 def _metrics_snapshot(storage: Any, app_id: str) -> dict[str, Any] | None:
@@ -759,13 +853,41 @@ def cloud_write_blocked_by_newer_data(
 ) -> bool:
     """True when the store moved forward after this save already read it.
 
-    A missing current timestamp is not treated as newer. Equal timestamps may be written.
+    A missing current timestamp is not treated as newer. The exact revision this session saw may
+    be written. Another revision in the same second is newer: comparing whole seconds let a stale
+    device overwrite a write made less than a second earlier (a refused stale save is rebased by
+    ``_rebase_onto_cloud``, so being strict here costs nothing).
     """
     if not current_updated_at:
         return False
-    previous = int(parse_persist_timestamp(previous_updated_at))
-    current = int(parse_persist_timestamp(current_updated_at))
-    return current > previous
+    if previous_updated_at and str(current_updated_at) == str(previous_updated_at):
+        return False
+    previous = parse_persist_timestamp(previous_updated_at)
+    current = parse_persist_timestamp(current_updated_at)
+    return current >= previous if previous else current > previous
+
+
+def cloud_revision_moved(app_id: str, ss: Any = None) -> bool:
+    """True when the account's row has a revision this session has not loaded or written.
+
+    Metadata only (no ``full_session`` download). False when unknown, so a failed probe never
+    triggers a restore.
+    """
+    from workspace_cloud_guard import CLOUD_REVISION_SEEN_KEY
+
+    ss = ss if ss is not None else _streamlit_session()
+    seen = str((ss.get(CLOUD_REVISION_SEEN_KEY) if ss is not None else "") or "")
+    if not seen:
+        return False
+    try:
+        storage, _ = _import_storage()
+        meta_fn = getattr(storage, "load_current_state_meta_for_app", None)
+        if not callable(meta_fn):
+            return False
+        current = str((meta_fn(app_id) or {}).get("updated_at") or "")
+    except Exception:
+        return False
+    return bool(current) and current != seen
 
 
 def block_cloud_writes_until_reconciled(app_id: str, ss: Any = None, *, reason: str = "cloud_read_failed") -> None:
@@ -794,7 +916,7 @@ def _resolved_cloud_app_key(app_id: str) -> str:
 def last_cloud_write_meta() -> dict[str, Any]:
     """Session notes from the last full-session write. Empty outside Streamlit."""
     ss = _streamlit_session()
-    if not isinstance(ss, dict):
+    if not _is_session(ss):
         return {}
     return {
         "write_mode": str(ss.get("_suite_last_cloud_write_mode") or ""),
@@ -900,7 +1022,7 @@ def save_cloud_full_session_with_details(
     if not ok:
         return False, redact_cloud_error(cloud_write_error_message() or "cloud_save_failed"), app_key
     ss = _streamlit_session()
-    if isinstance(ss, dict):
+    if _is_session(ss):
         ss.pop("_suite_cloud_write_used_workflow_fallback", None)
         ss["_suite_last_cloud_app_key"] = app_key
     return True, "", app_key
@@ -1032,7 +1154,7 @@ def save_cloud_full_session_with_result(
     if minimum <= 0:
         return True, ""
     ss = _streamlit_session()
-    if isinstance(ss, dict) and ss.get("_suite_cloud_write_used_workflow_fallback"):
+    if _is_session(ss) and ss.get("_suite_cloud_write_used_workflow_fallback"):
         err = "workflow_fallback_omitted_draft_room_picks"
         _record_cloud_write_error(err)
         return False, err
@@ -1041,7 +1163,7 @@ def save_cloud_full_session_with_result(
             app_id,
             min_picks=minimum,
             cloud_app_key=app_key,
-            session=ss if isinstance(ss, dict) else None,
+            session=ss if _is_session(ss) else None,
         )
     except Exception as exc:
         safe = redact_cloud_error(exc)
@@ -1051,7 +1173,7 @@ def save_cloud_full_session_with_result(
         err = _format_draft_readback_error(readback, minimum, app_key)
         _record_cloud_write_error(err)
         return False, err
-    if isinstance(ss, dict):
+    if _is_session(ss):
         ss["_suite_last_draft_room_readback"] = {
             "cloud_app_key": readback.get("cloud_app_key") or app_key,
             "workspace_id": readback.get("workspace_id"),

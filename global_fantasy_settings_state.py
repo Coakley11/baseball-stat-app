@@ -167,7 +167,7 @@ def _active_league_team_info(session: dict[str, Any]) -> tuple[str, str] | None:
     if src == "draft_room":
         team = str(session.get(GLOBAL_TEAM_KEY) or "").strip()
         if team:
-            return team, "Draft Room Simulator Board (temporary / unsaved)"
+            return team, "Draft Room Simulator Board (working board)"
     return None
 
 
@@ -368,21 +368,34 @@ def write_canonical_global_fantasy_settings(
     format_: str | None = None,
     reason: str = "",
 ) -> None:
-    """Write team and/or format to the canonical keys and mirror into all aliases."""
+    """Write team and/or format to the canonical keys and mirror into all aliases.
+
+    The draft room counts as locally edited only when an already-set value actually changes:
+    first-time initialization and re-mirroring an unchanged value (every page load does this)
+    are not edits, and must not stop a saved board from being restored after sign-in.
+    """
+    edited = False
     if team is not None:
-        session[GLOBAL_TEAM_KEY] = str(team).strip()
+        new_team = str(team).strip()
+        old_team = session.get(GLOBAL_TEAM_KEY)
+        edited = edited or (old_team not in (None, "") and str(old_team).strip() != new_team)
+        session[GLOBAL_TEAM_KEY] = new_team
     if format_ is not None:
-        session[GLOBAL_FORMAT_KEY] = normalize_league_format(format_)
+        new_format = normalize_league_format(format_)
+        old_format = session.get(GLOBAL_FORMAT_KEY)
+        edited = edited or (old_format not in (None, "") and old_format != new_format)
+        session[GLOBAL_FORMAT_KEY] = new_format
     _mirror_globals_to_aliases(session)
     if format_ is not None or session.get(GLOBAL_FORMAT_KEY) is not None:
         _mirror_live_format_aliases(session, session.get(GLOBAL_FORMAT_KEY) or CANONICAL_ROTO)
     record_global_settings_trace(session, f"write_canonical:{reason or 'unspecified'}")
-    try:
-        from draft_room_state import mark_draft_room_local_edit
+    if edited:
+        try:
+            from draft_room_state import mark_draft_room_local_edit
 
-        mark_draft_room_local_edit(session)
-    except Exception:
-        pass
+            mark_draft_room_local_edit(session)
+        except Exception:
+            pass
 
 
 def _lineup_format_is_h2h(session: dict[str, Any]) -> bool:

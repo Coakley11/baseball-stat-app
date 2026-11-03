@@ -84,6 +84,7 @@ def _completed_room(*, host: str = "daniel") -> dict:
 class _FakeSt:
     def __init__(self, session: dict) -> None:
         self.session_state = session
+        self.query_params: dict = {}
 
     def caption(self, *_args, **_kwargs) -> None:
         pass

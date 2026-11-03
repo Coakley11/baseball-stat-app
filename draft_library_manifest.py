@@ -341,10 +341,43 @@ def collect_library_content_clock_diagnostics(
     }
 
 
+def _row_clock(row: dict[str, Any]) -> tuple[int, str]:
+    return _content_revision(row), _content_updated_at(row)
+
+
+def _merge_with_published_rows(session: dict[str, Any], rows: list[dict[str, Any]], published: Any) -> list[dict[str, Any]]:
+    """Per draft, the newer content clock wins; a draft only the account lists stays listed unless
+    it was deleted here. A stale device publishing used to roll the account's clocks back."""
+    remote_rows = published.get("rows") if isinstance(published, dict) and isinstance(published.get("rows"), list) else []
+    deleted = {str(x) for x in (session.get("_deleted_draft_archive_ids") or []) if str(x or "").strip()}
+    remote_by_id = {str(r.get("draft_id") or ""): r for r in remote_rows if isinstance(r, dict) and r.get("draft_id")}
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        did = str(row.get("draft_id") or "")
+        remote = remote_by_id.pop(did, None)
+        out.append(remote if isinstance(remote, dict) and _row_clock(remote) > _row_clock(row) else row)
+    out.extend(r for did, r in remote_by_id.items() if did not in deleted and not r.get("is_deleted"))
+    return out
+
+
 def publish_library_manifest_to_cloud(session: dict[str, Any]) -> dict[str, Any]:
     """Write compact manifest for cross-device content clock convergence."""
     rows = build_library_manifest(session, force=True)
     rev = int(session.get("_library_manifest_revision") or len(rows))
+    app = _manifest_settings_app(session)
+    try:
+        if _TEST_CLOUD_STORE is not None:
+            envelope = _TEST_CLOUD_STORE.get(app) or {}
+        else:
+            from suite_account import load_settings
+
+            envelope = load_settings(app) or {}
+        published = envelope.get(MANIFEST_DOC_KEY) if isinstance(envelope, dict) else None
+        rows = _merge_with_published_rows(session, rows, published)
+        if isinstance(published, dict):
+            rev = max(rev, int(published.get("revision") or 0) + 1)  # never behind the account's
+    except Exception:
+        pass  # unreadable: publish this device's rows, as before
     now = _utc_now_iso()
     doc = {
         "schema_version": 1,
@@ -352,7 +385,6 @@ def publish_library_manifest_to_cloud(session: dict[str, Any]) -> dict[str, Any]
         "revision": rev,
         "rows": rows,
     }
-    app = _manifest_settings_app(session)
     header = {"revision": rev, "updated_at": now}
     try:
         if _TEST_CLOUD_STORE is not None:

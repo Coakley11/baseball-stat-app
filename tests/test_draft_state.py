@@ -208,5 +208,28 @@ class TestDraftState(unittest.TestCase):
         self.assertEqual(session[DRAFT_QUEUE_KEY], ["Bobby Witt Jr.", "Julio Rodríguez"])
 
 
+class QueueNormalizeIsNotAnEditTests(unittest.TestCase):
+    """The sidebar normalizes the queue on every run; only a change may mark a local edit."""
+
+    def test_normalizing_an_unchanged_queue_marks_no_edit(self) -> None:
+        from draft_state import sync_draft_queue
+
+        for session in ({}, {DRAFT_QUEUE_KEY: [], "draft_state": {"queue": []}},
+                        {DRAFT_QUEUE_KEY: ["Aaron Judge"], "draft_state": {"queue": ["Aaron Judge"]}}):
+            queue = list(session.get(DRAFT_QUEUE_KEY) or [])
+            sync_draft_queue(session, queue, reason="normalize_queue")
+            self.assertFalse(is_draft_locally_dirty(session), session)
+
+    def test_a_real_change_still_marks_an_edit(self) -> None:
+        from draft_state import sync_draft_queue
+
+        session = {DRAFT_QUEUE_KEY: ["Aaron Judge"], "draft_state": {"queue": ["Aaron Judge"]}}
+        sync_draft_queue(session, [], reason="auto_remove_drafted")
+        self.assertTrue(is_draft_locally_dirty(session))
+        session = {}
+        add_player_to_draft_queue(session, "Juan Soto")
+        self.assertTrue(is_draft_locally_dirty(session))
+
+
 if __name__ == "__main__":
     unittest.main()

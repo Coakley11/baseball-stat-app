@@ -447,9 +447,31 @@ def gather_career_filters(session: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _restore_hof_case_mode_from_page_block(session: dict[str, Any]) -> None:
+    """Case Mode and its target are widget keys outside the career filters: Streamlit drops them
+    while another page shows, and sidebar navigation skips the generic page restore. Bring them
+    back from this page's saved block (this device's, or the account's after a restore)."""
+    try:
+        from hall_of_fame_data import CAREER_HOF_CASE_MODE_KEY, CAREER_HOF_CASE_TARGET_KEY
+    except ImportError:
+        return
+    if CAREER_HOF_CASE_MODE_KEY in session:
+        return
+    block = _career_page_filter_block(session)
+    if CAREER_HOF_CASE_MODE_KEY not in block:
+        return
+    session[CAREER_HOF_CASE_MODE_KEY] = bool(block[CAREER_HOF_CASE_MODE_KEY])
+    target = str(block.get(CAREER_HOF_CASE_TARGET_KEY) or "").strip()
+    if session[CAREER_HOF_CASE_MODE_KEY] and target and CAREER_HOF_CASE_TARGET_KEY not in session:
+        session[CAREER_HOF_CASE_TARGET_KEY] = target
+    record_career_field_write(session, CAREER_HOF_CASE_MODE_KEY, "page_filter_state.Career Totals",
+                              new=session[CAREER_HOF_CASE_MODE_KEY])
+
+
 def prepare_career_totals_page(session: dict[str, Any]) -> dict[str, Any]:
     """Reconcile Career Totals filters before widgets render."""
     _migrate_legacy_career_keys(session)
+    _restore_hof_case_mode_from_page_block(session)
     if session.pop("_hof_case_skip_prepare_reconcile", None) or session.get("_hof_case_workspace_restored"):
         widget = _extract_filters_from_session(session)
         if widget:
@@ -700,7 +722,7 @@ def flush_career_filter_edits(session: dict[str, Any], st_obj: Any = None, *, re
         session,
         filters={**prev, **current},
         reason=reason,
-        local_edit=True,
+        local_edit=pending,
         sync_widget_keys=False,
     )
     record_career_sync_trace(session, "phone_after_edit", flush_reason=reason)

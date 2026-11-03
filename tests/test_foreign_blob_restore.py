@@ -19,6 +19,8 @@ class ApplyBaseballDiskStateForeignBlobTests(unittest.TestCase):
             "_suite_auth_session": True,
             "_suite_auth_user_id": "uuid-coakley",
             "_suite_auth_user_email": "coakley11@aol.com",
+            "_suite_auth_external_id": "coakley11",
+            "_suite_auth_tokens": {"access_token": "a.b.c", "refresh_token": "r"},  # a complete sign-in
         }
         state = {
             "room_your_team": "Daniel",
@@ -27,7 +29,7 @@ class ApplyBaseballDiskStateForeignBlobTests(unittest.TestCase):
             },
             "live_draft_state": {"draft_room_id": "X1", "status": "in_progress", "draft_board": []},
         }
-        st = SimpleNamespace(session_state=ss)
+        st = SimpleNamespace(session_state=ss, query_params={})
         with patch("live_draft_state._current_auth_external_id", return_value="coakley11"):
             with patch("live_draft_state._current_workspace_id", return_value="daniel"):
                 with patch("suite_auth.is_auth_enabled", return_value=True):

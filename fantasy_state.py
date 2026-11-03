@@ -690,7 +690,7 @@ def flush_fantasy_section_edits(
         section,
         filters={**prev, **current},
         reason=reason,
-        local_edit=True,
+        local_edit=pending,
         sync_widget_keys=False,
     )
     if st_obj is not None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import unittest
+import unittest.mock
 
 from account_fantasy_preferences import (
     PREFS_DOC_KEY,
@@ -191,6 +192,65 @@ class CrossDevicePreferenceSyncTests(unittest.TestCase):
         reseed_fantasy_context_toggle_widgets(dell)
         self.assertTrue(dell.get(_RESEARCH_SYNC_TOGGLE_WIDGET_KEY))
         self.assertTrue(dell.get(_SIM_CONTEXT_TOGGLE_WIDGET_KEY))
+
+    def test_a_stale_device_toggling_research_never_reverts_the_league_chosen_elsewhere(self) -> None:
+        phone = _seed_session(device="phone")
+        dell = _seed_session(device="dell")
+        write_account_fantasy_preferences(phone, reason="bootstrap")
+        sync_account_fantasy_preferences(dell, force=True)
+        activate_library_selection_and_sync_preferences(phone, draft_id=UPLOAD_DRAFT)   # phone: league 2
+
+        dell[FANTASY_RESEARCH_SYNC_KEY] = True                                          # stale Dell: a toggle
+        write = write_account_fantasy_preferences(dell, reason="fantasy_context_toggle")
+        self.assertTrue(write.get("write_verified"))
+        doc = _cloud_doc(self.store, dell)
+        self.assertTrue(doc.get("research_mode_enabled"))
+        self.assertEqual(doc.get("active_draft_id"), UPLOAD_DRAFT)                      # not the Dell's stale one
+        self.assertEqual(doc.get("active_league_context_id"), UPLOAD_CTX)
+
+        sync_account_fantasy_preferences(phone, force=True)                              # both devices agree
+        sync_account_fantasy_preferences(dell, force=True)
+        for device in (phone, dell):
+            self.assertTrue(device.get(FANTASY_RESEARCH_SYNC_KEY))
+            self.assertEqual(device.get("active_draft_archive_id"), UPLOAD_DRAFT)
+
+    def test_a_stale_device_choosing_a_league_never_reverts_the_override_chosen_elsewhere(self) -> None:
+        phone = _seed_session(device="phone")
+        dell = _seed_session(device="dell")
+        write_account_fantasy_preferences(phone, reason="bootstrap")
+        sync_account_fantasy_preferences(dell, force=True)
+        phone[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = True                         # phone: Simulator override
+        write_account_fantasy_preferences(phone, reason="fantasy_context_toggle")
+        activate_library_selection_and_sync_preferences(dell, draft_id=UPLOAD_DRAFT)    # stale Dell: a league
+        doc = _cloud_doc(self.store, dell)
+        self.assertEqual(doc.get("fantasy_source_override_kind"), "simulator_board")
+        self.assertEqual(doc.get("active_draft_id"), UPLOAD_DRAFT)
+
+    def test_a_write_racing_the_other_device_is_reapplied_onto_its_document(self) -> None:
+        import account_fantasy_preferences as afp
+
+        phone = _seed_session(device="phone")
+        dell = _seed_session(device="dell")
+        write_account_fantasy_preferences(phone, reason="bootstrap")
+        sync_account_fantasy_preferences(dell, force=True)
+        real_pair = afp.persist_and_verify_preference_pair
+        raced = {"done": False}
+
+        def pair_with_a_race(session, doc):
+            out = real_pair(session, doc)
+            if not raced["done"]:          # the phone's write lands right after the Dell's
+                raced["done"] = True
+                phone[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = True
+                write_account_fantasy_preferences(phone, reason="fantasy_context_toggle")
+            return out
+
+        dell[FANTASY_RESEARCH_SYNC_KEY] = True
+        with unittest.mock.patch.object(afp, "persist_and_verify_preference_pair", side_effect=pair_with_a_race):
+            write = write_account_fantasy_preferences(dell, reason="fantasy_context_toggle")
+        doc = _cloud_doc(self.store, dell)
+        self.assertTrue(write.get("write_verified"), write)
+        self.assertTrue(doc.get("research_mode_enabled"))                                 # the Dell's change
+        self.assertEqual(doc.get("fantasy_source_override_kind"), "simulator_board")      # and the phone's
 
     def test_reverse_direction_dell_to_phone(self) -> None:
         phone = _seed_session(device="phone")

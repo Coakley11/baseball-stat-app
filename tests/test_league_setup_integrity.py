@@ -5,6 +5,7 @@ banner reads progress from the board, and a new local workspace can save."""
 from __future__ import annotations
 
 import textwrap
+import contextlib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -198,22 +199,29 @@ class _FakeSt:
 
 
 class NewLocalWorkspaceCanSaveTests(unittest.TestCase):
-    def _sync(self, *, cloud_disabled: bool) -> dict:
+    def _sync(self, *, cloud_disabled: bool, read_status: str | None = None) -> dict:
+        import suite_cloud_state as scs
         import suite_user_persistence as sup
 
         st = _FakeSt()
-        with mock.patch.object(sup, "_cloud_storage_disabled", return_value=cloud_disabled), mock.patch.object(
-            sup, "_load_raw", return_value=({}, None, None)
-        ), mock.patch("suite_cloud_state.load_cloud_full_session", return_value=({}, None)), mock.patch(
-            "suite_cloud_state.reconcile_stale_resume_session_flags", return_value=None
-        ), mock.patch("suite_cloud_state.should_skip_workspace_restore_for_resume", return_value=False), mock.patch.object(
-            sup, "record_page_navigation_startup_diagnostics"
-        ), mock.patch.object(sup, "_record_workspace_sync_trace"), mock.patch.object(
-            sup, "_record_startup_restore_diagnostics"
-        ):
+        patches = [
+            mock.patch.object(sup, "_cloud_storage_disabled", return_value=cloud_disabled),
+            mock.patch.object(sup, "_load_raw", return_value=({}, None, None)),
+            mock.patch("suite_cloud_state.load_cloud_full_session", return_value=({}, None)),
+            mock.patch("suite_cloud_state.reconcile_stale_resume_session_flags", return_value=None),
+            mock.patch("suite_cloud_state.should_skip_workspace_restore_for_resume", return_value=False),
+            mock.patch.object(sup, "record_page_navigation_startup_diagnostics"),
+            mock.patch.object(sup, "_record_workspace_sync_trace"),
+            mock.patch.object(sup, "_record_startup_restore_diagnostics"),
+        ]
+        if read_status is not None:
+            patches.append(mock.patch("suite_cloud_state.load_cloud_full_session_status",
+                                      return_value=scs.CloudRead({}, None, read_status)))
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
             applied = sup.sync_workspace_protocol(st, "baseball", apply_state=lambda *_: None)
         self.assertFalse(applied)
-        self.assertEqual(st.session_state.get("_suite_persist_restore_skip_reason"), "no workspace blob")
         return st.session_state
 
     def test_local_empty_workspace_does_not_block_autosave(self):
@@ -221,12 +229,25 @@ class NewLocalWorkspaceCanSaveTests(unittest.TestCase):
 
         state = self._sync(cloud_disabled=True)
         self.assertNotIn(sup._autosave_block_key("baseball"), state)
+        self.assertEqual(state.get("_suite_persist_restore_skip_reason"), "no workspace blob")
 
-    def test_cloud_empty_read_still_blocks_autosave(self):
+    def test_an_inconclusive_cloud_read_still_blocks_autosave(self):
         import suite_user_persistence as sup
 
-        state = self._sync(cloud_disabled=False)
+        state = self._sync(cloud_disabled=False)          # auth not ready: the store never answered
         self.assertTrue(state.get(sup._autosave_block_key("baseball")))
+        self.assertIn("inconclusive", state.get("_suite_persist_restore_skip_reason"))
+
+    def test_a_confirmed_empty_account_autosaves_its_first_work(self):
+        import suite_cloud_state as scs
+        import suite_user_persistence as sup
+        import workspace_merge as wm
+
+        state = self._sync(cloud_disabled=False, read_status=scs.CLOUD_READ_NOT_FOUND)
+        self.assertNotIn(sup._autosave_block_key("baseball"), state)
+        self.assertFalse(state.get("_suite_workspace_sync_skipped_no_apply"))
+        self.assertEqual(wm.merge_base(state, "baseball"), {})   # a later remote row merges, never silently wins
+        self.assertTrue(state.get("_suite_cloud_confirmed_empty"))
 
 
 class LineupDiagnosisRosterTests(unittest.TestCase):

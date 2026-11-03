@@ -21,6 +21,10 @@ DRAFT_ROOM_EDITOR_CACHE_KEY = "draft_room_board_editor_cache"
 DRAFT_ROOM_EDITOR_KEY = DRAFT_ROOM_EDITOR_KEY_PREFIX
 DRAFT_ROOM_STATE_KEY = "draft_room_state"
 DRAFT_ROOM_DIRTY_KEY = "draft_room_state_dirty"
+# Board writes the app makes by itself (building the default empty practice board). They are
+# not user edits: marking them "locally edited" made a guest first run (auth not ready) block
+# the saved board from being restored once sign-in completed.
+AUTOMATIC_BOARD_REASONS = frozenset({"ensure_simulator_board"})
 DRAFT_ROOM_LOCAL_EDIT_TS_KEY = "draft_room_state_last_local_edit_ts"
 SUITE_LOCAL_DIRTY_BASEBALL_KEY = "_suite_local_dirty::baseball"
 DRAFT_ROOM_PERSIST_SCHEMA = 1
@@ -535,6 +539,26 @@ def sync_editor_seed(session: dict[str, Any], table: Any, *, force_reset: bool =
         session[DRAFT_ROOM_EDITOR_SEED_KEY] = table.copy()
 
 
+def _drop_stale_board_ownership_stamp(session: dict[str, Any], table: Any) -> None:
+    """A restored board replaces whatever this session held, so the session's stamp for the old
+    board no longer applies; left in place, the ownership scrub reads the mismatch as a foreign
+    board and clears the restored one. The restored blob carries its own stamp, which the scrub
+    verifies against the account and workspace as usual."""
+    try:
+        from live_draft_navigation import (
+            SIMULATOR_BOARD_OWNERSHIP_KEY,
+            SIMULATOR_OWNERSHIP_SCRUB_TOKEN_KEY,
+            simulator_board_fingerprint_for_table,
+        )
+
+        stamp = session.get(SIMULATOR_BOARD_OWNERSHIP_KEY)
+        if isinstance(stamp, dict) and stamp.get("simulator_board_fingerprint") != simulator_board_fingerprint_for_table(table):
+            session.pop(SIMULATOR_BOARD_OWNERSHIP_KEY, None)
+            session.pop(SIMULATOR_OWNERSHIP_SCRUB_TOKEN_KEY, None)
+    except ImportError:
+        pass
+
+
 def apply_restored_board_to_session(
     session: dict[str, Any],
     table: pd.DataFrame,
@@ -546,6 +570,7 @@ def apply_restored_board_to_session(
     session[DRAFT_ROOM_TABLE_KEY] = table
     if isinstance(blob, dict):
         session[DRAFT_ROOM_STATE_KEY] = blob
+    _drop_stale_board_ownership_stamp(session, table)
     session[DRAFT_ROOM_EDITOR_CACHE_KEY] = table.copy()
     sync_editor_seed(session, table, force_reset=True)
     if bump_widget:
@@ -2920,6 +2945,72 @@ def is_draft_room_locally_dirty(session: dict[str, Any]) -> bool:
     return bool(session.get(DRAFT_ROOM_DIRTY_KEY))
 
 
+# --- what "saved" means for the Simulator working board --------------------------------------
+# Three different facts used to be shown as one "temporary / unsaved" label: the board is not a
+# named Draft Library entry, it is (or is not) persisted to the account, and it has (or has not)
+# changed since that was last confirmed. The account state is only ever "saved" when a cloud
+# readback or a cloud restore verified exactly this board.
+BOARD_CLOUD_VERIFIED_FP_KEY = "_draft_room_cloud_verified_fp"
+BOARD_STATUS_EMPTY = "empty"
+BOARD_STATUS_CLOUD_SAVED = "cloud_saved"
+BOARD_STATUS_UNSYNCED = "unsynced_changes"
+BOARD_STATUS_UNVERIFIED = "unverified"
+BOARD_STATUS_DEVICE_ONLY = "device_only"
+
+
+def mark_board_cloud_verified(session: dict[str, Any], *, cloud_state: dict[str, Any] | None = None) -> None:
+    """Record that the account copy was confirmed to hold exactly the current board.
+
+    With ``cloud_state`` (a restore) the claim is only made when the live board really equals the
+    account copy's board: a restore that skipped the board because of local edits verifies nothing.
+    """
+    try:
+        live_fp = table_picks_fingerprint(coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY)))
+        if cloud_state is not None:
+            blob = _draft_room_from_blob(cloud_state)
+            cloud_table = table_from_persist_dict(blob) if isinstance(blob, dict) else None
+            if cloud_table is None or table_picks_fingerprint(cloud_table) != live_fp:
+                return
+        session[BOARD_CLOUD_VERIFIED_FP_KEY] = live_fp
+    except Exception:
+        session.pop(BOARD_CLOUD_VERIFIED_FP_KEY, None)
+
+
+def simulator_board_save_status(session: dict[str, Any]) -> str:
+    """One of the ``BOARD_STATUS_*`` values for the Simulator working board."""
+    try:
+        from suite_auth import is_anonymous_guest
+        from suite_storage_config import cloud_storage_enabled
+
+        if is_anonymous_guest(session) or not cloud_storage_enabled():
+            return BOARD_STATUS_DEVICE_ONLY
+    except ImportError:
+        pass
+    table = coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY))
+    verified = session.get(BOARD_CLOUD_VERIFIED_FP_KEY)
+    if table_pick_count(table) == 0 and not verified:
+        return BOARD_STATUS_EMPTY
+    if not verified:
+        return BOARD_STATUS_UNVERIFIED
+    if table_picks_fingerprint(table) == verified:
+        return BOARD_STATUS_CLOUD_SAVED
+    return BOARD_STATUS_UNSYNCED
+
+
+_BOARD_STATUS_PHRASES = {
+    BOARD_STATUS_EMPTY: "no picks yet",
+    BOARD_STATUS_CLOUD_SAVED: "saved to your account",
+    BOARD_STATUS_UNSYNCED: "changes not yet saved to your account",
+    BOARD_STATUS_UNVERIFIED: "not yet confirmed saved to your account",
+    BOARD_STATUS_DEVICE_ONLY: "kept on this device only",
+}
+
+
+def simulator_board_status_phrase(session: dict[str, Any]) -> str:
+    """Plain-language state of the working board, for banners (never claims more than verified)."""
+    return _BOARD_STATUS_PHRASES[simulator_board_save_status(session)]
+
+
 def mark_draft_room_local_edit(session: dict[str, Any]) -> None:
     session[DRAFT_ROOM_DIRTY_KEY] = True
     session[DRAFT_ROOM_LOCAL_EDIT_TS_KEY] = _utc_now_iso()
@@ -3092,7 +3183,7 @@ def write_canonical_draft_room_state(
     if is_runtime_table(table):
         session[DRAFT_ROOM_TABLE_KEY] = table
     _sync_page_filter_draft_room_block(session, blob=blob)
-    if local_edit:
+    if local_edit and reason not in AUTOMATIC_BOARD_REASONS:
         mark_draft_room_local_edit(session)
     return blob
 
@@ -4230,26 +4321,49 @@ def save_draft_board_direct_to_cloud(
             trace["error"] = "cloud storage could not be read, so writing was refused"
             trace["cloud_write_error"] = trace["error"]
             return trace
-        if cloud_write_blocked_by_newer_data(ts_before, ts_now):
-            block_cloud_writes_until_reconciled(
-                "baseball",
-                session,
-                reason="cloud_newer_than_loaded_session",
-            )
-            trace["cloud_timestamp_after"] = ts_now
-            trace["error"] = "cloud_newer_than_loaded_session"
-            trace["cloud_write_error"] = trace["error"]
-            return trace
+        from draft_board_reconcile import is_stale_error, reconcile_board_save
 
-        ok, cloud_err = save_cloud_full_session_with_result(
-            "baseball",
-            state,
-            page=page,
-            summary=summary,
-            min_draft_pick_count=expected_picks,
-            save_reason="manual_save",
-        )
-        cloud_err = redact_cloud_error(cloud_err) if cloud_err else ""
+        def _write_board(payload: dict[str, Any]) -> tuple[bool, str]:
+            written, err = save_cloud_full_session_with_result(
+                "baseball",
+                payload,
+                page=page,
+                summary=summary,
+                min_draft_pick_count=expected_picks,
+                save_reason="manual_save",
+            )
+            return written, (redact_cloud_error(err) if err else "")
+
+        if cloud_write_blocked_by_newer_data(ts_before, ts_now):
+            # The account moved on since this page loaded. Reconcile instead of blocking every
+            # later save: rebase onto the fresh copy when its board is unchanged, else report a
+            # conflict and keep this page's picks untouched.
+            trace["cloud_timestamp_after"] = ts_now
+            rec = reconcile_board_save(session, state)
+            trace["reconcile_status"] = rec.get("status")
+            if rec.get("status") != "rebased":
+                trace["board_conflict"] = rec.get("status") == "conflict"
+                if rec.get("status") == "unreadable":
+                    # The account could not be read to reconcile: pause writes as before.
+                    block_cloud_writes_until_reconciled(
+                        "baseball",
+                        session,
+                        reason="cloud_newer_than_loaded_session",
+                    )
+                trace["error"] = "cloud_newer_than_loaded_session"
+                trace["cloud_write_error"] = trace["error"]
+                return trace
+            state = rec["state"]
+
+        ok, cloud_err = _write_board(state)
+        if not ok and is_stale_error(cloud_err):
+            rec = reconcile_board_save(session, state)
+            trace["reconcile_status"] = rec.get("status")
+            if rec.get("status") == "rebased":
+                ok, cloud_err = _write_board(rec["state"])
+                state = rec["state"]
+            else:
+                trace["board_conflict"] = rec.get("status") == "conflict"
         trace["saved_cloud"] = ok
         trace["cloud_write_error"] = cloud_err
         if cloud_err:
@@ -4300,6 +4414,7 @@ def save_draft_board_direct_to_cloud(
                 trace["cloud_write_error"] = trace["error"]
             elif raw_readback > 0:
                 clear_draft_room_local_edit(session)
+                mark_board_cloud_verified(session)
         else:
             session["_suite_persist_last_save_cloud"] = False
     except Exception as exc:

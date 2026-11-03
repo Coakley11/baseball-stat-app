@@ -110,7 +110,8 @@ def load_persisted_workspace_id(*, session_state: dict[str, Any] | None = None) 
         from suite_auth import is_auth_enabled, is_authenticated
 
         account_aware = (
-            isinstance(session_state, dict)
+            session_state is not None
+            and hasattr(session_state, "get")  # dict or Streamlit's SessionStateProxy
             and is_auth_enabled()
             and is_authenticated(session_state)
         )
@@ -141,11 +142,27 @@ def persist_active_workspace_id(workspace_id: str, *, session_state: dict[str, A
             return True
     except ImportError:
         pass
+    if _signed_in(session_state):
+        return False  # a signed-in account's choice is per account, never the shared pointer
     payload = {
         "workspace_id": ws,
         "label": workspace_label(ws),
     }
     return _write_json(_PERSISTED_FILE, payload)
+
+
+def _signed_in(session_state: Any = None) -> bool:
+    try:
+        from suite_auth import is_auth_enabled, is_authenticated
+
+        return bool(
+            session_state is not None
+            and hasattr(session_state, "get")
+            and is_auth_enabled()
+            and is_authenticated(session_state)
+        )
+    except ImportError:
+        return False
 
 
 def _anonymous_guest(session_state: Any = None) -> bool:
@@ -226,7 +243,9 @@ def _maybe_clamp_resolved_workspace(session_state: dict[str, Any], workspace_id:
             try:
                 from suite_workspace_registry import get_owned_workspace_id
 
-                target = normalize_workspace_id(get_owned_workspace_id(session_state) or "")
+                owned = get_owned_workspace_id(session_state)
+                # An unresolved owner is "", not the default profile: normalize("") is "daniel".
+                target = normalize_workspace_id(owned) if owned else ""
             except ImportError:
                 target = ""
             if not target and allowed:
@@ -577,7 +596,8 @@ def init_suite_workspace(st: Any) -> str:
     if SESSION_KEY not in st.session_state:
         set_active_workspace_id(st, load_persisted_workspace_id(session_state=st.session_state))
     else:
-        ws = normalize_workspace_id(str(st.session_state.get(SESSION_KEY) or ""))
+        raw = str(st.session_state.get(SESSION_KEY) or "").strip()
+        ws = normalize_workspace_id(raw) if raw else load_persisted_workspace_id(session_state=st.session_state)
         st.session_state[SESSION_KEY] = ws
         persist_active_workspace_id(ws, session_state=st.session_state)
 

@@ -186,6 +186,22 @@ class LibraryContentClockManifestTests(unittest.TestCase):
         self.assertEqual(_clocks(dell)[ROBINS], before_robins)
         self.assertIn("Jul", format_archive_modified(phone["draft_archive_teams"][0]))
 
+    def test_a_stale_device_publishing_never_rolls_the_account_manifest_back(self) -> None:
+        phone = _seed(device="phone")
+        dell = _seed(device="dell")
+        publish_library_manifest_to_cloud(phone)
+        sync_library_manifest_from_cloud(dell, force=True)
+        rename_draft_archive(phone, UPLOAD, "Upload Renamed On Phone")    # rename publishes
+        publish_library_manifest_to_cloud(phone)
+        renamed_at = _clocks(phone)[UPLOAD]
+        publish_library_manifest_to_cloud(dell)                            # stale Dell publishes its rows
+        third = _seed(device="tablet")
+        sync_library_manifest_from_cloud(third, force=True)
+        self.assertEqual(_clocks(third)[UPLOAD], renamed_at)
+        self.assertEqual(third["draft_archive_teams"][0]["draft_name"], "Upload Renamed On Phone")
+        sync_library_manifest_from_cloud(dell, force=True)                 # and the Dell converges
+        self.assertEqual(_clocks(dell)[UPLOAD], renamed_at)
+
     def test_hydration_does_not_rewrite_content_clocks(self) -> None:
         session = _seed(device="phone")
         before = copy.deepcopy(_clocks(session))

@@ -639,6 +639,23 @@ def _authenticated_cloud_migration_eligible(session: dict[str, Any]) -> bool:
         return False
 
 
+def _migration_scan_allowed(session: dict[str, Any], workspace_id: str) -> bool:
+    """A signed-in account scans only its own workspaces for drafts to recover.
+
+    The owner's legacy profiles (daniel, daniel_cohen11) are recovery sources for the owner's
+    sessions; on a shared server they hold the owner's drafts, never another account's.
+    """
+    try:
+        from suite_auth import is_auth_enabled, is_authenticated
+        from suite_workspace_registry import workspace_access_allowed
+
+        if is_auth_enabled() and is_authenticated(session):
+            return workspace_access_allowed(workspace_id, session_state=session)
+    except ImportError:
+        pass
+    return True
+
+
 def _cloud_app_keys_to_scan_for_migration(app_id: str, session: dict[str, Any]) -> list[tuple[str, str]]:
     """Return (workspace_id, cloud_app_key) pairs to scan for draft migration."""
     from suite_workspace import DEFAULT_WORKSPACE_ID, get_active_workspace_id, normalize_workspace_id, scoped_cloud_app_id
@@ -648,7 +665,7 @@ def _cloud_app_keys_to_scan_for_migration(app_id: str, session: dict[str, Any]) 
 
     def add(ws: str) -> None:
         ws_norm = normalize_workspace_id(str(ws or "").strip())
-        if not ws_norm:
+        if not ws_norm or not _migration_scan_allowed(session, ws_norm):
             return
         cloud_key = scoped_cloud_app_id(app_id, ws_norm)
         if cloud_key in seen:
@@ -686,7 +703,7 @@ def _disk_migration_candidate_workspace_ids(session: dict[str, Any]) -> list[str
 
     def add(ws: str) -> None:
         ws_norm = normalize_workspace_id(str(ws or "").strip())
-        if ws_norm and ws_norm not in seen:
+        if ws_norm and ws_norm not in seen and _migration_scan_allowed(session, ws_norm):
             seen.add(ws_norm)
             ids.append(ws_norm)
 

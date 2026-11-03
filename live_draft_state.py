@@ -2054,12 +2054,9 @@ def enrich_save_payload_with_live_draft(
             try:
                 from suite_user_persistence import _load_raw
 
-                ws = str(
-                    session.get("_suite_active_workspace_id")
-                    or session.get("workspace_id")
-                    or ""
-                ).strip() or None
-                disk_state, _, _ = _load_raw("baseball", workspace_id=ws)
+                # This account's own disk copy: the workspace resolves (and is clamped to the
+                # signed-in owner) inside _load_raw, never from a raw session key.
+                disk_state, _, _ = _load_raw("baseball")
                 existing = _live_draft_from_blob(disk_state if isinstance(disk_state, dict) else {})
                 if existing and existing.get("draft_room_id"):
                     diag["recovered_from_disk"] = True

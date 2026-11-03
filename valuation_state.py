@@ -323,7 +323,7 @@ def flush_valuation_filter_edits(session: dict[str, Any], st_obj: Any = None, *,
         session,
         filters={**prev, **current},
         reason=reason,
-        local_edit=True,
+        local_edit=pending,
         sync_widget_keys=False,
     )
     if st_obj is not None:
