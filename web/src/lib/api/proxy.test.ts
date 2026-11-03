@@ -1,7 +1,7 @@
 // @vitest-environment node
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { baseballApiOrigin, proxyBaseballApi } from "./proxy";
+import { baseballApiOrigin, logProxyEvent, proxyBaseballApi, type ProxyEvent } from "./proxy";
 
 const ORIGIN = "http://api.test";
 
@@ -107,5 +107,89 @@ describe("Baseball API proxy", () => {
     const res = await proxyBaseballApi(get("/api/baseball/seasons"), { origin: null, fetchImpl: upstream(200, {}) });
     expect(res.status).toBe(503);
     expect((await res.json()).error.code).toBe("upstream_not_configured");
+  });
+});
+
+describe("Baseball API proxy failure logging", () => {
+  const SECRET_QUERY = "q=Shohei+Ohtani&token=abc123";
+  const logged = () => {
+    const events: ProxyEvent[] = [];
+    return { events, log: (event: ProxyEvent) => events.push(event) };
+  };
+
+  it("logs a route label, category, status and duration for an unreachable API, and nothing from the request", async () => {
+    const { events, log } = logged();
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      throw new TypeError("fetch failed: connect ECONNREFUSED http://10.1.2.3:8601");
+    });
+    const res = await proxyBaseballApi(get(`/api/baseball/players/ohtansh01/seasons?${SECRET_QUERY}`), { origin: ORIGIN, fetchImpl, log });
+    expect(res.status).toBe(502);
+    expect(events).toEqual([{ route: "players.seasons", category: "network", status: 502, ms: expect.any(Number) }]);
+    expect(JSON.stringify(events)).not.toMatch(/ohtansh01|Ohtani|abc123|token|10\.1\.2\.3|ECONNREFUSED|session=secret|Bearer/);
+  });
+
+  it("tells a timeout from other network failures", async () => {
+    const { events, log } = logged();
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    });
+    const res = await proxyBaseballApi(get("/api/baseball/leaderboards?metric=OPS"), { origin: ORIGIN, fetchImpl, log });
+    expect(res.status).toBe(502);
+    expect(events.map((e) => [e.route, e.category, e.status])).toEqual([["leaderboards", "timeout", 502]]);
+  });
+
+  it("logs a 5xx from the API as an error and an API 'still loading' 503 as warming, passing both through", async () => {
+    const { events, log } = logged();
+    const broken = await proxyBaseballApi(get("/api/baseball/catalog"), {
+      origin: ORIGIN,
+      fetchImpl: upstream(500, { error: { code: "internal_error", message: "Something went wrong." } }),
+      log,
+    });
+    const warming = await proxyBaseballApi(get("/api/baseball/catalog"), {
+      origin: ORIGIN,
+      fetchImpl: upstream(503, { error: { code: "data_unavailable", message: "loading" } }, { "retry-after": "5" }),
+      log,
+    });
+    expect([broken.status, warming.status]).toEqual([500, 503]);
+    expect(warming.headers.get("retry-after")).toBe("5");
+    expect(events.map((e) => [e.category, e.status])).toEqual([["upstream_error", 500], ["upstream_warming", 503]]);
+  });
+
+  it("logs a missing origin, and stays quiet for successes, API 4xx answers and refused paths", async () => {
+    const { events, log } = logged();
+    await proxyBaseballApi(get("/api/baseball/seasons"), { origin: null, fetchImpl: upstream(200, {}), log });
+    expect(events.map((e) => [e.route, e.category, e.status])).toEqual([["seasons", "not_configured", 503]]);
+
+    events.length = 0;
+    await proxyBaseballApi(get("/api/baseball/seasons"), { origin: ORIGIN, fetchImpl: upstream(200, {}), log });
+    await proxyBaseballApi(get("/api/baseball/leaderboards?metric=WAR"), { origin: ORIGIN, fetchImpl: upstream(422, { error: { code: "invalid_metric", message: "x" } }), log });
+    await proxyBaseballApi(get("/api/baseball/admin?x=1"), { origin: ORIGIN, fetchImpl: upstream(200, {}), log });
+    expect(events).toEqual([]);
+  });
+
+  it("does not log a request the browser itself abandoned", async () => {
+    const { events, log } = logged();
+    const controller = new AbortController();
+    const request = new Request("http://web.test/api/baseball/seasons", { signal: controller.signal });
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      controller.abort();
+      throw new DOMException("aborted", "AbortError");
+    });
+    const res = await proxyBaseballApi(request, { origin: ORIGIN, fetchImpl, log });
+    expect(res.status).toBe(499);
+    expect(events).toEqual([]);
+  });
+
+  describe("default sink", () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it("writes one JSON line: errors to console.error, warming to console.warn", () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      logProxyEvent({ route: "seasons", category: "timeout", status: 502, ms: 30001 });
+      logProxyEvent({ route: "catalog", category: "upstream_warming", status: 503, ms: 12 });
+      expect(JSON.parse(error.mock.calls[0]![0] as string)).toEqual({ event: "baseball_proxy", route: "seasons", category: "timeout", status: 502, ms: 30001 });
+      expect(JSON.parse(warn.mock.calls[0]![0] as string)).toMatchObject({ category: "upstream_warming", status: 503 });
+    });
   });
 });
