@@ -201,9 +201,8 @@ class TestDraftArchiveVisibility(unittest.TestCase):
         ), patch("suite_user_persistence.save_user_state", return_value=True) as save_mock:
             ok = force_persist_sanitized_workflow_disk(coakley)
 
-        self.assertTrue(ok)
-        saved_state = save_mock.call_args.args[1]
-        self.assertEqual(saved_state.get("draft_archive_teams"), polluted_disk["draft_archive_teams"])
+        self.assertFalse(ok)  # nothing to rewrite: the disk file is left alone
+        save_mock.assert_not_called()
         self.assertEqual(len(list_draft_archives(coakley)), 1)
         with _as_user("user:coakley"):
             self.assertEqual(list_visible_draft_archives(coakley), [])

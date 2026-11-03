@@ -443,27 +443,15 @@ def force_persist_sanitized_workflow_disk(
     *,
     app_id: str = "baseball",
 ) -> bool:
-    """Rewrite the workspace disk file with sanitized draft library workflow keys."""
-    try:
-        from suite_user_persistence import _load_raw, save_user_state
-        from workflow_persist_guard import WORKFLOW_PERSIST_ALLOW_CLEAR_KEY, mark_workflow_persist_authoritative
-    except ImportError:
-        return False
+    """No longer rewrites anything (hide, never delete; owner decision 2026-11-02).
 
-    prune_invisible_shared_league_state(session)
-    mark_workflow_persist_authoritative(session)
-    session[WORKFLOW_PERSIST_ALLOW_CLEAR_KEY] = True
-
-    disk_state, _, _ = _load_raw(app_id)
-    if not isinstance(disk_state, dict):
-        disk_state = {}
-    disk_state = sanitize_workflow_blob_for_account(session, disk_state)
-    patch = _workflow_patch_from_session(session)
-    for key, val in patch.items():
-        disk_state[key] = copy.deepcopy(val)
-    if not str(disk_state.get("active_draft_archive_id") or "").strip():
-        disk_state.pop("active_draft_archive_id", None)
-    return bool(save_user_state(app_id, disk_state))
+    It used to overwrite the workspace disk file's draft library with this session's list after the
+    prune. When the disk held only drafts this account may not see (for example its own Live Draft
+    saves that recorded no owner) and the session held none, that replaced them with an empty list
+    and allowed the next save to clear the cloud copy too. The prune removes nothing now, so there
+    is nothing to rewrite: the disk file and the clear flag are left alone. Returns False.
+    """
+    return False
 
 
 def sanitize_workflow_library_for_account(

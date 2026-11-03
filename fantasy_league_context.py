@@ -1927,11 +1927,18 @@ def save_live_draft_league_context(
     # multi-team Live Draft entry fails Library visibility (draft_archive_visibility). Session ids
     # only, the cloud account id first (the id the visibility check compares); nothing is recorded
     # without a signed-in id, so no fallback identity can become an owner.
+    # The account's own external id is recorded too: the team overlay looks the account up by its
+    # Auth id first, the Library visibility check by its cloud id, so the record matches both.
     owner_uid = str(session.get("_suite_cloud_user_id") or session.get("_suite_auth_user_id") or "").strip()
     if owner_uid and my_team:
         from fantasy_league_team_ownership import assign_team_owner_to_context
 
-        context = assign_team_owner_to_context(context, my_team, user_id=owner_uid)
+        context = assign_team_owner_to_context(
+            context,
+            my_team,
+            user_id=owner_uid,
+            external_id=str(session.get("_suite_auth_external_id") or "").strip().lower(),
+        )
     context = upsert_league_context(session, context)
     if save_only:
         session.pop(PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY, None)
@@ -3120,6 +3127,15 @@ def repair_archive_draft_types_from_contexts(session: dict[str, Any]) -> int:
                 session=session,
             )
             if repaired_ctx != ctx:
+                # This repair corrects origin labels. ctx came through get_league_context, whose team
+                # overlay blanks the team when it can't place this account; never save that blank
+                # over the stored team (a resolved team is still applied).
+                stored_ctx = (ensure_fantasy_league_context_state(session).get("contexts") or {}).get(
+                    str(repaired_ctx.get("league_context_id") or "")
+                )
+                stored_team = str((stored_ctx or {}).get("my_team_name") or "").strip()
+                if stored_team and not str(repaired_ctx.get("my_team_name") or "").strip():
+                    repaired_ctx = {**repaired_ctx, "my_team_name": stored_team}
                 upsert_league_context(session, repaired_ctx, mark_persist_authoritative=True)
                 ctx = repaired_ctx
         expected, selected_reason, evidence = resolve_archive_draft_type_with_reason(

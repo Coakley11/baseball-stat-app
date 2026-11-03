@@ -1784,6 +1784,19 @@ def _resolve_live_draft_save_team_name(
     team_name: str,
     session: dict[str, Any] | None = None,
 ) -> str:
+    # A Shared Draft is saved only under the team this account is seated at, because the save
+    # records this account as that team's owner. The seat wins over the button's team, the room's
+    # configured team and the first-team fallback; with no readable seat, nothing is saved.
+    # (Checked for any session mapping: a Streamlit SessionStateProxy is not a dict.)
+    if session is not None and hasattr(session, "get"):
+        try:
+            from draft_room_context import resolve_shared_room_code
+            from draft_room_participant_state import active_participant_team
+
+            if str(resolve_shared_room_code(session) or "").strip():
+                return str(active_participant_team(session) or "").strip()
+        except ImportError:
+            pass
     if isinstance(session, dict):
         try:
             from fantasy_workspace_team_identity import resolve_current_account_team_for_live_draft_and_league
