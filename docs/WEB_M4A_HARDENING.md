@@ -32,6 +32,40 @@ or Next's experimental SRI hashes; both are a separate decision.
 build that is **not** served over HTTPS, build with `BASEBALL_WEB_HSTS=off`. Headers are fixed into
 the build, so the variable is read at `next build`, not at `next start`.
 
+### What `'unsafe-inline'` costs, and what still protects
+
+`script-src 'self' 'unsafe-inline'` means the browser will run **any inline script or inline event
+handler on the page**, so this CSP does **not** stop script injection by itself. If an attacker
+could get markup into a page (reflected, stored or DOM-based XSS), an injected `<script>` or
+`onerror=` handler would run. The built home page has 13 inline scripts (Next's bootstrap and
+streaming data), so there is nothing to distinguish them from an injected one without a nonce or a
+hash. `style-src 'unsafe-inline'` likewise permits injected CSS (and React's inline `style`).
+
+What the policy **does** still do, for the same incident:
+
+- Blocks script loaded from any other origin, `data:` scripts and `eval` (production), so an
+  injection cannot pull in a second-stage payload or use string-to-code APIs.
+- Blocks sending data out: `connect-src 'self'` stops `fetch`/XHR/WebSocket to other origins, and
+  `form-action 'self'` stops forms posting elsewhere. `img-src` has no external origin either.
+- Blocks plugins, `<base>` hijacking and framing (`object-src 'none'`, `base-uri 'self'`,
+  `frame-ancestors 'none'`).
+
+What actually keeps injection unlikely today, independent of CSP: React escapes everything it
+renders; the app source has no `dangerouslySetInnerHTML`, `innerHTML`, `eval`, `new Function` or
+`document.write`; the pages show only API data, and the browser never calls the API directly (a
+GET-only, allowlisted, cookie-free proxy); and there are no cookies, sessions or secrets in this app
+for a script to steal. This is why the trade-off is acceptable for a read-only analytics front end,
+and why it must be revisited **before the web app gains sign-in, user-generated text, or any
+rendered HTML from outside** (Shared Draft chat, league names, notes).
+
+Ways to remove it, each its own decision:
+
+1. **Nonce + `'strict-dynamic'`** through a Next.js `proxy.ts`. Strongest, but every page must
+   render dynamically, which gives up Partial Prerendering and static caching.
+2. **Subresource-Integrity hashes** (Next.js experimental): keeps static rendering, hash-based, but
+   experimental and untested against this app.
+3. Keep as is, and add a **Report-Only** policy of the strict form first to see what would break.
+
 ## Health and readiness
 
 | Route | Meaning | Responses |
