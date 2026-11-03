@@ -387,3 +387,46 @@ class LibraryVisibilityAfterSaveTests(_Case):
         self.assertTrue(again["ok"], again)
         self.assertEqual(again["draft_id"], first["draft_id"])  # the same room id
         self.assertEqual(session.get(DELETED_DRAFT_ARCHIVE_IDS_KEY), ["someone-else"])  # only its own marker lifted
+
+
+class HostedAccountIdTests(_Case):
+    """The hosted app's two ids (2026-11-03): the participant key and host_user_id are the Auth id;
+    the participant record's user_id / account_user_id is the suite account id."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        doc = room_document()
+        doc["host_user_id"] = "auth-danny"
+        doc["host_participant_id"] = "auth-danny"
+        doc["participants"] = {
+            "auth-danny": {"participant_id": "auth-danny", "user_id": "suite-danny", "account_user_id": "suite-danny",
+                           "assigned_team": "Danny", "email": "danny@example.com"},
+            "auth-barry": {"participant_id": "auth-barry", "user_id": "suite-barry", "account_user_id": "suite-barry",
+                           "assigned_team": "Barry"},
+        }
+        self.write_room(doc)
+
+    @staticmethod
+    def hosted(account: str, *, auth: bool = True, suite: bool = True) -> dict:
+        session = {"_suite_auth_session": True, "_suite_auth_external_id": account}
+        if auth:
+            session["_suite_auth_user_id"] = f"auth-{account}"
+        if suite:
+            session["_suite_cloud_user_id"] = f"suite-{account}"
+        return session
+
+    def test_commissioner_and_participant_are_found_with_both_ids(self) -> None:
+        danny = list_recoverable_rooms(self.hosted("danny"), store=self.store)
+        barry = list_recoverable_rooms(self.hosted("barry"), store=self.store)
+        self.assertEqual([(r["team"], r["role"]) for r in danny], [("Danny", "commissioner")])
+        self.assertEqual([(r["team"], r["role"]) for r in barry], [("Barry", "participant")])
+
+    def test_either_own_id_alone_finds_the_seat(self) -> None:
+        self.assertEqual(load_recovery_preview(self.hosted("barry", auth=False), CODE, store=self.store)["team"], "Barry")
+        self.assertEqual(load_recovery_preview(self.hosted("barry", suite=False), CODE, store=self.store)["team"], "Barry")
+
+    def test_the_same_email_with_other_ids_finds_nothing(self) -> None:
+        lookalike = self.hosted("someone")
+        lookalike["_suite_auth_user_email"] = "danny@example.com"
+        self.assertEqual(list_recoverable_rooms(lookalike, store=self.store), [])
+        self.assertFalse(load_recovery_preview(lookalike, CODE, store=self.store).get("ok"))

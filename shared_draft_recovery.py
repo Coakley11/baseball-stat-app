@@ -32,10 +32,23 @@ def _now() -> str:
 
 def signed_in_account_id(session: Any) -> str:
     """The signed-in account's id from this session, or "" (no fallback identity)."""
-    try:
-        return str(session.get("_suite_auth_user_id") or session.get("_suite_cloud_user_id") or "").strip()
-    except Exception:
-        return ""
+    ids = signed_in_account_ids(session)
+    return ids[0] if ids else ""
+
+
+def signed_in_account_ids(session: Any) -> list[str]:
+    """This session's own account ids: the sign-in (Auth) id and the suite account id. In the hosted
+    app they differ: participant keys and host_user_id use the Auth id, participant records'
+    user_id / account_user_id the suite id. Never an email, name, workspace or fallback account."""
+    ids: list[str] = []
+    for key in ("_suite_auth_user_id", "_suite_cloud_user_id"):
+        try:
+            value = str(session.get(key) or "").strip()
+        except Exception:
+            value = ""
+        if value and value not in ids:
+            ids.append(value)
+    return ids
 
 
 def _ids_match(stored: str, uid: str) -> bool:
@@ -58,9 +71,11 @@ def _team_of(record: Any) -> str:
     return str(record.get("assigned_team") or record.get("team") or record.get("claimed_team") or "").strip()
 
 
-def account_seat(document: dict[str, Any] | None, uid: str) -> dict[str, str] | None:
-    """{"role", "team", "participant_id"} for this account's seat in a room (head or document)."""
-    if not isinstance(document, dict) or not uid:
+def account_seat(document: dict[str, Any] | None, uid: str | list[str]) -> dict[str, str] | None:
+    """{"role", "team", "participant_id"} for this account's seat in a room (head or document).
+    ``uid``: one id or the session's own ids (signed_in_account_ids)."""
+    uids = [u for u in ([uid] if isinstance(uid, str) else list(uid or [])) if str(u or "").strip()]
+    if not isinstance(document, dict) or not uids:
         return None
     participants = document.get("participants") if isinstance(document.get("participants"), dict) else {}
     host_pid = str(document.get("host_participant_id") or "").strip()
@@ -68,10 +83,10 @@ def account_seat(document: dict[str, Any] | None, uid: str) -> dict[str, str] | 
         if not isinstance(record, dict):
             continue
         ids = (str(pid), str(record.get("user_id") or ""), str(record.get("account_user_id") or ""))
-        if any(_ids_match(value, uid) for value in ids):
+        if any(_ids_match(value, u) for value in ids for u in uids):
             role = "commissioner" if host_pid and str(pid) == host_pid else "participant"
             return {"role": role, "team": _team_of(record), "participant_id": str(pid)}
-    if _ids_match(str(document.get("host_user_id") or ""), uid):
+    if any(_ids_match(str(document.get("host_user_id") or ""), u) for u in uids):
         host_record = participants.get(host_pid) if host_pid else None
         return {"role": "commissioner", "team": _team_of(host_record), "participant_id": host_pid}
     return None
@@ -166,7 +181,7 @@ def list_recoverable_rooms(session: Any, *, store: Any = None, limit: int = 200)
             continue
         if str(head.get("status") or "").strip().lower() not in COMPLETE_STATUSES:
             continue
-        seat = account_seat(head, uid)
+        seat = account_seat(head, signed_in_account_ids(session))
         if seat is None:
             continue
         code = str(head.get("room_code") or "").strip().upper()
@@ -246,7 +261,7 @@ def load_recovery_preview(session: Any, room_code: str, *, store: Any = None) ->
         document = _store(store).load(code)
     except Exception:
         document = None
-    seat = account_seat(document, uid) if isinstance(document, dict) else None
+    seat = account_seat(document, signed_in_account_ids(session)) if isinstance(document, dict) else None
     if seat is None:
         # Same answer for "no such room" and "not your room": nothing about other rooms leaks.
         return {"ok": False, "error": "No completed Shared Draft of yours was found with that code."}
