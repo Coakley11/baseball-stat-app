@@ -134,14 +134,36 @@ class StoredRoomTests(_Case):
 
 
 class RecoveryLifecycleTests(_Case):
-    def test_1_a_draft_already_saved_normally_is_found_and_not_duplicated(self) -> None:
+    def test_1_a_normal_save_with_the_same_picks_is_flagged_and_never_silently_duplicated(self) -> None:
         session = signed_in("danny")
         save_live_draft_league_context(session, room_document()["room"], my_team_name="Danny", draft_name="Saved normally", save_only=True)
         preview = load_recovery_preview(session, CODE, store=self.store)
-        self.assertTrue(preview["existing_draft_id"])
+        self.assertEqual(preview["existing_draft_id"], "")  # content alone is not this room's entry
+        self.assertTrue(preview["similar_draft_id"])        # but it is shown as possibly the same draft
         out = self.recover(session)
-        self.assertTrue(out.get("already_in_library"))
+        self.assertTrue(out.get("similar_in_library"))
         self.assertEqual([e["draft_name"] for e in list_draft_archives(session)], ["Saved normally"])
+        with mock.patch("suite_cloud_state._streamlit_session", return_value=session):
+            kept = recover_completed_shared_draft(self.st(session), session, CODE, confirmed=True, expected_revision=11,
+                                                  keep_alongside_similar=True, store=self.store)
+        self.assertTrue(kept["ok"], kept)  # only on an explicit "keep both"
+        self.assertEqual(sorted(e["draft_name"] for e in list_draft_archives(session)),
+                         sorted(["Saved normally", "Danny vs Barry — Danny"]))
+
+    def test_two_rooms_with_identical_picks_are_two_separate_entries(self) -> None:
+        other = room_document()
+        other["room_code"] = "BB0002"
+        (self.root / "BB0002.json").write_text(json.dumps(other), encoding="utf-8")
+        session = signed_in("danny")
+        self.assertTrue(self.recover(session)["ok"])
+        second = load_recovery_preview(session, "BB0002", store=self.store)
+        self.assertEqual((second["existing_draft_id"], second["similar_draft_id"]), ("", ""))  # not confused
+        with mock.patch("suite_cloud_state._streamlit_session", return_value=session):
+            out = recover_completed_shared_draft(self.st(session), session, "BB0002", confirmed=True, expected_revision=11,
+                                                 store=self.store)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(sorted(e["draft_id"] for e in list_draft_archives(session)), ["room-bb0002", "room-da9e78"])
+        self.assertEqual(sorted(e[ROOM_KEY_FIELD] for e in list_draft_archives(session)), ["BB0002", CODE])
 
     def test_2_and_3_room_complete_library_save_refused_then_recovered_in_a_new_session(self) -> None:
         # The original tab's save was refused and that tab is gone: a brand-new session recovers.
@@ -352,7 +374,7 @@ class LibraryVisibilityAfterSaveTests(_Case):
         with self._as_user("uuid-mallory"):
             self.assertEqual(list_visible_draft_archives(other), [])
 
-    def test_recovery_brings_back_a_draft_that_was_deleted_before(self) -> None:
+    def test_a_confirmed_recovery_after_deleting_the_recovered_copy_lifts_only_that_marker(self) -> None:
         from draft_archive_state import DELETED_DRAFT_ARCHIVE_IDS_KEY
 
         session = signed_in("danny")
@@ -360,7 +382,8 @@ class LibraryVisibilityAfterSaveTests(_Case):
             first = self.recover(session)
             self.assertTrue(first["ok"])
             session["draft_archive_teams"] = []
-            session[DELETED_DRAFT_ARCHIVE_IDS_KEY] = [first["draft_id"]]  # as the old clean-up left it
+            session[DELETED_DRAFT_ARCHIVE_IDS_KEY] = [first["draft_id"], "someone-else"]  # the copy was deleted
             again = self.recover(session)
         self.assertTrue(again["ok"], again)
-        self.assertNotIn(again["draft_id"], session.get(DELETED_DRAFT_ARCHIVE_IDS_KEY) or [])
+        self.assertEqual(again["draft_id"], first["draft_id"])  # the same room id
+        self.assertEqual(session.get(DELETED_DRAFT_ARCHIVE_IDS_KEY), ["someone-else"])  # only its own marker lifted

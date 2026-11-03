@@ -1882,20 +1882,31 @@ def save_live_draft_league_context(
     draft_name: str = "",
     defer_activation: bool = False,
     save_only: bool = False,
+    draft_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Save full live-draft league context plus linked archive entry."""
+    """Save full live-draft league context plus linked archive entry.
+
+    ``draft_id`` fixes the Library id (shared_draft_recovery: one id per room). Without it the id is
+    matched by draft content, so the same draft saved twice updates one entry."""
     from draft_archive_state import save_live_draft_team_archive
 
     my_team = str(my_team_name or "").strip()
     league_rosters = build_league_rosters_from_live_room(room, my_team)
     cfg = dict(room.get("config") or {})
     label = str(draft_name or "").strip() or f"{cfg.get('league_name', 'Live Draft')} — {my_team}"
-    draft_id, league_context_id, _fp = resolve_canonical_save_ids(
-        session,
-        league_rosters=league_rosters,
-        config=cfg,
-        fantasy_format=str(cfg.get("fantasy_format") or cfg.get("scoring_type") or ""),
-    )
+    fixed_id = bool(draft_id)
+    if draft_id:
+        # A fixed id is never re-pointed at another entry with identical content (two rooms can
+        # produce the same picks).
+        draft_id = str(draft_id).strip()
+        league_context_id = context_id_for_archive(draft_id)
+    else:
+        draft_id, league_context_id, _fp = resolve_canonical_save_ids(
+            session,
+            league_rosters=league_rosters,
+            config=cfg,
+            fantasy_format=str(cfg.get("fantasy_format") or cfg.get("scoring_type") or ""),
+        )
     entry = save_live_draft_team_archive(
         session,
         room,
@@ -1903,6 +1914,7 @@ def save_live_draft_league_context(
         draft_name=label,
         league_rosters=league_rosters,
         draft_id=draft_id,
+        fixed_draft_id=fixed_id,
     )
     draft_id = str(entry.get("draft_id") or "")
     league_context_id = str(
@@ -1933,12 +1945,6 @@ def save_live_draft_league_context(
 
         context = assign_team_owner_to_context(context, my_team, user_id=owner_uid)
     context = upsert_league_context(session, context)
-    # An explicit save brings this draft back if it was deleted before (deletion markers).
-    from draft_archive_state import DELETED_DRAFT_ARCHIVE_IDS_KEY
-
-    previously_deleted = [str(x) for x in (session.get(DELETED_DRAFT_ARCHIVE_IDS_KEY) or [])]
-    if draft_id in previously_deleted:
-        session[DELETED_DRAFT_ARCHIVE_IDS_KEY] = [x for x in previously_deleted if x != draft_id]
     if save_only:
         session.pop(PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY, None)
         session.pop(PENDING_ARCHIVE_ACTIVATION_KEY, None)

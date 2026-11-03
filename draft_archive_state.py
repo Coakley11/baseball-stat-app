@@ -131,13 +131,26 @@ def save_draft_archive(
     draft_id: str | None = None,
     league_rosters: dict[str, dict[str, Any]] | None = None,
     league_context_id: str | None = None,
+    fixed_draft_id: bool = False,
 ) -> dict[str, Any]:
-    """Persist one saved draft team snapshot."""
+    """Persist one saved draft team snapshot. ``fixed_draft_id``: keep ``draft_id`` as given, never
+    re-point it at another entry with the same content (Shared Draft recovery: one id per room)."""
     now = _utc_now_iso()
     cfg = copy.deepcopy(config or {})
     draft_fingerprint = ""
     entry_id = str(draft_id or "").strip() or None
-    if isinstance(league_rosters, dict) and league_rosters:
+    if fixed_draft_id and entry_id and isinstance(league_rosters, dict) and league_rosters:
+        try:
+            from fantasy_league_context import compute_save_draft_fingerprint
+
+            draft_fingerprint = compute_save_draft_fingerprint(
+                league_rosters=league_rosters,
+                config=cfg,
+                fantasy_format=str(cfg.get("fantasy_format") or cfg.get("scoring_type") or ""),
+            )
+        except ImportError:
+            pass
+    elif isinstance(league_rosters, dict) and league_rosters:
         try:
             from fantasy_league_context import resolve_canonical_save_ids
 
@@ -200,7 +213,7 @@ def save_draft_archive(
             entries[i] = entry
             replaced = True
             break
-    if not replaced and draft_fingerprint:
+    if not replaced and draft_fingerprint and not fixed_draft_id:
         for i, existing in enumerate(entries):
             if str(existing.get("draft_fingerprint") or "").strip() != draft_fingerprint:
                 continue
@@ -239,6 +252,7 @@ def save_live_draft_team_archive(
     draft_name: str = "",
     league_rosters: dict[str, dict[str, Any]] | None = None,
     draft_id: str | None = None,
+    fixed_draft_id: bool = False,
 ) -> dict[str, Any]:
     cfg = dict(room.get("config") or {})
     roster = _roster_rows_from_live_room(room, team_name)
@@ -260,6 +274,7 @@ def save_live_draft_team_archive(
         draft_board_rows=full_board,
         league_rosters=league_rosters,
         draft_id=draft_id,
+        fixed_draft_id=fixed_draft_id,
     )
 
 

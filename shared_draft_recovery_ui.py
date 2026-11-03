@@ -86,6 +86,16 @@ def render_shared_draft_recovery_panel(st: Any, session: Any) -> None:
             return
         if not preview.get("ok"):
             return
+        keep_both = False
+        if preview.get("similar_draft_id"):
+            st.warning(
+                f"A draft with the same picks is already in your Library as \"{preview.get('similar_draft_name')}\". "
+                "It may be this draft saved earlier, or another room with identical picks."
+            )
+            if st.button("📂 Open that entry", key="sdr_open_similar"):
+                session[FOCUS_KEY] = preview["similar_draft_id"]
+                st.rerun()
+            keep_both = st.checkbox("Keep both: add this room's draft as a separate entry", key="sdr_keep_both")
         name = st.text_input("Name in your Library", value=f"{preview['league_name']} — {preview['team']}", key="sdr_name")
         confirmed = st.checkbox("Add a copy of this completed draft to my Saved Draft Library", key="sdr_confirm")
         if st.button("♻️ Recover draft", key="sdr_recover", type="primary", disabled=not confirmed):
@@ -96,6 +106,7 @@ def render_shared_draft_recovery_panel(st: Any, session: Any) -> None:
                 confirmed=bool(confirmed),  # checked again on the server, not only by the disabled button
                 expected_revision=int(preview.get("revision") or 0),
                 draft_name=name,
+                keep_alongside_similar=bool(keep_both),
             )
             session[RESULT_KEY] = outcome
             if outcome.get("ok"):

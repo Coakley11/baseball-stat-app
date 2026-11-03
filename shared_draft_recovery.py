@@ -99,14 +99,32 @@ def _library_entries(session: Any) -> list[dict[str, Any]]:
         return []
 
 
-def existing_library_entry(session: Any, room_code: str, room: dict[str, Any] | None, team: str) -> dict[str, Any] | None:
-    """The account's Library entry that already holds this draft: one recovered from this room, or
-    one with the same draft content (a normal save of the same draft)."""
+def room_draft_id(room_code: str) -> str:
+    """The Library id of a draft recovered from a room: one per room, whatever its picks."""
+    return "room-" + str(room_code or "").strip().lower()
+
+
+def existing_library_entry(session: Any, room_code: str, room: dict[str, Any] | None = None, team: str = "") -> dict[str, Any] | None:
+    """The entry already recovered from THIS room (stable room identity: room code or room id).
+    Content alone never makes a duplicate: two rooms can produce identical picks."""
     code = str(room_code or "").strip().upper()
+    if not code:
+        return None
+    rid = room_draft_id(code)
     for entry in _library_entries(session):
-        if str(entry.get(ROOM_KEY_FIELD) or "").strip().upper() == code and code:
+        if str(entry.get(ROOM_KEY_FIELD) or "").strip().upper() == code or str(entry.get("draft_id") or "") == rid:
             return entry
+    return None
+
+
+def similar_library_entry(session: Any, room: dict[str, Any] | None, team: str) -> dict[str, Any] | None:
+    """An entry with identical draft content that records no room (a normal Save to Draft Library):
+    possibly this draft saved earlier, possibly another room with the same picks. A hint only;
+    entries recovered from another room are never matched."""
     if not isinstance(room, dict) or not team:
+        return None
+    candidates = [e for e in _library_entries(session) if not str(e.get(ROOM_KEY_FIELD) or "").strip()]
+    if not candidates:
         return None
     try:
         from fantasy_league_context import (
@@ -121,7 +139,9 @@ def existing_library_entry(session: Any, room_code: str, room: dict[str, Any] | 
             config=cfg,
             fantasy_format=str(cfg.get("fantasy_format") or cfg.get("scoring_type") or ""),
         )
-        return find_archive_by_draft_fingerprint(session, fingerprint) if fingerprint else None
+        if not fingerprint:
+            return None
+        return find_archive_by_draft_fingerprint({"draft_archive_teams": copy.deepcopy(candidates)}, fingerprint)
     except ImportError:
         return None
 
@@ -158,9 +178,7 @@ def list_recoverable_rooms(session: Any, *, store: Any = None, limit: int = 200)
                 "role": seat["role"],
                 "updated_at": str(head.get("updated_at") or ""),
                 "revision": int(head.get("revision") or 0),
-                "in_library": bool(
-                    any(str(e.get(ROOM_KEY_FIELD) or "").upper() == code for e in _library_entries(session))
-                ),
+                "in_library": existing_library_entry(session, code) is not None,
             }
         )
     return out
@@ -245,7 +263,8 @@ def load_recovery_preview(session: Any, room_code: str, *, store: Any = None) ->
         for index, p in enumerate(room.get("draft_board") or [], start=1)
         if isinstance(p, dict)
     ]
-    existing = existing_library_entry(session, code, room, seat["team"])
+    existing = existing_library_entry(session, code)
+    similar = None if existing else similar_library_entry(session, room, seat["team"])
     return {
         "ok": not problems,
         "room_code": code,
@@ -265,6 +284,8 @@ def load_recovery_preview(session: Any, room_code: str, *, store: Any = None) ->
         "missing": missing,
         "existing_draft_id": str((existing or {}).get("draft_id") or ""),
         "existing_draft_name": str((existing or {}).get("draft_name") or ""),
+        "similar_draft_id": str((similar or {}).get("draft_id") or ""),
+        "similar_draft_name": str((similar or {}).get("draft_name") or ""),
     }
 
 
@@ -276,6 +297,7 @@ def recover_completed_shared_draft(
     confirmed: bool,
     expected_revision: int,
     draft_name: str = "",
+    keep_alongside_similar: bool = False,
     store: Any = None,
 ) -> dict[str, Any]:
     """Add this account's copy of a completed Shared Draft to its Library, after explicit confirmation.
@@ -299,6 +321,16 @@ def recover_completed_shared_draft(
             "existing_draft_id": preview["existing_draft_id"],
             "error": f"This draft is already in your Library as \"{preview['existing_draft_name']}\". Nothing was changed.",
         }
+    if preview["similar_draft_id"] and not keep_alongside_similar:
+        return {
+            "ok": False,
+            "similar_in_library": True,
+            "similar_draft_id": preview["similar_draft_id"],
+            "error": (
+                f"A draft with the same picks is already in your Library as \"{preview['similar_draft_name']}\". "
+                "It may be this draft saved earlier. Open it, or choose to keep both. Nothing was changed."
+            ),
+        }
     document = _store(store).load(preview["room_code"])
     room = copy.deepcopy(_room_of(document or {}))  # a private copy: the room record is never modified
     team = preview["team"]
@@ -309,7 +341,10 @@ def recover_completed_shared_draft(
 
     before = copy.deepcopy(list_draft_archives(session))
     contexts_before = copy.deepcopy(session.get("fantasy_league_context_state"))
-    entry, _context = save_live_draft_league_context(session, room, my_team_name=team, draft_name=label, save_only=True)
+    rid = room_draft_id(preview["room_code"])
+    entry, _context = save_live_draft_league_context(
+        session, room, my_team_name=team, draft_name=label, save_only=True, draft_id=rid
+    )
     draft_id = str((entry or {}).get("draft_id") or "")
     if not draft_id or any(str(e.get("draft_id") or "") == draft_id for e in before):
         # The save path matched an entry by content after all: never replace it. Put back exactly
@@ -331,6 +366,13 @@ def recover_completed_shared_draft(
             archives[index] = stamped
             break
     _set_archive_list(session, archives)
+    # This confirmed recovery re-adds this room's entry: lift a deletion marker on the room's own
+    # id only (an earlier recovered copy the account deleted). No other marker is touched.
+    from draft_archive_state import DELETED_DRAFT_ARCHIVE_IDS_KEY
+
+    markers = [str(x) for x in (session.get(DELETED_DRAFT_ARCHIVE_IDS_KEY) or [])]
+    if rid in markers:
+        session[DELETED_DRAFT_ARCHIVE_IDS_KEY] = [x for x in markers if x != rid]
 
     from draft_archive_ui import _persist_archive, _persist_failure_message
 
