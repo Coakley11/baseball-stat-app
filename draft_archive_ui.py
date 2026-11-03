@@ -128,6 +128,8 @@ def _persist_failure_message(session: dict[str, Any]) -> str:
     cause = str(session.get(_PERSIST_FAILURE_KEY) or "").strip()
     if not cause:
         return "Couldn't save changes. Try again."
+    if cause[:1].isupper():  # a full explanation from cloud_write_refusal_message
+        return f"Couldn't save this draft. {cause} The draft is still open here."
     return f"Couldn't save this draft: {cause}. It is still open here, so you can try again."
 
 
@@ -1452,13 +1454,18 @@ def _persist_archive(session: dict[str, Any], st: Any, *, reason: str, entry: di
             pass
     if not persist_ok and not session.get(_PERSIST_FAILURE_KEY):
         cloud_error = ""
+        explained = ""
         try:
-            from suite_cloud_state import cloud_write_error_message
+            from suite_cloud_state import cloud_write_error_message, cloud_write_refusal_message
 
             cloud_error = cloud_write_error_message(session)
+            explained = cloud_write_refusal_message(session)
         except ImportError:
             pass
-        if cloud_error:
+        if explained:
+            # A plain reason first (stale copy, page not loaded, read failure...), the code last.
+            session[_PERSIST_FAILURE_KEY] = f"{explained} (code: {cloud_error})" if cloud_error else explained
+        elif cloud_error:
             session[_PERSIST_FAILURE_KEY] = f"cloud storage did not accept the save ({cloud_error})"
         elif session.get("_draft_archive_persist_error"):
             session[_PERSIST_FAILURE_KEY] = str(session["_draft_archive_persist_error"])
@@ -5134,6 +5141,13 @@ def _render_saved_draft_library_page_body(
     _render_fantasy_sync_section(st, session)
     st.divider()
     _render_persistence_diagnostics(st, session, developer_mode=developer_mode)
+
+    try:
+        from shared_draft_recovery_ui import render_shared_draft_recovery_panel
+
+        render_shared_draft_recovery_panel(st, session)
+    except ImportError:
+        pass
 
     st.markdown("##### Saved Drafts")
     st.metric("Saved drafts", len(archives))

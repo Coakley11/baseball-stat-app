@@ -188,6 +188,33 @@ class SupabaseSharedRoomStore:
             "updated_at": str(row.get("updated_at") or ""),
         }
 
+    def list_completed_room_heads(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        """Completed rooms, newest first: code, host, status, revision, update time, participant
+        records and league name only (never the board, rosters or chat). The caller keeps only the
+        rooms the signed-in account is seated in (shared_draft_recovery); nothing here is shown."""
+        try:
+            rows = _request(
+                "GET",
+                _TABLE,
+                params={
+                    "select": (
+                        "room_code,host_user_id,status,revision,updated_at,"
+                        "participants:shared_room_json->participants,"
+                        "host_participant_id:shared_room_json->>host_participant_id,"
+                        "league_name:shared_room_json->room->config->>league_name"
+                    ),
+                    "status": "in.(complete,completed)",
+                    "order": "updated_at.desc",
+                    "limit": str(max(1, int(limit))),
+                },
+                prefer="return=representation",
+            )
+        except RuntimeError:
+            return []
+        if not isinstance(rows, list):
+            return []
+        return [dict(row) for row in rows if isinstance(row, dict)]
+
     def load_chat_sidecar(self, room_code: str) -> dict[str, Any] | None:
         """Fetch chat + minimal membership — avoids downloading full shared_room_json."""
         code = str(room_code or "").strip().upper()

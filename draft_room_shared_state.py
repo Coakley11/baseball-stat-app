@@ -750,6 +750,39 @@ class LocalFileSharedRoomStore:
             "room_code_queried": code,
         }
 
+    def list_completed_room_heads(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        """Same shape as the Supabase store's: completed rooms' heads, newest first."""
+        heads: list[dict[str, Any]] = []
+        try:
+            paths = sorted(self.root.glob("*.json"))
+        except OSError:
+            return []
+        for path in paths:
+            try:
+                doc = json.loads(_read_text_retry(path))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(doc, dict):
+                continue
+            room = doc.get("room") if isinstance(doc.get("room"), dict) else doc.get("live_room")
+            status = str(doc.get("status") or (room or {}).get("status") or "").strip().lower()
+            if status not in ("complete", "completed"):
+                continue
+            heads.append(
+                {
+                    "room_code": str(doc.get("room_code") or path.stem).upper(),
+                    "host_user_id": str(doc.get("host_user_id") or ""),
+                    "status": status,
+                    "revision": int(doc.get("revision") or 1),
+                    "updated_at": str(doc.get("updated_at") or ""),
+                    "participants": copy.deepcopy(doc.get("participants") or {}),
+                    "host_participant_id": str(doc.get("host_participant_id") or ""),
+                    "league_name": str(((room or {}).get("config") or {}).get("league_name") or ""),
+                }
+            )
+        heads.sort(key=lambda h: h.get("updated_at") or "", reverse=True)
+        return heads[: max(1, int(limit))]
+
     def load_head(self, room_code: str) -> dict[str, Any] | None:
         path = self._path(room_code)
         if not path.is_file():

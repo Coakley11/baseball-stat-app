@@ -628,6 +628,17 @@ try:
 except Exception:
     pass
 
+# Background saves refused twice in a row (stale copy, page not loaded, read failure...): say so
+# instead of failing silently. Cleared by the next successful save.
+try:
+    from suite_cloud_state import autosave_refusal_warning
+
+    _autosave_warning = autosave_refusal_warning(st.session_state)
+    if _autosave_warning:
+        st.warning(_autosave_warning, icon="⚠️")
+except Exception:
+    pass
+
 try:
     from baseball_account_sidebar import prepare_baseball_auth_session
 

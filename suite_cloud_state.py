@@ -32,6 +32,9 @@ CLOUD_READ_FAILED_KEY = "_suite_cloud_read_failed"
 CLOUD_RECONCILED_KEY = "_suite_cloud_reconciled"
 CLOUD_WRITE_BLOCKED_KEY = "_suite_cloud_write_blocked"
 CLOUD_WRITE_ERROR_KEY = "_suite_cloud_write_error"
+# Consecutive refused full-session writes in this session ({"count", "reason", "detail", "since"});
+# cleared by the next successful write. Drives the visible "not being saved" warning.
+CLOUD_WRITE_REFUSALS_KEY = "_suite_cloud_write_refusals"
 
 
 @dataclass(frozen=True)
@@ -603,6 +606,7 @@ def save_cloud_full_session(
         try:
             if ss is not None:
                 ss[CLOUD_WRITE_BLOCKED_KEY] = {"reason": "cloud_read_failed", "since": failure.get("at")}
+                _note_write_refused(ss, "cloud_read_failed")
         except Exception:
             pass
         _record_cloud_write_error("cloud storage could not be read, so writing was refused")
@@ -624,7 +628,10 @@ def save_cloud_full_session(
         fresh = load_cloud_full_session_status(app_id, force=True)
         if fresh.status in (CLOUD_READ_ERROR, CLOUD_READ_NOT_READY):
             if ss is not None:
-                ss[CLOUD_WRITE_BLOCKED_KEY] = {"reason": fresh.status}
+                ss[CLOUD_WRITE_BLOCKED_KEY] = {
+                    "reason": "cloud_read_failed" if fresh.status == CLOUD_READ_ERROR else "auth_not_ready"
+                }
+                _note_write_refused(ss, ss[CLOUD_WRITE_BLOCKED_KEY]["reason"])
             _record_cloud_write_error(
                 fresh.error or "cloud storage could not be read, so writing was refused"
                 if fresh.status == CLOUD_READ_ERROR
@@ -675,7 +682,8 @@ def save_cloud_full_session(
                     )
             if not plan.allowed:
                 if ss is not None:
-                    ss[CLOUD_WRITE_BLOCKED_KEY] = {"reason": plan.reason}
+                    ss[CLOUD_WRITE_BLOCKED_KEY] = {"reason": plan.reason, "detail": plan.detail}
+                    _note_write_refused(ss, plan.reason, plan.detail)
                 _record_cloud_write_error(plan.reason or "cloud_write_refused")
                 return False
             metrics: dict[str, Any] = {FULL_SESSION_KEY: copy.deepcopy(plan.state)}
@@ -696,6 +704,9 @@ def save_cloud_full_session(
             fresh = load_cloud_full_session_status(app_id, force=True)
             if attempt or fresh.status != CLOUD_READ_OK or wm.merge_base(ss, app_id) is None:
                 _record_cloud_write_error("cloud_revision_conflict")
+                if ss is not None:
+                    ss[CLOUD_WRITE_BLOCKED_KEY] = {"reason": "cloud_revision_conflict"}
+                    _note_write_refused(ss, "cloud_revision_conflict")
                 return False
         invalidate_cloud_full_session_cache(app_id)
         observed = load_cloud_full_session_status(app_id, force=True)
@@ -712,6 +723,9 @@ def save_cloud_full_session(
                 wm.hold_merge_base(ss, app_id, merged_against, state)
                 ss[wm.REAPPLY_KEY_PREFIX + app_id] = True
         _record_cloud_write_error(None)
+        if ss is not None:
+            ss.pop(CLOUD_WRITE_REFUSALS_KEY, None)
+            ss.pop(CLOUD_WRITE_BLOCKED_KEY, None)
         return True
     except Exception as exc:
         _record_cloud_write_error(exc)
@@ -737,7 +751,6 @@ def _rebase_onto_cloud(
     import workspace_merge as wm
     from workspace_cloud_guard import (
         BOARD_MUTATION_REASONS,
-        CLOUD_REVISION_SEEN_KEY,
         _reason_base,
         note_cloud_revision_seen,
         session_state_writable,
@@ -746,7 +759,9 @@ def _rebase_onto_cloud(
     if not session_state_writable(ss) or fresh.status != CLOUD_READ_OK:
         return None
     base = wm.merge_base(ss, app_id, local)
-    if base is None or not str(ss.get(CLOUD_REVISION_SEEN_KEY) or ""):
+    from workspace_cloud_guard import seen_cloud_revision
+
+    if base is None or not seen_cloud_revision(ss):
         return None
     merged, conflicts = wm.three_way_merge(base, local, fresh.state)
     if wm.board_conflicted(conflicts):
@@ -847,6 +862,69 @@ def cloud_write_error_message(ss: Any = None) -> str:
         return ""
 
 
+def _note_write_refused(ss: Any, reason: str, detail: str = "") -> None:
+    try:
+        prev = ss.get(CLOUD_WRITE_REFUSALS_KEY)
+        count = int(prev.get("count") or 0) if isinstance(prev, dict) else 0
+        since = prev.get("since") if isinstance(prev, dict) and prev.get("since") else datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        ss[CLOUD_WRITE_REFUSALS_KEY] = {"count": count + 1, "reason": str(reason or ""), "detail": str(detail or ""), "since": since}
+    except Exception:
+        pass
+
+
+_REFUSAL_MESSAGES = {
+    "stale": (
+        "Your account was saved from another tab or device, and this tab couldn't combine the two "
+        "automatically. Reload the page to load the newer copy, then save again."
+    ),
+    "unhydrated": (
+        "This page hasn't finished loading your saved account data, so saving is paused to protect "
+        "it. Reload the page, then save again."
+    ),
+    "cloud_read_failed": "Cloud storage couldn't be read just now, so saving is paused. Try again in a moment.",
+    "auth_not_ready": "Your sign-in is still loading. Try again in a moment.",
+    "cloud_revision_conflict": "Another save reached your account at the same moment. Try again.",
+    "cloud_storage_disabled": "Cloud saving is turned off for this app.",
+}
+
+
+def cloud_write_refusal_message(ss: Any = None) -> str:
+    """Plain explanation of why the last account save was refused; "" when nothing was refused."""
+    ss = ss if ss is not None else _streamlit_session()
+    try:
+        blocked = (ss or {}).get(CLOUD_WRITE_BLOCKED_KEY)
+    except Exception:
+        blocked = None
+    if isinstance(blocked, dict):
+        detail = str(blocked.get("detail") or "")
+        reason = str(blocked.get("reason") or "")
+        for key in (detail, reason):
+            if key in _REFUSAL_MESSAGES:
+                return _REFUSAL_MESSAGES[key]
+    code = cloud_write_error_message(ss)
+    if code in _REFUSAL_MESSAGES:
+        return _REFUSAL_MESSAGES[code]
+    if "sign in" in code:
+        return "Sign in to save to your account."
+    return f"Cloud storage didn't accept the save ({code})." if code else ""
+
+
+def autosave_refusal_warning(ss: Any = None, *, threshold: int = 2) -> str:
+    """The warning to show when background saves keep being refused; "" otherwise."""
+    ss = ss if ss is not None else _streamlit_session()
+    try:
+        info = (ss or {}).get(CLOUD_WRITE_REFUSALS_KEY)
+    except Exception:
+        info = None
+    if not isinstance(info, dict) or int(info.get("count") or 0) < threshold:
+        return ""
+    why = cloud_write_refusal_message(ss) or "Cloud storage isn't accepting saves right now."
+    return (
+        "Your recent changes aren't being saved to your account. They're still open in this tab. "
+        + why
+    )
+
+
 def cloud_write_blocked_by_newer_data(
     previous_updated_at: str | None,
     current_updated_at: str | None,
@@ -873,10 +951,10 @@ def cloud_revision_moved(app_id: str, ss: Any = None) -> bool:
     Metadata only (no ``full_session`` download). False when unknown, so a failed probe never
     triggers a restore.
     """
-    from workspace_cloud_guard import CLOUD_REVISION_SEEN_KEY
+    from workspace_cloud_guard import seen_cloud_revision
 
     ss = ss if ss is not None else _streamlit_session()
-    seen = str((ss.get(CLOUD_REVISION_SEEN_KEY) if ss is not None else "") or "")
+    seen = seen_cloud_revision(ss) if ss is not None else ""
     if not seen:
         return False
     try:

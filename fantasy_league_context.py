@@ -1923,7 +1923,22 @@ def save_live_draft_league_context(
         league_context_id=league_context_id,
         source_draft_id=draft_id,
     )
+    # Record the saving account as the owner of its own team. Without it a signed-in account's
+    # multi-team Live Draft entry fails Library visibility (draft_archive_visibility) and the next
+    # Library clean-up deletes it. Session ids only: no fallback identity is recorded. The cloud
+    # account id first: it is the id the visibility check compares (get_account_user_id).
+    owner_uid = str(session.get("_suite_cloud_user_id") or session.get("_suite_auth_user_id") or "").strip()
+    if owner_uid and my_team:
+        from fantasy_league_team_ownership import assign_team_owner_to_context
+
+        context = assign_team_owner_to_context(context, my_team, user_id=owner_uid)
     context = upsert_league_context(session, context)
+    # An explicit save brings this draft back if it was deleted before (deletion markers).
+    from draft_archive_state import DELETED_DRAFT_ARCHIVE_IDS_KEY
+
+    previously_deleted = [str(x) for x in (session.get(DELETED_DRAFT_ARCHIVE_IDS_KEY) or [])]
+    if draft_id in previously_deleted:
+        session[DELETED_DRAFT_ARCHIVE_IDS_KEY] = [x for x in previously_deleted if x != draft_id]
     if save_only:
         session.pop(PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY, None)
         session.pop(PENDING_ARCHIVE_ACTIVATION_KEY, None)

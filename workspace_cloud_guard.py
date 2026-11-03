@@ -15,6 +15,10 @@ from typing import Any
 
 CLOUD_REVISION_SEEN_KEY = "_suite_cloud_revision_seen"
 CLOUD_CONFIRMED_EMPTY_KEY = "_suite_cloud_confirmed_empty"
+# Which account record the seen revision belongs to (account id | owned workspace). A revision seen
+# for one record is never used to write another: after a sign-in change or workspace switch in the
+# same browser session, this session counts as not having seen the new record until it loads it.
+CLOUD_REVISION_RECORD_KEY = "_suite_cloud_revision_record"
 EXPLICIT_RESET_KEY = "_draft_room_explicit_reset_intent"
 VERIFIED_BOARD_SNAPSHOT_KEY = "draft_room_verified_snapshot"
 
@@ -80,11 +84,40 @@ class CloudWritePlan:
     snapshot: dict[str, Any] | None = None
     expected_updated_at: str | None = None
     include_snapshot: bool = False
+    # For a refused write: "stale" (another tab or device saved after this session's copy) or
+    # "unhydrated" (this session never loaded the account's saved copy). reason keeps its code.
+    detail: str = ""
 
 
 def session_state_writable(session: Any) -> bool:
     """True for a dict or a Streamlit SessionStateProxy."""
     return session is not None and hasattr(session, "__setitem__") and hasattr(session, "get")
+
+
+def cloud_record_identity(session: Any) -> str:
+    """The account record this session writes: signed-in account id and owned workspace."""
+    if not session_state_writable(session):
+        return ""
+    uid = str(session.get("_suite_auth_user_id") or session.get("_suite_cloud_user_id") or "").strip()
+    workspace = str(session.get("_suite_owned_workspace_id") or session.get("_suite_active_workspace_id") or "").strip()
+    return f"{uid}|{workspace}"
+
+
+def _seen_for_this_record(session: Any) -> bool:
+    recorded = session.get(CLOUD_REVISION_RECORD_KEY)
+    # No record noted (older session state): keep the previous behaviour for that value.
+    return recorded is None or str(recorded) == cloud_record_identity(session)
+
+
+def seen_cloud_revision(session: Any) -> str:
+    """The cloud revision this session last loaded or wrote for ITS CURRENT account record."""
+    if not session_state_writable(session) or not _seen_for_this_record(session):
+        return ""
+    return str(session.get(CLOUD_REVISION_SEEN_KEY) or "")
+
+
+def confirmed_empty_for_record(session: Any) -> bool:
+    return bool(session_state_writable(session) and _seen_for_this_record(session) and session.get(CLOUD_CONFIRMED_EMPTY_KEY))
 
 
 def note_cloud_revision_seen(
@@ -95,6 +128,7 @@ def note_cloud_revision_seen(
 ) -> None:
     if not session_state_writable(session):
         return
+    session[CLOUD_REVISION_RECORD_KEY] = cloud_record_identity(session)
     if confirmed_empty:
         session[CLOUD_CONFIRMED_EMPTY_KEY] = True
         session[CLOUD_REVISION_SEEN_KEY] = str(updated_at or "")
@@ -115,8 +149,8 @@ def authorize_explicit_reset(session: Any, *, reason: str) -> None:
         reasons.append(label)
     session[EXPLICIT_RESET_KEY] = {
         "reasons": reasons,
-        "revision": str(session.get(CLOUD_REVISION_SEEN_KEY) or ""),
-        "confirmed_empty": bool(session.get(CLOUD_CONFIRMED_EMPTY_KEY)),
+        "revision": seen_cloud_revision(session),
+        "confirmed_empty": confirmed_empty_for_record(session),
     }
 
 
@@ -129,7 +163,7 @@ def explicit_reset_ready(session: Any, reason: str) -> bool:
     reasons = intent.get("reasons")
     if not isinstance(reasons, list) or _reason_base(reason) not in {str(item) for item in reasons}:
         return False
-    return str(intent.get("revision") or "") == str(session.get(CLOUD_REVISION_SEEN_KEY) or "")
+    return str(intent.get("revision") or "") == seen_cloud_revision(session)
 
 
 def consume_explicit_reset(session: Any, reason: str) -> bool:
@@ -141,7 +175,7 @@ def consume_explicit_reset(session: Any, reason: str) -> bool:
     reasons = intent.get("reasons")
     if not isinstance(reasons, list) or str(reason or "") not in {str(item) for item in reasons}:
         return False
-    if str(intent.get("revision") or "") != str(session.get(CLOUD_REVISION_SEEN_KEY) or ""):
+    if str(intent.get("revision") or "") != seen_cloud_revision(session):
         return False
     session.pop(EXPLICIT_RESET_KEY, None)
     return True
@@ -313,8 +347,8 @@ def prepare_cloud_full_session_write(
     reason = _reason_base(save_reason)
     revision = str(cloud_updated_at or "")
     writable = session_state_writable(session)
-    seen = str(session.get(CLOUD_REVISION_SEEN_KEY) or "") if writable else ""
-    confirmed_empty = bool(writable and session.get(CLOUD_CONFIRMED_EMPTY_KEY))
+    seen = seen_cloud_revision(session) if writable else ""
+    confirmed_empty = confirmed_empty_for_record(session) if writable else False
     previously_observed = bool(seen) or confirmed_empty
 
     explicit_reset = explicit_reset_ready(session, reason)
@@ -325,14 +359,18 @@ def prepare_cloud_full_session_write(
         and previously_observed
         and cloud_write_blocked_by_newer_data(seen or None, revision or None)
     ):
-        return CloudWritePlan(False, outgoing, "stale_or_unhydrated_cloud_revision", expected_updated_at=revision or None)
+        return CloudWritePlan(
+            False, outgoing, "stale_or_unhydrated_cloud_revision", expected_updated_at=revision or None, detail="stale"
+        )
     if (
         read_status == CLOUD_READ_OK
         and not previously_observed
         and not explicit_reset
         and (reason not in BOARD_MUTATION_REASONS or incoming_picks < cloud_picks)
     ):
-        return CloudWritePlan(False, outgoing, "stale_or_unhydrated_cloud_revision", expected_updated_at=revision or None)
+        return CloudWritePlan(
+            False, outgoing, "stale_or_unhydrated_cloud_revision", expected_updated_at=revision or None, detail="unhydrated"
+        )
     if explicit_reset:
         consume_explicit_reset(session, reason)
 
