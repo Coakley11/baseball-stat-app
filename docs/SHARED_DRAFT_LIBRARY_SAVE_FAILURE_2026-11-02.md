@@ -53,3 +53,36 @@
   - unhydrated saves still refused;
   - split error messages;
   - a visible warning when autosaves are being refused, rather than failing silently.
+
+## Owner's read-only audits (2026-11-02)
+
+### Library deletion markers (`library_deletion_markers.sql`)
+| Workspace | Current entries | Live Draft without owner | Deletion markers | Markers with a Live Draft save event |
+|---|---|---|---|---|
+| Main | 4 (3 Live Draft, 1 imported) | 0 | 2 | 0 |
+| Older | 3 (2 Live Draft, 1 imported) | 0 | 2 | 1 (last saved 2026-07-12) |
+
+- A marker does not prove the clean-up bug deleted anything: a deliberate delete leaves the same marker.
+- No ownerless Live Draft entries exist now, so nothing is currently at risk from the clean-up.
+- Nothing was deleted, restored or changed.
+
+### Completed room `da9e78` (`room_recovery_inputs.sql`)
+- **Room:** complete, revision 11, 4 of 4 picks, 2 participants.
+- **Teams:** Danny and Barry, 2 rounds of 2 picks each.
+- **League:** My Fantasy League, 5x5 Roto, scoring Roto (5x5), roster slots C and 1B, 2 players per team.
+- **Commissioner:** Danny.
+- **Picks match the owner's CSV** in order, team and player id: Danny olsonma02, Barry raleica01, Barry alonspe01, Danny perezsa02.
+- **Not checked:** player names and positions are not stored on the board rows the query read.
+
+### Commissioner ids differ: expected
+In the hosted app the sign-in (Auth) user id and the suite account id are different values:
+- **Participant key:** the Auth id (`resolve_participant_id` with sign-in on).
+- **`host_user_id`:** also the Auth id (`draft_room_context`: `auth_user_id(session)`).
+- **Participant record `user_id` / `account_user_id`:** the suite account id (`_participant_account_identity`: `get_account_user_id()`).
+
+The masked commissioner key therefore matches the host, while the record's account id differs. That is by design, not a mapping error.
+
+**Consequence found:** the deployed security release compared league records, which store the suite id, with the Auth id only. A real commissioner was not recognised as commissioner. Fixed on `hotfix/keep-live-draft-saves` (`c2d6341`): a stored id matches either of the session's own two ids.
+
+**Stage B recovery:** matches the participant key (Auth id) and the host id, so it recognises both seats. Before deployment, it should also accept the suite id on the participant record.
+
