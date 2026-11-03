@@ -101,7 +101,8 @@ class TestDraftArchiveVisibility(unittest.TestCase):
             self.assertFalse(is_saved_draft_visible_to_session(coakley, entry, context=None))
             self.assertEqual(len(list_visible_draft_archives(coakley)), 0)
 
-    def test_prune_removes_leaked_shared_league(self) -> None:
+    def test_prune_keeps_a_leaked_shared_league_but_it_stays_hidden(self) -> None:
+        # Hide, never delete (2026-11-02): kept and unmarked, and still not visible to this account.
         session = _auth_session(user_id="user:daniel", external_id="daniel", workspace="daniel")
         _seed_daniel_shared_league(session)
 
@@ -110,10 +111,12 @@ class TestDraftArchiveVisibility(unittest.TestCase):
         coakley["fantasy_league_context_state"] = dict(session.get("fantasy_league_context_state") or {})
 
         with _as_user("user:coakley"):
-            removed = prune_invisible_shared_league_state(coakley)
-        self.assertGreaterEqual(removed["archives_removed"], 1)
-        self.assertGreaterEqual(removed["contexts_removed"], 1)
-        self.assertEqual(len(list_draft_archives(coakley)), 0)
+            result = prune_invisible_shared_league_state(coakley)
+            self.assertEqual(list_visible_draft_archives(coakley), [])
+        self.assertEqual((result["archives_removed"], result["contexts_removed"]), (0, 0))
+        self.assertGreaterEqual(result["archives_hidden"], 1)
+        self.assertEqual(len(list_draft_archives(coakley)), 1)
+        self.assertFalse(coakley.get("_deleted_draft_archive_ids"))
 
     def test_legacy_multi_team_blob_without_context_is_hidden(self) -> None:
         coakley = _auth_session(user_id="user:coakley", external_id="coakley11", workspace="coakley11")
@@ -132,19 +135,18 @@ class TestDraftArchiveVisibility(unittest.TestCase):
         with _as_user("user:coakley"):
             self.assertFalse(is_saved_draft_visible_to_session(coakley, entry, context=None))
 
-    def test_tombstone_blocks_disk_remerge(self) -> None:
+    def test_existing_deletion_markers_are_kept_and_still_block_disk_remerge(self) -> None:
         session = _auth_session(user_id="user:daniel", external_id="daniel", workspace="daniel")
         _seed_daniel_shared_league(session)
         entry = list_draft_archives(session)[0]
         draft_id = str(entry.get("draft_id") or "")
 
         coakley = _auth_session(user_id="user:coakley", external_id="coakley11", workspace="coakley11")
-        coakley["draft_archive_teams"] = list(session.get("draft_archive_teams") or [])
         coakley["fantasy_league_context_state"] = dict(session.get("fantasy_league_context_state") or {})
+        coakley["_deleted_draft_archive_ids"] = [draft_id]  # a marker from before the hotfix
         with _as_user("user:coakley"):
             prune_invisible_shared_league_state(coakley)
-        self.assertEqual(len(list_draft_archives(coakley)), 0)
-        self.assertIn(draft_id, coakley.get("_deleted_draft_archive_ids") or [])
+        self.assertEqual(coakley.get("_deleted_draft_archive_ids"), [draft_id])  # not lifted
 
         coakley["draft_archive_teams"] = []
         with _as_user("user:coakley"), patch(
@@ -154,7 +156,7 @@ class TestDraftArchiveVisibility(unittest.TestCase):
             merge_protected_workflow_on_restore(coakley, {})
         self.assertEqual(len(list_draft_archives(coakley)), 0)
 
-    def test_sanitize_persists_cleaned_library(self) -> None:
+    def test_sanitize_writes_nothing_and_keeps_the_library(self) -> None:
         session = _auth_session(user_id="user:daniel", external_id="daniel", workspace="daniel")
         _seed_daniel_shared_league(session)
 
@@ -173,13 +175,16 @@ class TestDraftArchiveVisibility(unittest.TestCase):
         ) as disk_mock:
             out = sanitize_workflow_library_for_account(coakley, st=st, persist_cleanup=True)
 
-        self.assertGreaterEqual(out["total_removed"], 1)
-        self.assertTrue(out["disk_persisted"])
-        disk_mock.assert_called_once()
-        save_mock.assert_called_once()
-        self.assertEqual(save_mock.call_args.kwargs.get("reason"), "workflow_library_sanitized")
+        # Nothing is removed, so nothing is written: the library is kept as stored, still hidden.
+        self.assertEqual(out["total_removed"], 0)
+        self.assertFalse(out["disk_persisted"])
+        disk_mock.assert_not_called()
+        save_mock.assert_not_called()
+        self.assertEqual(len(list_draft_archives(coakley)), 1)
+        with _as_user("user:coakley"):
+            self.assertEqual(list_visible_draft_archives(coakley), [])
 
-    def test_force_persist_sanitized_workflow_disk_writes_empty_archives(self) -> None:
+    def test_force_persist_sanitized_workflow_disk_keeps_the_archives(self) -> None:
         session = _auth_session(user_id="user:daniel", external_id="daniel", workspace="daniel")
         _seed_daniel_shared_league(session)
         coakley = _auth_session(user_id="user:coakley", external_id="coakley11", workspace="coakley11")
@@ -196,10 +201,11 @@ class TestDraftArchiveVisibility(unittest.TestCase):
         ), patch("suite_user_persistence.save_user_state", return_value=True) as save_mock:
             ok = force_persist_sanitized_workflow_disk(coakley)
 
-        self.assertTrue(ok)
-        saved_state = save_mock.call_args.args[1]
-        self.assertEqual(saved_state.get("draft_archive_teams"), [])
-        self.assertEqual(len(list_draft_archives(coakley)), 0)
+        self.assertFalse(ok)  # nothing to rewrite: the disk file is left alone
+        save_mock.assert_not_called()
+        self.assertEqual(len(list_draft_archives(coakley)), 1)
+        with _as_user("user:coakley"):
+            self.assertEqual(list_visible_draft_archives(coakley), [])
 
     def test_invited_member_sees_league_after_team_claim(self) -> None:
         session = _auth_session(user_id="user:daniel", external_id="daniel", workspace="daniel")

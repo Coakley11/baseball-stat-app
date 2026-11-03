@@ -334,84 +334,75 @@ def _repair_league_context_identities(session: dict[str, Any]) -> None:
             ctx = upsert_league_context(session, ctx)
 
 
-def prune_invisible_shared_league_state(session: dict[str, Any]) -> dict[str, int]:
-    """Remove shared real_league archives/contexts the account should not see."""
-    from draft_archive_state import (
-        ACTIVE_DRAFT_ARCHIVE_KEY,
-        DRAFT_ARCHIVE_KEY,
-        get_draft_archive,
-        list_draft_archives,
-    )
+def context_visible_to_session(session: dict[str, Any], ctx: dict[str, Any] | None) -> bool:
+    """The context-level twin of is_saved_draft_visible_to_session, for readers that walk league
+    contexts directly. Kept-but-hidden contexts (see prune_invisible_shared_league_state) and
+    Shared League copies this account may not see are not shown."""
+    if not isinstance(ctx, dict):
+        return False
+    if _copy_hidden(session, ctx):
+        return False
+    context_id = str(ctx.get("league_context_id") or "")
+    stub = {"draft_id": str(ctx.get("source_draft_id") or (ctx.get("metadata") or {}).get("source_draft_id") or ""),
+            "league_context_id": context_id}
+    if not _requires_membership_visibility(stub, ctx) or not _auth_session_scope_active(session):
+        return True
+    return _has_shared_league_membership(session, stub, context=ctx, user_id=_resolve_session_user_id(session))
 
+
+def prune_invisible_shared_league_state(session: dict[str, Any]) -> dict[str, int]:
+    """Hide, never delete (owner decision 2026-11-02).
+
+    Saved drafts and league contexts this account may not see are KEPT: nothing is removed or
+    marked deleted here. The Library and the other displays filter them out
+    (is_saved_draft_visible_to_session / league_copy_hidden), so account isolation is unchanged.
+    The only change is to the active selection: when it points at an entry this account may not
+    see, it is cleared (as the Library page already does), so fantasy pages stop using it.
+
+    Previously anything failing visibility was deleted and tombstoned, including a signed-in
+    account's own Live Draft saves that recorded no owner. Existing deletion markers are untouched.
+    Returns {"archives_removed": 0, "contexts_removed": 0, "archives_hidden": n, "contexts_hidden": m}.
+    """
+    from draft_archive_state import ACTIVE_DRAFT_ARCHIVE_KEY, get_draft_archive, list_draft_archives
+
+    out = {"archives_removed": 0, "contexts_removed": 0, "archives_hidden": 0, "contexts_hidden": 0}
     try:
-        from fantasy_league_context import (
-            FANTASY_LEAGUE_CONTEXT_STATE_KEY,
-            ensure_fantasy_league_context_state,
-            get_league_context_for_archive,
-        )
-        from workflow_persist_guard import mark_workflow_persist_authoritative
+        from fantasy_league_context import ensure_fantasy_league_context_state, get_league_context_for_archive
     except ImportError:
-        return {"archives_removed": 0, "contexts_removed": 0}
+        return out
 
     _repair_league_context_identities(session)
 
-    archives_removed = 0
-    contexts_removed = 0
-    removed_entries: list[dict[str, Any]] = []
-    removed_context_ids: list[str] = []
-    kept_archives: list[dict[str, Any]] = []
     for entry in list_draft_archives(session):
         ctx = get_league_context_for_archive(session, entry)
-        # A Shared League copy hidden from this account is never removed here (owner decision
-        # 2026-11-02): hiding is display only; clean-up is a separate, explicit decision.
-        if _copy_hidden(session, ctx) or is_saved_draft_visible_to_session(session, entry, context=ctx):
-            kept_archives.append(entry)
-        else:
-            archives_removed += 1
-            removed_entries.append(entry)
-
-    if archives_removed:
-        session[DRAFT_ARCHIVE_KEY] = kept_archives
-        _record_removed_draft_tombstones(session, removed_entries)
-        active_id = str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
-        if active_id and not get_draft_archive(session, active_id):
-            session.pop(ACTIVE_DRAFT_ARCHIVE_KEY, None)
+        if not (_copy_hidden(session, ctx) or is_saved_draft_visible_to_session(session, entry, context=ctx)):
+            out["archives_hidden"] += 1
 
     store = ensure_fantasy_league_context_state(session)
     contexts = store.get("contexts") or {}
-    if isinstance(contexts, dict):
-        auth_scope = _auth_session_scope_active(session)
+    if isinstance(contexts, dict) and _auth_session_scope_active(session):
         uid = _resolve_session_user_id(session)
-        kept_ctx: dict[str, Any] = {}
         for context_id, ctx in contexts.items():
             if not isinstance(ctx, dict):
                 continue
             stub = {"draft_id": str(ctx.get("source_draft_id") or ""), "league_context_id": context_id}
-            if not _requires_membership_visibility(stub, ctx):
-                kept_ctx[context_id] = ctx
-                continue
-            if not auth_scope:
-                kept_ctx[context_id] = ctx
-                continue
-            if _copy_hidden(session, ctx) or _has_shared_league_membership(session, stub, context=ctx, user_id=uid):
-                kept_ctx[context_id] = ctx
-            else:
-                contexts_removed += 1
-                removed_context_ids.append(context_id)
-        if contexts_removed:
-            store["contexts"] = kept_ctx
-            active_ctx_id = str(store.get("active_league_context_id") or "").strip()
-            if active_ctx_id and active_ctx_id not in kept_ctx:
-                store.pop("active_league_context_id", None)
-            _record_removed_context_tombstones(session, removed_context_ids)
-            session[FANTASY_LEAGUE_CONTEXT_STATE_KEY] = store
+            if _requires_membership_visibility(stub, ctx) and not (
+                _copy_hidden(session, ctx) or _has_shared_league_membership(session, stub, context=ctx, user_id=uid)
+            ):
+                out["contexts_hidden"] += 1
 
-    if archives_removed or contexts_removed:
-        try:
-            mark_workflow_persist_authoritative(session)
-        except Exception:
-            pass
-    return {"archives_removed": archives_removed, "contexts_removed": contexts_removed}
+    active_id = str(session.get(ACTIVE_DRAFT_ARCHIVE_KEY) or "").strip()
+    active = get_draft_archive(session, active_id) if active_id else None
+    if isinstance(active, dict):
+        active_ctx = get_league_context_for_archive(session, active)
+        # Hidden Shared League copies are gated where they are read (league_copy_hidden); clear the
+        # selection only for an entry that fails the account's visibility rules.
+        if not _copy_hidden(session, active_ctx) and not is_saved_draft_visible_to_session(session, active, context=active_ctx):
+            session.pop(ACTIVE_DRAFT_ARCHIVE_KEY, None)
+            linked = str(active.get("league_context_id") or (active_ctx or {}).get("league_context_id") or "").strip()
+            if linked and str(store.get("active_league_context_id") or "").strip() == linked:
+                store.pop("active_league_context_id", None)
+    return out
 
 
 def _workflow_patch_from_session(session: dict[str, Any]) -> dict[str, Any]:
@@ -452,27 +443,15 @@ def force_persist_sanitized_workflow_disk(
     *,
     app_id: str = "baseball",
 ) -> bool:
-    """Rewrite the workspace disk file with sanitized draft library workflow keys."""
-    try:
-        from suite_user_persistence import _load_raw, save_user_state
-        from workflow_persist_guard import WORKFLOW_PERSIST_ALLOW_CLEAR_KEY, mark_workflow_persist_authoritative
-    except ImportError:
-        return False
+    """No longer rewrites anything (hide, never delete; owner decision 2026-11-02).
 
-    prune_invisible_shared_league_state(session)
-    mark_workflow_persist_authoritative(session)
-    session[WORKFLOW_PERSIST_ALLOW_CLEAR_KEY] = True
-
-    disk_state, _, _ = _load_raw(app_id)
-    if not isinstance(disk_state, dict):
-        disk_state = {}
-    disk_state = sanitize_workflow_blob_for_account(session, disk_state)
-    patch = _workflow_patch_from_session(session)
-    for key, val in patch.items():
-        disk_state[key] = copy.deepcopy(val)
-    if not str(disk_state.get("active_draft_archive_id") or "").strip():
-        disk_state.pop("active_draft_archive_id", None)
-    return bool(save_user_state(app_id, disk_state))
+    It used to overwrite the workspace disk file's draft library with this session's list after the
+    prune. When the disk held only drafts this account may not see (for example its own Live Draft
+    saves that recorded no owner) and the session held none, that replaced them with an empty list
+    and allowed the next save to clear the cloud copy too. The prune removes nothing now, so there
+    is nothing to rewrite: the disk file and the clear flag are left alone. Returns False.
+    """
+    return False
 
 
 def sanitize_workflow_library_for_account(

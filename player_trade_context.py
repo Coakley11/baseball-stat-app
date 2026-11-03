@@ -155,9 +155,11 @@ def _collect_fantasy_league_context_rows(
             return
         from fantasy_league_context import active_league_copy_hidden
 
+        from draft_archive_visibility import context_visible_to_session
+
         for ctx in list_league_contexts(session):
-            if active_league_copy_hidden(session, ctx):
-                continue  # a Shared League copy this account may not see
+            if active_league_copy_hidden(session, ctx) or not context_visible_to_session(session, ctx):
+                continue  # not shown to this account (kept, never deleted)
             ownership = ctx.get("ownership_map") or {}
             if not isinstance(ownership, dict):
                 continue
@@ -247,9 +249,11 @@ def collect_player_roster_contexts(session: dict[str, Any], player_name: str) ->
         from draft_archive_visibility import archive_hidden_from_display
         from fantasy_league_context import context_id_for_archive
 
+        from draft_archive_visibility import is_saved_draft_visible_to_session
+
         for entry in list_draft_archives(session):
-            if archive_hidden_from_display(session, entry):
-                continue  # a Shared League copy this account may not see
+            if archive_hidden_from_display(session, entry) or not is_saved_draft_visible_to_session(session, entry):
+                continue  # not shown to this account (kept, never deleted)
             archive_team = str(entry.get("team_name") or "").strip()
             players = entry.get("players") or []
             found = False

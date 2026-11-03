@@ -46,7 +46,7 @@ class ExistingCopiesArePreservedTests(unittest.TestCase):
         before = len(list_draft_archives(other))
         with _as_user("user:coakley"), patch("fantasy_shared_league_store.load_shared_league", return_value=shared):
             removed = prune_invisible_shared_league_state(other)
-        self.assertEqual(removed, {"archives_removed": 0, "contexts_removed": 0})
+        self.assertEqual((removed["archives_removed"], removed["contexts_removed"]), (0, 0))
         self.assertEqual(len(list_draft_archives(other)), before)
         self.assertFalse(other.get("_deleted_draft_archive_ids"))
 

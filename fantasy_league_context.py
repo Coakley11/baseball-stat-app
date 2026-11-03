@@ -1893,6 +1893,17 @@ def save_live_draft_league_context(
     my_team = str(my_team_name or "").strip()
     league_rosters = build_league_rosters_from_live_room(room, my_team)
     cfg = dict(room.get("config") or {})
+    # Safety net for every caller: with sign-in on, a multi-team Live Draft entry is never created
+    # without a verified owner (it would be an ownerless entry that the account cannot see).
+    owner_uid = str(session.get("_suite_cloud_user_id") or session.get("_suite_auth_user_id") or "").strip()
+    try:
+        from suite_auth import is_auth_enabled
+
+        sign_in_on = bool(is_auth_enabled())
+    except ImportError:
+        sign_in_on = False
+    if sign_in_on and len(league_rosters) >= 2 and not (owner_uid and my_team and my_team in league_rosters):
+        raise ValueError("This draft can't be saved until your account and team are confirmed.")
     label = str(draft_name or "").strip() or f"{cfg.get('league_name', 'Live Draft')} — {my_team}"
     fixed_id = bool(draft_id)
     if draft_id:
@@ -1936,14 +1947,20 @@ def save_live_draft_league_context(
         source_draft_id=draft_id,
     )
     # Record the saving account as the owner of its own team. Without it a signed-in account's
-    # multi-team Live Draft entry fails Library visibility (draft_archive_visibility) and the next
-    # Library clean-up deletes it. Session ids only: no fallback identity is recorded. The cloud
-    # account id first: it is the id the visibility check compares (get_account_user_id).
-    owner_uid = str(session.get("_suite_cloud_user_id") or session.get("_suite_auth_user_id") or "").strip()
+    # multi-team Live Draft entry fails Library visibility (draft_archive_visibility). Session ids
+    # only, the cloud account id first (the id the visibility check compares); nothing is recorded
+    # without a signed-in id, so no fallback identity can become an owner.
+    # The account's own external id is recorded too: the team overlay looks the account up by its
+    # Auth id first, the Library visibility check by its cloud id, so the record matches both.
     if owner_uid and my_team:
         from fantasy_league_team_ownership import assign_team_owner_to_context
 
-        context = assign_team_owner_to_context(context, my_team, user_id=owner_uid)
+        context = assign_team_owner_to_context(
+            context,
+            my_team,
+            user_id=owner_uid,
+            external_id=str(session.get("_suite_auth_external_id") or "").strip().lower(),
+        )
     context = upsert_league_context(session, context)
     if save_only:
         session.pop(PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY, None)
@@ -3132,6 +3149,15 @@ def repair_archive_draft_types_from_contexts(session: dict[str, Any]) -> int:
                 session=session,
             )
             if repaired_ctx != ctx:
+                # This repair corrects origin labels. ctx came through get_league_context, whose team
+                # overlay blanks the team when it can't place this account; never save that blank
+                # over the stored team (a resolved team is still applied).
+                stored_ctx = (ensure_fantasy_league_context_state(session).get("contexts") or {}).get(
+                    str(repaired_ctx.get("league_context_id") or "")
+                )
+                stored_team = str((stored_ctx or {}).get("my_team_name") or "").strip()
+                if stored_team and not str(repaired_ctx.get("my_team_name") or "").strip():
+                    repaired_ctx = {**repaired_ctx, "my_team_name": stored_team}
                 upsert_league_context(session, repaired_ctx, mark_persist_authoritative=True)
                 ctx = repaired_ctx
         expected, selected_reason, evidence = resolve_archive_draft_type_with_reason(

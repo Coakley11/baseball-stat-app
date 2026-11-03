@@ -48,12 +48,24 @@ def _identity(session: MutableMapping[str, Any]) -> tuple[str, str, str]:
     return _resolve_startup_identity(session)
 
 
+def _session_account_ids(session: MutableMapping[str, Any]) -> list[str]:
+    """This signed-in session's own account ids: the sign-in (Auth) user id and the suite account
+    id. In the hosted app they differ (rooms and participants use the Auth id; league records store
+    the suite account id), so a stored id is this account's when it equals either. Only the
+    session's own ids; never an email prefix, a workspace or the deployment's fallback account."""
+    ids: list[str] = []
+    for key in ("_suite_auth_user_id", "_suite_cloud_user_id"):
+        value = str(session.get(key) or "").strip()
+        if value and value not in ids:
+            ids.append(value)
+    return ids
+
+
 def is_league_commissioner(session: MutableMapping[str, Any], document: dict[str, Any] | None) -> bool:
     from fantasy_league_team_ownership import account_user_ids_match
 
-    uid, _external, _workspace = _identity(session)
     stored = str((document or {}).get("commissioner_user_id") or "").strip()
-    return bool(uid and stored and account_user_ids_match(stored, uid))
+    return bool(stored) and any(account_user_ids_match(stored, uid) for uid in _session_account_ids(session))
 
 
 def is_league_member_or_invitee(session: MutableMapping[str, Any], document: dict[str, Any] | None) -> bool:
@@ -64,16 +76,16 @@ def is_league_member_or_invitee(session: MutableMapping[str, Any], document: dic
         return True
     from fantasy_shared_league_startup_sync import _record_matches_account, session_auth_email
 
-    uid, external, workspace = _identity(session)
+    _uid, external, workspace = _identity(session)
+    email = session_auth_email(session)
     records: list[Any] = list((document.get("team_ownership") or {}).values()) + list(
         document.get("league_invites") or []
     )
     return any(
         isinstance(record, dict)
-        and _record_matches_account(
-            record, user_id=uid, external_id=external, workspace_id=workspace, email=session_auth_email(session)
-        )
+        and _record_matches_account(record, user_id=uid, external_id=external, workspace_id=workspace, email=email)
         for record in records
+        for uid in (_session_account_ids(session) or [""])
     )
 
 
