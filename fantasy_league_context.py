@@ -3091,13 +3091,6 @@ def repair_archive_draft_types_from_contexts(session: dict[str, Any]) -> int:
             ctx = get_league_context(session, context_id_for_archive(draft_id))
         if isinstance(ctx, dict) and active_league_copy_hidden(session, ctx):
             continue  # a Shared League copy this account may not see: never repaired or rewritten
-        try:
-            from draft_archive_visibility import is_saved_draft_visible_to_session
-
-            if not is_saved_draft_visible_to_session(session, entry, context=ctx):
-                continue  # kept but hidden from this account: left exactly as stored
-        except ImportError:
-            pass
         shared_doc = None
         league_id = ""
         if isinstance(ctx, dict):

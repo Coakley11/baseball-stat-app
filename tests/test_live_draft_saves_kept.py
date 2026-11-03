@@ -123,15 +123,20 @@ class LegacyOwnerlessEntriesTests(_SignedIn):
         self.assertFalse(ensure_fantasy_league_context_state(session).get("active_league_context_id"))
         self.assertEqual(len(list_draft_archives(session)), 1)
 
-    def test_repairs_leave_an_ownerless_entry_as_stored(self) -> None:
+    def test_repairs_never_delete_or_unhide_an_ownerless_entry(self) -> None:
+        # The origin repairs still correct labels on stored entries (as before the hotfix); they
+        # never delete an entry, add a deletion marker, or record an owner.
         from fantasy_league_context import repair_archive_draft_types_from_contexts
 
         session = signed_in("danny")
-        self.legacy_ownerless(session)
-        before = stored(session)
+        entry = self.legacy_ownerless(session)
         with self.acting(session):
             repair_archive_draft_types_from_contexts(session)
-        self.assertEqual(stored(session), before)
+            prune_invisible_shared_league_state(session)
+            self.assertEqual(list_visible_draft_archives(session), [])
+        self.assertEqual([e["draft_id"] for e in list_draft_archives(session)], [entry["draft_id"]])
+        self.assertFalse(session.get(DELETED_DRAFT_ARCHIVE_IDS_KEY))
+        self.assertEqual(get_team_ownership(get_league_context_for_archive(session, entry)), {})
 
     def test_the_player_page_does_not_list_an_ownerless_entry(self) -> None:
         from player_trade_context import collect_player_roster_contexts
