@@ -271,7 +271,8 @@ def _integrity(room: dict[str, Any], document: dict[str, Any], team: str) -> tup
                 problems.append(f"{player} was picked twice")
             seen_names.add(player.lower())
         if not player_id:
-            missing.append(f"pick {index} ({player or '?'}): player id")
+            # The id is the pick's identity (rosters, trades, stats). Never filled in from the name.
+            problems.append(f"pick {index} ({player or '?'}) has no player id")
     if not cfg:
         missing.append("draft settings (config)")
     else:

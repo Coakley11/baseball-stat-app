@@ -218,9 +218,17 @@ class RejectionTests(_Case):
         preview = self._with_board(same_name)
         self.assertTrue(preview["ok"], preview["problems"])
 
-    def test_a_missing_player_id_is_named(self) -> None:
-        preview = self._with_board(lambda board: board[2].pop("playerID"))
-        self.assertIn("pick 3 (Pete Alonso): player id", preview["missing"])
+    def test_a_missing_or_blank_player_id_is_refused_never_looked_up(self) -> None:
+        def no_ids(board):
+            board[2].pop("playerID")
+            board[0]["playerID"] = "nan"
+        preview = self._with_board(no_ids)
+        self.assertFalse(preview["ok"])
+        self.assertIn("pick 3 (Pete Alonso) has no player id", preview["problems"])
+        self.assertIn("pick 1 (Matt Olson) has no player id", preview["problems"])
+        self.assertEqual(preview["picks"][2]["player_id"], "")  # shown as blank, not filled from the name
+        self.assertFalse(self.recover(signed_in("danny"))["ok"])
+        self.assertEqual(list_draft_archives(signed_in("danny")), [])
 
 
 class SafetyTests(_Case):

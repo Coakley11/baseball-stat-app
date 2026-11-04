@@ -120,8 +120,9 @@ class StoredRoomTests(_Case):
         doc["room"]["config"].pop("slots")
         self.write_room(doc)
         preview = load_recovery_preview(signed_in("danny"), CODE, store=self.store)
-        self.assertIn("pick 3 (Pete Alonso): player id", preview["missing"])
-        self.assertIn("roster slots", preview["missing"])
+        self.assertIn("pick 3 (Pete Alonso) has no player id", preview["problems"])  # identity: refused
+        self.assertFalse(preview["ok"])
+        self.assertIn("roster slots", preview["missing"])  # a setting: named, left as recorded
         self.assertEqual(preview["settings"]["roster_slots"], {})  # shown as not recorded, not defaulted
 
     def test_an_unfinished_room_cannot_be_recovered(self) -> None:
