@@ -199,6 +199,31 @@ def list_recoverable_rooms(session: Any, *, store: Any = None, limit: int = 200)
     return out
 
 
+# A Shared Draft pick is the drafted player's pool row (live_draft_make_pick copies it), so the
+# room stores the name as "fullName" and the id as "playerID". "Player" appears only on boards
+# built elsewhere (imports, simulator); the normal Library save reads both the same way.
+PICK_NAME_FIELDS = ("Player", "fullName", "player_name")
+PICK_ID_FIELDS = ("playerID", "player_id")
+
+
+def _first_text(pick: dict[str, Any], fields: tuple[str, ...]) -> str:
+    for field in fields:
+        value = str(pick.get(field) or "").strip()
+        if value and value.lower() not in ("nan", "none"):
+            return value
+    return ""
+
+
+def pick_player_name(pick: dict[str, Any]) -> str:
+    """The player name the room recorded for this pick ("" if none). Never looked up or guessed."""
+    return _first_text(pick, PICK_NAME_FIELDS)
+
+
+def pick_player_id(pick: dict[str, Any]) -> str:
+    """The player id the room recorded for this pick ("" if none)."""
+    return _first_text(pick, PICK_ID_FIELDS)
+
+
 def _integrity(room: dict[str, Any], document: dict[str, Any], team: str) -> tuple[list[str], list[str]]:
     """(problems that block recovery, fields that are missing but not needed to rebuild the entry)."""
     problems: list[str] = []
@@ -222,22 +247,30 @@ def _integrity(room: dict[str, Any], document: dict[str, Any], team: str) -> tup
         problems.append("your team in this room could not be determined")
     elif teams and team not in teams:
         problems.append(f"your team '{team}' is not one of the room's teams")
-    seen_players: set[str] = set()
+    seen_ids: set[str] = set()
+    seen_names: set[str] = set()
     for index, pick in enumerate(room.get("draft_board") or [], start=1):
         if not isinstance(pick, dict):
             problems.append(f"pick {index} is unreadable")
             continue
         pick_team = str(pick.get("Fantasy Team") or pick.get("Team") or "").strip()
-        player = str(pick.get("Player") or pick.get("player_name") or "").strip()
+        player = pick_player_name(pick)
+        player_id = pick_player_id(pick)
         if not player:
             problems.append(f"pick {index} has no player")
         if teams and pick_team not in teams:
             problems.append(f"pick {index} belongs to an unknown team '{pick_team}'")
-        key = player.lower()
-        if key and key in seen_players:
-            problems.append(f"{player} was picked twice")
-        seen_players.add(key)
-        if not str(pick.get("playerID") or pick.get("player_id") or "").strip():
+        # The same player twice is a broken board. Compare by id when the room has one (two
+        # players can share a name), and by name only for a pick without an id.
+        if player_id:
+            if player_id.lower() in seen_ids:
+                problems.append(f"{player or player_id} was picked twice")
+            seen_ids.add(player_id.lower())
+        elif player:
+            if player.lower() in seen_names:
+                problems.append(f"{player} was picked twice")
+            seen_names.add(player.lower())
+        if not player_id:
             missing.append(f"pick {index} ({player or '?'}): player id")
     if not cfg:
         missing.append("draft settings (config)")
@@ -273,7 +306,8 @@ def load_recovery_preview(session: Any, room_code: str, *, store: Any = None) ->
             "pick": p.get("Pick") or p.get("pick") or index,
             "round": p.get("Round") or p.get("round") or "",
             "team": str(p.get("Fantasy Team") or p.get("Team") or ""),
-            "player": str(p.get("Player") or p.get("player_name") or ""),
+            "player": pick_player_name(p),
+            "player_id": pick_player_id(p),
         }
         for index, p in enumerate(room.get("draft_board") or [], start=1)
         if isinstance(p, dict)
