@@ -20660,8 +20660,7 @@ elif active_page == "Draft Assistant Simulator":
         _da_sort_choice = str(st.session_state.get("draft_assistant_rec_card_sort") or "Roster Fit")
         _da_priorities = dict(st.session_state.get("da_effective_category_priorities") or {})
         try:
-            from draft_assistant_ranking import apply_draft_assistant_ranking, ranking_sort_column
-            from live_draft_ux import sort_recommendation_table
+            from draft_assistant_ranking import apply_draft_assistant_ranking
 
             available = apply_draft_assistant_ranking(
                 available,
@@ -20669,40 +20668,15 @@ elif active_page == "Draft Assistant Simulator":
                 needed_positions=list(needed_positions or []),
                 category_priorities=_da_priorities,
             )
-            _da_sort_col, _da_sort_asc = ranking_sort_column(_da_sort_choice)
-            if _da_sort_col not in available.columns:
-                from live_draft_ux import REC_TABLE_SORT_OPTIONS
-
-                _da_sort_col = REC_TABLE_SORT_OPTIONS.get(_da_sort_choice, "Decision Score")
-                _da_sort_asc = _da_sort_choice in {"Model Rank", "Market Rank"}
-            available = sort_recommendation_table(available, _da_sort_col, ascending=_da_sort_asc)
-            recs_ranked = available.copy()
             st.session_state.pop("_draft_assistant_rec_unavailable", None)
         except Exception:
             pass
 
-        best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
-        best_fit = recs_ranked.head(1).copy() if not recs_ranked.empty else pd.DataFrame()
-        featured_ids = collect_featured_player_ids(best_fit, best_value)
-        with da_answer_slot:
-            try:
-                _render_u4_draft_assistant_answer(
-                    best_fit, best_value, globals().get("draft_summary") or {}, globals().get("_gaps") or [],
-                    str(globals().get("assistant_my_team_name") or ""),
-                )
-            except Exception as _da_answer_exc:  # the summary must never take the page down
-                st.caption(f"Pick summary unavailable: {type(_da_answer_exc).__name__}")
-            import ui_hierarchy as _u1
-
-            _u1.section_label(st, "Explore more · settings, team needs, full recommendations, scarcity and roster heatmap")
-        _da_answer_done = True
-        recs = recs_ranked.head(int(draft_top_n)).copy()
-        if not needed_positions:
-            recs = ensure_top_raw_value_in_recommendations(
-                recs,
-                available,
-                limit=int(draft_top_n),
-            )
+        if "Expected Fantasy Value" in available.columns:
+            best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
+        else:
+            best_value = available.head(1).copy() if not available.empty else pd.DataFrame()
+        featured_ids = collect_featured_player_ids(pd.DataFrame(), best_value)
         _da_sort_labels = [
             "Roster Fit",
             "Model Value",
@@ -20713,20 +20687,43 @@ elif active_page == "Draft Assistant Simulator":
             "Positional Scarcity",
             "Primary Position",
         ]
-        st.selectbox(
+        _da_sort_choice = st.selectbox(
             "Sort recommendations by",
             _da_sort_labels,
             key="draft_assistant_rec_card_sort",
             help=(
-                "Roster Fit ranks by how much this roster benefits. "
-                "Model Value ranks by player quality, with a smaller roster adjustment. "
-                "Other choices rank the full available pool by that metric."
+                "Each option reorders the recommendation cards. "
+                "Roster Fit weighs open roster slots and category needs. "
+                "Model Value weighs player quality, with a smaller roster adjustment. "
+                "The other options rank the full available pool by that metric."
             ),
             on_change=_draft_assistant_settings_changed,
         )
+        try:
+            from draft_assistant_ranking import order_recommendation_cards
+
+            recs_ranked = order_recommendation_cards(available, _da_sort_choice)
+            available = recs_ranked
+        except Exception:
+            recs_ranked = available.copy() if isinstance(available, pd.DataFrame) else pd.DataFrame()
+        recs = recs_ranked.head(int(draft_top_n)).copy()
+        best_fit = recs.head(1).copy() if not recs.empty else pd.DataFrame()
+        featured_ids = collect_featured_player_ids(best_fit, best_value)
+        with da_answer_slot:
+            try:
+                _render_u4_draft_assistant_answer(
+                    best_fit, best_value, globals().get("draft_summary") or {}, globals().get("_gaps") or [],
+                    str(globals().get("assistant_my_team_name") or ""),
+                )
+            except Exception as _da_answer_exc:
+                st.caption(f"Pick summary unavailable: {type(_da_answer_exc).__name__}")
+            import ui_hierarchy as _u1
+
+            _u1.section_label(st, "Explore more · settings, team needs, full recommendations, scarcity and roster heatmap")
+        _da_answer_done = True
         st.caption(
-            "Roster Fit and Model Value use different scores. "
-            "Changing this, or a position or category priority, recalculates the list."
+            f"Showing **{_da_sort_choice}** order. "
+            "Card numbers match this order. Changing the sort, a position, or a category priority recalculates it."
         )
         try:
             from recommendation_player_diagnostics import (
@@ -20948,10 +20945,12 @@ elif active_page == "Draft Assistant Simulator":
                     if rec_idx >= len(recs):
                         break
                     rec_row = recs.iloc[rec_idx]
+                    _card_rank = int(rec_row.get("Card Rank") or (rec_idx + 1))
                     with rec_col:
                         render_draft_player_profile_card(
                             st,
                             rec_row,
+                            slot_label=f"#{_card_rank}",
                             reason=str(rec_row.get("Why this pick") or "").strip(),
                             show_decision_score=True,
                             compact=True,

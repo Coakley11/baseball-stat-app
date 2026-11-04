@@ -65,6 +65,16 @@ MODE_MODEL_VALUE = "model_value"
 
 SORT_ROSTER_FIT = "Roster Fit"
 SORT_MODEL_VALUE = "Model Value"
+DA_SORT_LABELS: tuple[str, ...] = (
+    "Roster Fit",
+    "Model Value",
+    "Decision Score",
+    "Player Grade",
+    "Model Rank",
+    "Market Rank",
+    "Positional Scarcity",
+    "Primary Position",
+)
 
 STANDARD_HITTER_SLOTS: dict[str, int] = {
     "C": 1,
@@ -500,6 +510,75 @@ def apply_draft_assistant_ranking(
         recommendation_reason(row, rank_mode) for _, row in frame.iterrows()
     ]
     return frame
+
+
+def _ensure_sort_column(frame: pd.DataFrame, sort_label: str) -> tuple[str, bool]:
+    """Return a real column and direction for every dropdown label.
+
+    Missing engine columns are derived so an option cannot silently keep the
+    previous card order.
+    """
+    label = str(sort_label or SORT_ROSTER_FIT)
+    if label == SORT_ROSTER_FIT:
+        return "Roster Fit Rank Score", False
+    if label == SORT_MODEL_VALUE:
+        return "Model Value Score", False
+    if label == "Decision Score":
+        if "Decision Score" not in frame.columns:
+            frame["Decision Score"] = frame.get("Base Quality Score", pd.Series(0.0, index=frame.index))
+        return "Decision Score", False
+    if label == "Player Grade":
+        if "Player Grade" not in frame.columns:
+            source = "Expected Fantasy Value" if "Expected Fantasy Value" in frame.columns else "Base Quality Score"
+            frame["Player Grade"] = pd.to_numeric(frame[source], errors="coerce") if source in frame.columns else 0.0
+        return "Player Grade", False
+    if label == "Model Rank":
+        if "Model Rank" not in frame.columns:
+            base = pd.to_numeric(frame.get("Expected Fantasy Value", frame.get("Base Quality Score")), errors="coerce")
+            frame["Model Rank"] = base.rank(ascending=False, method="min")
+        return "Model Rank", True
+    if label == "Market Rank":
+        if "Market Rank" not in frame.columns:
+            frame["Market Rank"] = pd.Series(range(1, len(frame) + 1), index=frame.index)
+        return "Market Rank", True
+    if label == "Positional Scarcity":
+        for col in ("Position Scarcity Score", "Scarcity Score", "Scarcity Adjustment"):
+            if col in frame.columns:
+                if col != "Positional Scarcity Sort":
+                    frame["Positional Scarcity Sort"] = pd.to_numeric(frame[col], errors="coerce")
+                return "Positional Scarcity Sort", False
+        frame["Positional Scarcity Sort"] = pd.to_numeric(frame.get("Position Need Score"), errors="coerce")
+        return "Positional Scarcity Sort", False
+    if label == "Primary Position":
+        if "Primary Position" not in frame.columns:
+            frame["Primary Position"] = ""
+        return "Primary Position", True
+    col, ascending = ranking_sort_column(label)
+    if col not in frame.columns:
+        frame[col] = pd.to_numeric(frame.get("Assistant Rank Score"), errors="coerce")
+    return col, ascending
+
+
+def order_recommendation_cards(frame: pd.DataFrame, sort_label: str) -> pd.DataFrame:
+    """Reorder the full pool for one dropdown option and stamp Card Rank 1..n.
+
+    The returned row order is the card order. Rank numbers match that order.
+    """
+    if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
+        return frame.copy() if isinstance(frame, pd.DataFrame) else pd.DataFrame()
+    work = frame.copy()
+    col, ascending = _ensure_sort_column(work, sort_label)
+    name_col = "fullName" if "fullName" in work.columns else ("Player" if "Player" in work.columns else None)
+    sort_cols = [col]
+    sort_asc = [ascending]
+    if name_col and name_col != col:
+        sort_cols.append(name_col)
+        sort_asc.append(True)
+    ordered = work.sort_values(sort_cols, ascending=sort_asc, kind="mergesort", na_position="last")
+    ordered = ordered.reset_index(drop=True)
+    ordered["Card Rank"] = range(1, len(ordered) + 1)
+    ordered["Sort Option"] = str(sort_label or SORT_ROSTER_FIT)
+    return ordered
 
 
 def ranking_sort_column(sort_label: str) -> tuple[str, bool]:

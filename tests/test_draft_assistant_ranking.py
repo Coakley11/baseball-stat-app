@@ -7,6 +7,7 @@ import unittest
 import pandas as pd
 
 from draft_assistant_ranking import (
+    DA_SORT_LABELS,
     MODE_MODEL_VALUE,
     MODE_ROSTER_FIT,
     SORT_MODEL_VALUE,
@@ -15,6 +16,7 @@ from draft_assistant_ranking import (
     auto_category_priorities,
     merge_category_priorities,
     open_positions_from_roster,
+    order_recommendation_cards,
     ranking_sort_column,
     resolve_action_player_name,
 )
@@ -211,6 +213,50 @@ class SortModeTests(unittest.TestCase):
         self.assertIn("fills C", reason)
         self.assertIn("improves SB", reason)
         self.assertTrue(reason.startswith("Strong roster fit"))
+
+
+class EverySortOptionTests(unittest.TestCase):
+    def test_each_dropdown_option_reorders_cards_and_renumbers(self) -> None:
+        pool = _pool().copy()
+        pool["Decision Score"] = [0.40, 0.55, 0.99, 0.20, 0.61]
+        pool["Player Grade"] = [61, 88, 70, 95, 64]
+        pool["Model Rank"] = [40, 8, 2, 15, 22]
+        pool["Market Rank"] = [90, 12, 4, 30, 18]
+        pool["Position Scarcity Score"] = [0.9, 0.2, 0.1, 0.4, 0.7]
+        scored = apply_draft_assistant_ranking(
+            pool,
+            mode=MODE_ROSTER_FIT,
+            needed_positions=["C", "1B"],
+            category_priorities={"SB": "High", "HR": "Low"},
+        )
+        orders = {}
+        for label in DA_SORT_LABELS:
+            ordered = order_recommendation_cards(scored, label)
+            names = list(ordered["fullName"])
+            ranks = list(ordered["Card Rank"])
+            self.assertEqual(ranks, list(range(1, len(names) + 1)))
+            self.assertEqual(len(names), len(set(names)))
+            orders[label] = tuple(names)
+        self.assertEqual(len(set(orders.values())), len(DA_SORT_LABELS))
+        fit = order_recommendation_cards(scored, "Roster Fit")
+        self.assertIn(fit.iloc[0]["fullName"], {"Catcher Speed", "First Base Power", "Catcher Power"})
+        self.assertEqual(int(fit.iloc[0]["Card Rank"]), 1)
+        grade = order_recommendation_cards(scored, "Player Grade")
+        self.assertEqual(grade.iloc[0]["fullName"], "Utility Only")
+        model_rank = order_recommendation_cards(scored, "Model Rank")
+        self.assertEqual(model_rank.iloc[0]["fullName"], "Star Outfielder")
+        market = order_recommendation_cards(scored, "Market Rank")
+        self.assertEqual(market.iloc[0]["fullName"], "Star Outfielder")
+
+    def test_filled_starters_do_not_bury_the_best_player(self) -> None:
+        ranked = apply_draft_assistant_ranking(
+            _pool(),
+            mode=MODE_ROSTER_FIT,
+            needed_positions=[],
+            category_priorities={"SB": "Low", "HR": "Low"},
+        )
+        ordered = order_recommendation_cards(ranked, "Roster Fit")
+        self.assertEqual(ordered.iloc[0]["fullName"], "Star Outfielder")
 
 
 class RosterRequirementTests(unittest.TestCase):

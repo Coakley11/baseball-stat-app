@@ -95,8 +95,10 @@ PAGE_STATE_REGISTRY = {
             "draft_window", "draft_format", "draft_top_n", "fantasy_draft_projection_style",
             "draft_use_ml_blend", "draft_ml_blend_weight", "draft_ml_min_games_signal",
             "draft_assistant_synced_team", "draft_pick_adjustment", "pending_draft_assistant_player",
+            "draft_assistant_rec_card_sort", "da_category_priority_overrides",
+            "da_position_needs_overridden",
         ],
-        "prefixes": ["draft_need_positions_auto_", "draft_category_needs_auto_", "draft_assistant_"],
+        "prefixes": ["draft_need_positions_auto_", "draft_category_needs_auto_", "draft_assistant_", "da_cat_priority_"],
     },
     "Draft Room Simulator": {
         "exact": [
