@@ -537,7 +537,7 @@ class TestFantasyLeagueInvites(unittest.TestCase):
 
     def test_resolve_invitee_target_uses_suite_users_when_registry_missing(self) -> None:
         with patch("suite_workspace_registry._read_registry", return_value={"by_owner": {}}), patch(
-            "suite_storage_supabase.list_suite_users_by_external_ids"
+            "suite_storage_supabase.find_user_rows"
         ) as list_users:
             list_users.return_value = [
                 {

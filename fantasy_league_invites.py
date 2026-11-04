@@ -48,6 +48,15 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+INVITE_SCAN_REUSE_SECONDS = 15.0
+
+
+def _monotonic() -> float:
+    import time
+
+    return time.monotonic()
+
+
 def _resolve_user_id(session: dict[str, Any] | None = None) -> str:
     uid = ""
     try:
@@ -124,6 +133,15 @@ def _strict_invitee_of(session: Any, shared: dict[str, Any] | None) -> bool:
         return bool(may_read_league(session, shared))
     except Exception:
         return False
+
+
+def _separate_accounts_on() -> bool:
+    """Sign-in on (hosted): separate accounts exist (fantasy_shared_league_authz)."""
+    try:
+        from fantasy_shared_league_authz import _separate_accounts
+    except ImportError:
+        return True
+    return bool(_separate_accounts())
 
 
 def _inbox_path(workspace_id: str) -> Path:
@@ -221,28 +239,36 @@ def resolve_invitee_target(target: str) -> dict[str, str]:
                 "invitee_external_id": ext or slug,
                 "resolve_source": "ownership_registry",
             }
+    # The account that holds this username (suite_users.external_id). The invite records its
+    # account id, so the invitee is matched by account and not only by the typed text. (This
+    # called list_suite_users_by_external_ids, which no longer exists; the error was swallowed and
+    # every hosted invite was stored with no account id.)
+    lookup_failed = False
     try:
-        import suite_storage_supabase as storage
+        from suite_storage_supabase import find_user_rows
 
-        for row in storage.list_suite_users_by_external_ids(slug):
+        for row in find_user_rows(external_id=slug) if slug else []:
             if not isinstance(row, dict):
                 continue
             ext = str(row.get("external_id") or slug).strip().lower()
             if ext != slug and slug != normalize_workspace_id(ext):
                 continue
+            uid = str(row.get("id") or "").strip()
+            if not uid:
+                continue
             return {
                 "invitee_workspace_id": slug,
-                "invitee_user_id": str(row.get("id") or "").strip(),
+                "invitee_user_id": uid,
                 "invitee_external_id": ext or slug,
                 "resolve_source": "suite_users",
             }
     except Exception:
-        pass
+        lookup_failed = True
     return {
         "invitee_workspace_id": slug,
         "invitee_user_id": "",
         "invitee_external_id": slug,
-        "resolve_source": "slug_fallback",
+        "resolve_source": "lookup_failed" if lookup_failed else "slug_fallback",
     }
 
 
@@ -437,6 +463,15 @@ def create_league_invite(
     invite_ws = str(target.get("invitee_workspace_id") or "").strip()
     if not invite_ws:
         return None, "Enter a valid workspace or account id."
+    if _separate_accounts_on() and not str(target.get("invitee_user_id") or "").strip():
+        # With sign-in on, an invite names a real account. One stored with only the typed text
+        # reaches nobody now, and would reach whoever later takes that username.
+        if target.get("resolve_source") == "lookup_failed":
+            return None, "Couldn't check that username right now. Nothing was sent; try again in a moment."
+        return None, (
+            f"No Baseball account has the username '{invite_ws}'. "
+            "Check the exact username with them. Nothing was sent."
+        )
 
     if invite_ws == _resolve_workspace_id(session) and (
         not target.get("invitee_user_id") or target.get("invitee_user_id") == uid
@@ -818,11 +853,15 @@ def scan_pending_invites_from_shared_leagues(
         ]
     )
     cached = session.get("_suite_pending_invite_scan_cache")
+    # The key is this account's own identity and save revision, which a commissioner's new invite
+    # never changes; so a scan is reused for a few seconds only, or an invite sent while this
+    # account is signed in would never show in this session.
     if (
         isinstance(cached, dict)
         and cached.get("fp") == warm_fp
         and isinstance(cached.get("invites"), list)
         and not session.get("_suite_pending_invite_scan_force")
+        and 0.0 <= _monotonic() - float(cached.get("at") or -1e9) <= INVITE_SCAN_REUSE_SECONDS
     ):
         return [dict(row) for row in cached["invites"] if isinstance(row, dict)]
     pending: list[dict[str, Any]] = []
@@ -861,6 +900,7 @@ def scan_pending_invites_from_shared_leagues(
     pending.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
     session["_suite_pending_invite_scan_cache"] = {
         "fp": warm_fp,
+        "at": _monotonic(),
         "invites": [dict(row) for row in pending],
     }
     session.pop("_suite_pending_invite_scan_force", None)

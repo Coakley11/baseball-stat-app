@@ -43,6 +43,18 @@ _NO_GET_CACHE_TABLES = frozenset(
         "baseball_shared_draft_rooms",
     }
 )
+# Multi-writer tables read on every render: a session may reuse a read for a few seconds only, so
+# another account's change (a new Shared League invite, a claimed team) shows on its next rerun
+# instead of never in this session.
+_SHORT_GET_CACHE_SECONDS: dict[str, float] = {
+    "baseball_shared_leagues": 15.0,
+}
+
+
+def _monotonic() -> float:
+    import time
+
+    return time.monotonic()
 
 
 def _read_cache_bucket() -> dict[tuple[str, str, tuple[tuple[str, str], ...]], tuple[int, Any]]:
@@ -338,9 +350,15 @@ def _request(
     method_u = method.upper()
     cache_key = _cache_key(method_u, table, params)
     allow_cache = bool(use_cache) if use_cache is not None else table not in _NO_GET_CACHE_TABLES
+    cache_ttl = _SHORT_GET_CACHE_SECONDS.get(table)
     if method_u == "GET" and allow_cache:
         bucket = _read_cache_bucket()
         hit = bucket.get(cache_key)
+        if hit is not None and cache_ttl is not None and (
+            len(hit) < 3 or _monotonic() - float(hit[2]) > cache_ttl
+        ):
+            bucket.pop(cache_key, None)  # too old for a table other accounts write
+            hit = None
         if hit is not None:
             try:
                 from suite_egress_trace import record_egress
@@ -392,7 +410,9 @@ def _request(
     except json.JSONDecodeError:
         parsed = None
     if method_u == "GET" and parsed is not None and allow_cache:
-        _read_cache_bucket()[cache_key] = (bytes_in, parsed)
+        _read_cache_bucket()[cache_key] = (
+            (bytes_in, parsed) if cache_ttl is None else (bytes_in, parsed, _monotonic())
+        )
     return parsed
 
 
