@@ -804,6 +804,24 @@ st.markdown("""
 .title-text {display: flex; align-items: center; gap: 0.4em;}
 .title-text .brand-logo {height: 1.5em; width: 1.5em; flex: 0 0 auto; object-fit: contain; border-radius: 0.3em;}
 .title-text .brand-name {min-width: 0;}
+@media (max-width: 768px) {
+    [data-testid="stAppViewContainer"] .title-box,
+    .title-box {
+        display: block !important;
+        visibility: visible !important;
+        min-height: 52px;
+        min-width: 200px;
+        position: relative;
+        z-index: 2;
+        max-width: 100%;
+        overflow: visible;
+        box-sizing: border-box;
+        margin-top: 0.25rem;
+    }
+    [data-testid="stMainBlockContainer"] { padding-top: 3.75rem !important; }
+    .title-text .brand-name { font-size: 1.05rem; line-height: 1.15; overflow-wrap: anywhere; }
+    .title-text .brand-logo { height: 28px !important; width: 28px !important; }
+}
 /* st.logo also paints a small copy in the top header bar whenever the sidebar is
    collapsed -- which is the default on phones, where it stacked directly above
    the hero logo. Branding is the hero + the compact sidebar mark only. The
@@ -1549,10 +1567,6 @@ def _u1_player_action_cb(action, player):
         st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = msg
         if nav:
             _schedule_player_action_page_nav(nav)
-        try:
-            st.rerun()
-        except Exception:
-            pass
     return _cb
 
 
@@ -14188,6 +14202,12 @@ try:
 except ImportError:
     pass
 st.session_state["_suite_post_consume_active_page"] = st.session_state.get("active_page")
+try:
+    from isolated_browser_seed import apply_isolated_browser_seed
+
+    apply_isolated_browser_seed(st)
+except Exception as _seed_exc:
+    st.session_state["_isolated_seed_error"] = f"{type(_seed_exc).__name__}: {_seed_exc}"
 _record_sidebar_nav_trace(
     "after_consume_scheduled_navigation",
     consumed_target=_consumed_nav_target,
@@ -19644,6 +19664,12 @@ elif active_page == "Fantasy Sleepers & Busts":
 
 
 elif active_page == "Draft Assistant Simulator":
+    try:
+        from isolated_browser_seed import apply_isolated_browser_seed
+
+        apply_isolated_browser_seed(st)
+    except Exception:
+        pass
     _page_perf_start(active_page)
     _maybe_render_account_pref_sync(active_page)
     if pp.is_screenshot_mode(st) or pp.is_demo_mode(st):
@@ -19935,7 +19961,7 @@ elif active_page == "Draft Assistant Simulator":
                         assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
                     st.caption(
                         "Excluding drafted players from the Draft Room Simulator board. "
-                        "Team-needs and roster-fit scoring are off for simulator practice."
+                        "Open starter slots and category needs still score recommendations."
                     )
             else:
                 if board_has_players:
@@ -20393,17 +20419,21 @@ elif active_page == "Draft Assistant Simulator":
                         st.session_state.pop("_draft_assistant_scoring_cache", None)
                     _draft_assistant_settings_changed()
 
-                def _restore_category_priorities():
-                    st.session_state.pop("da_category_priority_overrides", None)
+                if st.session_state.pop("_da_restore_category_priorities", False):
+                    st.session_state["da_category_priority_overrides"] = {}
+                    _priority_overrides = {}
+                    _effective_priorities = merge_category_priorities(_auto_priorities, {})
                     for cat_label in _cat_labels:
-                        st.session_state.pop(f"da_cat_priority_{cat_label}", None)
-                        st.session_state.pop(f"da_cat_priority_{cat_label}__auto", None)
+                        _auto_level_now = normalize_priority(_auto_priorities.get(cat_label, "Medium"))
+                        st.session_state[f"da_cat_priority_{cat_label}"] = _auto_level_now
+                        st.session_state[f"da_cat_priority_{cat_label}__auto"] = _auto_level_now
                     try:
                         from live_draft_ui_cache import DA_SCORING_CACHE_KEY
 
                         st.session_state.pop(DA_SCORING_CACHE_KEY, None)
                     except ImportError:
                         st.session_state.pop("_draft_assistant_scoring_cache", None)
+                    st.session_state["da_effective_category_priorities"] = dict(_effective_priorities)
 
                 st.caption("High / Medium / Low / Off. These values change recommendation scores, not just labels.")
                 _pri_cols = st.columns(min(3, max(1, len(_cat_labels))))
@@ -20425,11 +20455,12 @@ elif active_page == "Draft Assistant Simulator":
                             args=(_cat_label,),
                             help="Automatic until you change it. Restore automatic priorities clears overrides.",
                         )
-                st.button(
+                if st.button(
                     "Restore automatic category priorities",
                     key="da_restore_category_priorities",
-                    on_click=_restore_category_priorities,
-                )
+                ):
+                    st.session_state["_da_restore_category_priorities"] = True
+                    st.rerun()
                 category_needs = categories_at_or_above(_effective_priorities, "Medium")
                 st.session_state["da_effective_category_priorities"] = dict(_effective_priorities)
             try:
@@ -30728,6 +30759,12 @@ elif active_page == "Fantasy Lineup Assistant":
 
 
 elif active_page == "Waiver Wire / Add-Drop Center":
+    try:
+        from isolated_browser_seed import apply_isolated_browser_seed
+
+        apply_isolated_browser_seed(st)
+    except Exception:
+        pass
     from fantasy_waiver_wire_ui import render_waiver_wire_page
 
     _page_perf_start(active_page)
