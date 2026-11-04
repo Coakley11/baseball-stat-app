@@ -431,7 +431,7 @@ def draft_assistant_context_mode(session: dict[str, Any]) -> str:
 
     Returns one of:
     - ``live_board`` — sync picks and needs from the in-progress live draft board.
-    - ``simulator_board`` — exclude simulator-board picks only (no team-needs scoring).
+    - ``simulator_board`` — exclude simulator-board picks and score the user's open roster needs.
     - ``active_draft`` — exclude Saved Active Draft picks; keep default needs.
     - ``research_context`` — legacy alias for ``active_draft`` (Saved Active exclusions).
     - ``none`` — no fantasy-context filtering on Draft Assistant.

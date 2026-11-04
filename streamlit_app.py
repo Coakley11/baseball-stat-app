@@ -895,7 +895,7 @@ def _streamlit_script_run_ctx_active() -> bool:
 
 
 def render_global_app_chrome(active_page: str) -> None:
-    """Single app header + tutorial entry — always show explorer banner."""
+    """Blue brand bar with the existing logo on every page."""
     try:
         from mobile_nav_m2 import render_mobile_quick_nav
 
@@ -910,36 +910,18 @@ def render_global_app_chrome(active_page: str) -> None:
     except Exception:
         # Mobile quick-nav is purely additive chrome — never block the page body.
         pass
-    suppress_tutorial = False
-    suppress_hero = False
-    if active_page == "Live Draft Room":
-        try:
-            from live_draft_active_surface import live_draft_suppress_page_intro
-
-            suppress_tutorial = bool(live_draft_suppress_page_intro(st.session_state))
-            suppress_hero = suppress_tutorial
-        except ImportError:
-            suppress_tutorial = False
-            suppress_hero = False
-    if suppress_hero:
-        # Active draft: do not spend the first viewport on the brand hero.
-        with _ldr_m_hook("ldr-m-brand"):
-            st.caption("⚾ Baseball Explorer · Live Draft")
-    elif active_page != "Home" and active_page not in DRAFT_FOCUS_PAGES:
-        # U1: no brand hero or tutorial prompt above page content. Pages open on their own
-        # title; the sidebar logo (and the header icon on phones) still carries the brand.
-        # Home shows the compact brand line and offers the tutorial at its foot.
-        pass
-    else:
-        compact = active_page in DRAFT_FOCUS_PAGES or active_page == "Home"
-        if compact:
-            st.markdown("""
+    compact = (
+        active_page in DRAFT_FOCUS_PAGES
+        or active_page in {"Home", "Live Draft Room"}
+    )
+    if compact:
+        st.markdown("""
 <div class="title-box" style="padding:14px 18px;margin-bottom:12px;">
     <div class="title-text" style="font-size:28px;"><img class="brand-logo" src="app/static/brand/dcbe_logo_128.png" alt="" aria-hidden="true" width="128" height="128"><span class="brand-name">Daniel Cohen Baseball Explorer</span></div>
 </div>
 """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
+    else:
+        st.markdown("""
 <div class="title-box">
     <div class="title-text"><img class="brand-logo" src="app/static/brand/dcbe_logo_128.png" alt="" aria-hidden="true" width="128" height="128"><span class="brand-name">Daniel Cohen Baseball Explorer</span></div>
     <div class="subtitle-text">
@@ -947,7 +929,7 @@ def render_global_app_chrome(active_page: str) -> None:
     </div>
 </div>
 """, unsafe_allow_html=True)
-    # U1: the "New here? Start Tutorial" prompt is rendered at the foot of Home (home_page).
+    # The "New here? Start Tutorial" prompt stays at the foot of Home (home_page).
 
 from stat_helpers import fmt_int, fmt_rate_3, normalize_series, safe_numeric_series  # noqa: E402,F401  (shared with the fantasy modules)
 
@@ -1530,14 +1512,47 @@ def _u1_act(page, text):
 
 
 def _u1_player_action_cb(action, player):
-    """Button callback: the same player action the Player Actions menu runs (send to
-    Comparison / Trend), then go to that page. Never drafts, trades or saves a move."""
+    """Button callback: send the clicked player to Comparison or Trend, then open that page."""
     def _cb():
-        label_map = get_clean_player_label_map_yearly(yearly_df)
-        msg, nav = dispatch_player_action(player, action, None, None, label_map)
+        from draft_assistant_ranking import resolve_action_player_name
+        from player_action_handoff import (
+            queue_unresolved_compare,
+            queue_unresolved_trend,
+            remember_player_action,
+        )
+
+        remember_player_action(st.session_state, player, action)
+        try:
+            label_map = get_clean_player_label_map_yearly(yearly_df)
+        except Exception:
+            label_map = {}
+        resolved = resolve_action_player_name(player, label_map) or str(player or "").strip()
+        try:
+            msg, nav = dispatch_player_action(resolved, action, None, None, label_map)
+        except Exception as exc:
+            msg, nav = (f"Could not open that action ({type(exc).__name__}).", None)
+        if action == "Send to Trend Page" and not nav:
+            nav = queue_unresolved_trend(
+                st.session_state,
+                resolved or player,
+                msg or f"Trend data is unavailable for {player}.",
+            )
+            msg = st.session_state.get("trend_unavailable_notice") or msg
+        elif action == "Send to Comparison Tool" and not nav:
+            nav = queue_unresolved_compare(
+                st.session_state,
+                resolved or player,
+                msg or f"Could not match {player} for comparison.",
+            )
+            msg = st.session_state.get("compare_unavailable_notice") or msg
+        st.session_state["waiver_action_notice"] = msg
         st.session_state[wf_sb.SESSION_SIDEBAR_FLASH] = msg
         if nav:
             _schedule_player_action_page_nav(nav)
+        try:
+            st.rerun()
+        except Exception:
+            pass
     return _cb
 
 
@@ -17125,6 +17140,9 @@ elif active_page == "Comparison Tool":
     except ImportError:
         pass
     apply_pending_page_transfer(active_page)
+    _compare_notice = st.session_state.pop("compare_unavailable_notice", None)
+    if _compare_notice:
+        st.info(_compare_notice)
     clean_label_map_compare = get_clean_player_label_map_yearly(yearly_df)
     pid_to_clean_label_compare = {pid: lbl for lbl, pid in clean_label_map_compare.items()}
     compare_player_options = list(clean_label_map_compare.keys())
@@ -17942,6 +17960,9 @@ elif active_page == "Trend Value":
     except ImportError:
         pass
     apply_pending_page_transfer(active_page)
+    _trend_notice = st.session_state.pop("trend_unavailable_notice", None)
+    if _trend_notice:
+        st.info(_trend_notice)
     if st.session_state.get("pending_trend_player"):
         # A player sent here from another page leads the answer (prepare_trend_value_page consumes the flag).
         st.session_state["_u2_trend_focus"] = str(st.session_state["pending_trend_player"])
@@ -20196,9 +20217,26 @@ elif active_page == "Draft Assistant Simulator":
                 config=_slot_cfg,
                 draft_complete=bool(_draft_ctx.draft_complete),
             )
-            if _da_context_mode in ("simulator_board", "active_draft", "research_context"):
-                auto_needed_positions = []
-                auto_category_needs = []
+            if not auto_needed_positions and not bool(_draft_ctx.draft_complete):
+                from draft_assistant_ranking import open_positions_from_roster
+
+                _pitching_slots = False
+                try:
+                    from live_draft_roster_slots import league_allows_pitcher_recommendations
+
+                    _pitching_slots = league_allows_pitcher_recommendations(
+                        config=_slot_cfg,
+                        session=st.session_state,
+                        fantasy_format=draft_format,
+                    )
+                except Exception:
+                    _pitching_slots = False
+                auto_needed_positions = open_positions_from_roster(
+                    roster_df_auto,
+                    target_position_counts,
+                    include_pitching=_pitching_slots,
+                    draft_complete=bool(_draft_ctx.draft_complete),
+                )
         except ImportError:
             _slot_cfg = {}
             _draft_ctx = None
@@ -20239,76 +20277,171 @@ elif active_page == "Draft Assistant Simulator":
             cat_defs_auto = {"Power": "proj_HR", "Run Production": "proj_RBI", "Speed": "proj_SB", "Walks/OPS": "proj_OPS", "Volume": "AB"}
 
         with st.expander("Position & category priorities (auto-filled; override if needed)", expanded=False):
-            if _da_context_mode == "simulator_board":
-                st.caption(
-                    "Team-needs scoring is disabled while the Draft Room Simulator board is active. "
-                    "Drafted players are still excluded from recommendations."
-                )
-                needed_positions = []
-                category_needs = []
-            else:
-                st.markdown("#### Auto-detected team needs")
-                st.caption(
-                    "Derived from your roster and host-configured draft slots."
-                    if _slot_cfg.get("slots")
-                    else "Derived from your Draft Room roster. Change only if you want a different build."
-                )
-                r1, r2 = st.columns(2)
-                with r1:
-                    _pos_options = position_options
-                    try:
-                        from fantasy_position_sync import (
-                            DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
-                            on_draft_assistant_position_needs_changed,
-                            prepare_draft_assistant_position_needs,
-                        )
-
-                        prepare_draft_assistant_position_needs(
-                            st.session_state,
-                            auto_needed_positions,
-                            position_options=_pos_options,
-                            widget_key=DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
-                        )
-
-                        def _draft_assistant_position_needs_changed(*_args, **_kwargs):
-                            on_draft_assistant_position_needs_changed(st.session_state)
-                            _draft_assistant_settings_changed()
-
-                        needed_positions = st.multiselect(
-                            "Positions to prioritize",
-                            _pos_options,
-                            key=DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
-                            help="Auto-filled from host draft slots and your roster. Override temporarily during a live draft.",
-                            on_change=_draft_assistant_position_needs_changed,
-                        )
-                    except ImportError:
-                        _pos_default = [p for p in auto_needed_positions if p in _pos_options]
-                        needed_positions = st.multiselect(
-                            "Positions to prioritize",
-                            _pos_options,
-                            default=_pos_default,
-                            key=f"draft_need_positions_auto_{assistant_my_team_name}_{'_'.join(_pos_default)}",
-                            help="Auto-filled from host draft slots and your roster.",
-                        )
-                with r2:
-                    category_options_auto = list(cat_defs_auto.keys())
-                    category_needs = st.multiselect(
-                        "Categories / skills to strengthen",
-                        category_options_auto,
-                        default=[c for c in auto_category_needs if c in category_options_auto],
-                        key=f"draft_category_needs_auto_{assistant_my_team_name}_{'_'.join(auto_category_needs)}",
-                        help="Auto-filled vs draft pool averages."
-                    )
+            st.markdown("#### Auto-detected team needs")
+            st.caption(
+                "Required open roster slots and weak categories from your league, roster, and projections. "
+                "Bench depth is not treated as a required position. Overrides are kept until you restore automatic priorities."
+            )
+            if not position_options:
+                position_options = ["C", "1B", "2B", "3B", "SS", "OF", "DH", "P"]
+            r1, r2 = st.columns(2)
+            with r1:
+                _pos_options = position_options
                 try:
-                    from fantasy_position_sync import update_draft_assistant_position_needs
+                    from fantasy_position_sync import (
+                        DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
+                        on_draft_assistant_position_needs_changed,
+                        prepare_draft_assistant_position_needs,
+                    )
 
-                    update_draft_assistant_position_needs(
+                    prepare_draft_assistant_position_needs(
                         st.session_state,
-                        needed_positions,
-                        source_page="Draft Assistant Simulator",
+                        auto_needed_positions,
+                        position_options=_pos_options,
+                        widget_key=DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
+                    )
+
+                    def _draft_assistant_position_needs_changed(*_args, **_kwargs):
+                        on_draft_assistant_position_needs_changed(st.session_state)
+                        _draft_assistant_settings_changed()
+
+                    needed_positions = st.multiselect(
+                        "Positions to prioritize",
+                        _pos_options,
+                        key=DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
+                        help="Auto-filled from open required slots. Override if you want a different build.",
+                        on_change=_draft_assistant_position_needs_changed,
                     )
                 except ImportError:
-                    pass
+                    _pos_widget_key = "draft_need_positions_auto"
+                    _auto_pos = [p for p in dict.fromkeys(auto_needed_positions) if p in _pos_options]
+                    if not st.session_state.get("da_position_needs_overridden"):
+                        if (
+                            _pos_widget_key not in st.session_state
+                            or st.session_state.get("da_position_needs_auto_sig") != tuple(_auto_pos)
+                        ):
+                            st.session_state[_pos_widget_key] = _auto_pos
+                            st.session_state["da_position_needs_auto_sig"] = tuple(_auto_pos)
+
+                    def _mark_position_override():
+                        st.session_state["da_position_needs_overridden"] = True
+                        _draft_assistant_settings_changed()
+
+                    needed_positions = st.multiselect(
+                        "Positions to prioritize",
+                        _pos_options,
+                        key=_pos_widget_key,
+                        help="Auto-filled from open required slots. Changing this keeps your override.",
+                        on_change=_mark_position_override,
+                    )
+            with r2:
+                from draft_assistant_ranking import (
+                    auto_category_priorities,
+                    categories_at_or_above,
+                    league_category_labels,
+                    merge_category_priorities,
+                    normalize_priority,
+                )
+
+                _league_cats = None
+                _include_pitching = False
+                try:
+                    from fantasy_league_context import get_active_league_context
+                    from fantasy_season_results import scoring_categories
+                    from live_draft_roster_slots import league_allows_pitcher_recommendations
+
+                    _league_ctx = get_active_league_context(st.session_state)
+                    _league_cats = list(scoring_categories(_league_ctx))
+                    _include_pitching = league_allows_pitcher_recommendations(
+                        config=_slot_cfg,
+                        session=st.session_state,
+                        context=_league_ctx if isinstance(_league_ctx, dict) else None,
+                        fantasy_format=draft_format,
+                    )
+                except Exception:
+                    _league_cats = None
+                _cat_labels = league_category_labels(
+                    draft_format,
+                    _league_cats or list(cat_defs_auto.keys()),
+                    include_pitching=_include_pitching,
+                )
+                _unfilled_hitters = len([p for p in (auto_needed_positions or []) if p not in {"P", "SP", "RP"}])
+                _auto_priorities = auto_category_priorities(
+                    roster_df_auto,
+                    draft_df,
+                    _cat_labels,
+                    unfilled_hitter_slots=_unfilled_hitters,
+                    draft_complete=bool(getattr(_draft_ctx, "draft_complete", False)),
+                )
+                for _weak in auto_category_needs or []:
+                    if _weak in _auto_priorities and _auto_priorities[_weak] == "Low":
+                        _auto_priorities[_weak] = "Medium"
+                _priority_overrides = dict(st.session_state.get("da_category_priority_overrides") or {})
+                _effective_priorities = merge_category_priorities(_auto_priorities, _priority_overrides)
+
+                def _on_category_priority_changed(cat_label: str):
+                    overrides = dict(st.session_state.get("da_category_priority_overrides") or {})
+                    overrides[cat_label] = normalize_priority(
+                        st.session_state.get(f"da_cat_priority_{cat_label}")
+                    )
+                    st.session_state["da_category_priority_overrides"] = overrides
+                    try:
+                        from live_draft_ui_cache import DA_SCORING_CACHE_KEY
+
+                        st.session_state.pop(DA_SCORING_CACHE_KEY, None)
+                    except ImportError:
+                        st.session_state.pop("_draft_assistant_scoring_cache", None)
+                    _draft_assistant_settings_changed()
+
+                def _restore_category_priorities():
+                    st.session_state.pop("da_category_priority_overrides", None)
+                    for cat_label in _cat_labels:
+                        st.session_state.pop(f"da_cat_priority_{cat_label}", None)
+                        st.session_state.pop(f"da_cat_priority_{cat_label}__auto", None)
+                    try:
+                        from live_draft_ui_cache import DA_SCORING_CACHE_KEY
+
+                        st.session_state.pop(DA_SCORING_CACHE_KEY, None)
+                    except ImportError:
+                        st.session_state.pop("_draft_assistant_scoring_cache", None)
+
+                st.caption("High / Medium / Low / Off. These values change recommendation scores, not just labels.")
+                _pri_cols = st.columns(min(3, max(1, len(_cat_labels))))
+                for _i, _cat_label in enumerate(_cat_labels):
+                    _widget_key = f"da_cat_priority_{_cat_label}"
+                    _auto_level = normalize_priority(_auto_priorities.get(_cat_label, "Medium"))
+                    if _cat_label in _priority_overrides:
+                        if _widget_key not in st.session_state:
+                            st.session_state[_widget_key] = normalize_priority(_priority_overrides[_cat_label])
+                    elif st.session_state.get(f"{_widget_key}__auto") != _auto_level or _widget_key not in st.session_state:
+                        st.session_state[_widget_key] = _auto_level
+                        st.session_state[f"{_widget_key}__auto"] = _auto_level
+                    with _pri_cols[_i % len(_pri_cols)]:
+                        st.selectbox(
+                            _cat_label,
+                            ["High", "Medium", "Low", "Off"],
+                            key=_widget_key,
+                            on_change=_on_category_priority_changed,
+                            args=(_cat_label,),
+                            help="Automatic until you change it. Restore automatic priorities clears overrides.",
+                        )
+                st.button(
+                    "Restore automatic category priorities",
+                    key="da_restore_category_priorities",
+                    on_click=_restore_category_priorities,
+                )
+                category_needs = categories_at_or_above(_effective_priorities, "Medium")
+                st.session_state["da_effective_category_priorities"] = dict(_effective_priorities)
+            try:
+                from fantasy_position_sync import update_draft_assistant_position_needs
+
+                update_draft_assistant_position_needs(
+                    st.session_state,
+                    needed_positions,
+                    source_page="Draft Assistant Simulator",
+                )
+            except ImportError:
+                pass
 
         init_state_once("sync_draft_assistant_position_needs", False)
 
@@ -20367,10 +20500,6 @@ elif active_page == "Draft Assistant Simulator":
             else (_live_draft_room if isinstance(_live_draft_room, dict) and _da_context_mode == "live_board" else None)
         )
         _da_rec_mode = "draft_fit" if _da_context_mode == "live_board" else "decision"
-        if _da_context_mode in ("simulator_board", "active_draft", "research_context"):
-            needed_positions = []
-            category_needs = []
-            target_position_counts = {}
         _da_scored = None
         try:
             from live_draft_ui_cache import DA_SCORING_CACHE_KEY, draft_assistant_scoring_cache_key
@@ -20394,6 +20523,10 @@ elif active_page == "Draft Assistant Simulator":
                 ml_blend_weight=ml_blend_weight,
                 draft_top_n=int(draft_top_n),
                 research_sig=_research_sig,
+                ranking_mode=str(st.session_state.get("draft_assistant_rec_card_sort") or "Roster Fit"),
+                category_priority_sig=tuple(
+                    sorted((str(k), str(v)) for k, v in (st.session_state.get("da_effective_category_priorities") or {}).items())
+                ),
             )
             _da_entry = st.session_state.get(DA_SCORING_CACHE_KEY)
             if isinstance(_da_entry, dict) and _da_entry.get("key") == _da_key:
@@ -20522,6 +20655,32 @@ elif active_page == "Draft Assistant Simulator":
             remaining_recommendations,
         )
 
+        if "draft_assistant_rec_card_sort" not in st.session_state:
+            st.session_state["draft_assistant_rec_card_sort"] = "Roster Fit"
+        _da_sort_choice = str(st.session_state.get("draft_assistant_rec_card_sort") or "Roster Fit")
+        _da_priorities = dict(st.session_state.get("da_effective_category_priorities") or {})
+        try:
+            from draft_assistant_ranking import apply_draft_assistant_ranking, ranking_sort_column
+            from live_draft_ux import sort_recommendation_table
+
+            available = apply_draft_assistant_ranking(
+                available,
+                mode=_da_sort_choice,
+                needed_positions=list(needed_positions or []),
+                category_priorities=_da_priorities,
+            )
+            _da_sort_col, _da_sort_asc = ranking_sort_column(_da_sort_choice)
+            if _da_sort_col not in available.columns:
+                from live_draft_ux import REC_TABLE_SORT_OPTIONS
+
+                _da_sort_col = REC_TABLE_SORT_OPTIONS.get(_da_sort_choice, "Decision Score")
+                _da_sort_asc = _da_sort_choice in {"Model Rank", "Market Rank"}
+            available = sort_recommendation_table(available, _da_sort_col, ascending=_da_sort_asc)
+            recs_ranked = available.copy()
+            st.session_state.pop("_draft_assistant_rec_unavailable", None)
+        except Exception:
+            pass
+
         best_value = available.sort_values("Expected Fantasy Value", ascending=False).head(1).copy()
         best_fit = recs_ranked.head(1).copy() if not recs_ranked.empty else pd.DataFrame()
         featured_ids = collect_featured_player_ids(best_fit, best_value)
@@ -20538,32 +20697,37 @@ elif active_page == "Draft Assistant Simulator":
             _u1.section_label(st, "Explore more · settings, team needs, full recommendations, scarcity and roster heatmap")
         _da_answer_done = True
         recs = recs_ranked.head(int(draft_top_n)).copy()
-        recs = ensure_top_raw_value_in_recommendations(
-            recs,
-            available,
-            limit=int(draft_top_n),
+        if not needed_positions:
+            recs = ensure_top_raw_value_in_recommendations(
+                recs,
+                available,
+                limit=int(draft_top_n),
+            )
+        _da_sort_labels = [
+            "Roster Fit",
+            "Model Value",
+            "Decision Score",
+            "Player Grade",
+            "Model Rank",
+            "Market Rank",
+            "Positional Scarcity",
+            "Primary Position",
+        ]
+        st.selectbox(
+            "Sort recommendations by",
+            _da_sort_labels,
+            key="draft_assistant_rec_card_sort",
+            help=(
+                "Roster Fit ranks by how much this roster benefits. "
+                "Model Value ranks by player quality, with a smaller roster adjustment. "
+                "Other choices rank the full available pool by that metric."
+            ),
+            on_change=_draft_assistant_settings_changed,
         )
-        try:
-            from live_draft_ux import REC_TABLE_SORT_OPTIONS, sort_recommendation_table
-
-            _da_sort_labels = list(REC_TABLE_SORT_OPTIONS.keys())
-            _da_sort_choice = st.selectbox(
-                "Sort recommendations by",
-                _da_sort_labels,
-                index=0,
-                key="draft_assistant_rec_card_sort",
-                help=(
-                    "Reorders the same recommendation cards. "
-                    "It does not change which players were recommended."
-                ),
-            )
-            st.caption(
-                "Sort changes display order only — the recommendation pool stays the same."
-            )
-            _da_sort_col = REC_TABLE_SORT_OPTIONS.get(_da_sort_choice, "Decision Score")
-            recs = sort_recommendation_table(recs, _da_sort_col)
-        except ImportError:
-            pass
+        st.caption(
+            "Roster Fit and Model Value use different scores. "
+            "Changing this, or a position or category priority, recalculates the list."
+        )
         try:
             from recommendation_player_diagnostics import (
                 diagnose_recommendation_players,

@@ -68,9 +68,11 @@ class AppWiringTests(unittest.TestCase):
         self.assertIn('elif active_page == "Home":', APP)
         self.assertIn("render_home(st, st.session_state, navigate=navigate_to_page", APP)
 
-    def test_hero_and_tutorial_prompt_are_off_regular_pages(self):
+    def test_brand_header_is_on_every_page_and_tutorial_stays_off_chrome(self):
         chrome = APP[APP.index("def render_global_app_chrome"):APP.index("from stat_helpers import fmt_int")]
-        self.assertIn('elif active_page != "Home" and active_page not in DRAFT_FOCUS_PAGES:', chrome)
+        self.assertIn("Daniel Cohen Baseball Explorer", chrome)
+        self.assertIn('class="title-box"', chrome)
+        self.assertNotIn('elif active_page != "Home" and active_page not in DRAFT_FOCUS_PAGES:', chrome)
         self.assertNotIn("app_tutorial.render_tutorial_header_bar()", chrome)
         self.assertIn("render_tutorial_bar=app_tutorial.render_tutorial_header_bar", APP)
 

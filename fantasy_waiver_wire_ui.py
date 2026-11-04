@@ -240,10 +240,25 @@ def _render_u1_waiver_answer(
                     row_ctx = st.container()
                 with row_ctx:
                     cols = st.columns(2)
-                cols[0].button("Compare", key=f"u1_waiver_compare_{i}_{safe_key}", use_container_width=True,
-                               on_click=player_action_cb("Send to Comparison Tool", name))
-                cols[1].button("See trend", key=f"u1_waiver_trend_{i}_{safe_key}", use_container_width=True,
-                               on_click=player_action_cb("Send to Trend Page", name))
+                    cols[0].button(
+                        "Compare",
+                        key=f"u1_waiver_compare_{i}_{safe_key}",
+                        use_container_width=True,
+                        on_click=player_action_cb("Send to Comparison Tool", name),
+                    )
+                    cols[1].button(
+                        "See trend",
+                        key=f"u1_waiver_trend_{i}_{safe_key}",
+                        use_container_width=True,
+                        on_click=player_action_cb("Send to Trend Page", name),
+                    )
+    raw_notice = None
+    try:
+        raw_notice = st.session_state.get("waiver_action_notice")
+    except Exception:
+        raw_notice = None
+    if isinstance(raw_notice, str) and raw_notice.strip():
+        st.info(raw_notice)
     st.caption("“Consider add” puts the player in the move planner below. Nothing changes until you confirm a move.")
 
 

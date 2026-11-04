@@ -161,11 +161,5 @@ def schedule_page_demo(st, active_page: str) -> None:
 
 
 def render_draft_demo_button(st, active_page: str) -> None:
-    if active_page != "Draft Assistant Simulator":
-        return
-    if st.session_state.pop(DRAFT_DEMO_FLASH_KEY, False):
-        st.success(draft_demo_summary(st))
-    if st.button("Load Portfolio Demo Draft", type="primary", key="pp_load_demo_draft"):
-        request_draft_demo(st)
-        st.rerun()
-
+    """Demo loaders stay available; the Draft Assistant button is not shown."""
+    return
