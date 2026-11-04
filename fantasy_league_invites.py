@@ -28,6 +28,7 @@ from fantasy_league_team_ownership import (
 )
 from fantasy_shared_league_store import (
     build_team_ownership_sync_diagnostics,
+    invalidate_shared_league_doc_cache,
     load_shared_league,
     list_shared_league_documents,
     push_league_context_to_shared,
@@ -442,59 +443,163 @@ def _find_invite(invites: list[dict[str, Any]], invite_id: str) -> dict[str, Any
     return None
 
 
+def _validated_invitee(
+    session: dict[str, Any], context: dict[str, Any] | None, invitee_target: str
+) -> tuple[dict[str, str] | None, str, str, str]:
+    """(target, commissioner uid, league_id, error) for an invite the commissioner may send."""
+    if not isinstance(context, dict):
+        return None, "", "", "League context is required."
+    if str(context.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
+        return None, "", "", "Only uploaded/imported leagues support invites."
+    uid = _resolve_user_id(session)
+    if not uid:
+        return None, "", "", "Sign in to invite other managers."
+    if not is_league_commissioner(context, uid):
+        return None, uid, "", "Only the league commissioner can send invites."
+
+    target = resolve_invitee_target(invitee_target)
+    invite_ws = str(target.get("invitee_workspace_id") or "").strip()
+    if not invite_ws:
+        return None, uid, "", "Enter the manager's username."
+    if _separate_accounts_on() and not str(target.get("invitee_user_id") or "").strip():
+        # With sign-in on, an invite names a real account. One stored with only the typed text
+        # reaches nobody now, and would reach whoever later takes that username.
+        if target.get("resolve_source") == "lookup_failed":
+            return None, uid, "", "Couldn't check that username right now. Nothing was sent; try again in a moment."
+        return None, uid, "", (
+            f"No Baseball account has the username '{invite_ws}'. "
+            "Ask them for the exact username shown on their Saved Draft Library page. Nothing was sent."
+        )
+    invitee_uid = str(target.get("invitee_user_id") or "").strip()
+    if (invite_ws == _resolve_workspace_id(session) and (not invitee_uid or invitee_uid == uid)) or (
+        invitee_uid and _is_own_account(session, uid, invitee_uid)
+    ):
+        return None, uid, "", "You cannot invite your own account."
+
+    league_id = resolve_canonical_league_id(ensure_league_identity(context))
+    if not league_id:
+        return None, uid, "", "League identity is missing."
+    for row in get_league_invites(context):
+        if str(row.get("status") or "") != INVITE_STATUS_PENDING:
+            continue
+        if _invite_matches_user(
+            row,
+            user_id=invitee_uid,
+            external_id=str(target.get("invitee_external_id") or ""),
+            workspace_id=invite_ws,
+        ):
+            return None, uid, league_id, "A pending invite already exists for that account."
+    return target, uid, league_id, ""
+
+
+def _is_own_account(session: dict[str, Any], uid: str, other: str) -> bool:
+    ids = [uid] + [str(session.get(k) or "").strip() for k in ("_suite_auth_user_id", "_suite_cloud_user_id")]
+    return any(i and account_user_ids_match(i, other) for i in ids)
+
+
+def _seat_team_in_source_room(context: dict[str, Any], invitee_user_id: str) -> str:
+    """The team this account held in the league's source Shared Draft room ("" if not shown).
+
+    Only a positive confirmation for the commissioner: "" can also mean the room records the seat
+    under a different id, so the absence is never presented as proof."""
+    meta = context.get("metadata") if isinstance(context.get("metadata"), dict) else {}
+    code = str(meta.get("source_room_code") or "").strip()
+    if not code or not invitee_user_id:
+        return ""
+    try:
+        from draft_room_shared_state import get_shared_room_store
+        from shared_draft_recovery import account_seat
+
+        document = get_shared_room_store().load(code)
+        seat = account_seat(document, [invitee_user_id]) if isinstance(document, dict) else None
+        return str((seat or {}).get("team") or "")
+    except Exception:
+        return ""
+
+
+def preview_league_invitee(session: dict[str, Any], context: dict[str, Any] | None, invitee_target: str) -> dict[str, Any]:
+    """What an invite to this username would do, before anything is stored. Never writes.
+
+    The commissioner confirms the account shown here; create_league_invite then requires that
+    same account id, so a username that now resolves to someone else is refused."""
+    target, _uid, league_id, err = _validated_invitee(session, context, invitee_target)
+    if err or not target:
+        return {"ok": False, "error": err or "That username can't be invited."}
+    invitee_uid = str(target.get("invitee_user_id") or "").strip()
+    return {
+        "ok": True,
+        "username": str(target.get("invitee_external_id") or target.get("invitee_workspace_id") or ""),
+        "invitee_user_id": invitee_uid,
+        "league_id": league_id,
+        "seat_team": _seat_team_in_source_room(context or {}, invitee_uid),
+    }
+
+
+def revoke_league_invite(
+    session: dict[str, Any], context: dict[str, Any] | None, *, invite_id: str
+) -> tuple[bool, str]:
+    """Commissioner cancels a pending invite. It is marked revoked (kept as a record, never deleted)
+    in the stored league through the normal authorized league write; nobody can accept it after."""
+    if not isinstance(context, dict):
+        return False, "League context is required."
+    uid = _resolve_user_id(session)
+    if not uid or not is_league_commissioner(context, uid):
+        return False, "Only the league commissioner can cancel invites."
+    league_id = str(resolve_canonical_league_id(context) or "").strip()
+    iid = str(invite_id or "").strip()
+    invalidate_shared_league_doc_cache(league_id)
+    shared = load_shared_league(league_id)
+    if not isinstance(shared, dict):
+        return False, "The shared league could not be loaded. Nothing was changed."
+    invites = [dict(x) for x in (shared.get("league_invites") or []) if isinstance(x, dict)]
+    invite = _find_invite(invites, iid)
+    if not invite:
+        return False, "Invite not found. Nothing was changed."
+    if str(invite.get("status") or "") != INVITE_STATUS_PENDING:
+        return False, "This invite is no longer pending. Nothing was changed."
+    invite["status"] = INVITE_STATUS_REVOKED
+    invite["responded_at"] = _utc_now_iso()
+    invite["revoked_by_user_id"] = uid
+    shared["league_invites"] = [invite if str(r.get("invite_id") or "") == iid else r for r in invites]
+    try:
+        from fantasy_shared_league_store import save_shared_league
+
+        save_shared_league(shared)  # refused (raises) unless this account may write the league
+    except (ImportError, RuntimeError, OSError, ValueError):
+        return False, "Could not cancel the invite. Nothing was changed."
+    local = get_league_invites(context)
+    if _find_invite(local, iid):
+        _set_league_invites(context, [dict(invite) if str(r.get("invite_id") or "") == iid else r for r in local])
+        upsert_league_context(session, context)
+    remove_invite_from_inbox(str(invite.get("invitee_workspace_id") or ""), invite_id=iid, league_id=league_id)
+    if str((session.get("_last_commissioner_invite_sent") or {}).get("invite_id") or "") == iid:
+        session.pop("_last_commissioner_invite_sent", None)
+    return True, ""
+
+
 def create_league_invite(
     session: dict[str, Any],
     context: dict[str, Any],
     *,
     invitee_target: str,
+    confirmed_invitee_user_id: str = "",
 ) -> tuple[dict[str, Any] | None, str]:
-    """Commissioner invites another account/workspace to join a shared uploaded league."""
-    if not isinstance(context, dict):
-        return None, "League context is required."
-    if str(context.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
-        return None, "Only uploaded/imported leagues support invites."
-    uid = _resolve_user_id(session)
-    if not uid:
-        return None, "Sign in to invite other managers."
-    if not is_league_commissioner(context, uid):
-        return None, "Only the league commissioner can send invites."
+    """Commissioner invites another account to join a shared league.
 
-    target = resolve_invitee_target(invitee_target)
+    With sign-in on, ``confirmed_invitee_user_id`` must be the account the commissioner confirmed
+    (preview_league_invitee) and must still be the account the username resolves to."""
+    target, uid, league_id, err = _validated_invitee(session, context, invitee_target)
+    if err or not target:
+        return None, err or "That username can't be invited."
     invite_ws = str(target.get("invitee_workspace_id") or "").strip()
-    if not invite_ws:
-        return None, "Enter a valid workspace or account id."
-    if _separate_accounts_on() and not str(target.get("invitee_user_id") or "").strip():
-        # With sign-in on, an invite names a real account. One stored with only the typed text
-        # reaches nobody now, and would reach whoever later takes that username.
-        if target.get("resolve_source") == "lookup_failed":
-            return None, "Couldn't check that username right now. Nothing was sent; try again in a moment."
-        return None, (
-            f"No Baseball account has the username '{invite_ws}'. "
-            "Check the exact username with them. Nothing was sent."
-        )
-
-    if invite_ws == _resolve_workspace_id(session) and (
-        not target.get("invitee_user_id") or target.get("invitee_user_id") == uid
-    ):
-        return None, "You cannot invite your own account."
-
+    if _separate_accounts_on():
+        confirmed = str(confirmed_invitee_user_id or "").strip()
+        if not confirmed:
+            return None, "Confirm the account before sending the invite. Nothing was sent."
+        if not account_user_ids_match(confirmed, str(target.get("invitee_user_id") or "")):
+            return None, "That username now belongs to a different account than the one confirmed. Nothing was sent."
     context = ensure_league_identity(context)
-    league_id = resolve_canonical_league_id(context)
-    if not league_id:
-        return None, "League identity is missing."
-
     invites = get_league_invites(context)
-    for row in invites:
-        if str(row.get("status") or "") != INVITE_STATUS_PENDING:
-            continue
-        if not _invite_matches_user(
-            row,
-            user_id=str(target.get("invitee_user_id") or ""),
-            external_id=str(target.get("invitee_external_id") or ""),
-            workspace_id=invite_ws,
-        ):
-            continue
-        return None, "A pending invite already exists for that account."
 
     invite = {
         "invite_id": _generate_invite_id(),

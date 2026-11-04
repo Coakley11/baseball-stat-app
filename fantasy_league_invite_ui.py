@@ -15,10 +15,32 @@ from fantasy_league_invites import (
     is_league_commissioner,
     join_shared_league_from_invite,
     list_pending_invites_for_session,
+    preview_league_invitee,
     record_invite_submit_trace,
     resolve_invitee_target,
+    revoke_league_invite,
     unclaimed_teams_for_invite,
 )
+
+INVITE_PREVIEW_KEY = "_commissioner_invite_preview"
+REVOKE_CONFIRM_KEY = "_commissioner_invite_revoke_confirm"
+
+
+def _own_username(session: dict[str, Any]) -> str:
+    """This signed-in account's username (its profile id), or "" for a guest / sign-in off."""
+    try:
+        from fantasy_shared_league_authz import _separate_accounts
+        from fantasy_league_invites import _resolve_external_id
+        from suite_auth import is_anonymous_guest
+
+        if not _separate_accounts() or is_anonymous_guest(session):
+            return ""
+        if not str(session.get("_suite_auth_user_id") or session.get("_suite_cloud_user_id") or "").strip():
+            return ""
+        name = str(_resolve_external_id() or "").strip()
+        return "" if name in ("", "user_unidentified", "guest_unscoped") else name
+    except Exception:
+        return ""
 from fantasy_league_identity import resolve_canonical_league_id
 from fantasy_shared_league_store import load_shared_league
 
@@ -221,6 +243,9 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
                 session[seen_key] = sorted(seen)[-200:]
         except Exception:
             pass
+    own = _own_username(session)
+    if own:
+        st.caption(f"Your username for Shared League invites: **{own}**")
     if not pending:
         stranded = session.get("_suite_stranded_foreign_disk_draft")
         if stranded:
@@ -433,6 +458,46 @@ def render_commissioner_invite_diagnostics_panel(st: Any, session: dict[str, Any
     return True
 
 
+def _render_pending_invites_for_commissioner(
+    st: Any, session: dict[str, Any], context: dict[str, Any], league_id: str
+) -> None:
+    """Pending invites in the stored league, each with Cancel (asks once more before revoking)."""
+    shared = load_shared_league(league_id) if league_id else None
+    rows = [dict(x) for x in ((shared or {}).get("league_invites") or []) if isinstance(x, dict)]
+    pending = [r for r in rows if str(r.get("status") or "") == "pending"]
+    if not pending:
+        return
+    st.markdown("**Pending invites**")
+    for row in pending:
+        iid = str(row.get("invite_id") or "")
+        who = str(row.get("invitee_external_id") or row.get("invitee_workspace_id") or "—")
+        sent = str(row.get("created_at") or "")[:10]
+        no_account = "" if str(row.get("invitee_user_id") or "").strip() else " · no account recorded"
+        st.caption(f"Invite to **{who}** · sent {sent}{no_account} · id `{iid}`")
+        if session.get(REVOKE_CONFIRM_KEY) == iid:
+            st.warning(f"Cancel the invite to {who}? They won't be able to accept it. This can't be undone.")
+            c1, c2 = st.columns(2)
+            if c1.button("Yes, cancel this invite", key=f"invite_revoke_yes_{iid}", type="primary"):
+                ok, err = revoke_league_invite(session, context, invite_id=iid)
+                session.pop(REVOKE_CONFIRM_KEY, None)
+                if ok:
+                    st.success(f"The invite to {who} was cancelled.")
+                    try:
+                        from baseball_persistent_state import force_save_baseball_state
+
+                        force_save_baseball_state(st, reason="league_invite_revoked")
+                    except Exception:
+                        pass
+                else:
+                    st.error(err)
+            if c2.button("Keep it", key=f"invite_revoke_no_{iid}"):
+                session.pop(REVOKE_CONFIRM_KEY, None)
+                st.rerun()
+        elif st.button("Cancel invite", key=f"invite_revoke_{iid}"):
+            session[REVOKE_CONFIRM_KEY] = iid
+            st.rerun()
+
+
 def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
     """Let the league commissioner invite another workspace/account."""
     context = commissioner_invite_context(session)
@@ -493,20 +558,44 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
 
     submitted = False
     target = ""
-    with st.expander("Invite managers to this shared league", expanded=False):
+    preview = session.get(INVITE_PREVIEW_KEY)
+    if isinstance(preview, dict) and str(preview.get("league_id") or "") != league_id:
+        preview = None
+    with st.expander("Invite managers to this shared league", expanded=isinstance(preview, dict)):
         st.caption(
             f"Invite another account to join **{league_name}**. "
             "They will see the invite in their Saved Draft Library, claim a team, "
             "and link to the same canonical league — not a duplicate import."
         )
         with st.form("commissioner_invite_form", clear_on_submit=False):
-            target = st.text_input(
-                "Workspace or account id",
+            lookup_target = st.text_input(
+                "Manager's username",
                 key="commissioner_invite_target",
-                placeholder="e.g. ariel, coakley11",
-                help="Use the invitee's workspace slug or account external id.",
+                placeholder="their exact username",
+                help="Each manager's username is shown on their own Saved Draft Library page.",
             )
-            submitted = st.form_submit_button("Send invite", type="primary")
+            looked_up = st.form_submit_button("Find account")
+        if looked_up:
+            found = preview_league_invitee(session, context, str(lookup_target or "").strip())
+            if found.get("ok"):
+                preview = dict(found, target=str(lookup_target or "").strip())
+                session[INVITE_PREVIEW_KEY] = preview
+            else:
+                preview = None
+                session.pop(INVITE_PREVIEW_KEY, None)
+                st.error(str(found.get("error") or "That username can't be invited."))
+        if isinstance(preview, dict):
+            st.markdown(f"Username **{preview.get('username')}** belongs to an existing Baseball account.")
+            if preview.get("seat_team"):
+                st.caption(f"This account played team **{preview['seat_team']}** in this league's Shared Draft.")
+            sure = st.checkbox(
+                f"Yes, send the invite to {preview.get('username')}",
+                key=f"commissioner_invite_confirm_{preview.get('username')}",
+            )
+            if st.button("Send invite", key="commissioner_invite_send", type="primary", disabled=not sure):
+                submitted = bool(sure)
+                target = str(preview.get("target") or "")
+        _render_pending_invites_for_commissioner(st, session, context, league_id)
 
     if submitted:
         target_trimmed = str(target or "").strip()
@@ -522,7 +611,11 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
             create_error=None,
             invite_id=None,
         )
-        invite, err = create_league_invite(session, context, invitee_target=target_trimmed)
+        confirmed_uid = str((preview or {}).get("invitee_user_id") or "") if isinstance(preview, dict) else ""
+        session.pop(INVITE_PREVIEW_KEY, None)
+        invite, err = create_league_invite(
+            session, context, invitee_target=target_trimmed, confirmed_invitee_user_id=confirmed_uid
+        )
         record_invite_submit_trace(
             session,
             create_league_invite_called=True,

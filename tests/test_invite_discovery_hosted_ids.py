@@ -1,21 +1,21 @@
-"""Shared League invite discovery with the hosted account arrangement (2026-11-03 acceptance).
+"""Shared League invites with the hosted account arrangement (2026-11-03/04 acceptance).
 
-Danny created "Danny vs Barry League" and invited username coakley11 (invite pending); Barry,
-signed in to his own account, saw no invite. Hosted accounts carry two ids: the Supabase Auth id
-(_suite_auth_user_id) and the suite_users id (_suite_cloud_user_id, get_account_user_id), plus a
-username (external id) and an owned workspace. The ids below are sanitized placeholders.
+Production: Danny created "Danny vs Barry League" and invited username "coakley11". That username
+belongs to a different account (hash 16fc8a); Barry's account is "user_coakley11" (hash 20c4cd).
+The invite was stored with no account id, so it named nobody but the typed text. Hosted accounts
+carry two ids, the Supabase Auth id and the suite_users id, plus a username and a workspace. All
+ids below are sanitized placeholders.
 
-Found:
-1. A session reused its first read of baseball_shared_leagues for as long as it lived, and the
-   invite scan was keyed only by the invitee's own identity and save revision. An invite sent
-   while the invitee was already signed in never showed in that session.
-2. The username lookup called suite_storage_supabase.list_suite_users_by_external_ids, which no
-   longer exists; the error was swallowed and invites were stored with no account id, matched only
-   by the typed text. With sign-in on, an invite now records the account id or is refused.
+Covered: the username lookup records the account id; the commissioner confirms the account before
+anything is stored; unknown usernames and failed lookups are refused; Barry receives an invite to
+user_coakley11; the invite addressed to coakley11 is never shown to or accepted by Barry; the
+commissioner can cancel (revoke) an invite, after which nobody can accept it; reads refresh within
+seconds for a session that is already open.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import types
 import unittest
@@ -23,17 +23,27 @@ from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
 import fantasy_shared_league_authz as authz
+from draft_archive_state import list_draft_archives
 from fantasy_league_identity import resolve_canonical_league_id
-from fantasy_league_invites import create_league_invite, list_pending_invites_for_session
-from fantasy_shared_league_store import load_shared_league
+from fantasy_league_invites import (
+    create_league_invite,
+    join_shared_league_from_invite,
+    list_pending_invites_for_session,
+    preview_league_invitee,
+    revoke_league_invite,
+)
+from fantasy_shared_league_store import invalidate_shared_league_doc_cache, load_shared_league
 import tests.test_fantasy_league_invites as _invite_suite  # module import: its tests are not re-collected here
 from tests.test_fantasy_trade_proposals import _as_user
 
 DANNY = {"auth": "auth-danny-0001", "suite": "suite-danny-0001", "username": "daniel", "workspace": "daniel"}
-BARRY = {"auth": "auth-barry-0002", "suite": "suite-barry-0002", "username": "coakley11", "workspace": "coakley11"}
+BARRY = {"auth": "auth-barry-0002", "suite": "suite-barry-0002", "username": "user_coakley11",
+         "workspace": "user_coakley11"}
+OTHER = {"auth": "auth-coak-0003", "suite": "suite-coak-0003", "username": "coakley11", "workspace": "coakley11"}
 SUITE_USERS = [
     {"id": DANNY["suite"], "external_id": "daniel", "email": "danny@example.com"},
-    {"id": BARRY["suite"], "external_id": "coakley11", "email": "barry@example.com"},
+    {"id": BARRY["suite"], "external_id": "user_coakley11", "email": "coakley11@example.org"},
+    {"id": OTHER["suite"], "external_id": "coakley11", "email": "other@example.com"},
 ]
 
 
@@ -60,8 +70,9 @@ class _Case(unittest.TestCase):
 
     def on(self) -> ExitStack:
         """Sign-in on, as hosted. The hosted registry file is on the app's own disk and does not
-        know Barry, so the username is resolved from suite_users."""
+        know these accounts, so usernames are resolved from suite_users."""
         authz.clear_league_copy_decisions()
+        invalidate_shared_league_doc_cache()
         stack = ExitStack()
         stack.enter_context(patch.dict("os.environ", {"SUITE_AUTH_ENABLED": "1"}))
         stack.enter_context(patch("fantasy_shared_league_store._anonymous_guest", return_value=False))
@@ -70,7 +81,10 @@ class _Case(unittest.TestCase):
 
     def league(self) -> tuple[dict, str]:
         self._write_registry({"by_owner": {}})
-        context = _invite_suite._seed_imported_league({}, user_id=DANNY["suite"], workspace=DANNY["workspace"])
+        self.danny_session = _signed_in(DANNY)
+        self.owner_session: dict = {}
+        context = _invite_suite._seed_imported_league(self.owner_session, user_id=DANNY["suite"],
+                                                      workspace=DANNY["workspace"])
         return context, resolve_canonical_league_id(context)
 
     @contextmanager
@@ -80,81 +94,273 @@ class _Case(unittest.TestCase):
         ):
             yield
 
-    def invite(self, context: dict, target: str = "coakley11") -> tuple[dict | None, str]:
+    def invite(self, context: dict, target: str = "user_coakley11") -> tuple[dict | None, str]:
+        """Danny's two steps: find the account, confirm it, send."""
         with self.on(), self.as_account(DANNY):
-            return create_league_invite({}, context, invitee_target=target)
+            found = preview_league_invitee({}, context, target)
+            if not found.get("ok"):
+                return None, found["error"]
+            return create_league_invite({}, context, invitee_target=target,
+                                        confirmed_invitee_user_id=found["invitee_user_id"])
+
+    def legacy_invite(self, context: dict, target: str = "coakley11") -> dict:
+        """The production invite: addressed by typed text only, with no account id (as stored by
+        the deployed code before this fix)."""
+        with patch("fantasy_league_invites._separate_accounts_on", return_value=False), patch(
+            "fantasy_league_invites.resolve_invitee_target",
+            return_value={"invitee_workspace_id": target, "invitee_user_id": "", "invitee_external_id": target,
+                          "resolve_source": "slug_fallback"},
+        ), self.as_account(DANNY):
+            invite, err = create_league_invite({}, context, invitee_target=target)
+        self.assertEqual(err, "")
+        return invite
 
     def pending(self, session: dict, account: dict) -> list[dict]:
         with self.on(), self.as_account(account):
             return list_pending_invites_for_session(session)
 
+    def accept(self, session: dict, account: dict, league_id: str, invite_id: str, team: str):
+        with self.on(), self.as_account(account):
+            return join_shared_league_from_invite(session, league_id=league_id, invite_id=invite_id, team_name=team)
 
-class InviteeIdentityTests(_Case):
-    def test_barry_sees_the_invite_with_auth_and_suite_ids_that_differ(self) -> None:
-        context, league_id = self.league()
-        invite, err = self.invite(context)
-        self.assertEqual(err, "")
-        rows = self.pending(_signed_in(BARRY), BARRY)
-        self.assertEqual([(r["invite_id"], r["league_id"]) for r in rows], [(invite["invite_id"], league_id)])
-
-    def test_the_invite_records_barrys_account_id_not_only_the_typed_username(self) -> None:
-        context, league_id = self.league()
-        invite, err = self.invite(context)
-        self.assertEqual(err, "")
-        self.assertEqual(invite["invitee_user_id"], BARRY["suite"])
+    def stored_invite(self, league_id: str, invite_id: str) -> dict:
+        invalidate_shared_league_doc_cache()
         with self.on():
-            stored = load_shared_league(league_id)
-        stored_invite = next(i for i in stored["league_invites"] if i["invite_id"] == invite["invite_id"])
-        self.assertEqual(
-            (stored_invite["invitee_user_id"], stored_invite["invitee_external_id"], stored_invite["status"]),
-            (BARRY["suite"], "coakley11", "pending"),
-        )
+            doc = load_shared_league(league_id) or {}
+        return next(i for i in doc.get("league_invites") or [] if i["invite_id"] == invite_id)
+
+    def open_team(self, league_id: str) -> str:
+        with self.on():
+            doc = load_shared_league(league_id) or {}
+        owned = {t for t, r in (doc.get("team_ownership") or {}).items() if (r or {}).get("user_id")}
+        return next(t for t in sorted(doc.get("league_rosters") or {}) if t not in owned)
+
+
+class ResolveAndConfirmTests(_Case):
+    def test_1_a_new_invite_records_the_right_existing_account_id(self) -> None:
+        context, league_id = self.league()
+        invite, err = self.invite(context)
+        self.assertEqual(err, "")
+        stored = self.stored_invite(league_id, invite["invite_id"])
+        self.assertEqual((stored["invitee_user_id"], stored["invitee_external_id"], stored["status"]),
+                         (BARRY["suite"], "user_coakley11", "pending"))
+
+    def test_2_the_account_is_confirmed_before_anything_is_stored(self) -> None:
+        context, league_id = self.league()
+        with self.on(), self.as_account(DANNY):
+            found = preview_league_invitee({}, context, "user_coakley11")
+            unconfirmed = create_league_invite({}, context, invitee_target="user_coakley11")
+            swapped = create_league_invite({}, context, invitee_target="user_coakley11",
+                                           confirmed_invitee_user_id=OTHER["suite"])
+        self.assertEqual((found["ok"], found["username"], found["invitee_user_id"]),
+                         (True, "user_coakley11", BARRY["suite"]))
+        self.assertIsNone(unconfirmed[0])
+        self.assertIn("Confirm the account", unconfirmed[1])
+        self.assertIsNone(swapped[0])
+        self.assertIn("different account than the one confirmed", swapped[1])
+        with self.on():
+            self.assertEqual((load_shared_league(league_id) or {}).get("league_invites") or [], [])
+
+    def test_3_unknown_usernames_and_failed_lookups_are_refused(self) -> None:
+        context, league_id = self.league()
+        _invite, err = self.invite(context, "coakley111")
+        self.assertIn("No Baseball account has the username 'coakley111'", err)
+        with self.on(), self.as_account(DANNY), patch(
+            "suite_storage_supabase.find_user_rows", side_effect=RuntimeError("store down")
+        ):
+            found = preview_league_invitee({}, context, "user_coakley11")
+            sent = create_league_invite({}, context, invitee_target="user_coakley11",
+                                        confirmed_invitee_user_id=BARRY["suite"])
+        self.assertIn("Couldn't check that username", found["error"])
+        self.assertIsNone(sent[0])
+        with self.on():
+            self.assertEqual((load_shared_league(league_id) or {}).get("league_invites") or [], [])
+
+    def test_danny_cannot_invite_himself(self) -> None:
+        context, _league_id = self.league()
+        _invite, err = self.invite(context, "daniel")
+        self.assertIn("cannot invite your own account", err)
+
+
+class BarryReceivesTests(_Case):
+    def test_4_barry_receives_and_accepts_an_invite_to_user_coakley11(self) -> None:
+        context, league_id = self.league()
+        invite, _err = self.invite(context)
+        barry = _signed_in(BARRY)
+        rows = self.pending(barry, BARRY)
+        self.assertEqual([(r["invite_id"], r["league_id"]) for r in rows], [(invite["invite_id"], league_id)])
+        team = self.open_team(league_id)
+        _entry, ctx, err = self.accept(barry, BARRY, league_id, invite["invite_id"], team)
+        self.assertEqual(err, "")
+        self.assertEqual(self.stored_invite(league_id, invite["invite_id"])["status"], "accepted")
 
     def test_barry_is_found_by_account_id_alone(self) -> None:
-        # Neither the typed username nor the workspace matches; only the recorded account id does.
         context, _league_id = self.league()
         self.invite(context)
         renamed = dict(BARRY, workspace="barry_ws2", username="barry_renamed")
         with patch("fantasy_league_invites._read_inbox", side_effect=lambda _ws: []):
             self.assertEqual(len(self.pending(_signed_in(renamed), renamed)), 1)
 
-    def test_an_invite_to_another_accounts_username_is_not_shown_to_barry(self) -> None:
-        # If "coakley11" is not Barry's username, the invite is addressed to that other account.
-        context, _league_id = self.league()
-        self.invite(context)
-        other_barry = {"auth": "auth-barry-9", "suite": "suite-barry-9", "username": "barry_ab12cd34",
-                       "workspace": "barry_ab12cd34"}
-        self.assertEqual(self.pending(_signed_in(other_barry), other_barry), [])
 
-    def test_an_unknown_username_is_refused_and_nothing_is_stored(self) -> None:
+class WronglyAddressedInviteTests(_Case):
+    """The production invite: to "coakley11", no account id."""
+
+    def test_5_barry_cannot_see_or_accept_the_invite_to_coakley11(self) -> None:
         context, league_id = self.league()
-        invite, err = self.invite(context, "coakley111")
-        self.assertIsNone(invite)
-        self.assertIn("No Baseball account has the username 'coakley111'", err)
+        wrong = self.legacy_invite(context)
+        barry = _signed_in(BARRY)
+        self.assertEqual(self.pending(barry, BARRY), [])
+        _entry, _ctx, err = self.accept(barry, BARRY, league_id, wrong["invite_id"], self.open_team(league_id))
+        self.assertIn("sent to a different account", err)
+        self.assertEqual(self.stored_invite(league_id, wrong["invite_id"])["status"], "pending")
+        self.assertEqual(list_draft_archives(barry), [])
+
+    def test_6_after_cancelling_nobody_can_use_it(self) -> None:
+        context, league_id = self.league()
+        wrong = self.legacy_invite(context)
+        other = _signed_in(OTHER)
+        clock = [1000.0]
+        with patch("fantasy_league_invites._monotonic", side_effect=lambda: clock[0], create=True):
+            self.assertEqual(len(self.pending(other, OTHER)), 1)  # the exposure: coakley11 could accept today
+            with self.on(), self.as_account(DANNY):
+                ok, err = revoke_league_invite(self.danny_session, context, invite_id=wrong["invite_id"])
+            self.assertEqual((ok, err), (True, ""))
+            # Accepting is refused at once (it re-reads the stored league) ...
+            _entry, _ctx, err = self.accept(other, OTHER, league_id, wrong["invite_id"], self.open_team(league_id))
+            self.assertIn("no longer pending", err)
+            clock[0] += 16.0  # ... and the invite leaves their list on the next rerun after 15 s
+            self.assertEqual(self.pending(other, OTHER), [])
+        stored = self.stored_invite(league_id, wrong["invite_id"])
+        self.assertEqual((stored["status"], stored["revoked_by_user_id"]), ("revoked", DANNY["suite"]))
         with self.on():
-            stored = load_shared_league(league_id) or {}
-        self.assertEqual(stored.get("league_invites") or [], [])
+            doc = load_shared_league(league_id)
+        self.assertEqual(len(doc["league_invites"]), 1)  # kept as a record, never deleted
+        self.assertTrue(doc["league_rosters"])          # the league is untouched
 
-    def test_a_failed_username_lookup_is_refused_never_stored_without_an_account(self) -> None:
-        context, _league_id = self.league()
-        with self.on(), self.as_account(DANNY), patch(
-            "suite_storage_supabase.find_user_rows", side_effect=RuntimeError("store down")
-        ):
-            invite, err = create_league_invite({}, context, invitee_target="coakley11")
-        self.assertIsNone(invite)
-        self.assertIn("Couldn't check that username", err)
+    def test_a_stale_pending_copy_cannot_undo_a_cancel(self) -> None:
+        from fantasy_shared_league_store import _merge_league_invites
 
-    def test_danny_still_cannot_invite_himself(self) -> None:
-        context, _league_id = self.league()
-        invite, err = self.invite(context, "daniel")
-        self.assertIsNone(invite)
-        self.assertIn("cannot invite your own account", err)
+        context, league_id = self.league()
+        wrong = self.legacy_invite(context)
+        stale = copy.deepcopy(wrong)
+        with self.on(), self.as_account(DANNY):
+            revoke_league_invite(self.danny_session, context, invite_id=wrong["invite_id"])
+        revoked = self.stored_invite(league_id, wrong["invite_id"])
+        self.assertEqual(_merge_league_invites([revoked], [stale])[0]["status"], "revoked")
+        self.assertEqual(_merge_league_invites([stale], [revoked])[0]["status"], "revoked")
 
-    def test_a_stranger_never_sees_the_invite(self) -> None:
-        context, _league_id = self.league()
+    def test_only_the_commissioner_can_cancel(self) -> None:
+        context, league_id = self.league()
+        wrong = self.legacy_invite(context)
+        for account in (BARRY, OTHER):
+            with self.on(), self.as_account(account):
+                ok, err = revoke_league_invite(_signed_in(account), context, invite_id=wrong["invite_id"])
+            self.assertFalse(ok)
+            self.assertIn("Only the league commissioner", err)
+        self.assertEqual(self.stored_invite(league_id, wrong["invite_id"])["status"], "pending")
+
+    def test_cancelling_one_invite_leaves_barrys_new_invite_pending(self) -> None:
+        context, league_id = self.league()
+        wrong = self.legacy_invite(context)
+        right, err = self.invite(context)
+        self.assertEqual(err, "")
+        with self.on(), self.as_account(DANNY):
+            revoke_league_invite(self.danny_session, context, invite_id=wrong["invite_id"])
+        self.assertEqual(self.stored_invite(league_id, right["invite_id"])["status"], "pending")
+        self.assertEqual([r["invite_id"] for r in self.pending(_signed_in(BARRY), BARRY)], [right["invite_id"]])
+
+
+class IsolationTests(_Case):
+    def test_7_a_stranger_never_sees_an_invite_or_the_league(self) -> None:
+        context, league_id = self.league()
         self.invite(context)
         stranger = {"auth": "auth-x", "suite": "suite-x", "username": "mallory", "workspace": "mallory"}
-        self.assertEqual(self.pending(_signed_in(stranger), stranger), [])
+        session = _signed_in(stranger)
+        self.assertEqual(self.pending(session, stranger), [])
+        with self.on():
+            doc = load_shared_league(league_id)
+            self.assertFalse(authz.may_read_league(session, doc))
+            self.assertTrue(authz.may_read_league(_signed_in(BARRY), doc))  # the invitee only
+            self.assertFalse(authz.may_read_league(_signed_in(OTHER), doc))  # not coakley11
+
+    def test_8_workspace_invites_with_sign_in_off_still_work(self) -> None:
+        self._write_registry({"by_owner": {"user:seal11": {"owner_user_id": "user:seal11",
+                                                          "owner_external_id": "seal11", "workspace_id": "ariel"}}})
+        context = _invite_suite._seed_imported_league({}, user_id="user:donny", workspace="donny_ws")
+        with _as_user("user:donny"), self._workspace("donny_ws"):
+            invite, err = create_league_invite({}, context, invitee_target="ariel")
+        self.assertEqual(err, "")
+        self.assertEqual((invite["invitee_workspace_id"], invite["invitee_user_id"]), ("ariel", "user:seal11"))
+
+
+class LibraryPageTests(_Case):
+    """The real Saved Draft Library page (AppTest), sign-in on."""
+
+    def app(self, account: dict, extra: dict | None = None):
+        from pathlib import Path
+
+        from streamlit.testing.v1 import AppTest
+
+        fixture = Path(__file__).resolve().parent / "fixtures" / "library_invite_app.py"
+        at = AppTest.from_file(str(fixture), default_timeout=180)
+        for key, value in {**copy.deepcopy(extra or {}), **_signed_in(account)}.items():
+            at.session_state[key] = value
+        at.session_state["_fx_league_root"] = str(self.store_root)
+        at.session_state["_fx_suite_users"] = SUITE_USERS
+        return at
+
+    @staticmethod
+    def text(at) -> str:
+        parts = [str(getattr(e, "value", "")) for e in list(at.markdown) + list(at.caption) + list(at.success)
+                 + list(at.warning) + list(at.error) + list(at.info)]
+        return " ".join(parts) + " " + " ".join(str(getattr(e, "label", "")) for e in at.checkbox)
+
+    def run_ok(self, at, step=None):
+        with patch.dict("os.environ", {"SUITE_AUTH_ENABLED": "1"}):
+            (step or at).run()
+        self.assertFalse(at.exception, [str(e.value)[:300] for e in at.exception])
+
+    def test_barry_sees_the_invite_and_his_username_on_saved_draft_library(self) -> None:
+        context, _league_id = self.league()
+        self.invite(context)
+        at = self.app(BARRY)
+        self.run_ok(at)
+        page = self.text(at)
+        self.assertIn("Shared league invites", page)
+        self.assertIn("Invite Test League", page)
+        self.assertIn("Your username for Shared League invites: **user_coakley11**", page)
+
+    def test_the_coakley11_invite_is_not_on_barrys_page(self) -> None:
+        context, _league_id = self.league()
+        self.legacy_invite(context)
+        at = self.app(BARRY)
+        self.run_ok(at)
+        self.assertNotIn("Shared league invites", self.text(at))
+
+    def test_danny_finds_confirms_and_sends_then_cancels_the_wrong_invite(self) -> None:
+        context, league_id = self.league()
+        wrong = self.legacy_invite(context)
+        at = self.app(DANNY, extra=self.owner_session)
+        self.run_ok(at)
+        at.text_input(key="commissioner_invite_target").set_value("user_coakley11")
+        find = next(b for b in at.button if b.label == "Find account")
+        self.run_ok(at, find.click())
+        self.assertIn("Username **user_coakley11** belongs to an existing Baseball account.", self.text(at))
+        send = at.button(key="commissioner_invite_send")
+        self.assertTrue(send.disabled)  # not until the account is confirmed
+        self.run_ok(at, at.checkbox(key="commissioner_invite_confirm_user_coakley11").check())
+        self.run_ok(at, at.button(key="commissioner_invite_send").click())
+        with self.on():
+            invalidate_shared_league_doc_cache()
+            stored = load_shared_league(league_id)["league_invites"]
+        new = [i for i in stored if i["invite_id"] != wrong["invite_id"]]
+        self.assertEqual([(i["invitee_user_id"], i["status"]) for i in new], [(BARRY["suite"], "pending")])
+
+        self.run_ok(at, at.button(key=f"invite_revoke_{wrong['invite_id']}").click())
+        self.assertIn("Cancel the invite to coakley11?", self.text(at))
+        self.run_ok(at, at.button(key=f"invite_revoke_yes_{wrong['invite_id']}").click())
+        self.assertEqual(self.stored_invite(league_id, wrong["invite_id"])["status"], "revoked")
+        self.assertEqual(self.stored_invite(league_id, new[0]["invite_id"])["status"], "pending")
 
 
 class InviteSentWhileSignedInTests(_Case):
