@@ -34,3 +34,22 @@ Stage B code only, on `stageb/library-recovery`, with no database change. It shi
 2. the owner reviews the candidate.
 
 Excluded: Shared Draft layout, icons, room exit, Draft Strategy, the hybrid queue, historical queue snapshots and billing.
+
+## Deployment record (2026-11-03)
+- **Deployed:** `dev` `369b9e7` → `9bc266f`, fast-forward. The marker pins `6dc6b2f`, and the hosted app shows "Build 9bc266f".
+- **Database:** no change of any kind.
+- **Pre-deployment baseline (owner's read-only run):**
+  - Totals: 4 Baseball workspace rows owned by 3 accounts; 31 Shared Draft rooms, 14 of them complete; 4 Shared Leagues.
+  - Main workspace: 4 Library entries, 2 deletion markers, 4 league contexts, 1 queued player.
+  - Older workspace: 3 Library entries, 2 markers, 4 contexts. `baseball__712986`: 4 Library entries, 0 markers, 4 contexts. `baseball__c3562d`: empty.
+  - Room `da9e78`: complete, revision 11, 4 picks, 2 participants.
+- **Anonymous smoke tests:** sign-in screen, Home, Saved Draft Library, Lineup & Trades and Live Draft all load, with no errors and no repair banner.
+- **Rollback (code only, approval needed):** one commit restoring the `369b9e7` tree, plus a marker, as a normal fast-forward. No cloud snapshot is restored.
+
+## Remaining risks (recorded)
+- **Primary-key migration deferred.** Other suite apps' plain upserts can still replace a Baseball row under a shared key; Baseball's own writes cannot.
+- **Misleading guest diagnostic.** A signed-out visitor still sees "TEMPORARY · MP identity diagnostics — WORKSPACE_RESOLUTION_BUG … active=daniel" on the Live Draft page.
+  - It is an existing diagnostic from Mobile M6.
+  - For a guest the active workspace resolves to the default `daniel`. The guest's Saved Draft Library shows no drafts, so no data exposure is seen.
+  - The message is wrong and alarming. Separate follow-up: hide it for guests, and confirm the guest workspace path.
+
