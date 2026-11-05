@@ -1247,28 +1247,21 @@ def join_shared_league_from_invite(
     except ImportError:
         context_source = "live_draft_room" if is_live_origin else SOURCE_IMPORTED_DRAFT
 
-    draft_id, league_context_id, fingerprint = resolve_canonical_save_ids(
-        session,
-        league_rosters=league_rosters,
-        config=cfg,
-        fantasy_format=str(cfg.get("fantasy_format") or cfg.get("scoring_type") or ""),
-    )
-    if not draft_id:
-        draft_id = str(invite.get("draft_id") or "").strip() or None
-    keep_separate = bool(draft_id) and _is_recovered_room_copy(session, str(draft_id))
-    if keep_separate:
-        # The matching entry is this account's copy recovered from the completed Shared Draft
-        # room. It is left exactly as it is; the league gets its own entry with a fixed id (never
-        # matched by content onto the recovered one).
-        from fantasy_league_context import context_id_for_archive
+    # The accepting account's entry for this league is identified by the league
+    # (shared_draft_identity), never by roster content: matching by content rewrote whichever of the
+    # account's own drafts had the same players (another room, a recovered copy). Accepting the
+    # same league again updates its own entry.
+    from fantasy_league_context import context_id_for_archive
+    from shared_draft_identity import entry_for_league, league_library_id
 
-        league_key = str(shared.get("draft_fingerprint") or league_id).replace("league:", "")[:24]
-        draft_id = f"league-{league_key}"
+    linked = entry_for_league(session, league_id)
+    if isinstance(linked, dict) and str(linked.get("draft_id") or "").strip():
+        draft_id = str(linked.get("draft_id")).strip()
+        league_context_id = str(linked.get("league_context_id") or "").strip() or context_id_for_archive(draft_id)
+    else:
+        draft_id = league_library_id(league_id)
         league_context_id = context_id_for_archive(draft_id)
-    if draft_id and not league_context_id:
-        from fantasy_league_context import context_id_for_archive
-
-        league_context_id = context_id_for_archive(str(draft_id))
+    keep_separate = True  # always a fixed id: never re-pointed at an entry with the same picks
 
     board_rows = _board_rows_from_league_rosters(league_rosters)
     picks = [row for row in board_rows if str(row.get("Team") or "") == team]

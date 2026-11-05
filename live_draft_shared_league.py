@@ -93,6 +93,18 @@ def preview_shared_league_creation(
     if compute_draft_fingerprint is not None:
         draft_fp = str(compute_draft_fingerprint(preview_context) or "").strip()
         canonical_id = str(resolve_canonical_league_id(preview_context) or "").strip()
+    try:
+        # The id the league will actually get (shared_draft_identity), not the content fingerprint.
+        import streamlit as _st
+
+        from shared_draft_identity import league_for_room, shared_room_code
+
+        _session = _st.session_state
+        _code = shared_room_code(_session, room)
+        if _code:
+            canonical_id = league_for_room(_session, _code)
+    except Exception:
+        pass
 
     roster_counts = {team: len((entry or {}).get("players") or []) for team, entry in league_rosters.items()}
     trade_enabled, trade_message = trades_enabled(preview_context, {})
@@ -254,12 +266,23 @@ def save_live_draft_shared_league_context(
 
     label = str(draft_name or league_name or "").strip() or f"{cfg.get('league_name', 'Live Draft')} — Shared"
     league_label = str(league_name or cfg.get("league_name") or label).strip() or label
-    draft_id, league_context_id, _fp = resolve_canonical_save_ids(
-        session,
-        league_rosters=league_rosters,
-        config=cfg,
-        fantasy_format=str(cfg.get("fantasy_format") or cfg.get("scoring_type") or ""),
-    )
+    try:
+        from shared_draft_identity import room_save_ids, shared_room_code
+
+        shared_code = shared_room_code(session, room)
+    except ImportError:
+        shared_code = ""
+    if shared_code:
+        # This room's own entry (or a new room-<code> entry), never another room's entry with the
+        # same picks: that overwrote a different saved draft (QA 2026-11-05).
+        draft_id, league_context_id = room_save_ids(session, shared_code)
+    else:
+        draft_id, league_context_id, _fp = resolve_canonical_save_ids(
+            session,
+            league_rosters=league_rosters,
+            config=cfg,
+            fantasy_format=str(cfg.get("fantasy_format") or cfg.get("scoring_type") or ""),
+        )
 
     entry = save_live_draft_team_archive(
         session,
@@ -268,8 +291,13 @@ def save_live_draft_shared_league_context(
         draft_name=label,
         league_rosters=league_rosters,
         draft_id=draft_id,
+        fixed_draft_id=bool(shared_code),
     )
     draft_id = str(entry.get("draft_id") or "")
+    if shared_code:
+        from shared_draft_identity import stamp_room
+
+        stamp_room(session, draft_id, shared_code)
     league_context_id = str(
         entry.get("league_context_id") or league_context_id or context_id_for_archive(draft_id)
     ).strip()
@@ -324,6 +352,20 @@ def save_live_draft_shared_league_context(
     except ImportError:
         CREATION_ORIGIN_LIVE_DRAFT_ROOM = "live_draft_room"  # type: ignore[misc,assignment]
         stamp_immutable_creation_origin = None  # type: ignore[assignment,misc]
+    # Hand these to the context before the identity step: it used to rebuild metadata from the
+    # context alone, dropping created_from and source_room_code before the first shared write.
+    context["metadata"] = dict(meta)
+    if shared_code:
+        # A league made from a Shared Draft room is identified by the room: league:room-<code>, or
+        # the id this room's league already has. Never the roster fingerprint, which two rooms can share.
+        from fantasy_league_identity import compute_draft_fingerprint
+        from shared_draft_identity import league_for_room
+
+        room_league = league_for_room(session, shared_code)
+        context["metadata"]["league_id"] = room_league
+        context["metadata"]["draft_fingerprint"] = compute_draft_fingerprint(context)
+        context["metadata"]["source_room_code"] = shared_code
+        context["league_id"] = room_league
     try:
         from fantasy_league_identity import ensure_league_identity
 

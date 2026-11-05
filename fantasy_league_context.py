@@ -1906,18 +1906,39 @@ def save_live_draft_league_context(
         raise ValueError("This draft can't be saved until your account and team are confirmed.")
     label = str(draft_name or "").strip() or f"{cfg.get('league_name', 'Live Draft')} — {my_team}"
     fixed_id = bool(draft_id)
+    room_code = ""
     if draft_id:
         # A fixed id is never re-pointed at another entry with identical content (two rooms can
         # produce the same picks).
         draft_id = str(draft_id).strip()
         league_context_id = context_id_for_archive(draft_id)
     else:
-        draft_id, league_context_id, _fp = resolve_canonical_save_ids(
-            session,
-            league_rosters=league_rosters,
-            config=cfg,
-            fantasy_format=str(cfg.get("fantasy_format") or cfg.get("scoring_type") or ""),
-        )
+        # A draft from a Shared Draft room is identified by its room (shared_draft_identity), never
+        # by its picks: two rooms with identical rosters stay two entries, and saving the same room
+        # again updates its own entry. Solo Live Drafts keep content matching.
+        try:
+            from shared_draft_identity import room_save_ids, shared_room_code
+
+            room_code = shared_room_code(session, room)
+        except ImportError:
+            room_code = ""
+        if room_code:
+            from shared_draft_identity import existing_room_league_id, find_room_library_entry
+
+            if existing_room_league_id(session, room_code):
+                # This room is already a Shared League in this account: a plain save must not turn
+                # the league back into a draft (it would replace the league's context). Unchanged.
+                existing = find_room_library_entry(session, room_code) or {}
+                return existing, get_league_context_for_archive(session, existing) or {}
+            draft_id, league_context_id = room_save_ids(session, room_code)
+            fixed_id = True
+        else:
+            draft_id, league_context_id, _fp = resolve_canonical_save_ids(
+                session,
+                league_rosters=league_rosters,
+                config=cfg,
+                fantasy_format=str(cfg.get("fantasy_format") or cfg.get("scoring_type") or ""),
+            )
     entry = save_live_draft_team_archive(
         session,
         room,
@@ -1937,6 +1958,11 @@ def save_live_draft_league_context(
         league_rosters=league_rosters,
         league_context_id=league_context_id,
     )
+    if room_code:
+        from shared_draft_identity import ROOM_KEY_FIELD, stamp_room
+
+        stamp_room(session, draft_id, room_code)
+        entry = {**entry, ROOM_KEY_FIELD: room_code}
     context = create_league_context_from_live_room(
         session,
         room,
@@ -1946,6 +1972,10 @@ def save_live_draft_league_context(
         league_context_id=league_context_id,
         source_draft_id=draft_id,
     )
+    if room_code:
+        meta = dict(context.get("metadata") or {})
+        meta["source_room_code"] = room_code
+        context["metadata"] = meta
     # Record the saving account as the owner of its own team. Without it a signed-in account's
     # multi-team Live Draft entry fails Library visibility (draft_archive_visibility). Session ids
     # only, the cloud account id first (the id the visibility check compares); nothing is recorded
