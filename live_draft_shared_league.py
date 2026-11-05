@@ -215,9 +215,18 @@ def save_live_draft_shared_league_context(
     defer_activation: bool = False,
     assign_team: bool = True,
     preassign_owners: dict[str, dict[str, str]] | None = None,
+    keep_current_active: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Promote a completed live draft to a shared real_league."""
+    """Promote a completed live draft to a shared real_league.
+
+    ``keep_current_active``: when the account already has an active league or draft, the new
+    league is not made active (Set active league does that explicitly); with none, it is."""
     from draft_archive_state import save_live_draft_team_archive
+
+    prior_active = (
+        str(((session.get("fantasy_league_context_state") or {}).get("active_league_context_id")) or "").strip(),
+        str(session.get("active_draft_archive_id") or "").strip(),
+    )
 
     room = apply_live_draft_completion(dict(room), session)
     ready, errors = validate_live_draft_ready_for_shared_league(room)
@@ -302,6 +311,12 @@ def save_live_draft_shared_league_context(
     room_code = _resolve_room_code_for_owners(session, room)
     if room_code:
         meta["source_room_code"] = room_code
+    # Stamped before the shared write (not only after it): the shared league's origin is read from
+    # these, and without a room code it was published as an imported league, so invitees' copies
+    # showed as Imported League instead of Live Draft.
+    meta["created_from"] = CREATED_FROM_LIVE_DRAFT
+    meta["source_draft_type"] = "live_draft_room"
+    meta["source"] = SOURCE_LIVE_DRAFT_ROOM
     try:
         from fantasy_league_context import CREATION_ORIGIN_LIVE_DRAFT_ROOM, stamp_immutable_creation_origin
 
@@ -375,17 +390,33 @@ def save_live_draft_shared_league_context(
         except ImportError:
             pass
 
-    if defer_activation:
+    activation_skipped = bool(keep_current_active and any(prior_active))
+    if activation_skipped:
+        # Saving the draft above may have pointed the active draft at it; put the account's own
+        # choice back. Nothing else about the active league changes.
+        store = session.get("fantasy_league_context_state")
+        if isinstance(store, dict):
+            store["active_league_context_id"] = prior_active[0]
+        if prior_active[1]:
+            session["active_draft_archive_id"] = prior_active[1]
+    elif defer_activation:
         schedule_league_context_activation(session, league_context_id, archive_id=draft_id)
     else:
         activate_league_context(session, league_context_id)
 
+    # Whether the league reached the shared store (where invitees find it) is reported, not
+    # assumed: a refused or failed write leaves shared_league_created False, so the page says the
+    # league is on this device only instead of showing success.
+    shared_push_error = ""
+    pushed = None
     try:
         from fantasy_shared_league_store import push_league_context_to_shared
 
-        push_league_context_to_shared(session, context)
-    except (ImportError, RuntimeError, OSError):
-        pass
+        pushed = push_league_context_to_shared(session, context)
+        if not isinstance(pushed, dict):
+            shared_push_error = "the shared league store returned nothing"
+    except (ImportError, RuntimeError, OSError, ValueError) as exc:
+        shared_push_error = f"{type(exc).__name__}: {exc}"
 
     context = get_league_context(session, league_context_id) or context
     meta = dict(context.get("metadata") or {})
@@ -404,7 +435,10 @@ def save_live_draft_shared_league_context(
     context["draft_results"] = draft_results
     context = upsert_league_context(session, context)
     entry = dict(entry)
-    entry["shared_league_created"] = True
+    entry["shared_league_created"] = isinstance(pushed, dict) and not shared_push_error
+    entry["activation_skipped"] = activation_skipped
+    if shared_push_error:
+        entry["shared_league_push_error"] = shared_push_error
     entry["canonical_league_id"] = str(context.get("league_id") or (context.get("metadata") or {}).get("league_id") or "")
     entry["context_type"] = CONTEXT_TYPE_REAL_LEAGUE
     try:

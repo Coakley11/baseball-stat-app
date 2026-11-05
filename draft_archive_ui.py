@@ -3102,21 +3102,26 @@ def _finalize_shared_league_creation_success(
         count_text=count_text,
         readback=readback,
     )
-    session["_live_draft_shared_league_flash"] = {"level": "success", "message": success_msg}
+    # Success only once both are confirmed: the shared league reached the shared store (so invitees
+    # can find it) and, with cloud saving on, the account's save was read back. Otherwise the kept
+    # message is the warning, not a success with a warning that disappears on the next rerun.
+    from ui_user_copy import SHARED_LEAGUE_BACKUP_UNCONFIRMED, SHARED_LEAGUE_LOCAL_ONLY
+
+    cloud_unconfirmed = bool(readback.get("cloud_enabled")) and readback.get("cloud_readback_found") is not True
+    if not shared_push_ok:
+        session["_live_draft_shared_league_flash"] = {"level": "warning", "message": SHARED_LEAGUE_LOCAL_ONLY}
+    elif cloud_unconfirmed:
+        session["_live_draft_shared_league_flash"] = {"level": "warning", "message": SHARED_LEAGUE_BACKUP_UNCONFIRMED}
+    else:
+        if session.pop("_shared_league_activation_skipped", False):
+            success_msg += " Your active league is unchanged; use **Set Active League** to switch to it."
+        session["_live_draft_shared_league_flash"] = {"level": "success", "message": success_msg}
     session["_live_draft_shared_league_success_actions"] = {
         "draft_id": draft_id,
         "context_id": context_id,
         "league_label": league_label,
         "key_prefix": key_prefix,
     }
-    if not shared_push_ok:
-        from ui_user_copy import SHARED_LEAGUE_LOCAL_ONLY
-
-        st.warning(SHARED_LEAGUE_LOCAL_ONLY)
-    if readback.get("cloud_enabled") and readback.get("cloud_unavailable") and not readback.get("cloud_readback_found"):
-        from ui_user_copy import SHARED_LEAGUE_BACKUP_UNCONFIRMED
-
-        st.warning(SHARED_LEAGUE_BACKUP_UNCONFIRMED)
     _merge_shared_league_diag(
         session,
         create_request_status="completed",
@@ -3588,9 +3593,11 @@ def _process_live_draft_shared_league_create_request(
                 draft_name=draft_name,
                 defer_activation=True,
                 assign_team=True,
+                keep_current_active=True,  # creating a league never replaces the active one
             )
             save_call_count += 1
             shared_push_ok = bool(entry.get("shared_league_created"))
+            session["_shared_league_activation_skipped"] = bool(entry.get("activation_skipped"))
             _merge_shared_league_diag(
                 session,
                 save_call_completed=True,

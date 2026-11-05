@@ -1169,6 +1169,12 @@ def join_shared_league_from_invite(
     if not team:
         return None, None, "Choose a team to claim."
 
+    # Everything accepting changes in this account's Library and league contexts; if the shared
+    # league does not record the acceptance, all of it is put back (see _accept_recorded).
+    from draft_archive_state import DRAFT_ARCHIVE_KEY as _LIBRARY_KEY
+
+    rollback = {key: copy.deepcopy(session.get(key)) for key in (_LIBRARY_KEY, "fantasy_league_context_state",
+                                                                  "active_draft_archive_id")}
     shared = load_shared_league(league_id)
     if not isinstance(shared, dict):
         return None, None, "Shared league could not be loaded."
@@ -1249,6 +1255,16 @@ def join_shared_league_from_invite(
     )
     if not draft_id:
         draft_id = str(invite.get("draft_id") or "").strip() or None
+    keep_separate = bool(draft_id) and _is_recovered_room_copy(session, str(draft_id))
+    if keep_separate:
+        # The matching entry is this account's copy recovered from the completed Shared Draft
+        # room. It is left exactly as it is; the league gets its own entry with a fixed id (never
+        # matched by content onto the recovered one).
+        from fantasy_league_context import context_id_for_archive
+
+        league_key = str(shared.get("draft_fingerprint") or league_id).replace("league:", "")[:24]
+        draft_id = f"league-{league_key}"
+        league_context_id = context_id_for_archive(draft_id)
     if draft_id and not league_context_id:
         from fantasy_league_context import context_id_for_archive
 
@@ -1270,6 +1286,7 @@ def join_shared_league_from_invite(
         draft_id=draft_id,
         league_rosters=league_rosters,
         league_context_id=league_context_id,
+        fixed_draft_id=keep_separate,
     )
     shared_fp = str(shared.get("draft_fingerprint") or invite.get("draft_fingerprint") or "").strip()
     if shared_fp:
@@ -1362,12 +1379,23 @@ def join_shared_league_from_invite(
         responder_user_id=uid,
     )
 
+    write_error = ""
     try:
         from fantasy_shared_league_store import save_shared_league
 
         save_shared_league(shared)
-    except (ImportError, RuntimeError, OSError):
-        push_league_context_to_shared(session, saved_context)
+    except (ImportError, RuntimeError, OSError, ValueError) as exc:
+        write_error = f"{type(exc).__name__}: {exc}"
+    if write_error or not _accept_recorded(league_id, invite_id=invite_id, team=team, uid=uid):
+        # The shared league does not show this acceptance, so other members would not see it and
+        # it would not survive a new session: undo this account's local changes and say so.
+        for key, value in rollback.items():
+            if value is None:
+                session.pop(key, None)
+            else:
+                session[key] = value
+        session["_last_invite_accept_error"] = write_error or "acceptance not found in the shared league"
+        return None, None, "Your acceptance could not be saved to the shared league, so nothing was changed. Try again."
 
     saved_context = sync_context_with_shared_store(session, saved_context)
     remove_invite_from_inbox(
@@ -1395,6 +1423,36 @@ def join_shared_league_from_invite(
     except Exception:
         pass
     return entry, saved_context, ""
+
+
+def _is_recovered_room_copy(session: dict[str, Any], draft_id: str) -> bool:
+    """True for a Library entry recovered from a completed Shared Draft room (shared_draft_recovery)."""
+    try:
+        from draft_archive_state import get_draft_archive
+        from shared_draft_recovery import RECOVERED_FLAG, ROOM_KEY_FIELD
+    except ImportError:
+        return False
+    entry = get_draft_archive(session, draft_id)
+    return isinstance(entry, dict) and bool(
+        entry.get(RECOVERED_FLAG) or str(entry.get(ROOM_KEY_FIELD) or "").strip()
+    )
+
+
+def _accept_recorded(league_id: str, *, invite_id: str, team: str, uid: str) -> bool:
+    """Re-read the stored league: the invite is accepted for this team and the team is this account's."""
+    invalidate_shared_league_doc_cache(league_id)
+    stored = load_shared_league(league_id)
+    if not isinstance(stored, dict):
+        return False
+    invite = _find_invite([dict(x) for x in (stored.get("league_invites") or []) if isinstance(x, dict)], invite_id)
+    record = (stored.get("team_ownership") or {}).get(team) if isinstance(stored.get("team_ownership"), dict) else None
+    return (
+        isinstance(invite, dict)
+        and str(invite.get("status") or "") == INVITE_STATUS_ACCEPTED
+        and str(invite.get("claimed_team") or "") == team
+        and isinstance(record, dict)
+        and account_user_ids_match(str(record.get("user_id") or ""), uid)
+    )
 
 
 def merge_shared_into_context_for_invite(context: dict[str, Any], shared: dict[str, Any]) -> dict[str, Any]:
@@ -2026,10 +2084,23 @@ def commissioner_invite_diagnostics(session: dict[str, Any]) -> dict[str, Any]:
 
 
 def commissioner_invite_context(session: dict[str, Any]) -> dict[str, Any] | None:
-    """Best league context the current user can invite from."""
+    """Best league context the current user can invite from (the first of commissioner_invite_contexts)."""
+    contexts = commissioner_invite_contexts(session)
+    return contexts[0] if contexts else None
+
+
+def commissioner_invite_contexts(session: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every Shared League this account commissions, one per league: a league created in this
+    session first (creating one no longer makes it the active league), then the active league,
+    then the rest. The invite panel lets the commissioner choose among them."""
     from fantasy_league_context import get_active_league_context, get_league_context, list_league_contexts
 
     candidates: list[dict[str, Any]] = []
+    created = session.get("_live_draft_shared_league_create_completed")
+    for row in (created.values() if isinstance(created, dict) else []):
+        ctx = get_league_context(session, str((row or {}).get("context_id") or "")) if isinstance(row, dict) else None
+        if isinstance(ctx, dict) and str(ctx.get("context_type") or "") == CONTEXT_TYPE_REAL_LEAGUE:
+            candidates.insert(0, ctx)
     context = get_active_league_context(session, respect_source_priority=False)
     if isinstance(context, dict) and str(context.get("context_type") or "") == CONTEXT_TYPE_REAL_LEAGUE:
         candidates.append(context)
@@ -2052,6 +2123,8 @@ def commissioner_invite_context(session: dict[str, Any]) -> dict[str, Any] | Non
     uid = _resolve_user_id(session)
     from fantasy_league_context import active_league_copy_hidden
 
+    out: list[dict[str, Any]] = []
+    seen_leagues: set[str] = set()
     for raw in candidates:
         league_context_id = str(raw.get("league_context_id") or "").strip()
         context = get_league_context(session, league_context_id) if league_context_id else raw
@@ -2060,6 +2133,11 @@ def commissioner_invite_context(session: dict[str, Any]) -> dict[str, Any] | Non
         if active_league_copy_hidden(session, context):
             continue  # a Shared League copy this account may not see: no invite panel for it
         context, _ = repair_commissioner_identity(context, session)
-        if is_league_commissioner(context, uid):
-            return context
-    return None
+        if not is_league_commissioner(context, uid):
+            continue
+        key = str(resolve_canonical_league_id(context) or league_context_id or id(context))
+        if key in seen_leagues:
+            continue
+        seen_leagues.add(key)
+        out.append(context)
+    return out

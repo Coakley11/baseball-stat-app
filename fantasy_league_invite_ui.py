@@ -500,9 +500,25 @@ def _render_pending_invites_for_commissioner(
 
 def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
     """Let the league commissioner invite another workspace/account."""
-    context = commissioner_invite_context(session)
-    if not context:
+    try:
+        from fantasy_league_invites import commissioner_invite_contexts
+
+        choices = commissioner_invite_contexts(session)
+    except ImportError:
+        one = commissioner_invite_context(session)
+        choices = [one] if one else []
+    if not choices:
         return False
+    context = choices[0]
+    if len(choices) > 1:
+        # More than one league to invite to: the commissioner picks (never assumed from the
+        # active league, which creating a league no longer changes).
+        labels = []
+        for ctx in choices:
+            name = str(ctx.get("league_name") or ctx.get("display_name") or "Shared league").strip()
+            labels.append(f"{name} · {str(resolve_canonical_league_id(ctx) or '')[-6:]}")
+        picked = st.selectbox("League to invite managers to", labels, key="commissioner_invite_league")
+        context = choices[labels.index(picked)] if picked in labels else choices[0]
     uid = ""
     try:
         from fantasy_league_invites import _resolve_user_id
