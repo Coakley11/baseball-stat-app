@@ -31,9 +31,14 @@ invitations or keys into it.
 
 In `C:\tmp\bb-invites-dev\.streamlit\secrets.toml` (git-ignored; it does not exist yet):
 
+The QA project is the existing **`baseball-qa-staging`** (owner, 2026-11-05: healthy, US East, Nano, no
+migrations recorded, no GitHub link). Use the **Legacy API keys** (JWT `anon` and `service_role`); the app
+sends the key as a Bearer token, which the newer `sb_secret_…` keys do not support.
+
 ```toml
 [qa]
-is_qa_project = true          # the launcher refuses to start without this
+is_qa_project = true          # every QA tool refuses to run without this
+project_ref = "<Reference ID from baseball-qa-staging Settings -> General>"   # not secret
 
 [suite_activity]
 supabase_url = "<QA project URL>"
@@ -44,8 +49,13 @@ suite_auth_redirect_url = "http://localhost:8611"
 suite_user_id = "qa_signed_out"
 ```
 
-Start it with `powershell -File scripts\qa\run_qa_local.ps1` (port 8611). It checks only the `[qa]` marker and
-prints no key.
+`python scripts\qa\qa_guard.py` checks the file: the marker, that `supabase_url` is
+`https://<project_ref>.supabase.co`, both keys present and legacy, sign-in on. It prints no key or URL.
+`python scripts\qa\qa_readonly_probe.py` then reads (GET only) which tables exist with row counts, the auth
+settings, the auth-user count and any rows that look copied from production. `scripts/qa/qa_schema_inspect.sql`
+(SQL editor, read-only) shows RLS, policies, columns and auth triggers.
+
+Start the app with `powershell -File scripts\qa\run_qa_local.ps1` (port 8611); it runs the guard first.
 
 Two independent sessions: one normal browser window (Danny) and one private/incognito window, or a second
 browser (Barry). Each signs in with its own QA account.
