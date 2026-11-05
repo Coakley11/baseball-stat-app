@@ -878,9 +878,52 @@ def permanently_end_live_draft(
     room_code: str = "",
     reason: str = "permanently_end_live_draft",
 ) -> dict[str, Any]:
-    """Deprecated alias — End now means discard (Save & Continue Later is the pause-for-later path)."""
+    """End this Live Draft session.
+
+    A completed Shared Draft room is only closed for this session: the room itself stays complete
+    for every participant (its record, picks and seats are what Shared Draft recovery and later
+    leagues use). Deleting a room is the separate, confirmed "End/Delete Draft for Everyone".
+    Any other draft: discard as before (Save & Continue Later is the pause-for-later path)."""
     del canonical_user_id, draft_id, room_id, room_code
+    room = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else {}
+    d_id, r_id, code = _ids_from_room(session, room)
+    if code and str(room.get("status") or "").strip().lower() in ("complete", "completed"):
+        return close_completed_shared_session(session, st=st, draft_id=d_id, room_id=r_id, room_code=code)
     return discard_live_draft_and_start_over(session, st=st, reason=reason)
+
+
+def close_completed_shared_session(
+    session: dict[str, Any],
+    *,
+    st: Any | None = None,
+    draft_id: str = "",
+    room_id: str = "",
+    room_code: str = "",
+) -> dict[str, Any]:
+    """Leave a completed Shared Draft room in this session without changing the shared room.
+
+    Writes nothing to the shared room. An account-local marker keeps this session from re-opening
+    the finished room after a refresh; saved drafts and leagues are untouched."""
+    code = str(room_code or "").strip().upper()
+    persist_durable_tombstones(session, draft_id=draft_id, room_id=room_id, room_code=code)
+    _mark_membership_left(session, code)
+    cleared = _clear_runtime_pointers(session, clear_queues=True)
+    for key in ("live_draft_room", "live_draft_state"):
+        if session.pop(key, None) is not None:
+            cleared.append(key)
+    clear_last_draft_board_snapshot(session)
+    session[DELETING_STATUS_KEY] = "done"
+    session.pop("_live_draft_controls_locked", None)
+    _clear_query_room_params(st)
+    return {
+        "ok": True,
+        "operation": "close_completed",
+        "backend_closed": False,
+        "draft_id": draft_id or None,
+        "room_id": room_id or None,
+        "room_code": code or None,
+        "cleared_keys": cleared,
+    }
 
 
 def reset_context_for_new_live_draft(
