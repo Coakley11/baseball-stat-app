@@ -75,8 +75,8 @@ class SidebarPlacementTests(unittest.TestCase):
             if "dcbe_logo" in p.read_text(encoding="utf-8", errors="ignore")
         ]
         self.assertEqual(refs, ["streamlit_app.py"])
-        # Two hero variants + the st.logo path.
-        self.assertEqual(APP.count("dcbe_logo_128.png"), 3)
+        # Two hero variants + sidebar and browser icon paths.
+        self.assertEqual(APP.count("dcbe_logo_128.png"), 4)
 
 
 if __name__ == "__main__":

@@ -467,7 +467,7 @@ ML_TARGET_STATS = ["R", "H", "2B", "3B", "HR", "RBI", "SB", "BB", "BA", "OBP", "
 ML_BASE_FEATURE_STATS = ["G", "AB", "R", "H", "2B", "3B", "HR", "RBI", "SB", "CS", "BB", "SO", "BA", "OBP", "SLG", "OPS"]
 ML_DERIVED_FEATURE_STATS = ["PA_est", "BB_rate", "K_rate", "SB_rate", "XBH", "XBH_rate", "HR_rate", "Speed_Index"]
 
-st.set_page_config(page_title="⚾ Daniel Cohen Baseball Explorer ⚾", layout="wide")
+st.set_page_config(page_title="⚾ Daniel Cohen Baseball Explorer ⚾", page_icon=str(Path(__file__).resolve().parent / "static/brand/dcbe_logo_128.png"), layout="wide")
 
 try:
     from live_draft_stage1_parent_boundary import capture_stage1_diagnostic_intents
