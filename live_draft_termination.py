@@ -906,6 +906,14 @@ def close_completed_shared_session(
     the finished room after a refresh; saved drafts and leagues are untouched."""
     code = str(room_code or "").strip().upper()
     persist_durable_tombstones(session, draft_id=draft_id, room_id=room_id, room_code=code)
+    # The next draft starts in Shared mode, as after the delete path: without this the saved mode
+    # preference stayed Solo and a setup edit switched the form back to Solo (QA run 2).
+    try:
+        from live_draft_setup_mode import SETUP_MODE_SHARED, request_live_draft_setup_mode
+
+        request_live_draft_setup_mode(session, SETUP_MODE_SHARED, persist=True, st=st)
+    except Exception:
+        pass
     _mark_membership_left(session, code)
     cleared = _clear_runtime_pointers(session, clear_queues=True)
     for key in ("live_draft_room", "live_draft_state"):

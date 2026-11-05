@@ -53,6 +53,17 @@ class EndCompletedSharedRoomTests(rec._Case):
         self.end(session)
         self.assertIn(rec.CODE, load_durable_tombstones(session)["room_codes"])  # account-local only
 
+    def test_the_next_draft_starts_in_shared_mode(self) -> None:
+        from live_draft_setup_mode import SETUP_MODE_SHARED
+
+        session = self.host_session()
+        session["live_draft_setup_mode"] = "solo"
+        session["preferred_next_draft_mode"] = "solo"
+        with mock.patch("live_draft_setup_mode.persist_live_draft_setup_mode_preference") as persist:
+            self.end(session)
+        self.assertEqual(session.get("preferred_next_draft_mode"), SETUP_MODE_SHARED)
+        persist.assert_called()
+
     def test_explicit_delete_for_everyone_still_deletes(self) -> None:
         session = self.host_session()
         with mock.patch("draft_room_shared_state.get_shared_room_store", return_value=self.store), mock.patch(
