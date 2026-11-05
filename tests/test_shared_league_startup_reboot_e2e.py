@@ -546,11 +546,15 @@ class TestSharedLeagueStartupRebootE2E(unittest.TestCase):
             draft_id=draft_id,
             league_context_id=league_context_id_a,
         )
+        # The invitee's entry is identified by the league (shared_draft_identity: league-<id>), the
+        # same id accepting gave it, so a rebuild never adds a second entry for the same league.
+        from shared_draft_identity import league_library_id
+
         self._assert_workspace_team_views(
             reboot_coakley,
             user_id="user:coakley11",
             expected_team="Team 2",
-            draft_id=draft_id,
+            draft_id=league_library_id(league_id),
             league_context_id=str(context_b.get("league_context_id") or ""),
         )
 

@@ -106,8 +106,13 @@ def build_context_from_shared_for_workspace(
     owner_external_id: str = "",
     workspace_id: str = "",
     existing: dict[str, Any] | None = None,
+    account_draft_id: str = "",
 ) -> dict[str, Any]:
-    """Seed or refresh a workspace league context from canonical shared league doc."""
+    """Seed or refresh a workspace league context from canonical shared league doc.
+
+    ``account_draft_id``: this account's own Library id for the league (the commissioner's draft
+    id, or an invitee's league-<id> from shared_draft_identity). A context the account already has
+    keeps its own source draft id; it is never re-pointed at the commissioner's."""
     from fantasy_league_context import (
         CONTEXT_TYPE_REAL_LEAGUE,
         CREATION_ORIGIN_LIVE_DRAFT_ROOM,
@@ -126,7 +131,7 @@ def build_context_from_shared_for_workspace(
     from fantasy_shared_league_store import merge_shared_into_context
 
     shared = copy.deepcopy(shared_doc)
-    draft_id = str(shared.get("draft_id") or "").strip()
+    draft_id = str(account_draft_id or shared.get("draft_id") or "").strip()
     league_id = str(shared.get("league_id") or "").strip()
     my_team = _owned_team_for_account(
         shared,
@@ -166,7 +171,9 @@ def build_context_from_shared_for_workspace(
         my_team = resolved_team
     meta = dict(merged.get("metadata") or {})
     meta["league_id"] = league_id or str(meta.get("league_id") or "").strip()
-    meta["source_draft_id"] = draft_id or str(meta.get("source_draft_id") or "").strip()
+    meta["source_draft_id"] = str(existing_meta.get("source_draft_id") or "").strip() or draft_id or str(
+        meta.get("source_draft_id") or ""
+    ).strip()
     meta["commissioner_user_id"] = str(shared.get("commissioner_user_id") or meta.get("commissioner_user_id") or "").strip()
     commissioner = str(meta.get("commissioner_user_id") or shared_doc.get("commissioner_user_id") or "").strip()
     identity_session = {

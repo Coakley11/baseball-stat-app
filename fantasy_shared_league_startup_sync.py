@@ -588,12 +588,25 @@ def rebuild_workflow_from_canonical_shared_leagues(
                 session.get("_suite_owned_workspace_id") or session.get("_suite_active_workspace_id") or ""
             ).strip()
             existing = find_league_context_by_league_id(session, league_id)
+            # This account's own id for the league: the commissioner keeps the league's draft id;
+            # an invitee gets the id accepting gives it (shared_draft_identity), so a rebuild after a
+            # lost session never creates a second entry for the same league.
+            account_draft_id = ""
+            try:
+                from fantasy_shared_league_authz import is_league_commissioner
+                from shared_draft_identity import league_library_id
+
+                if not is_league_commissioner(session, shared_doc):
+                    account_draft_id = league_library_id(league_id)
+            except ImportError:
+                account_draft_id = ""
             context = build_context_from_shared_for_workspace(
                 shared_doc,
                 owner_user_id=owner_uid,
                 owner_external_id=owner_external,
                 workspace_id=workspace_id,
                 existing=existing,
+                account_draft_id=account_draft_id,
             )
             context = apply_workspace_member_identity_from_shared(session, context, shared_doc)
             upsert_league_context(session, context, mark_persist_authoritative=False)
