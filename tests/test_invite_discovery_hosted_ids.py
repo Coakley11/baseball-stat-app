@@ -293,6 +293,27 @@ class IsolationTests(_Case):
         self.assertEqual((invite["invitee_workspace_id"], invite["invitee_user_id"]), ("ariel", "user:seal11"))
 
 
+class InviteSenderLabelTests(_Case):
+    def test_an_account_id_is_never_shown_as_the_sender(self) -> None:
+        from fantasy_league_invites import invite_sender_label
+
+        uid = "a555b840-d350-4371-bbfb-8182914ed4ea"
+        stored_before_fix = {"invited_by_user_id": uid, "invited_by_display": uid}
+        self.assertEqual(invite_sender_label(stored_before_fix), "the league commissioner")
+        self.assertEqual(invite_sender_label({**stored_before_fix, "invited_by_username": "qa_danny"}), "qa_danny")
+        self.assertEqual(invite_sender_label({"invited_by_user_id": "u1", "invited_by_display": "u1"}),
+                         "the league commissioner")
+        self.assertEqual(invite_sender_label({"invited_by_user_id": uid, "invited_by_display": "Danny C"}), "Danny C")
+
+    def test_a_new_invite_records_the_senders_username(self) -> None:
+        context, league_id = self.league()
+        invite, err = self.invite(context)
+        self.assertEqual(err, "")
+        stored = self.stored_invite(league_id, invite["invite_id"])
+        self.assertEqual(stored["invited_by_username"], "daniel")
+        self.assertNotEqual(stored["invited_by_display"], stored["invited_by_user_id"])
+
+
 class LibraryPageTests(_Case):
     """The real Saved Draft Library page (AppTest), sign-in on."""
 
@@ -336,6 +357,22 @@ class LibraryPageTests(_Case):
         at = self.app(BARRY)
         self.run_ok(at)
         self.assertNotIn("Shared league invites", self.text(at))
+
+    def test_barry_accepts_and_the_invite_leaves_his_page_at_once(self) -> None:
+        # QA run 2: after Accept the card stayed (a 15 s scan reuse) and the result never showed.
+        context, league_id = self.league()
+        invite, _err = self.invite(context)
+        at = self.app(BARRY)
+        self.run_ok(at)
+        page = self.text(at)
+        self.assertIn("Invited by **daniel**", page)  # the username, not an account id
+        self.assertNotIn(DANNY["suite"], page)
+        self.run_ok(at, next(b for b in at.button if b.label == "Accept invite").click())
+        page = self.text(at)
+        self.assertIn("Joined", page)
+        self.assertNotIn("invited to join", page)
+        self.assertFalse([b for b in at.button if b.label == "Accept invite"])
+        self.assertEqual(self.stored_invite(league_id, invite["invite_id"])["status"], "accepted")
 
     def test_an_unknown_username_message_stays_visible(self) -> None:
         # QA run 2: the refusal rendered only in the lookup's own run, inside a panel that collapsed.

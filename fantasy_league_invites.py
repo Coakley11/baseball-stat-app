@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,6 +59,33 @@ def _monotonic() -> float:
     return time.monotonic()
 
 
+PENDING_INVITE_SCAN_CACHE_KEY = "_suite_pending_invite_scan_cache"
+_ACCOUNT_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
+
+def invite_sender_label(invite: dict[str, Any] | None) -> str:
+    """Who sent an invite, as the invitee sees it: a name or username, never an account id.
+
+    Invites stored before 2026-11-05 carry the commissioner's account id as invited_by_display
+    when no display name was set; they are left as stored and only shown differently.
+    """
+    row = invite if isinstance(invite, dict) else {}
+    sender_id = str(row.get("invited_by_user_id") or "").strip()
+    for key in ("invited_by_display", "invited_by_username"):
+        value = str(row.get(key) or "").strip()
+        if value and value != sender_id and not _ACCOUNT_ID_RE.match(value):
+            return value
+    return "the league commissioner"
+
+
+def _forget_pending_invite_scan(session: dict[str, Any]) -> None:
+    """An invite this session just answered must not be served again from the short scan reuse."""
+    try:
+        session.pop(PENDING_INVITE_SCAN_CACHE_KEY, None)  # a dict, or Streamlit's session_state
+    except (AttributeError, KeyError, TypeError):
+        pass
+
+
 def _resolve_user_id(session: dict[str, Any] | None = None) -> str:
     uid = ""
     try:
@@ -93,6 +121,11 @@ def _resolve_external_id() -> str:
         return str(get_external_user_id() or "").strip().lower()
     except ImportError:
         return ""
+
+
+def _sender_username() -> str:
+    name = str(_resolve_external_id() or "").strip()
+    return "" if name in ("user_unidentified", "guest_unscoped") else name
 
 
 def _resolve_display_name() -> str:
@@ -609,7 +642,8 @@ def create_league_invite(
         "draft_id": str((context.get("metadata") or {}).get("source_draft_id") or "").strip(),
         "status": INVITE_STATUS_PENDING,
         "invited_by_user_id": uid,
-        "invited_by_display": _resolve_display_name() or uid,
+        "invited_by_display": _resolve_display_name(),
+        "invited_by_username": _sender_username(),
         "invitee_user_id": str(target.get("invitee_user_id") or "").strip(),
         "invitee_external_id": str(target.get("invitee_external_id") or "").strip(),
         "invitee_workspace_id": invite_ws,
@@ -813,6 +847,7 @@ def _enrich_pending_invite(
     if str(invite.get("status") or "") != INVITE_STATUS_PENDING:
         return None
     out = copy.deepcopy(invite)
+    out["invited_by_display"] = invite_sender_label(invite)
     out["league_name"] = str(
         invite.get("league_name")
         or invite_ref.get("league_name")
@@ -957,7 +992,7 @@ def scan_pending_invites_from_shared_leagues(
             str(session.get("_suite_cloud_session_revision") or ""),
         ]
     )
-    cached = session.get("_suite_pending_invite_scan_cache")
+    cached = session.get(PENDING_INVITE_SCAN_CACHE_KEY)
     # The key is this account's own identity and save revision, which a commissioner's new invite
     # never changes; so a scan is reused for a few seconds only, or an invite sent while this
     # account is signed in would never show in this session.
@@ -997,13 +1032,11 @@ def scan_pending_invites_from_shared_leagues(
             invite["league_name"] = str(
                 invite.get("league_name") or doc.get("league_name") or league_id
             ).strip()
-            invite["invited_by_display"] = str(
-                invite.get("invited_by_display") or doc.get("commissioner_user_id") or "League commissioner"
-            ).strip()
+            invite["invited_by_display"] = invite_sender_label(invite)
             invite["lookup_source"] = "shared_league_scan"
             pending.append(invite)
     pending.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
-    session["_suite_pending_invite_scan_cache"] = {
+    session[PENDING_INVITE_SCAN_CACHE_KEY] = {
         "fp": warm_fp,
         "at": _monotonic(),
         "invites": [dict(row) for row in pending],
@@ -1415,6 +1448,7 @@ def join_shared_league_from_invite(
         log_team_claimed(saved_context, team=team, invite_id=invite_id)
     except Exception:
         pass
+    _forget_pending_invite_scan(session)
     return entry, saved_context, ""
 
 
@@ -1589,6 +1623,7 @@ def decline_league_invite(
         log_shared_league_invite_declined(None, invite)
     except Exception:
         pass
+    _forget_pending_invite_scan(session)
     return True, ""
 
 

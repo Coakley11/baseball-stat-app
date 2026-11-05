@@ -12,6 +12,7 @@ from fantasy_league_invites import (
     commissioner_invite_diagnostics,
     create_league_invite,
     decline_league_invite,
+    invite_sender_label,
     is_league_commissioner,
     join_shared_league_from_invite,
     list_pending_invites_for_session,
@@ -178,8 +179,15 @@ def _render_last_invite_submit_section(st: Any, submit: dict[str, Any] | None) -
             st.json(snap)
 
 
+INVITE_RESULT_KEY = "_league_invite_result_flash"
+
+
 def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
     """Surface pending shared-league invites at the top of Saved Draft Library."""
+    # Accept / Decline rerun the page at once; their result shows on that next render.
+    result = session.pop(INVITE_RESULT_KEY, None)
+    if isinstance(result, dict) and str(result.get("message") or "").strip():
+        st.success(str(result["message"]))
     # Commissioner notices for responses — accepted/declined invites leave the library UI.
     try:
         from fantasy_league_invites import (
@@ -261,7 +269,7 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
         league_id = str(invite.get("league_id") or "").strip()
         invite_id = str(invite.get("invite_id") or "").strip()
         league_name = str(invite.get("league_name") or league_id).strip()
-        invited_by = str(invite.get("invited_by_display") or "League commissioner").strip()
+        invited_by = invite_sender_label(invite)
         key_base = f"invite_{invite_id}"
 
         st.info(
@@ -279,7 +287,7 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
                 if err:
                     st.error(err)
                 else:
-                    st.success("Invite declined.")
+                    session[INVITE_RESULT_KEY] = {"message": "Invite declined."}
                     st.rerun()
             continue
 
@@ -305,10 +313,10 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
                 else:
                     title = str((entry or {}).get("draft_name") or league_name)
                     team = str((entry or {}).get("team_name") or pick)
-                    st.success(
-                        f"Joined **{title}** as **{team}**. "
+                    session[INVITE_RESULT_KEY] = {
+                        "message": f"Joined **{title}** as **{team}**. "
                         "The league is now in your Saved Draft Library."
-                    )
+                    }
                     st.rerun()
         with decline_col:
             if st.button("Decline", key=f"{key_base}_decline"):
@@ -316,7 +324,7 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
                 if err:
                     st.error(err)
                 elif ok:
-                    st.success("Invite declined.")
+                    session[INVITE_RESULT_KEY] = {"message": "Invite declined."}
                     st.rerun()
         st.divider()
     return True
