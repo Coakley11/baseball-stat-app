@@ -70,6 +70,9 @@ _SHARED_ROOM_HEAVY_KEYS = frozenset(
 )
 
 
+PER_VIEWER_CONFIG_KEYS = frozenset({"your_team", "user_team"})
+
+
 def strip_shared_room_heavy_payload(room_blob: dict[str, Any] | None) -> dict[str, Any]:
     """Keep only canonical shared draft state — drop pools and derived tables."""
     if not isinstance(room_blob, dict):
@@ -78,6 +81,12 @@ def strip_shared_room_heavy_payload(room_blob: dict[str, Any] | None) -> dict[st
     for key in _SHARED_ROOM_HEAVY_KEYS:
         out.pop(key, None)
     out.pop("pool", None)
+    # "your_team" is per viewer: each participant's team is their seat (participants), never one
+    # stored value. Whoever wrote last used to leave theirs here, and other participants then saw
+    # "Your team: <someone else>" (QA 2026-11-05). Each session sets it from its own seat on read.
+    cfg = out.get("config")
+    if isinstance(cfg, dict) and ("your_team" in cfg or "user_team" in cfg):
+        out["config"] = {k: v for k, v in cfg.items() if k not in PER_VIEWER_CONFIG_KEYS}
     return out
 
 _PARTICIPANT_PUBLIC_KEYS = frozenset(
@@ -1329,6 +1338,20 @@ def publish_shared_room_runtime(
                 runtime["pool"] = fallback
 
     session.pop("_draft_room_publish_error", None)
+    # This session's own team, from its seat: the shared room stores no viewer's "your_team".
+    try:
+        from draft_room_participant_state import active_participant_team
+
+        seat_team = str(active_participant_team(session) or "").strip()
+    except Exception:
+        seat_team = ""
+    run_cfg = dict(runtime.get("config") or {})
+    for key in PER_VIEWER_CONFIG_KEYS:
+        run_cfg.pop(key, None)
+    if seat_team:
+        run_cfg["your_team"] = seat_team
+        run_cfg["user_team"] = seat_team
+    runtime["config"] = run_cfg
     session[LIVE_DRAFT_ROOM_KEY] = runtime
     session[ACTIVE_SHARED_ROOM_CODE_KEY] = str(document.get("room_code") or "").strip().upper()
     meta = {
