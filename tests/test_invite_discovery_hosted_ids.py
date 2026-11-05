@@ -414,6 +414,22 @@ class LibraryPageTests(_Case):
         with self.on():
             self.assertEqual((load_shared_league(league_id) or {}).get("league_invites") or [], [])
 
+    def test_the_run_that_sends_shows_the_new_invite_and_no_send_button(self) -> None:
+        # QA run 2: after Send the page still showed the confirm step and a list without the invite.
+        context, league_id = self.league()
+        at = self.app(DANNY, extra=self.owner_session)
+        self.run_ok(at)
+        at.text_input(key="commissioner_invite_target").set_value("user_coakley11")
+        self.run_ok(at, next(b for b in at.button if b.label == "Find account").click())
+        self.run_ok(at, at.checkbox(key="commissioner_invite_confirm_user_coakley11").check())
+        self.run_ok(at, at.button(key="commissioner_invite_send").click())
+        with self.on():
+            invalidate_shared_league_doc_cache()
+            (invite,) = load_shared_league(league_id)["league_invites"]
+        self.assertFalse([b for b in at.button if b.key == "commissioner_invite_send"])
+        self.assertIn("Invite to **user_coakley11**", self.text(at))
+        self.assertTrue([b for b in at.button if b.key == f"invite_revoke_{invite['invite_id']}"])
+
     def test_danny_finds_confirms_and_sends_then_cancels_the_wrong_invite(self) -> None:
         context, league_id = self.league()
         wrong = self.legacy_invite(context)

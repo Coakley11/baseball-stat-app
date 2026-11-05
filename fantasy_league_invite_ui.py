@@ -591,7 +591,8 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
     lookup_error = session.get(INVITE_LOOKUP_ERROR_KEY)
     if not (isinstance(lookup_error, dict) and lookup_error.get("league_id") == league_id):
         lookup_error = None
-    with st.expander("Invite managers to this shared league", expanded=isinstance(preview, dict) or bool(lookup_error)):
+    panel = st.expander("Invite managers to this shared league", expanded=isinstance(preview, dict) or bool(lookup_error))
+    with panel:
         st.caption(
             f"Invite another account to join **{league_name}**. "
             "They will see the invite in their Saved Draft Library, claim a team, "
@@ -620,7 +621,12 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
                 session[INVITE_LOOKUP_ERROR_KEY] = lookup_error
         if lookup_error:
             st.error(str(lookup_error.get("message") or ""))
-        if isinstance(preview, dict):
+        # The confirm step goes in a slot that a successful send clears, and the pending list is drawn
+        # after the send: otherwise the run that sent kept showing the Send button and a list without
+        # the new invite (QA run 2).
+        confirm_slot = st.empty()
+    if isinstance(preview, dict):
+        with confirm_slot.container():
             st.markdown(f"Username **{preview.get('username')}** belongs to an existing Baseball account.")
             if preview.get("seat_team"):
                 st.caption(f"This account played team **{preview['seat_team']}** in this league's Shared Draft.")
@@ -631,7 +637,6 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
             if st.button("Send invite", key="commissioner_invite_send", type="primary", disabled=not sure):
                 submitted = bool(sure)
                 target = str(preview.get("target") or "")
-        _render_pending_invites_for_commissioner(st, session, context, league_id)
 
     if submitted:
         target_trimmed = str(target or "").strip()
@@ -666,6 +671,7 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
             session["_last_commissioner_invite_submit_error"] = err
             st.error(err)
         elif invite:
+            confirm_slot.empty()
             session.pop("_last_commissioner_invite_submit_error", None)
             session["_last_commissioner_invite_sent"] = dict(invite)
             ws = str(invite.get("invitee_workspace_id") or target_trimmed).strip()
@@ -706,4 +712,6 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
             session["_last_commissioner_invite_submit_error"] = msg
             record_invite_submit_trace(session, create_error=msg)
             st.error(msg)
+    with panel:
+        _render_pending_invites_for_commissioner(st, session, context, league_id)
     return True
