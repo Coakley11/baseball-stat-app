@@ -14,6 +14,10 @@ from typing import Any
 
 MEMORY_KEY = "_live_draft_setup_memory"
 _PREFIXES = ("live_draft_team_name_", "live_slot_")
+# Draft Mode has its own persistence (a pending value applied before the radio, the preferred next
+# mode and the saved preference). Putting back an older remembered mode would override a mode the
+# user just chose (QA 2026-11-05: Shared reverted to Solo), so it is never remembered here.
+_NOT_REMEMBERED = frozenset({"live_draft_setup_mode", "preferred_next_draft_mode"})
 
 
 def _setup_keys() -> tuple[str, ...]:
@@ -27,6 +31,8 @@ def _setup_keys() -> tuple[str, ...]:
 
 def _is_setup_key(key: Any) -> bool:
     k = str(key)
+    if k in _NOT_REMEMBERED:
+        return False
     return k in _setup_keys() or k.startswith(_PREFIXES)
 
 
@@ -39,7 +45,7 @@ def remember_and_restore_live_draft_setup(session: Any) -> list[str]:
     memory = dict(memory) if isinstance(memory, dict) else {}
     restored: list[str] = []
     for key, value in memory.items():
-        if key not in session:
+        if key not in session and _is_setup_key(key):
             session[key] = value
             restored.append(key)
     for key in list(session.keys()):

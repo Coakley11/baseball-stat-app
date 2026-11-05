@@ -39,6 +39,18 @@ class SetupMemoryTests(unittest.TestCase):
         self.assertEqual(session["live_draft_league_name"], "Renamed")
         self.assertEqual(session[MEMORY_KEY]["live_draft_league_name"], "Renamed")
 
+    def test_draft_mode_is_never_put_back(self) -> None:
+        # Draft Mode has its own pending/preferred-mode persistence; an old remembered "solo" must
+        # never override a Shared mode the user just chose (QA run 2).
+        session = {**ENTERED, "live_draft_setup_mode": "solo", "preferred_next_draft_mode": "solo"}
+        remember_and_restore_live_draft_setup(session)
+        self.assertNotIn("live_draft_setup_mode", session[MEMORY_KEY])
+        session.pop("live_draft_setup_mode")
+        session.pop("preferred_next_draft_mode")
+        remember_and_restore_live_draft_setup(session)
+        self.assertNotIn("live_draft_setup_mode", session)
+        self.assertNotIn("preferred_next_draft_mode", session)
+
     def test_unrelated_keys_are_not_remembered(self) -> None:
         session = {"active_page": "Home", **ENTERED}
         remember_and_restore_live_draft_setup(session)
