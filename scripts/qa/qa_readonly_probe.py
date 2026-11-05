@@ -31,7 +31,7 @@ PRODUCTION_MARKERS = {  # existence counts only, never values
 def _count(base: str, key: str, table: str, extra: str = "") -> tuple[str, str]:
     r = requests.get(f"{base}/rest/v1/{table}?select=*&limit=1{extra}", timeout=15,
                      headers={"apikey": key, "Authorization": f"Bearer {key}", "Prefer": "count=exact"})
-    if r.status_code == 200:
+    if r.status_code in (200, 206):  # 206: exists, more rows than the 1 requested
         total = (r.headers.get("Content-Range") or "*/?").split("/")[-1]
         return "exists", total
     if r.status_code in (404, 400) and ("PGRST205" in r.text or "does not exist" in r.text or "schema cache" in r.text):
@@ -81,6 +81,26 @@ def main() -> int:
         print(f"  users={len(users)} confirmed={confirmed}")
     else:
         print(f"  users: http {r.status_code}")
+    print("== What is already there (GET; no keys, no row contents)")
+    hdr = {"apikey": service, "Authorization": f"Bearer {service}"}
+    known = {"daniel", "coakley11", "user_coakley11", "ariel"}
+    r = requests.get(f"{base}/rest/v1/suite_users?select=external_id,created_at&order=created_at", headers=hdr, timeout=15)
+    for row in (r.json() if r.ok else []):
+        ext = str(row.get("external_id") or "")
+        label = ext if ext in known or ext in ("default",) else "other"
+        print(f"  suite_users: username={label:16s} created={str(row.get('created_at') or '')[:10]}")
+    r = requests.get(f"{base}/rest/v1/suite_app_current_state?select=app,updated_at,user_id", headers=hdr, timeout=15)
+    for row in (r.json() if r.ok else []):
+        app = str(row.get("app") or "")
+        print(f"  app_state: app={app.split('__')[0] + ('__<workspace>' if '__' in app else ''):20s} updated={str(row.get('updated_at') or '')[:16]} has_user={bool(row.get('user_id'))}")
+    r = requests.get(f"{base}/rest/v1/subscriptions?select=*&limit=5", headers=hdr, timeout=15)
+    for row in (r.json() if r.ok else []):
+        print(f"  subscriptions: columns={sorted(row)[:12]} status={row.get('status')}")
+    r = requests.get(f"{base}/auth/v1/admin/users?page=1&per_page=50", headers=hdr, timeout=15)
+    for u in ((r.json() or {}).get("users") or [] if r.ok else []):
+        email = str(u.get("email") or "")
+        masked = (email[:2] + "***@" + email.split("@")[-1]) if "@" in email else "-"
+        print(f"  auth user: {masked:28s} created={str(u.get('created_at') or '')[:10]} last_sign_in={str(u.get('last_sign_in_at') or '')[:10]}")
     print("Nothing was written.")
     return 0
 
