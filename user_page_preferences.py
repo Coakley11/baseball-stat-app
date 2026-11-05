@@ -483,6 +483,12 @@ def reset_live_draft_setup_to_defaults(
 ) -> dict[str, Any]:
     """Reset persisted + session setup to defaults (does not wipe an active draft board)."""
     defaults = default_live_draft_setup_settings()
+    try:
+        from live_draft_setup_memory import forget_live_draft_setup
+
+        forget_live_draft_setup(session)  # a reset must not be undone by the remembered values
+    except ImportError:
+        pass
     session["_live_draft_setup_force_mode_apply"] = True
     try:
         apply_live_draft_setup_settings(session, defaults)

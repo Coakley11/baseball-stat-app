@@ -14571,6 +14571,14 @@ try:
     apply_pending_league_context_activation(st.session_state)
 except ImportError:
     pass
+try:
+    # Every run, on every page: keep the Live Draft setup form's entered values even on runs that
+    # do not draw the form (Streamlit drops undrawn widgets' values), so a retry uses them.
+    from live_draft_setup_memory import remember_and_restore_live_draft_setup
+
+    remember_and_restore_live_draft_setup(st.session_state)
+except ImportError:
+    pass
 
 try:
     from draft_lab_resume import apply_baseball_suite_resume, apply_draft_lab_resume
