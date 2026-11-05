@@ -78,6 +78,36 @@ def invite_sender_label(invite: dict[str, Any] | None) -> str:
     return "the league commissioner"
 
 
+def _is_account_id(value: str, *ids: str) -> bool:
+    return bool(_ACCOUNT_ID_RE.match(value)) or value in {i for i in ids if i}
+
+
+def invitee_label(invite: dict[str, Any] | None) -> str:
+    """Who an invite was sent to, as the commissioner sees it: never an account id."""
+    row = invite if isinstance(invite, dict) else {}
+    own_id = str(row.get("invitee_user_id") or "").strip()
+    for key in ("invitee_display_name", "invitee_username", "invitee_external_id", "invitee_email"):
+        value = str(row.get(key) or "").strip()
+        if value and not _is_account_id(value, own_id):
+            return value
+    return "The invited manager"
+
+
+def _readable_response_message(raw: dict[str, Any], doc: dict[str, Any]) -> str:
+    """A stored accept/decline notice, with a leading account id (notices stored before
+    2026-11-05) shown as the invitee's username. The stored notice is not changed."""
+    message = str(raw.get("message") or "").strip()
+    first, _, rest = message.partition(" ")
+    if not rest or not _is_account_id(first, str(raw.get("responder_user_id") or "").strip()):
+        return message
+    invite_id = str(raw.get("invite_id") or "").strip()
+    invite = next(
+        (i for i in doc.get("league_invites") or [] if isinstance(i, dict) and str(i.get("invite_id") or "") == invite_id),
+        {},
+    )
+    return f"{invitee_label(invite)} {rest}"
+
+
 def _forget_pending_invite_scan(session: dict[str, Any]) -> None:
     """An invite this session just answered must not be served again from the short scan reuse."""
     try:
@@ -1502,13 +1532,7 @@ def _append_invite_response_activity(
 ) -> None:
     """Record accept/decline on the shared league so the commissioner can see it."""
     activities = [dict(x) for x in (shared.get("league_activity") or []) if isinstance(x, dict)]
-    invitee = str(
-        invite.get("invitee_display_name")
-        or invite.get("invitee_username")
-        or invite.get("invitee_email")
-        or invite.get("invitee_user_id")
-        or "Invitee"
-    ).strip()
+    invitee = invitee_label(invite)
     league_name = str(invite.get("league_name") or shared.get("league_name") or "your league").strip()
     if status == INVITE_STATUS_ACCEPTED and team_name:
         message = f"{invitee} accepted your invitation and claimed {team_name}"
@@ -1542,12 +1566,7 @@ def _notify_invite_response_activity(
     league_name: str = "",
 ) -> None:
     """Queue a session flash for invite responses (invitee-side write; commissioner reads shared)."""
-    invitee = str(
-        invite.get("invitee_display_name")
-        or invite.get("invitee_username")
-        or invite.get("invitee_email")
-        or "Invitee"
-    ).strip()
+    invitee = invitee_label(invite)
     name = str(league_name or invite.get("league_name") or "your league").strip()
     if status == INVITE_STATUS_ACCEPTED:
         message = f"{invitee} accepted your invitation"
@@ -1660,7 +1679,7 @@ def list_commissioner_invite_response_notifications(
                     {
                         "alert_key": aid,
                         "kind": kind,
-                        "message": str(raw.get("message") or "").strip(),
+                        "message": _readable_response_message(raw, doc),
                         "league_id": str(raw.get("league_id") or doc.get("league_id") or "").strip(),
                         "created_at": str(raw.get("created_at") or "").strip(),
                     }

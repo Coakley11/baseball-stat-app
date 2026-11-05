@@ -305,6 +305,32 @@ class InviteSenderLabelTests(_Case):
                          "the league commissioner")
         self.assertEqual(invite_sender_label({"invited_by_user_id": uid, "invited_by_display": "Danny C"}), "Danny C")
 
+    def test_the_commissioner_sees_the_invitees_username_not_an_account_id(self) -> None:
+        from fantasy_league_invites import (
+            _readable_response_message,
+            invitee_label,
+            list_commissioner_invite_response_notifications,
+        )
+
+        uid = "b243eff8-09fe-41cb-855a-c28848de116a"
+        self.assertEqual(invitee_label({"invitee_user_id": uid, "invitee_external_id": "qa_barry"}), "qa_barry")
+        self.assertEqual(invitee_label({"invitee_user_id": uid}), "The invited manager")
+        stored_before_fix = {"invite_id": "inv_1", "responder_user_id": uid,
+                             "message": f"{uid} accepted your invitation and claimed Barry"}
+        doc = {"league_invites": [{"invite_id": "inv_1", "invitee_user_id": uid, "invitee_external_id": "qa_barry"}]}
+        self.assertEqual(_readable_response_message(stored_before_fix, doc),
+                         "qa_barry accepted your invitation and claimed Barry")
+        # The real path: Barry accepts, Danny's Library reads the notice.
+        context, league_id = self.league()
+        invite, _err = self.invite(context)
+        team = self.open_team(league_id)
+        _entry, _ctx, err = self.accept(_signed_in(BARRY), BARRY, league_id, invite["invite_id"], team)
+        self.assertEqual(err, "")
+        with self.on(), self.as_account(DANNY):
+            notes = list_commissioner_invite_response_notifications(self.danny_session)
+        self.assertIn(f"user_coakley11 accepted your invitation and claimed {team}", [n["message"] for n in notes])
+        self.assertFalse([n for n in notes if BARRY["suite"] in n["message"] or BARRY["auth"] in n["message"]])
+
     def test_a_new_invite_records_the_senders_username(self) -> None:
         context, league_id = self.league()
         invite, err = self.invite(context)
