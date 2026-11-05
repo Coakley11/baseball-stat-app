@@ -184,7 +184,11 @@ class InviteOriginTests(unittest.TestCase):
             "revision": 3,
         }
 
+        # Both id helpers read the same signed-in account (suite_user.get_account_user_id); accepting
+        # re-reads the stored claim and requires it to be this account's.
         with patch("fantasy_league_invites._resolve_user_id", return_value="user:coakley11"), patch(
+            "fantasy_league_team_ownership._resolve_user_id", return_value="user:coakley11"
+        ), patch(
             "fantasy_league_invites._resolve_external_id", return_value="coakley11"
         ), patch(
             "fantasy_league_invites._resolve_workspace_id", return_value="coakley11"
