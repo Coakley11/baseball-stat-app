@@ -1193,14 +1193,19 @@ def sync_workspace_protocol(
     # to the saved page; an apply later in the session (a merge after a save, another device's newer
     # save) keeps the page the user is on. Without this, creating or joining a Shared Draft room
     # (a save that merged with a newer cloud copy) sent the user to the copy's saved page, Home.
+    # "First restore" is this browser session's first applied state, recorded once: the workspace
+    # synced flag is not reliable for this (it is cleared whenever the cloud copy is newer than disk,
+    # which on hosted is almost every sync).
+    page_restored_key = f"_suite_session_page_restored::{app_id}"
     keep_page = None
-    if not first_sync:
+    if st.session_state.get(page_restored_key):
         ss = st.session_state
         current = str(ss.get("active_page") or "").strip()
         if current:
             keep_page = (current, ss.get("main_sidebar_page"), "_navigate_to_page" in ss)
     try:
         apply_state(st, to_apply)
+        st.session_state[page_restored_key] = True
         if keep_page is not None:
             ss = st.session_state
             if str(ss.get("active_page") or "").strip() != keep_page[0]:
