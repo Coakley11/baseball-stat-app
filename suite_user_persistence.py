@@ -1189,8 +1189,27 @@ def sync_workspace_protocol(
                 "local_kept": local_contributed,
                 "conflicts": [wm.conflict_label(p) for p in conflicts],
             }
+    # The page is this browser tab's, not account data. Only the first restore of a session returns
+    # to the saved page; an apply later in the session (a merge after a save, another device's newer
+    # save) keeps the page the user is on. Without this, creating or joining a Shared Draft room
+    # (a save that merged with a newer cloud copy) sent the user to the copy's saved page, Home.
+    keep_page = None
+    if not first_sync:
+        ss = st.session_state
+        current = str(ss.get("active_page") or "").strip()
+        if current:
+            keep_page = (current, ss.get("main_sidebar_page"), "_navigate_to_page" in ss)
     try:
         apply_state(st, to_apply)
+        if keep_page is not None:
+            ss = st.session_state
+            if str(ss.get("active_page") or "").strip() != keep_page[0]:
+                ss["_suite_reapply_page_kept"] = {"kept": keep_page[0], "blob_page": ss.get("active_page")}
+            ss["active_page"] = keep_page[0]
+            if keep_page[1]:
+                ss["main_sidebar_page"] = keep_page[1]
+            if not keep_page[2]:
+                ss.pop("_navigate_to_page", None)  # a navigation the apply added, not the user
     except Exception as exc:
         reason = f"apply_state failed: {exc}"
         st.session_state["_suite_persist_restore_skip_reason"] = reason
