@@ -337,6 +337,20 @@ class LibraryPageTests(_Case):
         self.run_ok(at)
         self.assertNotIn("Shared league invites", self.text(at))
 
+    def test_an_unknown_username_message_stays_visible(self) -> None:
+        # QA run 2: the refusal rendered only in the lookup's own run, inside a panel that collapsed.
+        context, league_id = self.league()
+        at = self.app(DANNY, extra=self.owner_session)
+        self.run_ok(at)
+        at.text_input(key="commissioner_invite_target").set_value("qa_nobody_here")
+        self.run_ok(at, next(b for b in at.button if b.label == "Find account").click())
+        self.assertIn("No Baseball account has the username 'qa_nobody_here'", self.text(at))
+        self.run_ok(at)  # any later rerun
+        self.assertIn("No Baseball account has the username 'qa_nobody_here'", self.text(at))
+        self.assertFalse([b for b in at.button if b.key == "commissioner_invite_send"])
+        with self.on():
+            self.assertEqual((load_shared_league(league_id) or {}).get("league_invites") or [], [])
+
     def test_danny_finds_confirms_and_sends_then_cancels_the_wrong_invite(self) -> None:
         context, league_id = self.league()
         wrong = self.legacy_invite(context)

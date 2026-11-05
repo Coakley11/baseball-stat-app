@@ -23,6 +23,7 @@ from fantasy_league_invites import (
 )
 
 INVITE_PREVIEW_KEY = "_commissioner_invite_preview"
+INVITE_LOOKUP_ERROR_KEY = "_commissioner_invite_lookup_error"
 REVOKE_CONFIRM_KEY = "_commissioner_invite_revoke_confirm"
 
 
@@ -577,7 +578,12 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
     preview = session.get(INVITE_PREVIEW_KEY)
     if isinstance(preview, dict) and str(preview.get("league_id") or "") != league_id:
         preview = None
-    with st.expander("Invite managers to this shared league", expanded=isinstance(preview, dict)):
+    # A refused lookup stays on screen (and the panel open) until the next lookup or send; it used to
+    # render only in the lookup's own run, inside a panel that had just collapsed (QA run 2).
+    lookup_error = session.get(INVITE_LOOKUP_ERROR_KEY)
+    if not (isinstance(lookup_error, dict) and lookup_error.get("league_id") == league_id):
+        lookup_error = None
+    with st.expander("Invite managers to this shared league", expanded=isinstance(preview, dict) or bool(lookup_error)):
         st.caption(
             f"Invite another account to join **{league_name}**. "
             "They will see the invite in their Saved Draft Library, claim a team, "
@@ -596,10 +602,16 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
             if found.get("ok"):
                 preview = dict(found, target=str(lookup_target or "").strip())
                 session[INVITE_PREVIEW_KEY] = preview
+                session.pop(INVITE_LOOKUP_ERROR_KEY, None)
+                lookup_error = None
             else:
                 preview = None
                 session.pop(INVITE_PREVIEW_KEY, None)
-                st.error(str(found.get("error") or "That username can't be invited."))
+                lookup_error = {"league_id": league_id,
+                                "message": str(found.get("error") or "That username can't be invited.")}
+                session[INVITE_LOOKUP_ERROR_KEY] = lookup_error
+        if lookup_error:
+            st.error(str(lookup_error.get("message") or ""))
         if isinstance(preview, dict):
             st.markdown(f"Username **{preview.get('username')}** belongs to an existing Baseball account.")
             if preview.get("seat_team"):
@@ -629,6 +641,7 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
         )
         confirmed_uid = str((preview or {}).get("invitee_user_id") or "") if isinstance(preview, dict) else ""
         session.pop(INVITE_PREVIEW_KEY, None)
+        session.pop(INVITE_LOOKUP_ERROR_KEY, None)
         invite, err = create_league_invite(
             session, context, invitee_target=target_trimmed, confirmed_invitee_user_id=confirmed_uid
         )
