@@ -915,6 +915,12 @@ def _streamlit_script_run_ctx_active() -> bool:
 def render_global_app_chrome(active_page: str) -> None:
     """Blue brand bar with the existing logo on every page."""
     try:
+        from action_icons import inject_action_styles
+
+        inject_action_styles(st)  # button icon sizing, danger styling, suite navigation row
+    except ImportError:
+        pass
+    try:
         from mobile_nav_m2 import render_mobile_quick_nav
 
         render_mobile_quick_nav(

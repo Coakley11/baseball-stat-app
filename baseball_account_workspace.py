@@ -8,6 +8,8 @@ Command Center / Saved session chrome above Choose Page.
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from typing import Any, Callable
 
 __all__ = ("render_baseball_account_workspace_control",)
@@ -50,22 +52,63 @@ def _signed_in_email(ctx: dict[str, Any], session_state: dict[str, Any]) -> str:
     return ""
 
 
-def _render_command_center_entry(st: Any) -> None:
+def _command_center_href(st: Any) -> str:
     try:
         from suite_command_center_link import command_center_url
         from suite_workspace import get_active_workspace_id
 
-        url = command_center_url(workspace_id=get_active_workspace_id(st))
+        return command_center_url(workspace_id=get_active_workspace_id(st))
     except Exception:
         try:
             from suite_command_center_link import command_center_url
 
-            url = command_center_url()
+            return command_center_url()
         except Exception:
-            return
-    if not url:
-        return
-    st.link_button("← Command Center", url, use_container_width=True)
+            return ""
+
+
+def _go_home(session_state: Any) -> None:
+    """Button callback: open Baseball Explorer's Home on the next run (the app's navigation contract,
+    baseball_monetization_ui.schedule_page / streamlit_app.navigate_to_page)."""
+    session_state["_navigate_to_page"] = "Home"
+    session_state["_suite_page_user_nav"] = True
+
+
+def _render_suite_navigation(st: Any) -> None:
+    """Icon-only suite navigation: the approved Command Center logo (opens Command Center) and a
+    house (Baseball Explorer Home). Each has a tooltip; the logo link has an accessible name."""
+    try:
+        from action_icons import HOME
+    except ImportError:
+        HOME = ":material/home:"
+    url = _command_center_href(st)
+    with st.container(key="bx-suite-nav"):
+        logo_col, home_col, _spacer = st.columns([1, 1, 3])
+        with logo_col:
+            shown = False
+            if url:
+                try:
+                    from suite_brand_assets import render_command_center_logo_link
+
+                    shown = render_command_center_logo_link(st, url)
+                except ImportError:
+                    shown = False
+                if not shown:
+                    st.link_button("Command Center", url, help="Open Command Center")
+        with home_col:
+            st.button(
+                "",
+                key="suite_nav_home_btn",
+                icon=HOME,
+                help="Baseball Explorer Home",
+                on_click=_go_home,
+                args=(st.session_state,),
+            )
+
+
+def _render_command_center_entry(st: Any) -> None:
+    """Kept for callers outside this module: the suite navigation row."""
+    _render_suite_navigation(st)
 
 
 def _render_saved_sessions_section(
@@ -132,7 +175,7 @@ def _render_logout_entry(st: Any, session_state: dict[str, Any]) -> None:
         from suite_auth import is_auth_enabled, is_authenticated, logout
 
         if is_auth_enabled() and is_authenticated(session_state):
-            if st.button("Log out", key="suite_account_workspace_logout_btn", use_container_width=True):
+            if st.button("Log out", key="suite_account_workspace_logout_btn", icon=_icons.LOG_OUT, use_container_width=True):
                 logout(session_state, st=st)
                 st.rerun()
     except ImportError:
@@ -149,6 +192,7 @@ def _render_consolidated_body(
     reset_label: str,
     reset_help: str,
 ) -> None:
+    _render_suite_navigation(st)
     email = _signed_in_email(ctx, session_state)
     if email:
         st.markdown(f"Signed in as **{email}**")
@@ -171,9 +215,6 @@ def _render_consolidated_body(
         st.divider()
         st.caption("Subscription details are temporarily unavailable.")
 
-    st.divider()
-    st.markdown("**Command Center**")
-    _render_command_center_entry(st)
     st.divider()
     _render_saved_sessions_section(
         st,
@@ -268,6 +309,7 @@ def render_baseball_account_workspace_control(
             expanded=open_login or True,
             key="suite_account_workspace_expander",
         ):
+            _render_suite_navigation(st)
             st.markdown("**Not signed in**")
             if _shared_drafts_require_sign_in():
                 st.caption(
@@ -281,9 +323,6 @@ def render_baseball_account_workspace_control(
                     "with a Real Account to sync suite data across devices."
                 )
             render_auth_panel(st, expanded=True, show_signed_in_status=False, flat_sidebar=True)
-            st.divider()
-            st.markdown("**Command Center**")
-            _render_command_center_entry(st)
             st.divider()
             _render_saved_sessions_section(
                 st,

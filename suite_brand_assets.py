@@ -19,6 +19,23 @@ def brand_data_uri(name: str) -> str:
     mime = "image/webp" if path.suffix == ".webp" else "image/png"
     return "data:" + mime + ";base64," + base64.b64encode(path.read_bytes()).decode("ascii")
 
+def render_command_center_logo_link(target, url: str, *, name: str = "Open Command Center", size: int = 30) -> bool:
+    """The approved Command Center logo as the whole control (no words), with a tooltip and an
+    accessible name. Opens the already-resolved URL in a new tab, as the text link did."""
+    logo = brand_data_uri("command_emblem_96")
+    if not logo or not url or not callable(getattr(target, "markdown", None)):
+        return False
+    target.markdown(
+        '<a class="bx-cc-logo" href="' + html.escape(url, quote=True) + '" target="_blank" '
+        'rel="noopener noreferrer" title="' + html.escape(name, quote=True) + '" '
+        'aria-label="' + html.escape(name, quote=True) + '">'
+        '<img src="' + logo + '" alt="Command Center" width="' + str(int(size)) + '" height="'
+        + str(int(size)) + '" style="object-fit:contain;border-radius:6px"></a>',
+        unsafe_allow_html=True,
+    )
+    return True
+
+
 def render_command_center_brand_link(target, label: str, url: str) -> bool:
     """Decorate the already-resolved navigation URL without changing its query or target."""
     logo = brand_data_uri("command_emblem_96")

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from typing import Any
 
 from fantasy_league_invites import (
@@ -282,7 +284,7 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
         teams = unclaimed_teams_for_invite(shared, session=session)
         if not teams:
             st.warning("No unclaimed teams remain in this league.")
-            if st.button("Decline invite", key=f"{key_base}_decline_no_teams"):
+            if st.button("Decline invite", key=f"{key_base}_decline_no_teams", icon=_icons.DECLINE):
                 ok, err = decline_league_invite(session, league_id=league_id, invite_id=invite_id)
                 if err:
                     st.error(err)
@@ -301,7 +303,7 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
         )
         accept_col, decline_col = st.columns(2)
         with accept_col:
-            if st.button("Accept invite", key=f"{key_base}_accept", type="primary"):
+            if st.button("Accept invite", key=f"{key_base}_accept", type="primary", icon=_icons.ACCEPT):
                 entry, context, err = join_shared_league_from_invite(
                     session,
                     league_id=league_id,
@@ -319,7 +321,7 @@ def render_pending_league_invites(st: Any, session: dict[str, Any]) -> bool:
                     }
                     st.rerun()
         with decline_col:
-            if st.button("Decline", key=f"{key_base}_decline"):
+            if st.button("Decline", key=f"{key_base}_decline", icon=_icons.DECLINE):
                 ok, err = decline_league_invite(session, league_id=league_id, invite_id=invite_id)
                 if err:
                     st.error(err)
@@ -486,7 +488,7 @@ def _render_pending_invites_for_commissioner(
         if session.get(REVOKE_CONFIRM_KEY) == iid:
             st.warning(f"Cancel the invite to {who}? They won't be able to accept it. This can't be undone.")
             c1, c2 = st.columns(2)
-            if c1.button("Yes, cancel this invite", key=f"invite_revoke_yes_{iid}", type="primary"):
+            if c1.container(key=f"bx-danger-invite_revoke_yes_{iid}").button("Yes, cancel this invite", key=f"invite_revoke_yes_{iid}", type="primary", icon=_icons.CANCEL_INVITE):
                 ok, err = revoke_league_invite(session, context, invite_id=iid)
                 session.pop(REVOKE_CONFIRM_KEY, None)
                 if ok:
@@ -502,7 +504,7 @@ def _render_pending_invites_for_commissioner(
             if c2.button("Keep it", key=f"invite_revoke_no_{iid}"):
                 session.pop(REVOKE_CONFIRM_KEY, None)
                 st.rerun()
-        elif st.button("Cancel invite", key=f"invite_revoke_{iid}"):
+        elif st.container(key=f"bx-danger-invite_revoke_{iid}").button("Cancel invite", key=f"invite_revoke_{iid}", icon=_icons.CANCEL_INVITE):
             session[REVOKE_CONFIRM_KEY] = iid
             st.rerun()
 
@@ -605,7 +607,7 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
                 placeholder="their exact username",
                 help="Each manager's username is shown on their own Saved Draft Library page.",
             )
-            looked_up = st.form_submit_button("Find account")
+            looked_up = st.form_submit_button("Find account", icon=_icons.SEARCH)
         if looked_up:
             found = preview_league_invitee(session, context, str(lookup_target or "").strip())
             if found.get("ok"):
@@ -634,7 +636,7 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
                 f"Yes, send the invite to {preview.get('username')}",
                 key=f"commissioner_invite_confirm_{preview.get('username')}",
             )
-            if st.button("Send invite", key="commissioner_invite_send", type="primary", disabled=not sure):
+            if st.button("Send invite", key="commissioner_invite_send", type="primary", disabled=not sure, icon=_icons.INVITE_MANAGER):
                 submitted = bool(sure)
                 target = str(preview.get("target") or "")
 

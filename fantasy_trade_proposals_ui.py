@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
@@ -296,7 +298,7 @@ def _process_incoming_accept_forms(
                 )
             except ImportError:
                 pass
-            submitted = st.form_submit_button("Accept Trade", type="primary")
+            submitted = st.form_submit_button("Accept Trade", type="primary", icon=_icons.ACCEPT)
         if not submitted:
             continue
         active_ctx = get_active_league_context(session)
@@ -542,7 +544,7 @@ def _render_proposal_card(
             if not skip_accept_button:
                 st.caption("Use **Accept Trade** above the offer list.")
         with btn_decline:
-            if st.button("Decline Trade", key=f"{key_prefix}_decline_{pid}"):
+            if st.button("Decline Trade", key=f"{key_prefix}_decline_{pid}", icon=_icons.DECLINE):
                 declined, err = decline_trade_proposal(session, pid)
                 if err:
                     st.error(err)
