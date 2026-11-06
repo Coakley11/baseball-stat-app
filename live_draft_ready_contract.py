@@ -249,9 +249,12 @@ def prestart_expiration_blocked(room: dict[str, Any] | None) -> bool:
     if status != "in_progress":
         return True
     try:
-        from live_draft_timer_logic import first_pick_awaiting_live_ready
+        from live_draft_timer_logic import (
+            first_pick_awaiting_live_ready,
+            first_pick_expired_before_actionable,
+        )
 
-        if first_pick_awaiting_live_ready(room):
+        if first_pick_awaiting_live_ready(room) or first_pick_expired_before_actionable(room):
             return True
     except ImportError:
         if room.get("timer_deadline") is None and room.get("timer_started_at") is None:

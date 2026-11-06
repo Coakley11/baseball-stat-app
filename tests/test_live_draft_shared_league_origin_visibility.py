@@ -50,6 +50,9 @@ def _complete_two_team_room() -> dict:
         "config": {
             "user_team": "Team 1",
             "num_teams": 2,
+            # Real rooms always carry the round count; completion is checked against it
+            # (is_draft_truly_complete), so a fixture without it is never "complete".
+            "picks_per_team": 2,
             "teams": ["Team 1", "Team 2"],
             "fantasy_format": "5x5 Roto",
             "scoring_type": "Roto (5x5)",

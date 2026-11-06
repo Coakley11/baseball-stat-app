@@ -101,7 +101,9 @@ class LiveDraftTimerLogicTests(unittest.TestCase):
             "pick_order": [{"Pick": 1, "Team": "A"}],
             "draft_board": [],
             "current_pick_index": 0,
-            "timer_deadline": __import__("time").time() + 60,
+            # Unarmed: Start never arms pick 1 (the live board does). An already-armed clock
+            # keeps its 1 Hz banner during Start by design (timer_should_run, Solo Start note).
+            "timer_deadline": None,
         }
         begin_live_draft_start(session)
         self.assertFalse(timer_should_run(session, room))
@@ -156,9 +158,15 @@ class LiveDraftTimerLogicTests(unittest.TestCase):
             "timer_started_at": time.time() - 120,
             "current_pick_index": 0,
             "timer_handled_index": -1,
+            # Pick 1 had been actionable (live board painted). Without this stamp the clock
+            # "expired before pick 1 was actionable" and is re-initialized once instead
+            # (owner policy 2026-11-06, tests/test_first_pick_timer_policy.py).
+            "timer_live_ready_at": time.time() - 110,
         }
         fake = _FakeSt()
-        with mock.patch("live_draft_timer_ui.timer_should_run", return_value=True, create=True):
+        # Since 11cd55c the timer bar is a no-op in Solo (the On-the-Clock banner owns that clock),
+        # so this covers the Shared room timer bar on the Live Draft Room page.
+        with mock.patch("live_draft_timer_ui.timer_should_run", return_value=True, create=True),                 mock.patch("live_draft_solo_timer.is_solo_live_draft", return_value=False),                 mock.patch("app_page_generation.fragment_allowed", return_value=True):
             with mock.patch(
                 "live_draft_safe_mode.timer_should_run",
                 return_value=True,
@@ -167,7 +175,7 @@ class LiveDraftTimerLogicTests(unittest.TestCase):
         self.assertTrue(fake.fragment_called)
         self.assertFalse(fake.rerun_called)
         self.assertTrue(session.get("_live_draft_timer_expired_pending"))
-        self.assertTrue(any("Processing expired pick" in c for c in fake.captions))
+        # (The old "Processing expired pick" caption no longer exists in the app.)
 
     def test_grace_skipped_when_timer_expired(self) -> None:
         import time
@@ -258,7 +266,12 @@ class LiveDraftTimerLiveReadyTests(unittest.TestCase):
             "timer_deadline": time.time() - 15,
             "timer_handled_index": -1,
         }
-        self.assertTrue(first_pick_awaiting_live_ready(room))
+        # A stamped pick-1 clock is no longer "awaiting" (first_pick_awaiting_live_ready); the
+        # expired-before-actionable case has its own rule (owner policy 2026-11-06).
+        from live_draft_timer_logic import first_pick_expired_before_actionable
+
+        self.assertFalse(first_pick_awaiting_live_ready(room))
+        self.assertTrue(first_pick_expired_before_actionable(room))
         self.assertEqual(live_draft_seconds_remaining(room), 0)
         self.assertFalse(ensure_live_draft_timer_for_pick(room))
         self.assertEqual(live_draft_seconds_remaining(room), 0)

@@ -274,6 +274,17 @@ class TestSharedLeagueStartupRebootE2E(unittest.TestCase):
         self.assertEqual(count_league_contexts(session_a.get(LEAGUE_CONTEXT_STATE_KEY)), 1)
         self.assertEqual(count_league_contexts(session_b.get(LEAGUE_CONTEXT_STATE_KEY)), 1)
 
+        # The startup rebuild keys each rebuilt league context by its canonical league id
+        # (archive:league-<id>, 5053b1e); an imported league's pre-reboot id was its draft's. It is
+        # the same single league context (counted above), so find it by league id.
+        def _context_for_league(session: dict) -> str:
+            contexts = (session.get(LEAGUE_CONTEXT_STATE_KEY) or {}).get("contexts") or {}
+            ids = [cid for cid, c in contexts.items() if isinstance(c, dict) and c.get("league_id") == league_id]
+            self.assertEqual(len(ids), 1, ids)
+            return ids[0]
+
+        league_context_id_a = _context_for_league(session_a)
+        league_context_id_b = _context_for_league(session_b)
         with _as_user("user:donny"):
             ctx_a = get_league_context(session_a, league_context_id_a)
             assert ctx_a is not None

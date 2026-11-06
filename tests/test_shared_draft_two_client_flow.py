@@ -685,10 +685,13 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
         self.assertNotIn("pool", stored_blob)
 
         rebuilt = _pool()
+        # The guest is on another server process: the host's same-server pool file
+        # (data/draft_room_local_pools) is not there, so the guest must rebuild. On one process
+        # the file is found first and no rebuild is needed (recorded 2026-11-05 as outdated).
         with mock.patch(
             "shared_draft_local_pool.rebuild_shared_room_player_pool",
             return_value=rebuilt,
-        ) as builder:
+        ) as builder, mock.patch("shared_draft_local_pool.load_local_pool_disk", return_value=None):
             ok, msg, _ = join_shared_draft_room(
                 self.guest, code, requested_team="Team B", store=self.store
             )
@@ -730,11 +733,17 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
             calls["n"] += 1
             return _pool()
 
-        first = ensure_local_shared_player_pool(self.host, empty, builder=builder)
+        # No same-server pool file either (a leftover data/draft_room_local_pools/CCCC33.pkl from an
+        # earlier run would otherwise satisfy the first call too).
+        with mock.patch("shared_draft_local_pool.load_local_pool_disk", return_value=None):
+            first = ensure_local_shared_player_pool(self.host, empty, builder=builder)
         self.assertFalse(getattr(first, "empty", True))
         empty["pool"] = pd.DataFrame()
         self.host.pop(DRAFT_ROOM_PLAYER_POOL_KEY, None)
-        second = ensure_local_shared_player_pool(self.host, empty, builder=builder)
+        # A full wipe also loses the same-server pool file; otherwise that file is reused and no
+        # second build is needed (both are correct; this test covers the retry).
+        with mock.patch("shared_draft_local_pool.load_local_pool_disk", return_value=None):
+            second = ensure_local_shared_player_pool(self.host, empty, builder=builder)
         self.assertFalse(getattr(second, "empty", True))
         self.assertGreaterEqual(len(second), 4)
         self.assertGreaterEqual(calls["n"], 2)
@@ -788,7 +797,11 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
         }
         restored = restore_persisted_shared_room_membership(parked_refresh)
         self.assertEqual(restored, "")
-        self.assertIn("saved_for_later", str(parked_refresh.get("_live_draft_restore_blocked_reason") or ""))
+        # The parked code is skipped (active_code_skipped:saved_for_later) and dropped. A later
+        # gate in the same restore (solo preference, bac7182) then records its own reason over
+        # it, so the reason text names whichever gate ran last; the outcome is what matters.
+        self.assertNotIn(ACTIVE_SHARED_ROOM_CODE_KEY, parked_refresh)
+        self.assertFalse(parked_refresh.get(LIVE_DRAFT_ROOM_KEY))
 
         cont = continue_saved_draft(self.host, st=None)
         self.assertTrue(cont.get("ok"), cont)

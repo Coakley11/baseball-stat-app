@@ -448,6 +448,62 @@ class ExistingLeagueCompatibilityTests(_Base):
         self.assertEqual(out["draft_id"], "draft-1")
         self.assertEqual(set(out["team_ownership"]), {"Danny", "Barry", "Open"})
 
+    # Production R2 (2026-11-06): 1 declined invite whose invitee owns a team, 1 invite without
+    # invitee_user_id. Both shapes must keep legitimate access without granting anything more.
+
+    def test_a_team_owner_whose_invite_was_declined_keeps_their_team_and_nothing_more(self) -> None:
+        doc = stored_league()
+        doc["league_invites"].append({"invite_id": "inv_barry_old", "status": "declined",
+                                      "invitee_user_id": MEMBER["suite"]})
+        member = signed_in(MEMBER)
+        with self.request(member):
+            self.assertTrue(authz.is_league_member_or_invitee(member, doc))  # membership = ownership
+            self.assertTrue(authz.may_read_league(member, doc))
+            self.assertEqual(authz.owned_teams(member, doc), {"Barry"})
+            self.assertFalse(authz.is_league_commissioner(member, doc))
+
+            incoming = copy.deepcopy(doc)
+            incoming["league_rosters"]["Barry"] = {"players": ["B", "add"]}
+            incoming["league_invites"][-1]["status"] = "accepted"  # cannot revive the declined invite
+            incoming["league_invites"][0]["status"] = "revoked"  # cannot cancel someone else's
+            incoming["league_name"] = "Barry's league"
+            out = authz.authorize_league_write(member, incoming, doc)
+        self.assertEqual(out["league_rosters"]["Barry"], {"players": ["B", "add"]})
+        self.assertEqual(out["league_invites"], doc["league_invites"])
+        self.assertEqual(out["league_name"], doc["league_name"])
+        self.assertEqual(out["team_ownership"], doc["team_ownership"])
+
+    def test_an_invite_without_an_account_id_matches_only_the_named_account(self) -> None:
+        doc = stored_league()
+        doc["league_invites"] = [{"invite_id": "inv_legacy", "status": "pending",
+                                  "invitee_external_id": INVITEE["username"]}]  # no invitee_user_id
+        named, other = signed_in(INVITEE), signed_in(OUTSIDER)
+        with self.request(other):
+            self.assertFalse(authz.is_league_member_or_invitee(other, doc))
+            self.assertFalse(authz.may_read_league(other, doc))
+            stolen = copy.deepcopy(doc)
+            stolen["league_invites"][0]["status"] = "accepted"
+            with self.assertRaises(authz.SharedLeagueWriteRefused):
+                authz.authorize_league_write(other, stolen, doc)
+        with self.request(named):
+            self.assertTrue(authz.may_read_league(named, doc))
+            self.assertFalse(authz.is_league_commissioner(named, doc))
+            answer = copy.deepcopy(doc)
+            answer["league_invites"][0].update(status="accepted", claimed_team="Open")
+            answer["team_ownership"]["Open"] = {"user_id": INVITEE["suite"], "claim_status": "claimed"}
+            answer["league_invites"].append({"invite_id": "inv_more", "status": "pending",
+                                             "invitee_user_id": OUTSIDER["suite"]})
+            out = authz.authorize_league_write(named, answer, doc)
+        self.assertEqual(out["league_invites"][0]["status"], "accepted")
+        self.assertEqual([i["invite_id"] for i in out["league_invites"]], ["inv_legacy"])  # no new invite
+        self.assertEqual(out["team_ownership"]["Open"]["user_id"], INVITEE["suite"])
+        # The commissioner can still cancel it.
+        cancel = copy.deepcopy(doc)
+        cancel["league_invites"][0]["status"] = "revoked"
+        with self.request(signed_in(COMMISSIONER)):
+            out = authz.authorize_league_write(signed_in(COMMISSIONER), cancel, doc)
+        self.assertEqual(out["league_invites"][0]["status"], "revoked")
+
 
 class SignInOffTests(_Base):
     def _off(self):

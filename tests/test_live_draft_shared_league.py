@@ -486,6 +486,9 @@ class LiveDraftSharedLeagueAppTest(unittest.TestCase):
                     "canonical_league_id": "league:test",
                     "draft_id": "live-two-team-test",
                     "league_context_id": "ctx:test",
+                    # The real save reports that the league reached the shared store; without
+                    # it the kept message is the "saved on this device" warning (95f9630).
+                    "shared_league_created": True,
                 },
                 {"league_id": "league:test", "league_context_id": "ctx:test"},
             )
@@ -497,7 +500,8 @@ class LiveDraftSharedLeagueAppTest(unittest.TestCase):
             at.button(key="live_draft_complete_confirm_shared_league").click().run()
         save_mock.assert_called_once()
         blob = "\n".join(str(m.value) for m in at.success) + "\n".join(str(m.value) for m in at.info) + "\n".join(str(m.value) for m in at.markdown)
-        self.assertIn("Shared League Saved", blob, blob)
+        # Plain-language success copy since 10c7d55 (ui_user_copy.SHARED_LEAGUE_SAVED).
+        self.assertIn("saved. Your team: **Daniel**", blob, blob)
         self.assertNotIn("_live_draft_shared_league_confirm_open", at.session_state)
         diag = dict(at.session_state[SHARED_LEAGUE_DIAG_KEY])
         self.assertEqual(int(diag.get("save_call_count") or 0), 1)
@@ -717,6 +721,7 @@ class LiveDraftRobinsFantasyConfirmAppTest(unittest.TestCase):
                     "canonical_league_id": "league:robins",
                     "draft_id": str(room.get("draft_room_id") or ""),
                     "league_context_id": "ctx:robins",
+                    "shared_league_created": True,
                 },
                 {"league_id": "league:robins", "league_context_id": "ctx:robins"},
             )
@@ -729,13 +734,13 @@ class LiveDraftRobinsFantasyConfirmAppTest(unittest.TestCase):
             "live_draft_shared_league.save_live_draft_shared_league_context",
             save_mock,
         )
-        verify_patch = patch(
-            "draft_archive_ui._post_save_shared_league_library",
+        verify_mock = Mock(
             return_value=_post_save_success_tuple(
                 canonical_league_id="league:robins",
                 roster_counts={"Donny": 10, "Team B": 10},
-            ),
+            )
         )
+        verify_patch = patch("draft_archive_ui._post_save_shared_league_library", verify_mock)
         with save_patch, verify_patch:
             at.run()
             at.button(key="live_draft_complete_shared_league_btn").click().run()
@@ -747,9 +752,9 @@ class LiveDraftRobinsFantasyConfirmAppTest(unittest.TestCase):
         self.assertIn("SHARED_LEAGUE_CREATE_PROCESSOR:yes", blob, blob)
         self.assertIn("SHARED_LEAGUE_SAVE_CALL_COUNT:1", blob, blob)
         self.assertIn("SHARED_LEAGUE_CONFIRM_CLOSED:yes", blob, blob)
-        self.assertIn("Shared League Saved", blob, blob)
-        self.assertIn("Donny 10", blob, blob)
-        self.assertIn("Team B 10", blob, blob)
+        # Plain-language success copy since 10c7d55; per-team counts are no longer shown to the
+        # user, so the ten-player rosters are checked where they are verified (below).
+        self.assertIn("saved. Your team: **Donny**", blob, blob)
         self.assertNotIn("_live_draft_shared_league_confirm_open", at.session_state)
         self.assertEqual(int(at.session_state[SHARED_LEAGUE_CONFIRM_CALLBACK_COUNT_KEY]), 1)
         req = at.session_state[SHARED_LEAGUE_CREATE_REQUEST_KEY] if SHARED_LEAGUE_CREATE_REQUEST_KEY in at.session_state else None
@@ -757,6 +762,7 @@ class LiveDraftRobinsFantasyConfirmAppTest(unittest.TestCase):
         diag = dict(at.session_state[SHARED_LEAGUE_DIAG_KEY])
         self.assertTrue(diag.get("preview_validation_ok"))
         self.assertEqual(int(diag.get("save_call_count") or 0), 1)
+        self.assertEqual(verify_mock.call_args.kwargs.get("expected_counts"), {"Donny": 10, "Team B": 10})
 
 
 class LiveDraftSharedLeagueTests(unittest.TestCase):

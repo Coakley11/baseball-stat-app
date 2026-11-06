@@ -35,6 +35,35 @@ def first_pick_awaiting_live_ready(room: dict[str, Any]) -> bool:
     return True
 
 
+def first_pick_expired_before_actionable(room: dict[str, Any]) -> bool:
+    """True when pick 1's clock ran out before the first manager could ever act on it.
+
+    Owner policy (2026-11-06): the first-pick countdown starts only once the draft board and
+    player pool are ready and the first manager can make a selection. A deadline that was
+    stamped earlier (an older Start-armed room, or a clock armed by a non-board paint) and then
+    expired during initial loading gets ONE initialization at the first live-board paint.
+    The live-ready stamp (``timer_live_ready_at``) is persisted with the room, so once pick 1
+    has been actionable this is never true again: reruns, refreshes, reconnects and restarts
+    keep the stored deadline, and a genuine expiry follows the timeout / autopick policy.
+    """
+    if not isinstance(room, dict):
+        return False
+    if room.get("status") != "in_progress":
+        return False
+    if int(room.get("current_pick_index") or 0) != 0:
+        return False
+    if room.get(TIMER_LIVE_READY_AT_KEY):
+        return False
+    board = room.get("draft_board")
+    if isinstance(board, list) and board:
+        return False
+    if room.get("timer_deadline") is None and room.get("timer_started_at") is None:
+        return False  # never armed: first_pick_awaiting_live_ready covers it
+    if room.get("timer_handled_index") == 0 or expiration_already_processed(room):
+        return False
+    return live_draft_seconds_remaining(room) <= 0
+
+
 def ensure_full_pick_order(room: dict[str, Any]) -> list[dict[str, Any]]:
     """Repair truncated pick_order from config so timer/autopick cannot stall after Pick 1."""
     if not isinstance(room, dict):
@@ -282,8 +311,9 @@ def ensure_live_draft_timer_for_pick(
 
     Pick 0 of a just-started empty board waits for the interactive live board
     (recommendation cards / Add-to-Queue). Sidebar and timer-bar paints must
-    not arm that first clock. A Start-armed deadline that already expired
-    before the board is ready is re-armed once. Later genuine expiries stay expired.
+    not arm that first clock. A deadline that already expired before pick 1 was ever
+    actionable is re-armed once (first_pick_expired_before_actionable). Later genuine
+    expiries stay expired and follow the timeout / autopick policy.
     """
     if room.get("status") != "in_progress":
         return False
@@ -298,6 +328,17 @@ def ensure_live_draft_timer_for_pick(
         room[TIMER_LIVE_READY_AT_KEY] = time.time()
         _note_timer_rearm(room, reason="first_pick_live_ready", live_board_ready=live_board_ready)
         return True
+    if first_pick_expired_before_actionable(room):
+        if not live_board_ready:
+            return False
+        live_draft_reset_timer(room)
+        room[TIMER_LIVE_READY_AT_KEY] = time.time()
+        _note_timer_rearm(room, reason="first_pick_expired_before_actionable", live_board_ready=True)
+        return True
+    if live_board_ready and int(room.get("current_pick_index") or 0) == 0 and not room.get(TIMER_LIVE_READY_AT_KEY):
+        # Pick 1 is actionable now and its clock is still running: record that, so a later
+        # expiry is a real one (never re-initialized).
+        room[TIMER_LIVE_READY_AT_KEY] = time.time()
     if deadline is None and started is None:
         live_draft_reset_timer(room)
         _note_timer_rearm(room, reason="missing_deadline", live_board_ready=live_board_ready)
@@ -341,8 +382,9 @@ def _note_timer_rearm(room: dict[str, Any], *, reason: str, live_board_ready: bo
 def live_draft_timer_expired_for_pick(room: dict[str, Any]) -> bool:
     if room.get("status") != "in_progress":
         return False
-    # Pick 1 must not expire until the live board has armed a real deadline.
-    if first_pick_awaiting_live_ready(room):
+    # Pick 1 must not expire until the live board has armed a real deadline, and a clock that
+    # ran out before pick 1 was ever actionable is re-initialized once instead of autopicked.
+    if first_pick_awaiting_live_ready(room) or first_pick_expired_before_actionable(room):
         return False
     if room.get("timer_deadline") is None and room.get("timer_started_at") is None:
         return False
