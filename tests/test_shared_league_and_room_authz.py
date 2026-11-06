@@ -32,10 +32,25 @@ LEAGUE = {
 
 
 def _session(uid: str, external: str = "", workspace: str = "") -> dict:
-    return {"_suite_auth_user_id": uid, "_suite_auth_external_id": external, "_suite_owned_workspace_id": workspace}
+    """A verified sign-in (2026-11-05: Shared League authority needs sign-in enabled and a signed-in
+    session; an id alone, or sign-in off, is never an account)."""
+    return {
+        "_suite_auth_session": bool(uid),
+        "_suite_auth_user_id": uid,
+        "_suite_auth_external_id": external,
+        "_suite_owned_workspace_id": workspace,
+    }
 
 
-class MembershipMatcherTests(unittest.TestCase):
+class _SignInOn(unittest.TestCase):
+    def setUp(self) -> None:
+        env = patch.dict("os.environ", {"SUITE_AUTH_ENABLED": "1"})
+        env.start()
+        self.addCleanup(env.stop)
+        authz.clear_league_copy_decisions()
+
+
+class MembershipMatcherTests(_SignInOn):
     def test_unrelated_account_matches_nothing(self) -> None:
         for record in (OWNER, *LEAGUE["league_invites"]):
             self.assertFalse(_record_matches_account(record, user_id="uuid-attacker", external_id="attacker", workspace_id="attacker_ws"))
@@ -81,7 +96,7 @@ class MembershipMatcherTests(unittest.TestCase):
         self.assertEqual(len(member), 1)
 
 
-class LeagueWriteAuthorizationTests(unittest.TestCase):
+class LeagueWriteAuthorizationTests(_SignInOn):
     def test_outside_a_user_request_nothing_is_checked(self) -> None:
         doc = {"x": 1}
         self.assertIs(authz.authorize_league_write(None, doc, LEAGUE), doc)
@@ -100,7 +115,9 @@ class LeagueWriteAuthorizationTests(unittest.TestCase):
         incoming = {**LEAGUE, "commissioner_user_id": "uuid-member", "league_name": "Mine", "draft_id": "x", "league_rosters": {"Team 2": {}}}
         out = authz.authorize_league_write(_session("uuid-member"), incoming, LEAGUE)
         self.assertEqual((out["commissioner_user_id"], out["league_name"], out["draft_id"]), ("uuid-owner", "Owner League", "draft-1"))
-        self.assertEqual(out["league_rosters"], {"Team 2": {}})  # members' own saves (trades, claims) still go through
+        # A member's own team saves go through; another team's stored roster is never dropped or
+        # overwritten by a member's copy (2026-11-05: it used to replace the whole roster map).
+        self.assertEqual(out["league_rosters"], {"Team 1": {"players": []}, "Team 2": {}})
 
     def test_team_owner_and_invitee_cannot_become_commissioner_by_editing_the_document(self) -> None:
         for session in (_session("uuid-member"), _session("uuid-invitee", "invitee")):
@@ -138,7 +155,7 @@ class LeagueWriteAuthorizationTests(unittest.TestCase):
         self.assertEqual(authz.authorize_league_write(_session("uuid-owner"), incoming, LEAGUE)["league_name"], "Renamed")
 
 
-class LeagueWritersRefuseNonMembersTests(unittest.TestCase):
+class LeagueWritersRefuseNonMembersTests(_SignInOn):
     def _store(self):
         store = MagicMock()
         store.load.return_value = dict(LEAGUE)

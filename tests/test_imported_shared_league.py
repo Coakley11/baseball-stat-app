@@ -80,7 +80,9 @@ class TestImportedSharedLeague(unittest.TestCase):
         )
         self.assertEqual(entry.get("draft_type"), DRAFT_TYPE_IMPORTED)
         self.assertEqual(context.get("context_type"), CONTEXT_TYPE_REAL_LEAGUE)
-        self.assertEqual(context.get("my_team_name"), "Daniel")
+        # No team is claimed with assign_team=False: membership never rests on a name (2ef7758), so
+        # the uploader claims a team explicitly (this used to infer "Daniel" from the account name).
+        self.assertEqual(context.get("my_team_name"), "")
         self.assertTrue(resolve_canonical_league_id(context))
         self.assertEqual(get_active_draft_archive(self.session), entry)
         active_ctx = get_active_league_context(self.session, respect_source_priority=False)
@@ -224,15 +226,18 @@ class TestImportedLeagueTradeActivation(unittest.TestCase):
         self._tmpdir.cleanup()
 
     def _save_imported_two_team_league(self) -> tuple[dict, dict]:
+        """Uploaded by Donny, who is therefore the stored commissioner (2026-11-05: a league's
+        commissioner is the stored one; local team ownership never makes anyone commissioner)."""
         board = _league_board()
-        entry, context = save_imported_league_context(
-            self.session,
-            board,
-            my_team_name="Donny",
-            draft_name="Imported Trade League",
-            league_name="Imported Trade League",
-            assign_team=False,
-        )
+        with _as_user("user:donny"):
+            entry, context = save_imported_league_context(
+                self.session,
+                board,
+                my_team_name="Donny",
+                draft_name="Imported Trade League",
+                league_name="Imported Trade League",
+                assign_team=False,
+            )
         return entry, context
 
     def test_mock_draft_blocks_trades(self) -> None:

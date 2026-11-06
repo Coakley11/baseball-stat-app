@@ -284,6 +284,22 @@ def reserve_team_for_invite_claim(
     return context
 
 
+def _shared_claim_error(session: dict[str, Any], context: dict[str, Any] | None) -> str:
+    """'' unless this is a Shared League (stored in the shared store) and this request has no
+    verified sign-in: claiming a team in a Shared League needs one (owner decision 2026-11-05).
+    Private leagues on this device are unchanged."""
+    try:
+        from fantasy_league_identity import resolve_canonical_league_id
+        from fantasy_shared_league_authz import LOAD_MISSING, shared_league_sign_in_error, stored_commissioner
+    except ImportError:
+        return ""
+    message = shared_league_sign_in_error(session)
+    if not message or not isinstance(context, dict):
+        return ""
+    status, _commissioner = stored_commissioner(str(resolve_canonical_league_id(context) or ""))
+    return "" if status == LOAD_MISSING else message
+
+
 def assign_my_team(
     session: dict[str, Any],
     team_name: str,
@@ -299,6 +315,9 @@ def assign_my_team(
     context = get_league_context(session, league_context_id)
     if not context:
         return None, "Active league context could not be loaded."
+    claim_error = _shared_claim_error(session, context)
+    if claim_error:
+        return None, claim_error
     team = str(team_name or "").strip()
     teams = set((context.get("league_rosters") or {}).keys())
     if team not in teams:
@@ -344,6 +363,9 @@ def claim_team_in_league_context(
     context = get_league_context(session, league_context_id)
     if not context:
         return None, "League context could not be loaded."
+    claim_error = _shared_claim_error(session, context)
+    if claim_error:
+        return None, claim_error
     team = str(team_name or "").strip()
     teams = set((context.get("league_rosters") or {}).keys())
     if team not in teams:

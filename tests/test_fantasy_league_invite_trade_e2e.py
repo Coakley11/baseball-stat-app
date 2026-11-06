@@ -200,7 +200,9 @@ class TestInviteTradeCrossAccountE2E(unittest.TestCase):
             assert stale_ctx is not None
             stale_ctx.setdefault("workflow", {})["trade_proposals"] = []
             activate_league_context(session_b, league_context_id_b)
-            refreshed = sync_context_with_shared_store(session_b, stale_ctx)
+            # force=True: this account's 12 s soft cache still holds the league as it was when it
+            # accepted, before the proposal; page paints read that cache by design (3ec4fda).
+            refreshed = sync_context_with_shared_store(session_b, stale_ctx, force=True)
             upsert_league_context(session_b, refreshed)
             activate_league_context(session_b, league_context_id_b)
             incoming = get_incoming_trade_proposals(session_b, "Team 2")

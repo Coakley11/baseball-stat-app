@@ -16,6 +16,14 @@ WORKFLOW_KEY_LEAGUE_ACTIVITY = "league_activity"
 
 DATA_DIR = Path(__file__).resolve().parent / "data" / "shared_leagues"
 
+import threading as _threading
+
+_LOCAL_CAS_LOCK = _threading.RLock()
+
+
+class SharedLeagueConflict(RuntimeError):
+    """Another write changed this Shared League first; nothing was saved (compare-and-swap)."""
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -225,13 +233,15 @@ class LocalFileSharedLeagueStore:
         *,
         expected_revision: int | None,
     ) -> tuple[bool, dict[str, Any] | None]:
+        """Compare-and-swap: the check and the write happen under one lock (this process)."""
         league_id = str(document.get("league_id") or "").strip()
-        existing = self.load(league_id)
-        if expected_revision is not None and isinstance(existing, dict):
-            current = int(existing.get("revision") or 0)
-            if current != int(expected_revision):
-                return False, existing
-        saved = self.save(document)
+        with _LOCAL_CAS_LOCK:
+            existing = self.load(league_id)
+            if expected_revision is not None:
+                current = int(existing.get("revision") or 0) if isinstance(existing, dict) else None
+                if current is None or current != int(expected_revision):
+                    return False, existing
+            saved = self.save(document)
         return True, saved
 
     def list_documents(self) -> list[dict[str, Any]]:
@@ -287,8 +297,18 @@ _SHARED_DOC_CACHE_TTL_S = 12.0
 
 
 def invalidate_shared_league_doc_cache(league_id: str = "") -> None:
-    """Drop soft-cached shared docs (call after writes / auth switches)."""
+    """Drop soft-cached shared docs (call after writes / auth switches), and the authorization
+    caches derived from them (stored commissioner, copy decisions)."""
     lid = str(league_id or "").strip()
+    try:
+        from fantasy_shared_league_authz import clear_league_copy_decisions, clear_stored_commissioner_cache
+
+        if lid:
+            clear_stored_commissioner_cache(lid)
+        else:
+            clear_league_copy_decisions()
+    except ImportError:
+        pass
     if lid:
         _SHARED_DOC_SOFT_CACHE.pop(lid, None)
         return
@@ -306,12 +326,24 @@ def load_shared_league(league_id: str, *, store: SharedLeagueStore | None = None
     if store is None:
         hit = _SHARED_DOC_SOFT_CACHE.get(lid)
         if hit is not None and (time.monotonic() - hit[0]) < _SHARED_DOC_CACHE_TTL_S:
-            return copy.deepcopy(hit[1])
+            return copy.deepcopy(hit[1]) if _reader_may_see(hit[1]) else None
     backend = store or get_shared_league_store()
     doc = backend.load(lid)
     if isinstance(doc, dict) and store is None:
         _SHARED_DOC_SOFT_CACHE[lid] = (time.monotonic(), copy.deepcopy(doc))
-    return doc
+    return doc if _reader_may_see(doc) else None
+
+
+def _reader_may_see(document: dict[str, Any] | None) -> bool:
+    """In a user request, a Shared League is returned only to a verified signed-in member or
+    invitee (never with sign-in off). Scripts and tests are not user requests (security review
+    2026-11-05, finding 6: one rule for every reader instead of a check at each call site)."""
+    if not isinstance(document, dict):
+        return True
+    from fantasy_shared_league_authz import current_session, may_read_league
+
+    live = current_session()
+    return live is None or may_read_league(live, document)
 
 
 def list_shared_league_documents(*, store: SharedLeagueStore | None = None) -> list[dict[str, Any]]:
@@ -322,18 +354,38 @@ def list_shared_league_documents(*, store: SharedLeagueStore | None = None) -> l
         return []
 
 
-def save_shared_league(document: dict[str, Any], *, store: SharedLeagueStore | None = None) -> dict[str, Any]:
+def save_shared_league(
+    document: dict[str, Any],
+    *,
+    store: SharedLeagueStore | None = None,
+    expected_revision: int | None = None,
+) -> dict[str, Any]:
     """Write a Shared League document. Raises SharedLeagueWriteRefused (a RuntimeError) when the
-    signed-in account may not change this league (fantasy_shared_league_authz)."""
+    signed-in account may not change this league (fantasy_shared_league_authz).
+
+    ``expected_revision``: the revision the caller read. The write then succeeds only if the stored
+    league is still at that revision (atomic compare-and-swap), its revision becomes the next one,
+    and SharedLeagueConflict is raised (nothing saved) when another write came first."""
     from fantasy_shared_league_authz import authorize_league_write, current_session
 
     backend = store or get_shared_league_store()
     league_id = str((document or {}).get("league_id") or "").strip()
     session = current_session()
+    existing = backend.load(league_id) if league_id else None
+    if expected_revision is not None:
+        document = copy.deepcopy(document)
+        document["revision"] = int(expected_revision) + 1
+        if not isinstance(existing, dict) or int(existing.get("revision") or 0) != int(expected_revision):
+            invalidate_shared_league_doc_cache(league_id)
+            raise SharedLeagueConflict("shared league changed before this write")
     if session is not None:
-        document = authorize_league_write(
-            session, document, backend.load(league_id) if league_id else None, store=backend
-        )
+        document = authorize_league_write(session, document, existing, store=backend)
+    if expected_revision is not None:
+        ok, saved = backend.save_if_revision(document, expected_revision=int(expected_revision))
+        invalidate_shared_league_doc_cache(league_id)
+        if not ok:
+            raise SharedLeagueConflict("shared league changed before this write")
+        return saved if isinstance(saved, dict) else document
     saved = backend.save(document)
     invalidate_shared_league_doc_cache(league_id)
     return saved
@@ -615,6 +667,9 @@ def merge_shared_into_context(context: dict[str, Any], shared: dict[str, Any]) -
     meta = dict(out.get("metadata") or {})
     meta["team_ownership"] = copy.deepcopy(ownership)
     meta["shared_revision"] = max(local_revision, shared_revision)
+    if "commissioner_user_id" in shared:
+        # The stored commissioner is authoritative; a local copy never keeps its own (finding 1).
+        meta["commissioner_user_id"] = str(shared.get("commissioner_user_id") or "").strip()
     out["metadata"] = meta
     workflow = dict(out.get("workflow") or {})
     local_proposals = workflow.get(WORKFLOW_KEY_TRADE_PROPOSALS) or []

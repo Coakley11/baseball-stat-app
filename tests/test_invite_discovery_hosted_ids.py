@@ -62,8 +62,47 @@ def _signed_in(account: dict) -> dict:
     }
 
 
+def isolate_shared_room_store(case: unittest.TestCase) -> None:
+    """Shared Draft rooms in a temporary store for this test (the default local store is the
+    repository's data/draft_rooms, which kept rooms between runs)."""
+    import tempfile
+    from pathlib import Path
+
+    import draft_room_shared_state as rooms
+
+    tmp = tempfile.TemporaryDirectory()
+    previous = rooms._DEFAULT_STORE
+    rooms._DEFAULT_STORE = rooms.LocalFileSharedRoomStore(root=Path(tmp.name))
+
+    def _restore() -> None:
+        rooms._DEFAULT_STORE = previous
+        tmp.cleanup()
+
+    case.addCleanup(_restore)
+
+
+def store_room_with_host(room_code: str, host: dict, participants: tuple[dict, ...] = ()) -> None:
+    """A stored Shared Draft room as production records it (2026-10-30 audit D4b: every room's host
+    is an Auth user, and the host participant id is that Auth id)."""
+    from draft_room_shared_state import get_shared_room_store
+
+    seated = {acct["auth"]: {"user_id": acct["suite"]} for acct in (host, *participants)}
+    get_shared_room_store().save({
+        "room_code": room_code.upper(),
+        "host_participant_id": host["auth"],
+        "host_user_id": host["suite"],
+        "participants": seated,
+        "room": {"status": "complete"},
+        "status": "complete",
+        "revision": 1,
+    })
+
+
 class _Case(unittest.TestCase):
-    setUp = _invite_suite.TestFantasyLeagueInvites.setUp
+    def setUp(self) -> None:
+        _invite_suite.TestFantasyLeagueInvites.setUp(self)
+        isolate_shared_room_store(self)
+
     tearDown = _invite_suite.TestFantasyLeagueInvites.tearDown
     _write_registry = _invite_suite.TestFantasyLeagueInvites._write_registry
     _workspace = _invite_suite.TestFantasyLeagueInvites._workspace

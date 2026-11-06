@@ -114,7 +114,9 @@ class LegacyCompatibilityTests(_Case):
 
     def _legacy_league_entry(self, session: dict, *, room_code: str = "DA9E78") -> dict:
         """As the production Danny-Barry league was stored: random entry id, league id league:<fp>,
-        source_room_code on the league context, none on the entry."""
+        source_room_code on the league context, none on the entry, no stored commissioner id; its
+        room is stored with Danny as host (2026-11-05: the room host is the commissioner)."""
+        hosted.store_room_with_host(room_code, DANNY, (BARRY,))
         session.pop("active_shared_draft_room_code", None)
         with self.on(), self.as_account(DANNY):
             entry, _ = save_live_draft_league_context(session, rel.completed_room(), my_team_name="Danny",

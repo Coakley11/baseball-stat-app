@@ -1716,7 +1716,9 @@ def save_imported_league_context(
                 pass
     context = get_league_context(session, league_context_id) or context
     meta = dict(context.get("metadata") or {})
-    if not str(meta.get("commissioner_user_id") or "").strip() and assign_team:
+    if not str(meta.get("commissioner_user_id") or "").strip():
+        # The uploader is the commissioner whether or not they claim a team now (2026-11-05: the
+        # stored commissioner is the only authority, so a league must never be stored without one).
         try:
             from fantasy_league_team_ownership import _resolve_user_id
 

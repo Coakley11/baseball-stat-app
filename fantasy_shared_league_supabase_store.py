@@ -150,14 +150,30 @@ class SupabaseSharedLeagueStore:
         *,
         expected_revision: int | None,
     ) -> tuple[bool, dict[str, Any] | None]:
+        """Atomic compare-and-swap: one PATCH that matches only while the stored revision is still
+        ``expected_revision`` (security review 2026-11-05, findings 2 and 8). An empty result means
+        another write got there first; nothing was changed and the current document is returned."""
         league_id = str(document.get("league_id") or "").strip()
-        existing = self.load(league_id)
-        if expected_revision is not None and isinstance(existing, dict):
-            current = int(existing.get("revision") or 0)
-            if current != int(expected_revision):
-                return False, existing
-        saved = self.save(document)
-        return True, saved
+        if not league_id:
+            raise ValueError("shared league document missing league_id")
+        if expected_revision is None:
+            return True, self.save(document)
+        row = document_to_row(document)
+        rows = _request(
+            "PATCH",
+            _TABLE,
+            params={"league_id": f"eq.{league_id}", "revision": f"eq.{int(expected_revision)}"},
+            json_body={
+                "draft_fingerprint": row["draft_fingerprint"],
+                "shared_league_json": row["shared_league_json"],
+                "revision": row["revision"],
+                "updated_at": row["updated_at"],
+            },
+            prefer="return=representation",
+        )
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+            return True, row_to_document(rows[0]) or row["shared_league_json"]
+        return False, self.load(league_id)
 
     def list_documents(self) -> list[dict[str, Any]]:
         try:

@@ -185,18 +185,40 @@ def _strict_invitee_of(session: Any, shared: dict[str, Any] | None) -> bool:
     """The stored league lists this signed-in account (commissioner, owner, or invitee), decided
     with the session's own ids only (fantasy_shared_league_authz). _invite_matches_user is more
     tolerant (it accepts the "daniel" fallback workspace and helper-resolved ids), so with sign-in
-    on nothing in an invite flow reads league contents unless this also holds. Sign-in off: one
-    account, no restriction."""
+    on nothing in an invite flow reads league contents unless this also holds. Sign-in off: never
+    for a user request (owner decision 2026-11-05); scripts and tests are not user requests."""
     try:
-        from fantasy_shared_league_authz import _separate_accounts, may_read_league
+        from fantasy_shared_league_authz import _separate_accounts, current_session, may_read_league
     except ImportError:
         return True
     if not _separate_accounts():
-        return True
+        return current_session() is None
     try:
         return bool(may_read_league(session, shared))
     except Exception:
         return False
+
+
+def _shared_sign_in_error(session: Any) -> str:
+    """'' when this request may use Shared League invites (a verified sign-in), else the message."""
+    try:
+        from fantasy_shared_league_authz import shared_league_sign_in_error
+    except ImportError:
+        return ""
+    return shared_league_sign_in_error(session if isinstance(session, dict) else None)
+
+
+def _save_shared_cas(shared: dict[str, Any]) -> dict[str, Any] | None:
+    """Save with compare-and-swap against the revision that was read (raises SharedLeagueConflict)."""
+    from fantasy_shared_league_store import save_shared_league
+
+    return save_shared_league(shared, expected_revision=int(shared.get("revision") or 0))
+
+
+def _load_shared_fresh(league_id: str) -> dict[str, Any] | None:
+    """The stored league, never the 12 s soft cache: invite answers decide on the current state."""
+    invalidate_shared_league_doc_cache(league_id)
+    return load_shared_league(league_id)
 
 
 def _separate_accounts_on() -> bool:
@@ -403,6 +425,28 @@ def repair_commissioner_identity(
     if not uid:
         return context, False
     changed = False
+    commissioner = get_commissioner_user_id(context)
+    try:
+        from fantasy_league_identity import resolve_canonical_league_id
+        from fantasy_shared_league_authz import LOAD_FOUND, LOAD_MISSING, checked_load, stored_commissioner_id
+
+        status, stored_doc = checked_load(str(resolve_canonical_league_id(context) or ""))
+        stored = stored_commissioner_id(stored_doc) if status == LOAD_FOUND else ""
+    except ImportError:
+        status, stored = "missing", ""
+    if status != "missing":  # LOAD_MISSING
+        # A Shared League's commissioner is the stored one (security review 2026-11-05): never
+        # this account's own id. Keep the local copy in step with the stored value.
+        if status == LOAD_FOUND and stored and stored != commissioner:
+            meta = dict(context.get("metadata") or {})
+            meta["commissioner_user_id"] = stored
+            context["metadata"] = meta
+            changed = True
+            if isinstance(session, dict):
+                from fantasy_league_context import upsert_league_context
+
+                context = upsert_league_context(session, context)
+        return context, changed
     my_team = str(context.get("my_team_name") or "").strip()
     meta = dict(context.get("metadata") or {})
     if (
@@ -449,11 +493,49 @@ def repair_commissioner_identity(
     return context, changed
 
 
+def _stored_commissioner_decision(context: dict[str, Any], user_id: str) -> bool | None:
+    """For a league that exists in the shared store: True/False from the STORED commissioner
+    (security review 2026-11-05, finding 1). None when no shared league exists (a private league:
+    the local rules below apply). A shared league that cannot be read is never "commissioner"."""
+    try:
+        from fantasy_league_identity import resolve_canonical_league_id
+        from fantasy_shared_league_authz import (
+            LOAD_ERROR,
+            LOAD_FOUND,
+            _ids_match,
+            current_session,
+            stored_commissioner,
+            verified_account_ids,
+        )
+    except ImportError:
+        return None
+    league_id = str(resolve_canonical_league_id(context) or "").strip()
+    if not league_id:
+        return None
+    status, commissioners = stored_commissioner(league_id)
+    if status == LOAD_ERROR:
+        return False
+    if status != LOAD_FOUND:
+        return None
+    given = str(user_id or "").strip()
+    live = current_session()
+    if live is None:  # scripts and tests: the given or resolved account
+        ids = [given or str(_resolve_user_id() or "").strip()]
+    else:
+        own = verified_account_ids(live)  # empty with sign-in off or signed out: never commissioner
+        # The suite account id and the Auth id are the same person; a different given id is checked as itself.
+        ids = own if (not given or _ids_match(given, own)) else [given]
+    return any(_ids_match(commissioner, ids) for commissioner in commissioners)
+
+
 def is_league_commissioner(context: dict[str, Any] | None, user_id: str = "") -> bool:
     if not isinstance(context, dict):
         return False
     if str(context.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
         return False
+    stored_decision = _stored_commissioner_decision(context, user_id)
+    if stored_decision is not None:
+        return stored_decision
     uid = str(user_id or _resolve_user_id()).strip()
     if not uid:
         return False
@@ -514,6 +596,9 @@ def _validated_invitee(
         return None, "", "", "League context is required."
     if str(context.get("context_type") or "") != CONTEXT_TYPE_REAL_LEAGUE:
         return None, "", "", "Only uploaded/imported leagues support invites."
+    sign_in_error = _shared_sign_in_error(session)
+    if sign_in_error:
+        return None, "", "", sign_in_error
     uid = _resolve_user_id(session)
     if not uid:
         return None, "", "", "Sign in to invite other managers."
@@ -605,31 +690,47 @@ def revoke_league_invite(
     in the stored league through the normal authorized league write; nobody can accept it after."""
     if not isinstance(context, dict):
         return False, "League context is required."
+    sign_in_error = _shared_sign_in_error(session)
+    if sign_in_error:
+        return False, sign_in_error
     uid = _resolve_user_id(session)
     if not uid or not is_league_commissioner(context, uid):
         return False, "Only the league commissioner can cancel invites."
     league_id = str(resolve_canonical_league_id(context) or "").strip()
     iid = str(invite_id or "").strip()
-    invalidate_shared_league_doc_cache(league_id)
-    shared = load_shared_league(league_id)
-    if not isinstance(shared, dict):
-        return False, "The shared league could not be loaded. Nothing was changed."
-    invites = [dict(x) for x in (shared.get("league_invites") or []) if isinstance(x, dict)]
-    invite = _find_invite(invites, iid)
-    if not invite:
-        return False, "Invite not found. Nothing was changed."
-    if str(invite.get("status") or "") != INVITE_STATUS_PENDING:
-        return False, "This invite is no longer pending. Nothing was changed."
-    invite["status"] = INVITE_STATUS_REVOKED
-    invite["responded_at"] = _utc_now_iso()
-    invite["revoked_by_user_id"] = uid
-    shared["league_invites"] = [invite if str(r.get("invite_id") or "") == iid else r for r in invites]
-    try:
-        from fantasy_shared_league_store import save_shared_league
+    from fantasy_shared_league_store import SharedLeagueConflict
 
-        save_shared_league(shared)  # refused (raises) unless this account may write the league
-    except (ImportError, RuntimeError, OSError, ValueError):
-        return False, "Could not cancel the invite. Nothing was changed."
+    invite: dict[str, Any] | None = None
+    for attempt in range(2):
+        # Decided on the stored league as it is now; saved only if nobody wrote in between, so an
+        # acceptance racing this cancel can never be overwritten (or overwrite it).
+        shared = _load_shared_fresh(league_id)
+        if not isinstance(shared, dict):
+            return False, "The shared league could not be loaded. Nothing was changed."
+        invites = [dict(x) for x in (shared.get("league_invites") or []) if isinstance(x, dict)]
+        invite = _find_invite(invites, iid)
+        if not invite:
+            return False, "Invite not found. Nothing was changed."
+        if str(invite.get("status") or "") != INVITE_STATUS_PENDING:
+            return False, "This invite is no longer pending. Nothing was changed."
+        invite["status"] = INVITE_STATUS_REVOKED
+        invite["responded_at"] = _utc_now_iso()
+        invite["revoked_by_user_id"] = uid
+        shared["league_invites"] = [invite if str(r.get("invite_id") or "") == iid else r for r in invites]
+        try:
+            saved = _save_shared_cas(shared)  # refused (raises) unless this account may write the league
+        except SharedLeagueConflict:
+            if attempt:
+                return False, "The league changed at the same moment. Nothing was changed; please try again."
+            continue
+        except (ImportError, RuntimeError, OSError, ValueError):
+            return False, "Could not cancel the invite. Nothing was changed."
+        stored_invite = _find_invite(
+            [dict(x) for x in ((saved or {}).get("league_invites") or []) if isinstance(x, dict)], iid
+        )
+        if not stored_invite or str(stored_invite.get("status") or "") != INVITE_STATUS_REVOKED:
+            return False, "Only the league commissioner can cancel invites. Nothing was changed."
+        break
     local = get_league_invites(context)
     if _find_invite(local, iid):
         _set_league_invites(context, [dict(invite) if str(r.get("invite_id") or "") == iid else r for r in local])
@@ -692,6 +793,15 @@ def create_league_invite(
             saved = refreshed
     try:
         saved_shared = push_league_context_to_shared(session, saved)
+        if isinstance(saved_shared, dict) and not _find_invite(
+            [dict(x) for x in (saved_shared.get("league_invites") or []) if isinstance(x, dict)],
+            str(invite["invite_id"]),
+        ):
+            # The server kept the stored invites (only the stored commissioner may add one).
+            _set_league_invites(context, [r for r in invites if str(r.get("invite_id") or "") != str(invite["invite_id"])])
+            upsert_league_context(session, context)
+            session["_last_invite_shared_push_ok"] = False
+            return None, "Only the league commissioner can send invites. Nothing was sent."
         if isinstance(saved_shared, dict):
             session["_last_invite_shared_push_ok"] = True
             session["_last_invite_shared_league_id"] = str(saved_shared.get("league_id") or league_id)
@@ -1224,6 +1334,9 @@ def join_shared_league_from_invite(
     league_id = str(league_id or "").strip()
     invite_id = str(invite_id or "").strip()
     team = str(team_name or "").strip()
+    sign_in_error = _shared_sign_in_error(session)
+    if sign_in_error:
+        return None, None, sign_in_error
     uid = _resolve_user_id()
     if not uid:
         return None, None, "Sign in to accept a league invite."
@@ -1238,7 +1351,7 @@ def join_shared_league_from_invite(
 
     rollback = {key: copy.deepcopy(session.get(key)) for key in (_LIBRARY_KEY, "fantasy_league_context_state",
                                                                   "active_draft_archive_id")}
-    shared = load_shared_league(league_id)
+    shared = _load_shared_fresh(league_id)
     if not isinstance(shared, dict):
         return None, None, "Shared league could not be loaded."
 
@@ -1437,9 +1550,9 @@ def join_shared_league_from_invite(
 
     write_error = ""
     try:
-        from fantasy_shared_league_store import save_shared_league
-
-        save_shared_league(shared)
+        # Saved only if the league is unchanged since it was read: a cancel or another acceptance
+        # that landed in between is never overwritten (the acceptance is undone below instead).
+        _save_shared_cas(shared)
     except (ImportError, RuntimeError, OSError, ValueError) as exc:
         write_error = f"{type(exc).__name__}: {exc}"
     if write_error or not _accept_recorded(league_id, invite_id=invite_id, team=team, uid=uid):
@@ -1595,8 +1708,11 @@ def decline_league_invite(
 ) -> tuple[bool, str]:
     league_id = str(league_id or "").strip()
     invite_id = str(invite_id or "").strip()
+    sign_in_error = _shared_sign_in_error(session)
+    if sign_in_error:
+        return False, sign_in_error
     uid = _resolve_user_id()
-    shared = load_shared_league(league_id)
+    shared = _load_shared_fresh(league_id)
     if not isinstance(shared, dict):
         return False, "Shared league could not be loaded."
     invites = [dict(x) for x in (shared.get("league_invites") or []) if isinstance(x, dict)]
@@ -1624,9 +1740,11 @@ def decline_league_invite(
         responder_user_id=uid,
     )
     try:
-        from fantasy_shared_league_store import save_shared_league
+        from fantasy_shared_league_store import SharedLeagueConflict
 
-        save_shared_league(shared)
+        _save_shared_cas(shared)
+    except SharedLeagueConflict:
+        return False, "The league changed at the same moment. Nothing was changed; please try again."
     except (ImportError, RuntimeError, OSError):
         return False, "Could not update invite status."
     remove_invite_from_inbox(_resolve_workspace_id(session), invite_id=invite_id, league_id=league_id)

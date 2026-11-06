@@ -223,6 +223,12 @@ class TestSharedLeagueStartupRebootE2E(unittest.TestCase):
 
         with _as_user("user:seal11"):
             activate_league_context(session_b, league_context_id_b)
+            # A refresh (force=True): Team 2's 12 s soft cache predates the proposal by design (3ec4fda).
+            from fantasy_shared_league_store import sync_context_with_shared_store as _sync
+
+            _ctx_b = get_league_context(session_b, league_context_id_b)
+            upsert_league_context(session_b, _sync(session_b, _ctx_b, force=True))
+            activate_league_context(session_b, league_context_id_b)
             incoming = get_incoming_trade_proposals(session_b, "Team 2")
         self.assertEqual(len(incoming), 1)
 

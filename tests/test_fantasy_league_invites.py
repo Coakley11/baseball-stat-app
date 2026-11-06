@@ -303,7 +303,10 @@ class TestFantasyLeagueInvites(unittest.TestCase):
         self.assertTrue(is_league_commissioner(invite_ctx, "f66b85aa-1192-4f93-a669-d238bcd6858b"))
         self.assertEqual(str(entry.get("draft_id") or ""), str((invite_ctx.get("metadata") or {}).get("source_draft_id") or ""))
 
-    def test_invite_panel_trace_reports_commissioner_mismatch(self) -> None:
+    def test_forged_local_commissioner_metadata_does_not_change_the_stored_commissioner(self) -> None:
+        """2026-11-05 (security review finding 1): the commissioner is the STORED league's, so editing
+        this account's own copy (commissioner id, ownership) changes nothing in either direction.
+        This test used to expect the forged local values to remove the creator's commissioner role."""
         session: dict = {
             "_suite_auth_session": True,
             "_suite_cloud_user_id": "f66b85aa-1192-4f93-a669-d238bcd6858b",
@@ -334,14 +337,11 @@ class TestFantasyLeagueInvites(unittest.TestCase):
 
         with _as_user("f66b85aa-1192-4f93-a669-d238bcd6858b"):
             trace = build_commissioner_invite_panel_trace(session)
+            self.assertTrue(is_league_commissioner(context, "f66b85aa-1192-4f93-a669-d238bcd6858b"))
         self.assertGreaterEqual(int(trace.get("uploaded_league_session_count") or 0), 1)
-        self.assertFalse(trace.get("commissioner_invite_context_found"))
-        leagues = trace.get("uploaded_leagues") or []
-        self.assertGreaterEqual(len(leagues), 1)
-        row = next(item for item in leagues if str(item.get("draft_id")) == str(entry.get("draft_id")))
-        self.assertTrue(row.get("context_exists"))
-        self.assertIn("does not match", str(row.get("block_reason") or "").lower())
-        self.assertIn("None", str(trace.get("commissioner_invite_context_reason") or ""))
+        self.assertTrue(trace.get("commissioner_invite_context_found"))
+        # ...and the account the forged copy names is not made commissioner by it.
+        self.assertFalse(is_league_commissioner(context, "00000000-0000-0000-0000-000000000099"))
 
     def test_invite_panel_trace_detects_snapshot_only_team_count(self) -> None:
         session: dict = {
@@ -377,8 +377,10 @@ class TestFantasyLeagueInvites(unittest.TestCase):
         self.assertEqual(int(row.get("team_count_hint") or 0), 4)
         self.assertTrue(row.get("looks_like_uploaded_league"))
 
-    def test_invite_diagnostic_panel_always_renders_on_library(self) -> None:
-        from unittest.mock import MagicMock
+    def test_invite_diagnostic_panel_renders_on_library_in_developer_mode_only(self) -> None:
+        """The diagnostic is Developer Mode only (debug UI is hidden from users); it used to be
+        expected for everyone, which no longer holds (renamed 2026-11-05)."""
+        from unittest.mock import MagicMock, patch
 
         from fantasy_league_invite_ui import render_commissioner_invite_diagnostics_panel
 
@@ -386,7 +388,11 @@ class TestFantasyLeagueInvites(unittest.TestCase):
         st.expander.return_value.__enter__ = MagicMock(return_value=None)
         st.expander.return_value.__exit__ = MagicMock(return_value=False)
         session: dict = {"draft_archive_teams": []}
-        self.assertTrue(render_commissioner_invite_diagnostics_panel(st, session))
+        with patch("suite_workspace.can_show_developer_tools", return_value=False):
+            self.assertFalse(render_commissioner_invite_diagnostics_panel(st, session))
+        st.expander.assert_not_called()
+        with patch("suite_workspace.can_show_developer_tools", return_value=True):
+            self.assertTrue(render_commissioner_invite_diagnostics_panel(st, session))
         st.expander.assert_called_once()
         expander_title = str(st.expander.call_args[0][0])
         self.assertIn("Invite panel diagnostic", expander_title)
@@ -414,8 +420,11 @@ class TestFantasyLeagueInvites(unittest.TestCase):
         st = MagicMock()
         st.expander.return_value.__enter__ = MagicMock(return_value=None)
         st.expander.return_value.__exit__ = MagicMock(return_value=False)
+        from unittest.mock import patch
+
         render_commissioner_invite_panel(st, session)
-        render_commissioner_invite_diagnostics_panel(st, session)
+        with patch("suite_workspace.can_show_developer_tools", return_value=True):  # Developer Mode only
+            render_commissioner_invite_diagnostics_panel(st, session)
         markdown_calls = [str(call.args[0]) for call in st.markdown.call_args_list if call.args]
         self.assertTrue(any("button_clicked:** True" in text for text in markdown_calls))
         self.assertTrue(any("inv_same_run" in text for text in markdown_calls))

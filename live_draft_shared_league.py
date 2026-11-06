@@ -217,6 +217,52 @@ def _resolve_preassigned_owners(
     return owners
 
 
+ROOM_HOST_MESSAGES = {
+    "not_room_host": (
+        "Only this room's host can create its Shared League. You keep your team: once the host "
+        "creates the league, accept their invite to manage it. Nothing was changed."
+    ),
+    "room_host_unknown": (
+        "This room has no recorded host, so a Shared League cannot be created from it yet. "
+        "Nothing was changed. The app owner can review the room and assign its host."
+    ),
+    "room_unverifiable": "The room could not be checked right now. Nothing was changed; please try again.",
+    "room_missing": "This room could not be found, so a Shared League cannot be created from it. Nothing was changed.",
+}
+
+
+def room_host_creation_error(session: dict[str, Any], room_code: str) -> str:
+    """'' when this signed-in account is the stored host of ``room_code`` (or outside a user
+    request: scripts and tests); otherwise the message to show."""
+    try:
+        from fantasy_shared_league_authz import (
+            current_session,
+            room_league_creation_error,
+            shared_league_sign_in_error,
+        )
+    except ImportError:
+        return ""
+    if current_session() is None:
+        return ""
+    message = shared_league_sign_in_error(session)
+    if message:
+        return message
+    reason = room_league_creation_error(session, room_code)
+    return ROOM_HOST_MESSAGES.get(reason, ROOM_HOST_MESSAGES["not_room_host"]) if reason else ""
+
+
+def _creating_host_account_id(session: dict[str, Any]) -> str:
+    """The verified account creating the league (suite account id when known), or ''."""
+    try:
+        from fantasy_shared_league_authz import current_session, verified_account_ids
+    except ImportError:
+        return ""
+    if current_session() is None:
+        return ""
+    ids = verified_account_ids(session)
+    return ids[-1] if ids else ""
+
+
 def save_live_draft_shared_league_context(
     session: dict[str, Any],
     room: dict[str, Any],
@@ -272,6 +318,12 @@ def save_live_draft_shared_league_context(
         shared_code = shared_room_code(session, room)
     except ImportError:
         shared_code = ""
+    if shared_code:
+        # Only the stored room host may create this room's Shared League, and becomes its
+        # commissioner (owner decision 2026-11-05). Checked before anything is saved.
+        host_error = room_host_creation_error(session, shared_code)
+        if host_error:
+            raise ValueError(host_error)
     if shared_code:
         # This room's own entry (or a new room-<code> entry), never another room's entry with the
         # same picks: that overwrote a different saved draft (QA 2026-11-05).
@@ -410,6 +462,10 @@ def save_live_draft_shared_league_context(
                     commissioner = str(_resolve_user_id() or "").strip()
                 except ImportError:
                     commissioner = str(owner_map.get(my_team, {}).get("user_id") or "").strip()
+            if shared_code:
+                creator = _creating_host_account_id(session)
+                if creator:
+                    commissioner = creator  # the verified host, never a value from a local copy
             if commissioner:
                 meta["commissioner_user_id"] = commissioner
                 context["metadata"] = meta

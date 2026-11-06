@@ -3718,6 +3718,32 @@ def _on_live_draft_save_click(
     )
 
 
+def _shared_league_create_blocked_reason(session: dict[str, Any], room: dict[str, Any]) -> str:
+    """Why this account cannot create the room's Shared League ('' when it can). Display only:
+    live_draft_shared_league and the server's write check enforce the same rule."""
+    try:
+        from live_draft_shared_league import room_host_creation_error
+        from shared_draft_identity import shared_room_code
+
+        code = str(shared_room_code(session, room) or "").strip()
+    except Exception:
+        return ""
+    if not code:
+        return ""  # a Solo draft: this account's own draft
+    import time as _time
+
+    cached = session.get("_shared_league_create_gate")
+    now = _time.monotonic()
+    if isinstance(cached, dict) and cached.get("code") == code and now - float(cached.get("t") or 0) < 20.0:
+        return str(cached.get("reason") or "")
+    try:
+        reason = room_host_creation_error(session, code)
+    except Exception:
+        return ""
+    session["_shared_league_create_gate"] = {"code": code, "t": now, "reason": reason}
+    return reason
+
+
 def render_live_draft_completion_panel(
     st: Any,
     session: dict[str, Any],
@@ -3882,10 +3908,13 @@ def render_live_draft_completion_panel(
             kwargs={"key_prefix": key_prefix},
         )
     with league_col:
+        create_blocked = _shared_league_create_blocked_reason(session, room)
         st.button(
             "Create Shared League",
             key=f"{key_prefix}_shared_league_btn",
             use_container_width=True,
+            disabled=bool(create_blocked),
+            help=create_blocked or None,
             on_click=on_open_live_draft_shared_league_confirmation,
             kwargs={
                 "key_prefix": key_prefix,

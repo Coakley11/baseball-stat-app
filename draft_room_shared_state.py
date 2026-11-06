@@ -1452,6 +1452,18 @@ def commit_shared_room_pick(
     live_room = preserve_paused_against_stale_in_progress(
         session, current, live_room, persist_reason=persist_reason
     )
+    try:
+        from fantasy_shared_league_authz import room_pick_write_refusal
+
+        refusal = room_pick_write_refusal(session, current, live_room)
+    except ImportError:
+        refusal = ""
+    if refusal:
+        # One check for every caller (pick, auto-pick, status): nothing is written, and the stored
+        # room is handed back as on a conflict so the caller shows the authoritative state.
+        session["_shared_room_write_refused"] = {"room_code": code, "reason": refusal}
+        publish_shared_room_runtime(session, current, reason="shared_room_write_refused")
+        return False, current
     updated = bump_revision(current, live_room=live_room)
     ok, saved = backend.save_if_revision(updated, expected_revision=use_rev)
     invalidate_shared_room_document_cache(session, code)

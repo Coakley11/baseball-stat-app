@@ -602,6 +602,19 @@ class SharedDraftTwoClientFlowTests(unittest.TestCase):
         self.assertIsNone(stored_blob.get("timer_deadline"))
         self.assertIsNone(stored_blob.get("timer_started_at"))
 
+    def test_first_pick_clock_rearms_once_after_a_slow_first_paint(self) -> None:
+        """Split out of test_guest_cannot_start_shared_draft (2026-11-05) so that test's security
+        assertions run green on their own. OPEN PRODUCT QUESTION, not security: this expects an
+        expired Start-armed pick-0 clock to re-arm once the board is ready, as the docstring of
+        ensure_live_draft_timer_for_pick says; first_pick_awaiting_live_ready says a stamped pick-0
+        clock is never awaiting again. It has failed since before 2026-11-02 (recorded baseline)."""
+        set_live_draft_setup_mode(self.host, SETUP_MODE_SHARED)
+        create_and_host_shared_room(self.host, _room(status="not_started"), host_team="Team A", store=self.store)
+        prepare_global_draft_context(self.host)
+        with mock.patch("live_draft_state.commit_live_draft_room"):
+            started = start_prepared_shared_room(self.host, None)
+        self.assertTrue(started.get("ok"), started)
+        host_room = self.host[LIVE_DRAFT_ROOM_KEY]
         # Simulate a Start-armed 30s clock that already expired during a slow first paint.
         host_room["timer_started_at"] = __import__("time").time() - 45
         host_room["timer_deadline"] = __import__("time").time() - 15
