@@ -1891,7 +1891,14 @@ def unclaimed_teams_for_invite(
             continue
         record = ownership.get(team) if isinstance(ownership.get(team), dict) else {}
         if not ownership_is_firm_claim(record):
-            # Unclaimed or provisional reservation — always selectable.
+            # Unclaimed, or reserved for this invitee. A team reserved for someone else is not
+            # offered: only that participant may claim it (owner decision 2026-11-06).
+            reserved_for_someone = any(
+                str(record.get(k) or "").strip()
+                for k in ("reserved_for_user_id", "reserved_for_external_id", "reserved_for_email")
+            )
+            if reserved_for_someone and not _matches_invitee(record):
+                continue
             teams.append(team)
             continue
         # Firm claim by this invitee (legacy Live Draft preassign) — still allow Accept.

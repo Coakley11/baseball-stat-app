@@ -514,6 +514,25 @@ def _member_write(session: MutableMapping[str, Any], incoming: dict[str, Any], e
     if dropped:
         pinned.append("team_ownership")
     own_after = owned_teams(session, out)
+    # Accepting an invite and claiming its team are one action: an acceptance whose claim was not
+    # stored (a team someone else holds or is reserved for) stays as stored (QA 2026-11-06: the
+    # invite was kept "accepted" with no team, and the app's rollback cannot undo an acceptance).
+    stored_invites = {str(x.get("invite_id") or ""): x for x in _as_list(existing.get("league_invites"))}
+    reverted = False
+    for i, inv in enumerate(out["league_invites"]):
+        cur = stored_invites.get(str(inv.get("invite_id") or ""))
+        claimed = str(inv.get("claimed_team") or "").strip()
+        if (
+            cur is not None
+            and str(cur.get("status") or "").strip().lower() == INVITE_PENDING
+            and str(inv.get("status") or "").strip().lower() == INVITE_ACCEPTED
+            and claimed
+            and claimed not in own_after
+        ):
+            out["league_invites"][i] = copy.deepcopy(cur)
+            reverted = True
+    if reverted:
+        pinned.append("league_invites")
     proposals, accepted, dropped = _member_trades(
         existing.get("trade_proposals"), incoming.get("trade_proposals"), own_after, known_teams
     )

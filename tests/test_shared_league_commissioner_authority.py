@@ -413,6 +413,21 @@ class LegitimateMemberWriteTests(_Base):
         with self.request(session):
             out = authz.authorize_league_write(session, incoming, doc)
         self.assertTrue(authz.is_team_reservation(out["team_ownership"]["Open"]))
+        # Accept and claim are one action (QA 2026-11-06): the refused claim leaves the invite pending.
+        self.assertEqual(out["league_invites"][-1]["status"], "pending")
+
+    def test_the_accept_form_offers_only_open_teams_and_your_own_reservation(self) -> None:
+        from fantasy_league_invites import unclaimed_teams_for_invite
+
+        doc = self._reserved_for_invitee()
+        doc["team_ownership"]["Spare"] = {}
+        doc["league_rosters"]["Spare"] = {"players": []}
+        with patch("fantasy_league_invites._resolve_user_id", return_value=""),                 patch("fantasy_league_invites._resolve_external_id", return_value=""),                 patch("fantasy_league_invites._resolve_workspace_id", return_value=""):
+            for_cara = unclaimed_teams_for_invite(doc, invitee_user_id=INVITEE["suite"], invitee_external_id="cara")
+            for_mal = unclaimed_teams_for_invite(doc, invitee_user_id=OUTSIDER["suite"], invitee_external_id="mallory")
+        self.assertIn("Open", for_cara)
+        self.assertNotIn("Open", for_mal)
+        self.assertIn("Spare", for_mal)
 
     def test_malformed_trade_terms_are_never_stored_or_executed(self) -> None:
         """QA 2026-11-06: an accepted trade whose players were plain strings crashed every member's
