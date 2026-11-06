@@ -214,7 +214,10 @@ class DisplayHiddenTests(_Base):
         )
         self.assertTrue(player)
         self.assertEqual(collect_player_roster_contexts(self.other, player), [])
-        with _as_user("user:daniel"):
+        # The owner is genuinely signed in. This fixture has no real tokens, so the board's sign-in
+        # re-check (restore_auth_session) would sign it out, and a signed-out session now sees no
+        # Shared League at all (2026-11-05 security fixes: a verified sign-in is required).
+        with _as_user("user:daniel"), patch("suite_auth.ensure_authenticated_session_hydrated", return_value=True):
             self.assertTrue(collect_player_roster_contexts(self.owner, player))
 
     def test_activation_prompt_reports_unavailable_instead_of_rendering_the_league(self) -> None:
@@ -340,7 +343,10 @@ class WritesRefusedServerSideTests(_Base):
     def test_a_genuinely_new_league_may_be_created(self) -> None:
         with patch.object(authz, "checked_load", return_value=(authz.LOAD_MISSING, None)):
             doc = {"league_id": "league:new"}
-            self.assertIs(authz.authorize_league_write(self.owner, doc, None), doc)
+            out = authz.authorize_league_write(self.owner, doc, None)
+        # Allowed, and a new league's commissioner is its creator (2026-11-05 security fixes).
+        self.assertEqual(out["league_id"], "league:new")
+        self.assertIn(out["commissioner_user_id"], authz.verified_account_ids(self.owner))
 
     def test_supabase_store_reports_a_failed_request_as_error_and_no_config_as_missing(self) -> None:
         from fantasy_shared_league_supabase_store import SupabaseSharedLeagueStore
