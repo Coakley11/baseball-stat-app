@@ -201,3 +201,30 @@ The one still open is `test_second_account_sees_library_after_create_from_room_p
 fails identically on the candidate. A seated room participant's team is **reserved** for them, not
 claimed, so their Library shows the league only after they accept the host's invite (QA confirmed
 that flow). Open product question: should a reservation alone list the league?
+
+## Update 2026-11-06 (later): reservations, atomic accept, third QA run
+
+**Owner decision: a team reservation alone is not Shared League membership.** A Live Draft
+participant keeps their Live Draft Room. They see a pending invite once the commissioner sends one,
+and the league appears in their Saved Draft Library only after they accept it and claim the team.
+Nobody is enrolled automatically.
+
+- `401f9a9`: a reserved team record (`claim_status` "reserved…", no account id) used to match the
+  participant by email. It made them a member who could read the league and change that team's
+  roster without an invite. A reservation is no longer ownership or membership, and only the
+  account a team is reserved for may claim it.
+- `3a15648`: accepting an invite and claiming its team are one action. QA found an invitee whose
+  claim of another person's reserved team was refused, yet the invite stayed "accepted" with no
+  team (the app's rollback cannot undo an acceptance). Such an acceptance now stays pending. The
+  Accept form offers a reserved team only to the participant it is reserved for.
+
+Third QA run (baseball-qa-staging, room L9EBUJ, `league:room-l9ebuj`):
+
+| Step | Result |
+|---|---|
+| Existing memberships: Danny and Barry still see both existing leagues, Danny keeps the invite panel, QA Other sees neither | pass |
+| Reserved only: Barry keeps the Live Draft Room; the league is not in his Library; the server refuses reads, claims and roster writes (8 checks) | pass |
+| QA Other invited: the form offers no team ("No unclaimed teams remain"); a forced claim of Barry's team is refused and the invite stays pending (9 checks) | pass |
+| Barry invited: the pending invite offers Barry; he accepts and claims it; the league appears in his Library | pass |
+| QA Other declines; Library unchanged | pass |
+| Pre-existing QA leagues byte-identical; rooms unchanged apart from presence timestamps | pass |
