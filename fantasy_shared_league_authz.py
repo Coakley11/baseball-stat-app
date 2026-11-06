@@ -680,22 +680,42 @@ _PROPOSER_ANSWERS = frozenset({"canceled", "cancelled"})
 _TRADE_TERMS = ("proposal_id", "proposer_team", "recipient_team", "proposer_gives", "proposer_receives")
 
 
+def _player_identity(name: Any) -> str:
+    """A player as the app identifies one (fantasy_league_context.normalize_player_key: accents,
+    case, punctuation and Jr./Sr./II-V folded), so a trade the app can execute is one the server
+    accepts (R3 check 11, 2026-11-06: exact names disagreed with the app on spelling variants)."""
+    raw = str(name or "").strip()
+    if not raw:
+        return ""
+    try:
+        from fantasy_league_context import normalize_player_key
+    except ImportError:
+        return raw.lower()
+    return normalize_player_key(raw) or raw.lower()
+
+
 def _trade_names(items: Any) -> list[str]:
+    """The players a trade lists, as the app matches them (the name, normalized)."""
     out = []
     for item in items or []:
-        name = item.get("player_name") if isinstance(item, dict) else item
-        if str(name or "").strip():
-            out.append(str(name).strip())
+        key = _player_identity(item.get("player_name") if isinstance(item, dict) else item)
+        if key:
+            out.append(key)
     return out
 
 
 def _roster_names(roster: Any) -> list[str]:
+    """The players on a roster, as the app matches them: a stored player_key, else the name normalized."""
     players = roster.get("players") if isinstance(roster, dict) else roster
     out = []
     for item in players or []:
-        name = (item.get("player_name") or item.get("Player") or item.get("name")) if isinstance(item, dict) else item
-        if str(name or "").strip():
-            out.append(str(name).strip())
+        if isinstance(item, dict):
+            key = str(item.get("player_key") or "").strip() or _player_identity(
+                item.get("player_name") or item.get("Player") or item.get("name"))
+        else:
+            key = _player_identity(item)
+        if key:
+            out.append(key)
     return out
 
 

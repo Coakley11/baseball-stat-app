@@ -228,3 +228,21 @@ Third QA run (baseball-qa-staging, room L9EBUJ, `league:room-l9ebuj`):
 | Barry invited: the pending invite offers Barry; he accepts and claims it; the league appears in his Library | pass |
 | QA Other declines; Library unchanged | pass |
 | Pre-existing QA leagues byte-identical; rooms unchanged apart from presence timestamps | pass |
+
+## Update 2026-11-06 (evening): trades match players as the app does; Accept form uses the server rule
+
+- **Trade player matching.** The app checks and executes a trade by normalized player key
+  (`normalize_player_key`: accents, case, punctuation and Jr./Sr./II-V folded; a roster entry's
+  stored `player_key` first). The server's exact-swap and no-duplicate checks compared exact names,
+  so a trade whose terms and roster spelled a player differently ("Jose Ramirez" and "José
+  Ramírez") executed in the app, but the server silently kept the stored rosters and the pending
+  trade. The server now matches players the same way the app does. Production R3 check 11 (1
+  pending trade) uses exact names; R4 tells a spelling variant apart from a player who really moved.
+- **Accept form.** With a verified sign-in, a reserved team is offered only when the server's
+  `_reservation_is_session` would allow the claim (an account id must match; an email prefix that
+  equals a username is never enough). Before, the `coakley11` account was offered a team reserved
+  for `coakley11@…` and then refused; nothing changed, but the offer was wrong.
+- Verified separately: accepting an invite and claiming its team stay atomic when persistence fails
+  (a conflict, a refused write, OSError, ValueError, a lost write, a failed re-read). The invite
+  stays pending, the account's Library and league contexts are restored, no team is owned, and a
+  retry succeeds.

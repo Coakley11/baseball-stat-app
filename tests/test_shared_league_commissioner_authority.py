@@ -429,6 +429,44 @@ class LegitimateMemberWriteTests(_Base):
         self.assertNotIn("Open", for_mal)
         self.assertIn("Spare", for_mal)
 
+    def test_the_accept_form_never_offers_a_reservation_by_an_email_prefix(self) -> None:
+        """QA 2026-11-06: an account whose username equals the prefix of the reserved email (the
+        coakley11 account and a team reserved for coakley11@...) was offered the team, then refused."""
+        from fantasy_league_invites import unclaimed_teams_for_invite
+
+        doc = self._reserved_for_invitee()
+        doc["team_ownership"]["Open"]["email"] = "mallory@example.com"  # prefix = the outsider's username
+        for account, offered in ((OUTSIDER, False), (INVITEE, True)):
+            session = signed_in(account)
+            with self.request(session), patch("fantasy_league_invites._resolve_external_id", return_value=account["username"]):
+                teams = unclaimed_teams_for_invite(doc, session=session)
+            self.assertEqual("Open" in teams, offered, account["username"])
+
+    def test_trades_match_players_as_the_app_does(self) -> None:
+        """R3 check 11 (2026-11-06): the app matches a trade's players by normalized name (accents,
+        case, Jr.), so the server does too; an exact-name check refused trades the app executed."""
+        existing = stored_league()
+        existing["league_rosters"]["Danny"] = {"players": [{"player_name": "José Ramírez", "player_key": "jose ramirez"}]}
+        existing["league_rosters"]["Barry"] = {"players": [{"player_name": "Ronald Acuña Jr."}]}
+        existing["trade_proposals"][0].update(proposer_gives=[{"player_name": "Jose Ramirez"}],
+                                              proposer_receives=[{"player_name": "Ronald Acuna"}])
+        incoming = copy.deepcopy(existing)
+        incoming["trade_proposals"][0]["status"] = "accepted"
+        incoming["league_rosters"]["Danny"] = copy.deepcopy(existing["league_rosters"]["Barry"])
+        incoming["league_rosters"]["Barry"] = copy.deepcopy(existing["league_rosters"]["Danny"])
+        session = signed_in(MEMBER)
+        with self.request(session):
+            out = authz.authorize_league_write(session, incoming, existing)
+        self.assertEqual(out["trade_proposals"][0]["status"], "accepted")
+        self.assertEqual(out["league_rosters"]["Barry"], existing["league_rosters"]["Danny"])
+        self.assertEqual(out["league_rosters"]["Danny"], existing["league_rosters"]["Barry"])
+        # The same player spelled differently is still one player: never on two rosters.
+        incoming = copy.deepcopy(existing)
+        incoming["league_rosters"]["Barry"]["players"].append({"player_name": "jose ramirez"})
+        with self.request(session):
+            out = authz.authorize_league_write(session, incoming, existing)
+        self.assertEqual(out["league_rosters"]["Barry"], existing["league_rosters"]["Barry"])
+
     def test_malformed_trade_terms_are_never_stored_or_executed(self) -> None:
         """QA 2026-11-06: an accepted trade whose players were plain strings crashed every member's
         Library page (fantasy_trade_roster_sync expects player records)."""

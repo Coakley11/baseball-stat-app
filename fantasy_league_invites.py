@@ -1884,6 +1884,18 @@ def unclaimed_teams_for_invite(
                 return True
         return False
 
+    def _reservation_offered(record: dict[str, Any]) -> bool:
+        # With a verified sign-in, the server's own rule decides (fantasy_shared_league_authz): an
+        # account id must match, never an email prefix equal to a username (QA 2026-11-06: the
+        # coakley11 account was offered a team reserved for coakley11@... and then refused).
+        try:
+            from fantasy_shared_league_authz import _reservation_is_session, verified_account_ids
+        except ImportError:
+            return _matches_invitee(record)
+        if isinstance(session, dict) and verified_account_ids(session):
+            return _reservation_is_session(session, record)
+        return _matches_invitee(record)
+
     teams: list[str] = []
     for team_name in sorted(rosters.keys()):
         team = str(team_name or "").strip()
@@ -1897,7 +1909,7 @@ def unclaimed_teams_for_invite(
                 str(record.get(k) or "").strip()
                 for k in ("reserved_for_user_id", "reserved_for_external_id", "reserved_for_email")
             )
-            if reserved_for_someone and not _matches_invitee(record):
+            if reserved_for_someone and not _reservation_offered(record):
                 continue
             teams.append(team)
             continue
