@@ -117,3 +117,87 @@ Run the app from this branch on the QA configuration, with two QA accounts in tw
 5. A revoked invitee loses access. A member trades, sets a lineup and makes a waiver move, and all
    work.
 6. With sign-in off in a local run, no Shared League action is possible, and solo drafts still work.
+
+## Update 2026-11-06: production R2, two-account QA, QA-found fixes, first-pick clock
+
+### Production R2 (owner ran it read-only in daniel-ai-suite)
+
+5 leagues. All 5 store `commissioner_user_id` (0 missing; checks 13 and 14 are both 0), so no
+league relies on the derived room-host commissioner and no recovery step is needed. In all 5, the
+commissioner owns a team. 4 leagues have a team owned by someone other than the commissioner;
+for those owners nothing changes except that league-wide actions are now refused for them.
+Invites: accepted 2, declined 1, pending 1.
+
+- **1 declined invite whose invitee owns a team.** Membership comes from the team-ownership record,
+  not the invite, so that member keeps their team, roster, lineups and trades, and reading the
+  league. The declined invite itself confers nothing and cannot be revived (test
+  `test_a_team_owner_whose_invite_was_declined_keeps_their_team_and_nothing_more`).
+- **0 invalidated invites whose invitee owns no team.** Nobody loses access.
+- **1 invite without `invitee_user_id`.** It is matched only to the account named by its stored
+  username, workspace or full email (never another account). It grants no commissioner power and
+  the commissioner can still cancel it (test
+  `test_an_invite_without_an_account_id_matches_only_the_named_account`). If it is the known wrong
+  pending invite `inv_ef4d2624aa75`, only `coakley11` could answer it until Danny cancels it.
+- Optional read-only follow-up **R3** (counts only) narrows these two rows down and checks the data
+  shapes the QA fixes below depend on: `docs/sql/baseball_shared_security_recheck_readonly.sql`
+  on `plan/free-pro-entitlements`.
+
+### Two-account QA on baseball-qa-staging (qa_danny commissioner, qa_barry member, qa_other)
+
+The run used the isolated QA configuration (both keys and the URL decode to the QA project; the
+guard refuses anything else), a local app on 127.0.0.1:8611 and the app's own code paths.
+
+| Check | Result |
+|---|---|
+| Existing QA league `league:room-oyn4nc`: Danny has the invite panel, Barry does not | pass |
+| New Shared Draft: Danny hosts room 50RJB0, Barry joins and claims Barry | pass |
+| First pick: no clock during the 90 s first load (30 s timer, no autopick); clock started at board-ready; expiry then autopicked; `timer_live_ready_at` stored | pass |
+| Barry refreshes mid-draft: room state and stored deadline intact | pass |
+| Barry's Create Shared League is disabled: "Only this room's host can create its Shared League…" | pass |
+| Danny closes the browser, signs in from a new one, the completed room restores, Danny creates the league (`commissioner_user_id` = Danny) | pass |
+| Danny invites qa_barry; Barry accepts and claims Barry; Barry has no invite panel | pass |
+| Server tamper run as Barry with his real identity (25 checks): forged local commissioner metadata, send or cancel invites, rename or change settings, make himself commissioner, manage Danny's team, change the season; QA Other cannot read or write | 25 pass (after the fixes below) |
+| Barry's own-team write; stale write refused; 4 concurrent writers, exactly 1 wins | pass |
+| Danny invites qa_other and cancels it; Other loses the league; Other cannot accept or answer the revoked invite | pass |
+| Cancel and decline at the same moment: exactly one wins, storage matches, the loser is told "This invite is no longer pending. Nothing was changed." | pass |
+| Trade: Danny proposes, Barry accepts, both rosters swap; Barry cannot reopen it; an over-reaching accept changes neither roster | pass (after the fixes below) |
+| App restarted twice: both stay signed in; leagues, claims and commissioner tools intact | pass |
+| Pre-existing QA data: 2 leagues and 5 rooms byte-identical (rooms compared without presence timestamps; revisions unchanged) | pass |
+
+### Found by QA and fixed (commits 697e409 and the follow-up)
+
+1. **A member could add a team.** An accepted invitee (a member without a team) could store an
+   ownership record and a roster for a team the league does not have (team ""). Members now claim
+   only an existing, unowned team of the stored league, one team in total, and never add rosters.
+2. **Trades could be rewritten.** A party could move an accepted trade back to pending; the
+   accepting member's write could set the other team's roster to anything. Now a settled trade
+   never changes; from pending the recipient accepts, declines or counters and the proposer
+   cancels (any member may mark stale or expired); a proposal's teams and players never change;
+   an accepted trade must move the other roster by exactly its terms, or it stays pending and
+   neither roster changes; a member never adds a player who is on another team's roster.
+3. **Malformed trade data broke every member's Library page.** An accepted trade whose players
+   were plain strings (QA test data) raised `AttributeError` in `fantasy_trade_roster_sync`. Members
+   can no longer store or execute proposals whose players are not player records. (The app itself
+   always writes records; R3 check 7 counts any such trade in production.)
+
+QA data written by the run stayed in baseball-qa-staging: room 50RJB0 and `league:room-50rjb0`
+(teams Danny and Barry, trades and invites used by the checks). The stray "" team from finding 1 and
+the trade from finding 2 were put back by Danny as commissioner.
+
+### First-pick clock (owner decision 2026-11-06)
+
+`first_pick_expired_before_actionable`: a pick-1 clock that ran out before pick 1 was ever actionable
+is never autopicked; the first live-board paint initializes it once and stores
+`timer_live_ready_at`. After that the deadline survives reruns, refreshes, reconnects and restarts,
+and an expiry follows the timeout and autopick policy. `tests/test_first_pick_timer_policy.py` (10).
+
+### Legacy test status
+
+All 14 of the original legacy failures now pass except one, and none was fixed by weakening a
+product rule. Each change brings a test to the app's current intended behavior: copy, fixture
+completeness, same-server pool cache isolation, the rebuilt context id, and Solo timer ownership.
+
+The one still open is `test_second_account_sees_library_after_create_from_room_participants`. It
+fails identically on the candidate. A seated room participant's team is **reserved** for them, not
+claimed, so their Library shows the league only after they accept the host's invite (QA confirmed
+that flow). Open product question: should a reservation alone list the league?

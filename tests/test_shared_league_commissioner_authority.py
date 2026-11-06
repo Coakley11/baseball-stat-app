@@ -367,6 +367,25 @@ class LegitimateMemberWriteTests(_Base):
         out = self.member_write(MEMBER, lambda d: d["league_rosters"].__setitem__("Barry", {"players": ["B", "Free agent"]}))
         self.assertEqual(out["league_rosters"]["Barry"], {"players": ["B", "Free agent"]})
 
+    def test_malformed_trade_terms_are_never_stored_or_executed(self) -> None:
+        """QA 2026-11-06: an accepted trade whose players were plain strings crashed every member's
+        Library page (fantasy_trade_roster_sync expects player records)."""
+        out = self.member_write(MEMBER, lambda d: d["trade_proposals"].append(
+            {"proposal_id": "t7", "status": "pending", "proposer_team": "Barry", "recipient_team": "Danny",
+             "proposer_gives": ["B"], "proposer_receives": [{"player_name": "A"}]}))
+        self.assertEqual([p["proposal_id"] for p in out["trade_proposals"]], ["t1"])
+        existing = stored_league()
+        existing["trade_proposals"][0]["proposer_gives"] = ["A"]  # stored malformed (e.g. legacy)
+        incoming = copy.deepcopy(existing)
+        incoming["trade_proposals"][0]["status"] = "accepted"
+        incoming["league_rosters"]["Danny"] = {"players": ["B"]}
+        incoming["league_rosters"]["Barry"] = {"players": ["A"]}
+        session = signed_in(MEMBER)
+        with self.request(session):
+            out = authz.authorize_league_write(session, incoming, existing)
+        self.assertEqual(out["trade_proposals"][0]["status"], "pending")
+        self.assertEqual(out["league_rosters"]["Danny"], {"players": ["A"]})
+
     def test_a_member_proposes_only_to_a_team_of_the_league(self) -> None:
         def propose(doc):
             doc["trade_proposals"].append({"proposal_id": "t9", "status": "pending", "proposer_team": "Barry", "recipient_team": "Ghost"})

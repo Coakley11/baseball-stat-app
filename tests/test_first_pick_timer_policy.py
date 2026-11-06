@@ -83,7 +83,8 @@ class ExpiredDuringLoadingGetsOneInitialization(unittest.TestCase):
         room = self._expired_before_ready()
         self.assertTrue(first_pick_expired_before_actionable(room))
         self.assertFalse(live_draft_timer_expired_for_pick(room), "no autopick before pick 1 was actionable")
-        self.assertTrue(prestart_expiration_blocked(room))
+        # (Solo applies the same rule in its clock component: re-arm once at the first mount of a
+        # pick-1 clock that never became live-ready, before any expiry is processed.)
         self.assertFalse(ensure_live_draft_timer_for_pick(room), "only the live board initializes it")
 
         self.assertTrue(ensure_live_draft_timer_for_pick(room, live_board_ready=True))

@@ -646,6 +646,21 @@ def _roster_names(roster: Any) -> list[str]:
     return out
 
 
+def _well_formed_terms(proposal: dict[str, Any]) -> bool:
+    """The shape the app writes: lists of player records with a name. Anything else would break
+    every member's trade views once stored, so a member can never store it."""
+    for key in ("proposer_gives", "proposer_receives"):
+        items = proposal.get(key)
+        if items is None:
+            continue
+        if not isinstance(items, list):
+            return False
+        for item in items:
+            if not isinstance(item, dict) or not str(item.get("player_name") or "").strip():
+                return False
+    return True
+
+
 def _member_trades(
     existing: Any, incoming: Any, own: set[str], known_teams: set[str] | None = None
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], bool]:
@@ -671,6 +686,7 @@ def _member_trades(
                 and recipient
                 and recipient != proposer
                 and (known_teams is None or recipient in known_teams)
+                and _well_formed_terms(prop)
             ):
                 result.append(copy.deepcopy(prop))
                 index[pid] = len(result) - 1
@@ -707,6 +723,10 @@ def _member_trades(
                 updated.pop(key, None)
         result[index[pid]] = updated
         if new_status == TRADE_ACCEPTED:
+            if not _well_formed_terms(current):
+                result[index[pid]] = copy.deepcopy(current)  # never execute a malformed proposal
+                dropped = True
+                continue
             accepted[pid] = copy.deepcopy(current)
     return result, accepted, dropped
 
