@@ -26783,6 +26783,15 @@ elif active_page == "Live Draft Room":
                         f"**{cfg.get('league_name', 'League')}** · "
                         f"Pick {pick_num} of {total_picks}"
                     )
+            if _draft_in_progress and not _draft_is_complete:
+                # Same strip in Solo and Shared: on the clock, up next, your next pick, recent picks.
+                # Read-only on the room; the viewer's team is the one resolved above (Shared: the seat).
+                try:
+                    from live_draft_status_strip import render_draft_status_strip
+
+                    render_draft_status_strip(st, room, viewer_team=str(user_team or ""))
+                except ImportError:
+                    pass
         else:
             on_clock_team = str(
                 (_paint.get("team_on_clock") if isinstance(_paint, dict) else None)
