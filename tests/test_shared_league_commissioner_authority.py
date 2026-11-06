@@ -367,6 +367,53 @@ class LegitimateMemberWriteTests(_Base):
         out = self.member_write(MEMBER, lambda d: d["league_rosters"].__setitem__("Barry", {"players": ["B", "Free agent"]}))
         self.assertEqual(out["league_rosters"]["Barry"], {"players": ["B", "Free agent"]})
 
+    # Owner decision 2026-11-06: a team reservation alone is not Shared League membership.
+
+    def _reserved_for_invitee(self) -> dict:
+        doc = stored_league()
+        doc["team_ownership"]["Open"] = {"user_id": "", "email": "cara@example.com", "reserved_for_user_id": INVITEE["suite"],
+                                         "reserved_for_external_id": INVITEE["username"], "claim_status": "reserved_live_draft",
+                                         "provisional": True}
+        doc["league_invites"] = [i for i in doc["league_invites"] if i["invite_id"] != "inv_pending"]
+        return doc
+
+    def test_a_reservation_alone_grants_no_membership(self) -> None:
+        doc = self._reserved_for_invitee()
+        session = signed_in(INVITEE)
+        with self.request(session), patch("fantasy_shared_league_startup_sync.session_auth_email", return_value="cara@example.com"):
+            self.assertTrue(authz.is_team_reservation(doc["team_ownership"]["Open"]))
+            self.assertFalse(authz.is_league_member_or_invitee(session, doc))
+            self.assertFalse(authz.may_read_league(session, doc))
+            self.assertEqual(authz.owned_teams(session, doc), set())
+            incoming = copy.deepcopy(doc)
+            incoming["league_rosters"]["Open"] = {"players": ["C", "Z"]}
+            with self.assertRaises(authz.SharedLeagueWriteRefused):
+                authz.authorize_league_write(session, incoming, doc)
+
+    def test_the_reserved_participant_claims_it_after_accepting_an_invite(self) -> None:
+        doc = self._reserved_for_invitee()
+        doc["league_invites"].append({"invite_id": "inv_cara", "status": "pending", "invitee_user_id": INVITEE["suite"]})
+        incoming = copy.deepcopy(doc)
+        incoming["league_invites"][-1].update(status="accepted", claimed_team="Open")
+        incoming["team_ownership"]["Open"] = {"user_id": INVITEE["suite"], "claim_status": "claimed"}
+        session = signed_in(INVITEE)
+        with self.request(session):
+            self.assertTrue(authz.may_read_league(session, doc))  # as the invitee
+            out = authz.authorize_league_write(session, incoming, doc)
+        self.assertEqual(out["team_ownership"]["Open"]["user_id"], INVITEE["suite"])
+        self.assertEqual(out["league_invites"][-1]["status"], "accepted")
+
+    def test_another_invitee_cannot_take_a_team_reserved_for_someone_else(self) -> None:
+        doc = self._reserved_for_invitee()
+        doc["league_invites"].append({"invite_id": "inv_mal", "status": "pending", "invitee_user_id": OUTSIDER["suite"]})
+        incoming = copy.deepcopy(doc)
+        incoming["league_invites"][-1].update(status="accepted", claimed_team="Open")
+        incoming["team_ownership"]["Open"] = {"user_id": OUTSIDER["suite"], "claim_status": "claimed"}
+        session = signed_in(OUTSIDER)
+        with self.request(session):
+            out = authz.authorize_league_write(session, incoming, doc)
+        self.assertTrue(authz.is_team_reservation(out["team_ownership"]["Open"]))
+
     def test_malformed_trade_terms_are_never_stored_or_executed(self) -> None:
         """QA 2026-11-06: an accepted trade whose players were plain strings crashed every member's
         Library page (fantasy_trade_roster_sync expects player records)."""

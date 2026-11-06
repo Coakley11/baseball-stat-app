@@ -214,22 +214,52 @@ def _invite_is_live(invite: Any) -> bool:
     return isinstance(invite, dict) and str(invite.get("status") or "").strip().lower() in LIVE_INVITE_STATUSES
 
 
+def is_team_reservation(record: Any) -> bool:
+    """A team held for a Live Draft participant until they accept the commissioner's invite
+    (``claim_status`` "reserved…", no account id yet). A reservation is NOT ownership and grants no
+    Shared League membership (owner decision 2026-11-06): the participant keeps their Live Draft
+    Room, sees the invite once it is sent, and the league after they accept and claim the team."""
+    if not isinstance(record, dict):
+        return False
+    if str(record.get("user_id") or record.get("account_user_id") or "").strip():
+        return False
+    status = str(record.get("claim_status") or "").strip().lower()
+    return status.startswith("reserved") or bool(str(record.get("reserved_for_user_id") or "").strip())
+
+
+def _reservation_is_session(session: MutableMapping[str, Any], record: dict[str, Any]) -> bool:
+    """True when a reservation is held for this signed-in account (its account id, or for older
+    records its profile id or full email)."""
+    ids = verified_account_ids(session)
+    reserved = str(record.get("reserved_for_user_id") or "").strip()
+    if reserved:
+        return _ids_match(reserved, ids)
+    alias = {
+        "external_id": record.get("reserved_for_external_id") or record.get("external_id") or "",
+        "email": record.get("reserved_for_email") or record.get("email") or "",
+    }
+    return _record_has_identity(alias) and _record_is_session(session, alias)
+
+
 def is_league_member_or_invitee(session: MutableMapping[str, Any], document: dict[str, Any] | None) -> bool:
-    """Commissioner, a team owner, or the subject of a pending or accepted invite."""
+    """Commissioner, a team owner (a claimed team, never a reservation), or the subject of a
+    pending or accepted invite."""
     if not isinstance(document, dict) or not verified_account_ids(session):
         return False
     if is_league_commissioner(session, document):
         return True
-    owners = [r for r in (document.get("team_ownership") or {}).values() if isinstance(r, dict)]
+    owners = [r for r in (document.get("team_ownership") or {}).values()
+              if isinstance(r, dict) and not is_team_reservation(r)]
     invites = [i for i in (document.get("league_invites") or []) if _invite_is_live(i)]
     return any(_record_is_session(session, record) for record in owners + invites)
 
 
 def owned_teams(session: MutableMapping[str, Any], document: dict[str, Any] | None) -> set[str]:
-    """Teams whose stored ownership record names this signed-in account."""
+    """Teams whose stored ownership record names this signed-in account (claimed teams only; a
+    reservation is not ownership)."""
     out: set[str] = set()
     for team, record in ((document or {}).get("team_ownership") or {}).items():
-        if _record_is_session(session, record):
+        if not is_team_reservation(record) and _record_is_session(session, record):
             out.add(str(team))
     return out
 
@@ -607,7 +637,11 @@ def _member_ownership(
         if not _record_is_session(session, record):
             dropped = True  # a record for someone else
             continue
-        if _record_has_identity(current) and not _record_is_session(session, current):
+        if is_team_reservation(current):
+            if not _reservation_is_session(session, current):
+                dropped = True  # reserved for someone else
+                continue
+        elif _record_has_identity(current) and not _record_is_session(session, current):
             dropped = True  # someone else's team
             continue
         if holding and str(team) not in holding:

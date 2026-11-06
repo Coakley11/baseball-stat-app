@@ -224,7 +224,7 @@ class LiveDraftSharedLeagueOriginVisibilityTests(unittest.TestCase):
             self.assertIn("league:legacy-live", {m.get("league_id") for m in memberships})
             self.assertIn("Team 2", memberships[0].get("owned_teams") or [])
 
-    def test_second_account_sees_library_after_create_from_room_participants(self) -> None:
+    def test_reserved_participant_sees_the_league_only_after_accepting_the_invite(self) -> None:
         daniel = _auth_session(
             user_id="user:daniel",
             external_id="daniel",
@@ -277,22 +277,70 @@ class LiveDraftSharedLeagueOriginVisibilityTests(unittest.TestCase):
             email="coakley11@aol.com",
             auth_uuid="auth-coakley-uuid",
         )
-        with _as_user("user:coakley"), patch(
-            "fantasy_shared_league_startup_sync.list_shared_league_documents",
-            return_value=[shared],
-        ), patch(
-            "fantasy_shared_league_startup_sync.load_shared_league",
-            return_value=shared,
-        ), patch(
-            "fantasy_admin_draft_archive_repair.load_shared_league",
-            create=True,
-            return_value=shared,
+        # Owner policy (2026-11-06): a team reservation alone is NOT Shared League membership. The
+        # participant keeps their Live Draft Room, sees a pending invite once the commissioner sends
+        # one, and gets the league in their Saved Draft Library only after accepting and claiming.
+        import fantasy_shared_league_authz as authz
+        from fantasy_league_invites import join_shared_league_from_invite
+        from fantasy_shared_league_store import invalidate_shared_league_doc_cache
+
+        self.assertTrue(authz.is_team_reservation((shared.get("team_ownership") or {}).get("Team 2")))
+
+        def library(session: dict) -> list:
+            stored = load_shared_league(league_id)
+            with _as_user("user:coakley"), patch(
+                "fantasy_shared_league_startup_sync.list_shared_league_documents", return_value=[stored]
+            ), patch("fantasy_shared_league_startup_sync.load_shared_league", return_value=stored), patch(
+                "fantasy_admin_draft_archive_repair.load_shared_league", create=True, return_value=stored
+            ):
+                materialize_owned_shared_leagues_for_session(session)
+                return list_visible_draft_archives(session)
+
+        def as_request(session: dict):
+            invalidate_shared_league_doc_cache()
+            authz.clear_league_copy_decisions()
+            return patch.multiple(authz, current_session=lambda: session)
+
+        # 1. Reserved only: no membership, no league in the Library, nothing to manage.
+        with as_request(coakley), patch.dict("os.environ", {"SUITE_AUTH_ENABLED": "1"}), patch(
+            "fantasy_shared_league_startup_sync.session_auth_email", return_value="coakley11@aol.com"
         ):
-            materialize_owned_shared_leagues_for_session(coakley)
-            visible = list_visible_draft_archives(coakley)
-            self.assertGreaterEqual(len(visible), 1)
-            self.assertEqual(draft_type_display(visible[0]), "Live Draft")
-            self.assertNotEqual(str(entry.get("draft_type") or ""), DRAFT_TYPE_IMPORTED)
+            self.assertFalse(authz.may_read_league(coakley, shared))
+            self.assertEqual(authz.owned_teams(coakley, shared), set())
+        self.assertEqual(library(coakley), [])
+
+        # 2. The commissioner invites them: a pending invite; still no Library entry.
+        invited = load_shared_league(league_id)
+        invited["league_invites"] = list(invited.get("league_invites") or []) + [
+            {"invite_id": "inv_coakley", "status": "pending", "invitee_user_id": "user:coakley",
+             "invitee_external_id": "coakley11", "invited_by_user_id": "user:daniel"}
+        ]
+        self.store.save(invited)
+        invalidate_shared_league_doc_cache()
+        pending = load_shared_league(league_id)
+        with as_request(coakley), patch.dict("os.environ", {"SUITE_AUTH_ENABLED": "1"}):
+            self.assertTrue(authz.may_read_league(coakley, pending))  # an invitee may see the league
+            self.assertEqual(authz.owned_teams(coakley, pending), set())
+        self.assertEqual(library(coakley), [])
+
+        # 3. They accept and claim Team 2: the league appears, as a Live Draft league.
+        # As a signed-in user request, so the server-side rules decide the claim.
+        with _as_user("user:coakley"), patch(
+            "fantasy_league_invites._resolve_workspace_id", return_value="coakley11"
+        ), patch("fantasy_league_invites._resolve_user_id", return_value="user:coakley"), patch(
+            "fantasy_shared_league_store._anonymous_guest", return_value=False
+        ), as_request(coakley), patch.dict("os.environ", {"SUITE_AUTH_ENABLED": "1"}):
+            _entry, joined, err = join_shared_league_from_invite(
+                coakley, league_id=league_id, invite_id="inv_coakley", team_name="Team 2"
+            )
+        self.assertEqual(err, "")
+        self.assertIsNotNone(joined)
+        visible = library(coakley)
+        self.assertGreaterEqual(len(visible), 1)
+        self.assertEqual(draft_type_display(visible[0]), "Live Draft")
+        self.assertNotEqual(str(entry.get("draft_type") or ""), DRAFT_TYPE_IMPORTED)
+        claimed = (load_shared_league(league_id).get("team_ownership") or {}).get("Team 2") or {}
+        self.assertFalse(authz.is_team_reservation(claimed))
 
     def test_real_league_default_does_not_override_live_archive(self) -> None:
         draft_type, reason, _ = resolve_archive_draft_type_with_reason(
