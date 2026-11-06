@@ -72,7 +72,8 @@ def stored_league(**overrides) -> dict:
             {"invite_id": "inv_revoked", "status": "revoked", "invitee_user_id": OUTSIDER["suite"]},
         ],
         "trade_proposals": [
-            {"proposal_id": "t1", "status": "pending", "proposer_team": "Danny", "recipient_team": "Barry"},
+            {"proposal_id": "t1", "status": "pending", "proposer_team": "Danny", "recipient_team": "Barry",
+             "proposer_gives": [{"player_name": "A"}], "proposer_receives": [{"player_name": "B"}]},
         ],
         "season_ledger": {
             "calendar": {"first_day": "2030-04-01"},
@@ -225,6 +226,41 @@ class PrivilegedMutationTests(_Base):
         self.assertEqual(out["league_rosters"]["Danny"], {"players": ["A"]})
         self.assertEqual(out["league_rosters"]["Open"], {"players": ["C"]})
 
+    def test_members_cannot_add_a_team_to_the_league(self) -> None:
+        """Found in QA 2026-11-06: an accepted invitee could add an ownership record and a roster
+        for a team the league does not have (team name ""). Members never add teams."""
+        def change(doc):
+            for name in ("", "Phantom", " Barry"):
+                doc["team_ownership"][name] = {"user_id": MEMBER["suite"], "claim_status": "claimed"}
+                doc["league_rosters"][name] = {"players": ["Z"]}
+
+        out = self.member_write(MEMBER, change)
+        self.assertKept(out, "team_ownership")
+        self.assertEqual(set(out["league_rosters"]), {"Danny", "Barry", "Open"})
+
+        def invitee_change(doc):
+            doc["league_invites"][0]["status"] = "accepted"
+            doc["team_ownership"][""] = {"user_id": INVITEE["suite"], "claim_status": "claimed"}
+            doc["league_rosters"][""] = {"players": ["Z"]}
+
+        out = self.member_write(INVITEE, invitee_change)
+        self.assertNotIn("", out["team_ownership"])
+        self.assertNotIn("", out["league_rosters"])
+
+    def test_an_invitee_claims_only_one_team_in_a_single_write(self) -> None:
+        doc = stored_league()
+        doc["team_ownership"]["Open2"] = {}
+        doc["league_rosters"]["Open2"] = {"players": ["D"]}
+        incoming = copy.deepcopy(doc)
+        incoming["league_invites"][0]["status"] = "accepted"
+        for team in ("Open", "Open2"):
+            incoming["team_ownership"][team] = {"user_id": INVITEE["suite"], "claim_status": "claimed"}
+        session = signed_in(INVITEE)
+        with self.request(session):
+            out = authz.authorize_league_write(session, incoming, doc)
+        claimed = [t for t, r in out["team_ownership"].items() if (r or {}).get("user_id") == INVITEE["suite"]]
+        self.assertEqual(len(claimed), 1, claimed)
+
     def test_members_cannot_finalize_or_reconfigure_the_season(self) -> None:
         def change(doc):
             doc["season_ledger"]["calendar"] = {"first_day": "2031-01-01"}
@@ -281,6 +317,63 @@ class LegitimateMemberWriteTests(_Base):
         self.assertEqual(out["trade_proposals"][0]["status"], "accepted")
         self.assertEqual(out["league_rosters"]["Danny"], {"players": ["B"]})
         self.assertEqual(out["league_rosters"]["Barry"], {"players": ["A"]})
+
+    # Found in QA 2026-11-06: a party could reopen an accepted trade, and an accepting member's
+    # write could set the other team's roster to anything.
+
+    def test_a_settled_trade_never_changes_again(self) -> None:
+        for settled in ("accepted", "declined", "canceled", "countered", "expired"):
+            existing = stored_league()
+            existing["trade_proposals"][0]["status"] = settled
+            incoming = copy.deepcopy(existing)
+            incoming["trade_proposals"][0]["status"] = "pending"
+            session = signed_in(MEMBER)
+            with self.request(session):
+                out = authz.authorize_league_write(session, incoming, existing)
+            self.assertEqual(out["trade_proposals"][0]["status"], settled, settled)
+
+    def test_only_the_right_party_answers_and_terms_never_change(self) -> None:
+        # Barry (recipient) cannot cancel; Danny's side would. Terms are kept on an accept.
+        out = self.member_write(MEMBER, lambda d: d["trade_proposals"][0].update(status="canceled"))
+        self.assertEqual(out["trade_proposals"][0]["status"], "pending")
+
+        def accept_new_terms(doc):
+            doc["trade_proposals"][0].update(status="accepted", proposer_gives=[{"player_name": "C"}])
+            doc["league_rosters"]["Danny"] = {"players": ["B"]}
+            doc["league_rosters"]["Barry"] = {"players": ["A"]}
+
+        out = self.member_write(MEMBER, accept_new_terms)
+        self.assertEqual(out["trade_proposals"][0]["proposer_gives"], [{"player_name": "A"}])
+        self.assertEqual(out["trade_proposals"][0]["status"], "accepted")  # executed with the stored terms
+
+    def test_accepting_member_cannot_set_the_other_roster_freely(self) -> None:
+        def steal(doc):
+            doc["trade_proposals"][0]["status"] = "accepted"
+            doc["league_rosters"]["Danny"] = {"players": []}  # not what the trade says
+            doc["league_rosters"]["Barry"] = {"players": ["A", "B"]}
+
+        out = self.member_write(MEMBER, steal)
+        self.assertEqual(out["league_rosters"]["Danny"], {"players": ["A"]})
+        self.assertEqual(out["league_rosters"]["Barry"], {"players": ["B"]})
+        self.assertEqual(out["trade_proposals"][0]["status"], "pending")  # did not execute: stays pending
+
+    def test_accepting_without_moving_the_players_does_not_settle_the_trade(self) -> None:
+        out = self.member_write(MEMBER, lambda d: d["trade_proposals"][0].update(status="accepted"))
+        self.assertEqual(out["trade_proposals"][0]["status"], "pending")
+
+    def test_a_member_cannot_add_a_player_rostered_by_another_team(self) -> None:
+        out = self.member_write(MEMBER, lambda d: d["league_rosters"].__setitem__("Barry", {"players": ["B", "A"]}))
+        self.assertEqual(out["league_rosters"]["Barry"], {"players": ["B"]})
+        out = self.member_write(MEMBER, lambda d: d["league_rosters"].__setitem__("Barry", {"players": ["B", "Free agent"]}))
+        self.assertEqual(out["league_rosters"]["Barry"], {"players": ["B", "Free agent"]})
+
+    def test_a_member_proposes_only_to_a_team_of_the_league(self) -> None:
+        def propose(doc):
+            doc["trade_proposals"].append({"proposal_id": "t9", "status": "pending", "proposer_team": "Barry", "recipient_team": "Ghost"})
+            doc["trade_proposals"].append({"proposal_id": "t8", "status": "accepted", "proposer_team": "Barry", "recipient_team": "Danny"})
+
+        out = self.member_write(MEMBER, propose)
+        self.assertEqual([p["proposal_id"] for p in out["trade_proposals"]], ["t1"])
 
     def test_an_invitee_answers_their_own_invite_and_claims_an_open_team(self) -> None:
         def change(doc):

@@ -477,16 +477,33 @@ def _member_write(session: MutableMapping[str, Any], incoming: dict[str, Any], e
     out["league_invites"], dropped = _member_invites(session, existing.get("league_invites"), incoming.get("league_invites"))
     if dropped:
         pinned.append("league_invites")
-    out["team_ownership"], dropped = _member_ownership(session, existing.get("team_ownership"), incoming.get("team_ownership"), own_before)
+    known_teams = league_team_names(existing)
+    out["team_ownership"], dropped = _member_ownership(
+        session, existing.get("team_ownership"), incoming.get("team_ownership"), own_before, known_teams
+    )
     if dropped:
         pinned.append("team_ownership")
     own_after = owned_teams(session, out)
-    proposals, trade_teams, dropped = _member_trades(existing.get("trade_proposals"), incoming.get("trade_proposals"), own_after)
-    if "trade_proposals" in existing or "trade_proposals" in incoming:
-        out["trade_proposals"] = proposals
+    proposals, accepted, dropped = _member_trades(
+        existing.get("trade_proposals"), incoming.get("trade_proposals"), own_after, known_teams
+    )
     if dropped:
         pinned.append("trade_proposals")
-    rosters, dropped = _member_rosters(existing.get("league_rosters"), incoming.get("league_rosters"), own_after | trade_teams)
+    rosters, failed_trades, dropped = _member_rosters(
+        existing.get("league_rosters"), incoming.get("league_rosters"), own_after & known_teams, accepted
+    )
+    if failed_trades:
+        # The rosters did not execute exactly that trade: it stays as stored (pending).
+        stored_by_id = {str(x.get("proposal_id") or ""): x for x in _as_list(existing.get("trade_proposals"))}
+        proposals = [
+            copy.deepcopy(stored_by_id[str(x.get("proposal_id") or "")])
+            if str(x.get("proposal_id") or "") in failed_trades
+            else x
+            for x in proposals
+        ]
+        pinned.append("trade_proposals")
+    if "trade_proposals" in existing or "trade_proposals" in incoming:
+        out["trade_proposals"] = proposals
     if "league_rosters" in existing or "league_rosters" in incoming:
         out["league_rosters"] = rosters
     if dropped:
@@ -556,17 +573,36 @@ def _member_invites(session: MutableMapping[str, Any], existing: Any, incoming: 
     return result, dropped
 
 
+def league_team_names(document: dict[str, Any] | None) -> set[str]:
+    """The teams that exist in a STORED league: its ownership slots, rosters and team list.
+    A member can never add a team; only the commissioner shapes the league."""
+    doc = document if isinstance(document, dict) else {}
+    names = set(_as_dict(doc.get("team_ownership"))) | set(_as_dict(doc.get("league_rosters")))
+    for key in ("teams", "league_teams"):
+        for team in doc.get(key) or []:
+            names.add(str(team.get("team_name") if isinstance(team, dict) else team))
+    return {str(n).strip() for n in names if str(n or "").strip()}
+
+
 def _member_ownership(
-    session: MutableMapping[str, Any], existing: Any, incoming: Any, own_before: set[str]
+    session: MutableMapping[str, Any],
+    existing: Any,
+    incoming: Any,
+    own_before: set[str],
+    known_teams: set[str],
 ) -> tuple[dict[str, Any], bool]:
-    """Stored ownership; a member may write records naming themselves, for a team nobody else
-    holds, and may hold one team."""
+    """Stored ownership; a member may write records naming themselves, for an existing team
+    nobody else holds, and may hold one team (also within a single write)."""
     stored = _as_dict(existing)
     result = copy.deepcopy(stored)
     dropped = False
+    holding = set(own_before)
     for team, record in _as_dict(incoming).items():
         current = stored.get(team)
         if _canon(record) == _canon(current):
+            continue
+        if str(team).strip() not in known_teams or str(team) != str(team).strip():
+            dropped = True  # not a team of this league (members cannot add teams)
             continue
         if not _record_is_session(session, record):
             dropped = True  # a record for someone else
@@ -574,9 +610,10 @@ def _member_ownership(
         if _record_has_identity(current) and not _record_is_session(session, current):
             dropped = True  # someone else's team
             continue
-        if own_before and str(team) not in own_before:
-            dropped = True  # already owns another team in this league
+        if holding and str(team) not in holding:
+            dropped = True  # already owns (or is claiming) another team in this league
             continue
+        holding.add(str(team))
         result[team] = copy.deepcopy(record)
     for team in stored:
         if team not in _as_dict(incoming) and incoming is not None:
@@ -584,18 +621,57 @@ def _member_ownership(
     return result, dropped
 
 
-def _member_trades(existing: Any, incoming: Any, own: set[str]) -> tuple[list[dict[str, Any]], set[str], bool]:
-    """Stored proposals; a member may add proposals from their own team and update proposals they
-    are a party to. Returns the teams whose rosters an accepted trade in this write may change."""
+# Who may move a pending proposal to which status (anything else is the commissioner's):
+_RECIPIENT_ANSWERS = frozenset({"accepted", "declined", "countered"})
+_PROPOSER_ANSWERS = frozenset({"canceled", "cancelled"})
+_TRADE_TERMS = ("proposal_id", "proposer_team", "recipient_team", "proposer_gives", "proposer_receives")
+
+
+def _trade_names(items: Any) -> list[str]:
+    out = []
+    for item in items or []:
+        name = item.get("player_name") if isinstance(item, dict) else item
+        if str(name or "").strip():
+            out.append(str(name).strip())
+    return out
+
+
+def _roster_names(roster: Any) -> list[str]:
+    players = roster.get("players") if isinstance(roster, dict) else roster
+    out = []
+    for item in players or []:
+        name = (item.get("player_name") or item.get("Player") or item.get("name")) if isinstance(item, dict) else item
+        if str(name or "").strip():
+            out.append(str(name).strip())
+    return out
+
+
+def _member_trades(
+    existing: Any, incoming: Any, own: set[str], known_teams: set[str] | None = None
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], bool]:
+    """Stored proposals. A member may add a pending proposal from their own team to another team
+    of the league, and answer a PENDING proposal they are party to: the recipient accepts, declines
+    or counters; the proposer cancels. Any member may mark a pending proposal stale or expired
+    (invalidation, never execution). A settled proposal never changes again, and the teams and
+    players of a proposal never change. Returns the proposals accepted in this write."""
     result = _as_list(existing)
     index = {str(x.get("proposal_id") or ""): i for i, x in enumerate(result)}
-    trade_teams: set[str] = set()
+    accepted: dict[str, dict[str, Any]] = {}
     dropped = False
     for prop in _as_list(incoming):
         pid = str(prop.get("proposal_id") or "")
         current = result[index[pid]] if pid in index else None
         if current is None:
-            if pid and str(prop.get("proposer_team") or "") in own and str(prop.get("status") or "") == TRADE_PENDING:
+            proposer = str(prop.get("proposer_team") or "")
+            recipient = str(prop.get("recipient_team") or "")
+            if (
+                pid
+                and proposer in own
+                and str(prop.get("status") or "") == TRADE_PENDING
+                and recipient
+                and recipient != proposer
+                and (known_teams is None or recipient in known_teams)
+            ):
                 result.append(copy.deepcopy(prop))
                 index[pid] = len(result) - 1
             else:
@@ -603,39 +679,113 @@ def _member_trades(existing: Any, incoming: Any, own: set[str]) -> tuple[list[di
             continue
         if _canon(prop) == _canon(current):
             continue
-        parties = {str(current.get("proposer_team") or ""), str(current.get("recipient_team") or "")}
         old_status = str(current.get("status") or "")
         new_status = str(prop.get("status") or "")
-        system = old_status == TRADE_PENDING and new_status in TRADE_SYSTEM_STATUSES
-        if not (parties & own) and not system:
+        proposer = str(current.get("proposer_team") or "")
+        recipient = str(current.get("recipient_team") or "")
+        if old_status != TRADE_PENDING:
+            dropped = True  # settled: accepted, declined, canceled, countered, stale or expired
+            continue
+        if new_status == old_status:
+            allowed = bool({proposer, recipient} & own)  # e.g. a note or a viewed flag; terms kept below
+        elif new_status in TRADE_SYSTEM_STATUSES:
+            allowed = True
+        elif new_status in _RECIPIENT_ANSWERS:
+            allowed = recipient in own
+        elif new_status in _PROPOSER_ANSWERS:
+            allowed = proposer in own
+        else:
+            allowed = False
+        if not allowed:
             dropped = True
             continue
         updated = copy.deepcopy(prop)
-        for key in ("proposal_id", "proposer_team", "recipient_team"):
-            updated[key] = copy.deepcopy(current.get(key))
+        for key in _TRADE_TERMS:
+            if key in current:
+                updated[key] = copy.deepcopy(current[key])
+            else:
+                updated.pop(key, None)
         result[index[pid]] = updated
-        if (
-            old_status != TRADE_ACCEPTED
-            and new_status == TRADE_ACCEPTED
-            and str(current.get("recipient_team") or "") in own
-        ):
-            trade_teams |= {p for p in parties if p}
-    return result, trade_teams, dropped
+        if new_status == TRADE_ACCEPTED:
+            accepted[pid] = copy.deepcopy(current)
+    return result, accepted, dropped
 
 
-def _member_rosters(existing: Any, incoming: Any, allowed: set[str]) -> tuple[dict[str, Any], bool]:
+def _expected_after_trade(stored: Any, proposal: dict[str, Any], team: str) -> list[str] | None:
+    """The player names ``team`` holds after ``proposal`` executes, or None when it cannot."""
+    names = list(_roster_names(stored))
+    gives = _trade_names(proposal.get("proposer_gives"))
+    receives = _trade_names(proposal.get("proposer_receives"))
+    out_names, in_names = (gives, receives) if team == str(proposal.get("proposer_team") or "") else (receives, gives)
+    for name in out_names:
+        if name not in names:
+            return None  # the player is not on that roster: the trade cannot execute
+        names.remove(name)
+    return sorted(names + in_names)
+
+
+def _member_rosters(
+    existing: Any,
+    incoming: Any,
+    own: set[str],
+    accepted: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], set[str], bool]:
+    """Stored rosters. A member manages their own team's roster. A trade they accept in this write
+    may change the other team's roster by exactly that trade, and must. A member never adds a
+    player who is on another team's roster (only a trade moves players between teams). Returns the
+    rosters, the accepted proposal ids that did not execute exactly (those stay pending), and
+    whether anything was dropped."""
     stored = _as_dict(existing)
     result = copy.deepcopy(stored)
     dropped = False
+    failed: set[str] = set()
     incoming_rosters = _as_dict(incoming)
+    counterparty: dict[str, tuple[str, dict[str, Any]]] = {}
+    for pid, proposal in accepted.items():
+        for team in (str(proposal.get("proposer_team") or ""), str(proposal.get("recipient_team") or "")):
+            if team and team not in own:
+                counterparty[team] = (pid, proposal)
     for team, roster in incoming_rosters.items():
         if _canon(roster) == _canon(stored.get(team)):
             continue
-        if str(team) in allowed:
+        if str(team) in own:
             result[team] = copy.deepcopy(roster)
+        elif str(team) in counterparty:
+            pid, proposal = counterparty[str(team)]
+            expected = _expected_after_trade(stored.get(team), proposal, str(team))
+            if expected is not None and sorted(_roster_names(roster)) == expected:
+                result[team] = copy.deepcopy(roster)
+            else:
+                failed.add(pid)
+                dropped = True
         else:
             dropped = True
-    return result, dropped
+    for team, (pid, proposal) in counterparty.items():
+        expected = _expected_after_trade(stored.get(team), proposal, team)
+        if expected is None or sorted(_roster_names(result.get(team))) != expected:
+            failed.add(pid)  # accepted, but the other side did not move exactly as agreed
+    # No player may be on two rosters: a member's newly added players must not be rostered elsewhere.
+    for team in sorted(own):
+        if team not in result:
+            continue
+        added = set(_roster_names(result.get(team))) - set(_roster_names(stored.get(team)))
+        elsewhere = {n for other, r in result.items() if other != team for n in _roster_names(r)}
+        if added & elsewhere:
+            if team in stored:
+                result[team] = copy.deepcopy(stored[team])
+            else:
+                result.pop(team, None)
+            dropped = True
+            for pid, proposal in accepted.items():
+                if team in (proposal.get("proposer_team"), proposal.get("recipient_team")):
+                    failed.add(pid)
+    if failed:  # a trade that did not execute leaves both rosters as stored
+        for pid in failed:
+            proposal = accepted.get(pid) or {}
+            for team in (str(proposal.get("proposer_team") or ""), str(proposal.get("recipient_team") or "")):
+                if team in stored:
+                    result[team] = copy.deepcopy(stored[team])
+    return result, failed, dropped
 
 
 def _member_ledger(existing: Any, incoming: Any, own: set[str]) -> tuple[dict[str, Any] | None, bool]:
