@@ -48,7 +48,7 @@ class _Base(unittest.TestCase):
 
 
 class SnapshotTests(_Base):
-    def test_drafting_consumes_the_queue_but_never_the_strategy(self) -> None:
+    def test_drafting_marks_the_queue_and_never_changes_the_strategy(self) -> None:
         import draft_room_state as drs
         from draft_actions import _prune_drafted_from_queue
 
@@ -62,7 +62,11 @@ class SnapshotTests(_Base):
             drs.submit_board_pick_assignment(s, pick_label=label, player_match=player,
                                              pick_row_by_label=drs.pick_label_row_map(df), all_names=[player])
             _prune_drafted_from_queue(s)
-        self.assertEqual(s[DRAFT_QUEUE_KEY], TEN[8:])
+        # Owner decision 2026-11-06: picks never delete from the personal queue; this draft marks them.
+        from draft_queue_contract import split_queue_for_active_draft
+
+        self.assertEqual(s[DRAFT_QUEUE_KEY], TEN)
+        self.assertEqual(split_queue_for_active_draft(s), (TEN[8:], TEN[:8]))
         saved = dss.get_strategy(s, strategy["id"])
         self.assertEqual([p["name"] for p in saved["players"]], TEN)
         self.assertEqual(saved["players"][0]["note"], "elite power")
