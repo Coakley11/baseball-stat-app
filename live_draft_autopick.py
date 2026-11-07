@@ -1352,17 +1352,8 @@ def _try_queue_auto_pick(
                     request_immediate_paint=True,
                 )
             except Exception:
-                try:
-                    from draft_state import remove_drafted_player_from_active_queues
-
-                    remove_drafted_player_from_active_queues(session, chosen_name)
-                except Exception:
-                    q = [
-                        x
-                        for x in (session.get("draft_queue") or [])
-                        if _normalize_player_key(str(x.get("fullName") if isinstance(x, dict) else x))
-                        != _normalize_player_key(chosen_name)
-                    ]
-                    session["draft_queue"] = q
+                # The personal queue keeps the player (draft_queue_contract): this draft marks it
+                # drafted; nothing to strip here.
+                pass
         return True, msg or f"Queue auto-picked {chosen_name}."
     return False, msg or ""

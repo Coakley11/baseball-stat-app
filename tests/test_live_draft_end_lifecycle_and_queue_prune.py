@@ -162,7 +162,7 @@ class DraftedQueuePruneTests(unittest.TestCase):
         reset_shared_room_store_for_tests(None)
         self._tmpdir.cleanup()
 
-    def test_drafted_player_removed_locally_and_prune_clears_others(self) -> None:
+    def test_a_pick_never_edits_any_participants_queue(self) -> None:
         host = _daniel()
         set_live_draft_setup_mode(host, SETUP_MODE_SHARED)
         code, err = finalize_shared_room_create(host, _sample_room(), host_team="Team A", store=self.store)
@@ -178,9 +178,10 @@ class DraftedQueuePruneTests(unittest.TestCase):
         save_participant_workflow_from_session(guest, code)
 
         remove_drafted_player_from_active_queues(host, "Juan Soto", room_or_draft_id=code)
-        self.assertEqual(host.get(DRAFT_QUEUE_KEY), ["Aaron Judge"])
+        # Owner decision 2026-11-06: personal queues are never changed by picks, and one
+        # participant's pick never edits another's queue.
+        self.assertEqual(host.get(DRAFT_QUEUE_KEY), ["Juan Soto", "Aaron Judge"])
 
-        # Guest still has Soto until their board syncs; paint-time prune clears it.
         from draft_actions import _prune_drafted_from_queue
 
         guest["live_draft_room"] = {
@@ -194,8 +195,8 @@ class DraftedQueuePruneTests(unittest.TestCase):
             return_value=["Juan Soto"],
         ):
             pruned = _prune_drafted_from_queue(guest)
-        self.assertEqual(pruned, ["Aaron Judge"])
-        self.assertEqual(guest.get(DRAFT_QUEUE_KEY), ["Aaron Judge"])
+        self.assertEqual(pruned, ["Juan Soto", "Aaron Judge"])
+        self.assertEqual(guest.get(DRAFT_QUEUE_KEY), ["Juan Soto", "Aaron Judge"])
 
 
 class TimerDeadlineFreshnessTests(unittest.TestCase):

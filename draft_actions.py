@@ -222,12 +222,9 @@ def _clear_ami_draft_cache(session: dict[str, Any]) -> None:
 
 
 def _prune_drafted_from_queue(session: dict[str, Any]) -> list[str]:
-    """Remove queued players picked in the *active* draft (each committed pick once).
-
-    Delegates to draft_queue_contract: a player drafted on an old, finished or unrelated board
-    (another league, a past Live Draft) stays in the global queue; viewing the queue changes
-    nothing beyond applying picks the active draft has committed (incl. other managers' picks in a
-    shared room, and Undo restoring the player).
+    """The personal queue as stored. Picks never delete from it (owner decision 2026-11-06): each
+    draft marks the queued players it has taken (draft_queue_contract.split_queue_for_active_draft),
+    and they stay queued for every other draft. The name is kept for its callers.
     """
     try:
         from draft_queue_contract import sync_queue_with_active_draft

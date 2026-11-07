@@ -1,15 +1,18 @@
-"""The global working draft queue: when committed picks consume it (one contract app-wide).
+"""The global personal draft queue, and how each draft sees it (one contract app-wide).
 
-The queue (session ``draft_queue``, saved with the workspace) belongs to the user, not to a
-draft, board or league. A queued player leaves it only when a pick is committed in the *active*
-draft (the Draft Room Simulator board, or the Live Draft room while it is the active draft) — not
-because the player appears on an old, finished or unrelated board, and not because the queue was
-viewed.
+The queue (session ``draft_queue``, saved with the account's workspace) belongs to the user, not to
+a draft, board, room or league. Picks never delete from it (owner decision 2026-11-06): availability
+is evaluated per draft. In the active draft (the Draft Room Simulator board, or the Live Draft room
+while it is the active draft) a queued player taken in that draft is shown as "drafted in this
+draft" and skipped by queue-based picking; the same player stays queued for every other draft (a
+later mock, another league, another person's Shared Draft). Only the user removes players: one at
+a time, or "Remove players drafted in this draft".
 
-Each committed pick is applied once (ledger keyed by draft and pick), so reruns and duplicate
-events cannot remove twice. A pick that disappears from the same draft (Undo) puts the player
-back at their old position. A reset or a new board starts a new draft, so it neither restores nor
-clears anything.
+Privacy: a Shared Draft room never reads or stores anyone's queue (draft_room_participant_state);
+sign-out or an account change drops this session's copy (clear_queue_for_account_change).
+
+A reset or a new board starts a new draft (start_new_simulator_draft), so its drafted set starts
+empty; imported boards are the active draft's picks like any other.
 """
 
 from __future__ import annotations
@@ -80,37 +83,47 @@ def _ledger(session: dict[str, Any], source: str) -> dict[str, Any]:
     return entry
 
 
-def sync_queue_with_active_draft(session: dict[str, Any]) -> list[str]:
-    """Apply newly committed picks of the active draft (and undone ones); return the queue."""
-    from draft_state import DRAFT_QUEUE_KEY, _normalize_player_list, sync_draft_queue
+def drafted_in_active_draft(session: dict[str, Any]) -> set[str]:
+    """Lower-case names of players picked in the active draft (empty when there is none)."""
+    _source, picks = _active_draft_picks(session)
+    return {name.strip().lower() for _pick, name in picks if name.strip()}
 
-    queue = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
-    source, picks = _active_draft_picks(session)
-    if not source:
-        return queue
-    entry = _ledger(session, source)
-    current = {f"{pick}|{name.lower()}" for pick, name in picks}
-    q = list(queue)
-    changed = False
-    # Undo: a recorded pick of this draft is gone — put the player back where they were.
-    for key in [k for k in entry if k not in current]:
-        rec = entry.pop(key) or {}
-        player, index = str(rec.get("player") or ""), rec.get("index")
-        if index is not None and player and player.lower() not in {p.lower() for p in q}:
-            q.insert(min(int(index), len(q)), player)
-            changed = True
-    for pick, name in picks:
-        key = f"{pick}|{name.lower()}"
-        if key in entry:
-            continue
-        idx = next((i for i, p in enumerate(q) if p.lower() == name.lower()), None)
-        entry[key] = {"player": q[idx] if idx is not None else name, "index": idx}
-        if idx is not None:
-            q.pop(idx)
-            changed = True
-    if changed:
-        sync_draft_queue(session, q, reason="queue_consumed_by_committed_pick")
-    return q
+
+def split_queue_for_active_draft(session: dict[str, Any], queue: list[str] | None = None) -> tuple[list[str], list[str]]:
+    """(available, drafted in this draft) in queue order. Never changes the queue."""
+    from draft_state import DRAFT_QUEUE_KEY, _normalize_player_list
+
+    q = _normalize_player_list(queue if queue is not None else session.get(DRAFT_QUEUE_KEY))
+    taken = drafted_in_active_draft(session)
+    available = [p for p in q if p.strip().lower() not in taken]
+    drafted = [p for p in q if p.strip().lower() in taken]
+    return available, drafted
+
+
+def sync_queue_with_active_draft(session: dict[str, Any]) -> list[str]:
+    """The queue as stored (picks no longer delete from it); kept for its callers."""
+    from draft_state import DRAFT_QUEUE_KEY, _normalize_player_list
+
+    return _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
+
+
+def remove_players_drafted_in_active_draft(session: dict[str, Any]) -> list[str]:
+    """The user's explicit "Remove players drafted in this draft": returns the removed names."""
+    from draft_state import sync_draft_queue
+
+    available, drafted = split_queue_for_active_draft(session)
+    if drafted:
+        sync_draft_queue(session, available, reason="user_removed_players_drafted_in_this_draft")
+    return drafted
+
+
+def full_order_after_reorder(session: dict[str, Any], reordered_available: list[str]) -> list[str]:
+    """A reorder of the available players, with this draft's drafted players kept after them, so a
+    drag over the visible rows never drops queued players (reorder_user_draft_queue saves a subset
+    as the whole queue)."""
+    _available, drafted = split_queue_for_active_draft(session)
+    seen = {p.lower() for p in reordered_available}
+    return list(reordered_available) + [p for p in drafted if p.lower() not in seen]
 
 
 def adopt_board_without_consuming(session: dict[str, Any]) -> None:

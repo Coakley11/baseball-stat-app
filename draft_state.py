@@ -753,92 +753,27 @@ def remove_drafted_player_from_active_queues(
     source_type: str = "",
     room_or_draft_id: str = "",
 ) -> dict[str, Any]:
-    """After a successful pick, strip the player from every queue for this draft scope.
+    """After a successful pick: the queue is NOT changed (owner decision 2026-11-06).
 
-    - Local session queue (sidebar + main) updates immediately.
-    - Shared Multiplayer: also strip from every participant workflow slot for the room.
-    - Simulator picks only touch the active simulator session queue (caller scopes).
+    The personal queue keeps the player; each draft shows queued players it has drafted as
+    "drafted in this draft" (draft_queue_contract.split_queue_for_active_draft), so a player taken in
+    one draft stays queued for every other. No other participant's data is touched: a Shared room
+    holds no one's queue, and one participant never edits another's. Kept for its nine callers; it
+    only asks both queue surfaces (sidebar and panel) to repaint with the new drafted mark.
     """
-    del source_type  # reserved for live_draft vs simulator callers
+    del source_type
     token = str(player_id_or_name or "").strip()
-    result: dict[str, Any] = {
+    room_id = str(room_or_draft_id or "").strip()
+    if not room_id:
+        room_id, _ = _queue_scope_ids(session)
+    session["_draft_queue_widget_epoch"] = int(session.get("_draft_queue_widget_epoch") or 0) + 1
+    return {
         "removed_local": False,
         "removed_slots": 0,
         "player": token,
-        "room_or_draft_id": str(room_or_draft_id or ""),
+        "room_or_draft_id": str(room_id or ""),
+        "queue_after": _normalize_player_list(session.get(DRAFT_QUEUE_KEY)),
     }
-    if not token:
-        return result
-
-    # The committed pick is on the active draft's board now: let the consumption ledger take it,
-    # so it records the player's queue position and an Undo can put him back. The direct removal
-    # below then only covers a pick the board does not show yet.
-    try:
-        from draft_queue_contract import sync_queue_with_active_draft
-
-        sync_queue_with_active_draft(session)
-    except ImportError:
-        pass
-    before = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
-    q, changed = remove_player_from_user_draft_queue(
-        session,
-        token,
-        room_or_draft_id=room_or_draft_id,
-        reason="drafted_room_wide",
-    )
-    result["removed_local"] = bool(changed)
-    result["queue_after"] = list(q)
-
-    # Also prune any remaining drafted names (id/name variants).
-    try:
-        from draft_actions import _prune_drafted_from_queue
-
-        result["queue_after"] = _prune_drafted_from_queue(session)
-    except ImportError:
-        pass
-
-    room_id = str(room_or_draft_id or "").strip()
-    if not room_id:
-        scope_room, _ = _queue_scope_ids(session)
-        room_id = scope_room
-    result["room_or_draft_id"] = room_id
-
-    # Shared room: update every participant's private queue slot.
-    try:
-        from draft_room_context import resolve_shared_room_code
-        from draft_room_participant_state import (
-            PARTICIPANT_STATE_KEY,
-            participant_state_for_room,
-            save_workflow_for_participant_id,
-        )
-
-        code = str(resolve_shared_room_code(session) or room_id or "").strip().upper()
-        if not code:
-            return result
-        state = participant_state_for_room(session, code)
-        by_p = dict(state.get("by_participant") or {})
-        removed_slots = 0
-        token_l = token.lower()
-        for pid, slot in list(by_p.items()):
-            if not isinstance(slot, dict):
-                continue
-            wf = dict(slot.get("workflow") or {})
-            queue = [str(x).strip() for x in (wf.get("queue") or []) if str(x).strip()]
-            if not queue:
-                continue
-            new_q = [n for n in queue if n != token and n.lower() != token_l]
-            if new_q == queue:
-                continue
-            wf["queue"] = new_q
-            save_workflow_for_participant_id(session, str(pid), wf, room_code=code)
-            removed_slots += 1
-        result["removed_slots"] = removed_slots
-        # Bust sortable epochs so both surfaces drop the name.
-        session["_draft_queue_widget_epoch"] = int(session.get("_draft_queue_widget_epoch") or 0) + 1
-        _ = PARTICIPANT_STATE_KEY
-    except ImportError:
-        pass
-    return result
 
 
 def draft_player_from_queue(session: dict[str, Any], player_name: str) -> dict[str, Any]:

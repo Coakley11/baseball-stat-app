@@ -91,15 +91,14 @@ class DraftedRecAndQueueTests(unittest.TestCase):
         self.assertTrue(all(str(x) != "Shohei Ohtani" for x in top["fullName"].tolist()))
         self.assertIn("Juan Soto", top["fullName"].tolist())
 
-    def test_manual_and_auto_pick_strip_queue_by_id_and_name(self) -> None:
+    def test_manual_and_auto_pick_keep_the_personal_queue(self) -> None:
         session: dict = {}
         sync_draft_queue(session, ["Juan Soto", "Aaron Judge", "Other Player"], reason="test_seed")
         self.assertEqual(session[DRAFT_QUEUE_KEY][0], "Juan Soto")
         remove_drafted_player_from_active_queues(session, "sotoj001")
-        # Name still present until prune sees board — remove by name too.
         remove_drafted_player_from_active_queues(session, "Juan Soto")
-        self.assertNotIn("Juan Soto", session.get(DRAFT_QUEUE_KEY) or [])
-        self.assertIn("Aaron Judge", session.get(DRAFT_QUEUE_KEY) or [])
+        # Owner decision 2026-11-06: the queue keeps him; this draft marks him drafted.
+        self.assertEqual(session[DRAFT_QUEUE_KEY], ["Juan Soto", "Aaron Judge", "Other Player"])
 
     def test_sidebar_and_main_share_canonical_queue(self) -> None:
         session: dict = {}
@@ -110,7 +109,7 @@ class DraftedRecAndQueueTests(unittest.TestCase):
         self.assertEqual(session.get(DRAFT_QUEUE_KEY) or [], [])
         self.assertFalse(session.get("_live_draft_queue_sidebar_mirror"))
 
-    def test_make_pick_removes_from_queue_and_recs(self) -> None:
+    def test_make_pick_removes_from_recs_and_keeps_the_personal_queue(self) -> None:
         from live_draft_pick_engine import live_draft_make_pick
 
         session: dict = {DRAFT_QUEUE_KEY: ["Shohei Ohtani", "Juan Soto"]}
@@ -130,7 +129,8 @@ class DraftedRecAndQueueTests(unittest.TestCase):
             enrich_pick_context=False,
         )
         self.assertTrue(ok)
-        self.assertNotIn("Shohei Ohtani", session.get(DRAFT_QUEUE_KEY) or [])
+        # Owner decision 2026-11-06: picks never delete from the personal queue (marked instead).
+        self.assertIn("Shohei Ohtani", session.get(DRAFT_QUEUE_KEY) or [])
         top = session[REC_CACHE_KEY]["top_rec"]
         self.assertTrue(all(str(x) != "Shohei Ohtani" for x in top["fullName"].tolist()))
 

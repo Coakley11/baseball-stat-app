@@ -1250,6 +1250,32 @@ def _resolve_visible_draft_queue(
     return [], "empty"
 
 
+def _render_queue_drafted_here(container: Any, session: dict[str, Any], drafted_here: list[str], *, key_prefix: str) -> bool:
+    """Queued players this draft has taken: marked, still queued for every other draft, removable
+    only by the user. Returns True when the caller should rerun."""
+    if not drafted_here:
+        return False
+    names = ", ".join(drafted_here[:12]) + (f" and {len(drafted_here) - 12} more" if len(drafted_here) > 12 else "")
+    container.caption(
+        f"**Drafted in this draft:** {names}. They stay in your queue for your other drafts."
+    )
+    if container.button(
+        "Remove players drafted in this draft",
+        key=f"{key_prefix}_rm_drafted_here",
+        icon=":material/remove_circle_outline:",
+        help="Takes these players off your personal queue for every draft.",
+    ):
+        try:
+            from draft_queue_contract import remove_players_drafted_in_active_draft
+
+            remove_players_drafted_in_active_draft(session)
+        except ImportError:
+            return False
+        session["_draft_queue_widget_epoch"] = int(session.get("_draft_queue_widget_epoch") or 0) + 1
+        return True
+    return False
+
+
 def render_draft_queue_panel(
     st: Any,
     session: dict[str, Any],
@@ -1300,26 +1326,16 @@ def render_draft_queue_panel(
     # Keep sidebar (painted earlier next ScriptRun) on the same authoritative list.
     session["_live_draft_queue_sidebar_mirror"] = list(queue)
     session["draft_queue"] = list(queue)
-    # Hard filter: never paint drafted players (no "Already drafted by…" in queue).
+    # Players this draft has taken stay in the personal queue (owner decision 2026-11-06): the rows
+    # below show the available ones; the drafted ones are listed after them, marked, with an
+    # explicit remove. The saved queue is never rewritten by painting.
+    drafted_here: list[str] = []
     try:
-        from shared_live_draft_snapshot import drafted_player_tokens
+        from draft_queue_contract import split_queue_for_active_draft
 
-        drafted_tok = drafted_player_tokens(session)
-        if drafted_tok and queue:
-            filtered = [
-                n
-                for n in queue
-                if str(n).strip() not in drafted_tok and str(n).strip().lower() not in drafted_tok
-            ]
-            if filtered != list(queue):
-                try:
-                    from draft_state import sync_draft_queue
-
-                    sync_draft_queue(session, filtered, reason="queue_paint_drop_drafted")
-                except ImportError:
-                    session[_qkey] = list(filtered)
-                queue = filtered
-                queue_source = f"{queue_source}+drop_drafted"
+        queue, drafted_here = split_queue_for_active_draft(session, list(queue))
+        if drafted_here:
+            queue_source = f"{queue_source}+drafted_marked"
     except ImportError:
         pass
     # If widget was empty but another source has names, repair session for this paint.
@@ -1327,15 +1343,15 @@ def render_draft_queue_panel(
         try:
             from draft_state import sync_draft_queue
 
-            sync_draft_queue(session, queue, reason=f"paint_recover_from_{queue_source}")
-            widget_after_prune = list(queue)
+            sync_draft_queue(session, list(queue) + list(drafted_here), reason=f"paint_recover_from_{queue_source}")
+            widget_after_prune = list(queue) + list(drafted_here)
             session["_live_draft_queue_paint_repaired"] = {
                 "from": queue_source,
                 "names": list(queue)[:12],
             }
         except ImportError:
-            session[_qkey] = list(queue)
-            widget_after_prune = list(queue)
+            session[_qkey] = list(queue) + list(drafted_here)
+            widget_after_prune = list(queue) + list(drafted_here)
     rerun = False
     if _is_live:
         try:
@@ -1374,8 +1390,8 @@ def render_draft_queue_panel(
         container.subheader("Draft Queue")
         if session.pop("_live_draft_focus_queue", None):
             container.info("Draft Queue — reorder and draft from here while you’re on the clock.")
-        if queue:
-            session["_live_draft_queue_last_good"] = list(queue)
+        if queue or drafted_here:
+            session["_live_draft_queue_last_good"] = list(queue) + list(drafted_here)
         # Paint / survival diagnostics — Developer Mode only (screenshot-clean otherwise).
         if _dev_queue_diag:
             try:
@@ -1429,6 +1445,9 @@ def render_draft_queue_panel(
                 pass
 
     if not queue:
+        if drafted_here:
+            container.caption("Every player in your queue has been drafted in this draft.")
+            return _render_queue_drafted_here(container, session, drafted_here, key_prefix=str(key_prefix))
         container.caption("Empty — add players with **⭐ Add to Queue** on recommendation cards.")
         return False
 
@@ -1520,9 +1539,15 @@ def render_draft_queue_panel(
                         )
                     except ImportError:
                         pass
+                    try:
+                        from draft_queue_contract import full_order_after_reorder
+
+                        _full_order = full_order_after_reorder(session, list(sorted_queue))
+                    except ImportError:
+                        _full_order = list(sorted_queue)
                     _changed_q, changed = reorder_user_draft_queue(
                         session,
-                        list(sorted_queue),
+                        _full_order,
                         reason="drag_reorder_queue",
                     )
                     if changed:
@@ -1536,13 +1561,14 @@ def render_draft_queue_panel(
                             )
                         except ImportError:
                             pass
-                        queue = list(_changed_q)
+                        _drafted_l = {p.lower() for p in drafted_here}
+                        queue = [p for p in _changed_q if p.lower() not in _drafted_l]
                         session["_draft_queue_revision"] = (
                             int(session.get("_draft_queue_revision") or 0) + 1
                         )
-                        # Sidebar mirror must match canonical order immediately.
-                        session["_live_draft_queue_sidebar_mirror"] = list(queue)
-                        session["_live_draft_queue_last_good"] = list(queue)
+                        # Sidebar mirror must match canonical order immediately (the full queue).
+                        session["_live_draft_queue_sidebar_mirror"] = list(_changed_q)
+                        session["_live_draft_queue_last_good"] = list(_changed_q)
                         rerun = True
                     else:
                         # Rejected reorder — remount Sortable on canonical order
@@ -1715,6 +1741,8 @@ def render_draft_queue_panel(
             )
         except ImportError:
             pass
+    if drafted_here and _render_queue_drafted_here(container, session, drafted_here, key_prefix=str(key_prefix)):
+        rerun = True
     return rerun
 
 

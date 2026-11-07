@@ -1,8 +1,9 @@
-"""The global working queue contract (Draft Strategy Assistant Phase 0, 2026-10-27).
+"""The global personal queue contract (2026-10-27; marking rule 2026-11-06).
 
-One user-owned queue for Simulator, Solo/Live Draft and shared rooms. Only committed picks in
-the active draft consume it (once each); Undo restores; reset/delete/import/room changes and
-unrelated boards (a finished Live Draft, another league) leave it alone.
+One user-owned queue for Simulator, Solo/Live Draft and shared rooms. Picks never delete from it
+(owner decision 2026-11-06): the active draft marks the queued players it has taken, and only the
+user removes them. Reset/delete/import/room changes and unrelated boards (a finished Live Draft,
+another league) leave it alone.
 """
 
 from __future__ import annotations
@@ -41,55 +42,59 @@ def _finished_live_room(players: list[str]) -> dict:
             "config": {"num_teams": 2, "rounds": 1}, "draft_board": board, "current_pick_index": len(board)}
 
 
-class ConsumptionTests(unittest.TestCase):
-    def test_eight_drafted_leave_two_and_reruns_do_not_remove_more(self) -> None:
+class MarkingTests(unittest.TestCase):
+    def test_eight_drafted_are_marked_and_never_removed(self) -> None:
+        from draft_queue_contract import split_queue_for_active_draft
+
         s = _session()
         for p in QUEUE[:8]:
             _pick(s, p)
-        self.assertEqual(s[DRAFT_QUEUE_KEY], QUEUE[8:])
+        self.assertEqual(s[DRAFT_QUEUE_KEY], QUEUE)  # still the user's queue
+        self.assertEqual(split_queue_for_active_draft(s), (QUEUE[8:], QUEUE[:8]))
         for _ in range(3):
             _prune_drafted_from_queue(s)
-        self.assertEqual(s[DRAFT_QUEUE_KEY], QUEUE[8:])
+        self.assertEqual(s[DRAFT_QUEUE_KEY], QUEUE)
 
     def test_non_queued_picks_change_nothing(self) -> None:
         s = _session()
         _pick(s, "Someone Else")
         self.assertEqual(s[DRAFT_QUEUE_KEY], QUEUE)
 
-    def test_undo_restores_the_player_to_their_place(self) -> None:
+    def test_undo_removes_the_mark(self) -> None:
+        from draft_queue_contract import drafted_in_active_draft
+
         s = _session()
         _pick(s, QUEUE[3])
-        self.assertNotIn(QUEUE[3], s[DRAFT_QUEUE_KEY])
+        self.assertIn(QUEUE[3].lower(), drafted_in_active_draft(s))
         drs.undo_last_simulator_pick(s)
-        _prune_drafted_from_queue(s)
+        self.assertNotIn(QUEUE[3].lower(), drafted_in_active_draft(s))
         self.assertEqual(s[DRAFT_QUEUE_KEY], QUEUE)
 
-
-    def test_undo_to_zero_picks_restores_even_after_the_empty_board_is_rebuilt(self) -> None:
-        """Browser run: the Simulator rebuilds an empty board on render; that is not a new draft."""
-        s = _session()
-        _pick(s, QUEUE[1])
-        drs.undo_last_simulator_pick(s)
-        drs.ensure_simulator_board_for_settings(s)
-        _prune_drafted_from_queue(s)
-        self.assertEqual(s[DRAFT_QUEUE_KEY], QUEUE)
-
-
-    def test_undo_restores_after_a_direct_drafted_removal(self) -> None:
-        """Browser run: the pick handlers remove the drafted player directly; the ledger must still
-        record his position, or Undo cannot put him back."""
+    def test_a_direct_drafted_removal_call_no_longer_removes(self) -> None:
         from draft_state import remove_drafted_player_from_active_queues
 
         s = _session()
-        df = drs.ensure_runtime_draft_board(s)
-        label = drs.open_pick_row_options(df)[0][1]
-        drs.submit_board_pick_assignment(s, pick_label=label, player_match=QUEUE[2],
-                                         pick_row_by_label=drs.pick_label_row_map(df), all_names=[QUEUE[2]])
-        remove_drafted_player_from_active_queues(s, QUEUE[2])
-        self.assertNotIn(QUEUE[2], s[DRAFT_QUEUE_KEY])
-        drs.undo_last_simulator_pick(s)
-        _prune_drafted_from_queue(s)
+        _pick(s, QUEUE[2])
+        result = remove_drafted_player_from_active_queues(s, QUEUE[2])
+        self.assertFalse(result["removed_local"])
         self.assertEqual(s[DRAFT_QUEUE_KEY], QUEUE)
+
+    def test_only_the_user_removes_players_drafted_in_this_draft(self) -> None:
+        from draft_queue_contract import remove_players_drafted_in_active_draft
+
+        s = _session()
+        for p in QUEUE[:2]:
+            _pick(s, p)
+        self.assertEqual(remove_players_drafted_in_active_draft(s), QUEUE[:2])
+        self.assertEqual(s[DRAFT_QUEUE_KEY], QUEUE[2:])
+
+    def test_a_reorder_of_the_visible_rows_keeps_the_drafted_players(self) -> None:
+        from draft_queue_contract import full_order_after_reorder
+
+        s = _session()
+        _pick(s, QUEUE[0])
+        visible = list(reversed(QUEUE[1:]))
+        self.assertEqual(full_order_after_reorder(s, visible), visible + [QUEUE[0]])
 
 
 class LeftAloneTests(unittest.TestCase):
@@ -99,7 +104,10 @@ class LeftAloneTests(unittest.TestCase):
             _pick(s, p)
         drs.reset_simulator_board_only(s)
         _prune_drafted_from_queue(s)
-        self.assertEqual(s[DRAFT_QUEUE_KEY], QUEUE[3:])
+        from draft_queue_contract import drafted_in_active_draft
+
+        self.assertEqual(s[DRAFT_QUEUE_KEY], QUEUE)  # nothing removed, nothing added
+        self.assertEqual(drafted_in_active_draft(s), set())  # a reset board is a new draft
 
     def test_delete_active_draft_keeps_the_queue(self) -> None:
         s = _session()
@@ -180,7 +188,7 @@ class SharedRoomTests(unittest.TestCase):
 
 
 class PersistenceTests(unittest.TestCase):
-    def test_consumption_survives_reload_without_reapplying(self) -> None:
+    def test_the_queue_survives_reload_unchanged(self) -> None:
         from baseball_persistent_state import apply_baseball_disk_state, build_baseball_disk_state
 
         class _St:
@@ -195,7 +203,7 @@ class PersistenceTests(unittest.TestCase):
         apply_baseball_disk_state(_St(restored), blob)
         drs.prepare_draft_room_state(restored)
         _prune_drafted_from_queue(restored)
-        self.assertEqual(restored[DRAFT_QUEUE_KEY][:9], QUEUE[1:])
+        self.assertEqual(restored[DRAFT_QUEUE_KEY], QUEUE)  # picks never removed anyone
 
 
 if __name__ == "__main__":
