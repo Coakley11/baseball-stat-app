@@ -39,6 +39,18 @@ def _world():
 
 
 world = _world()
+ss = st.session_state
+# Choices the screenshot asks for. All preview sessions share one workspace, so the app's restore of
+# that workspace can bring back another session's saved mode; re-apply once (before any widget).
+WANT = {}
+if st.query_params.get("qmode") in ("fixed", "adaptive"):
+    WANT["draft_queue_mode"] = st.query_params.get("qmode")
+if st.query_params.get("approach"):
+    WANT["draft_strategy_approach"] = st.query_params.get("approach")
+_pending = ss.pop("_bx_preview_pending", None)
+if isinstance(_pending, dict):
+    for _k, _v in _pending.items():
+        ss[_k] = _v
 if "_bx_preview_seeded" not in st.session_state:
     mode = str(st.query_params.get("mode") or "solo")
     for key, value in copy.deepcopy(world["host" if mode == "host" else "solo"]).items():
@@ -54,4 +66,13 @@ if "_bx_preview_seeded" not in st.session_state:
         st.session_state["draft_strategy_approach"] = st.query_params.get("approach")
     st.session_state["_bx_preview_seeded"] = mode
 
-runpy.run_path(os.path.join(REPO, "streamlit_app.py"), run_name="__main__")
+_rerun = False
+try:
+    runpy.run_path(os.path.join(REPO, "streamlit_app.py"), run_name="__main__")
+finally:
+    if WANT and int(ss.get("_bx_preview_reapplied") or 0) < 2 and any(ss.get(k) != v for k, v in WANT.items()):
+        ss["_bx_preview_reapplied"] = int(ss.get("_bx_preview_reapplied") or 0) + 1
+        ss["_bx_preview_pending"] = dict(WANT)
+        _rerun = True
+if _rerun:
+    st.rerun()
