@@ -12472,10 +12472,27 @@ try:
         _PAGE_LABEL_TO_KEY.setdefault(_legacy_label, _legacy_key)
 except ImportError:
     pass
+try:
+    # Navigation icons: Material Symbols on the page labels (sidebar list, buttons, captions). The
+    # emoji labels above stay readable for saved sessions (_PAGE_LABEL_TO_KEY keeps them).
+    from feature_identity import material_icon as _material_icon, plain_name as _plain_name
+
+    for _page_key, _label in list(PAGE_OPTION_LABELS.items()):
+        _mi = _material_icon(_page_key)
+        if _mi:
+            PAGE_OPTION_LABELS[_page_key] = f"{_mi} {_plain_name(_label)}"
+    _PAGE_LABEL_TO_KEY.update({label: key for key, label in PAGE_OPTION_LABELS.items()})
+except ImportError:
+    _plain_name = lambda label: str(label)  # noqa: E731
 
 
 def page_option_label(page_key: str) -> str:
     return PAGE_OPTION_LABELS.get(page_key, page_key)
+
+
+def page_plain_label(page_key: str) -> str:
+    """The page name with no icon, for dropdown options and HTML (no Markdown there)."""
+    return _plain_name(PAGE_OPTION_LABELS.get(page_key, page_key))
 
 
 def get_sidebar_page_label(page_key: str) -> str:

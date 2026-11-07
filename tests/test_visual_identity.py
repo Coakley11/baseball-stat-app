@@ -55,7 +55,10 @@ class FeatureRegistryTests(unittest.TestCase):
         for page in app.PAGE_OPTIONS:
             label = app.page_option_label(page)
             feat = fi.feature(page)
-            self.assertEqual(label, f"{feat.icon} {feat.name}", page)
+            # Owner decision 2026-11-06: navigation uses Material Symbols (feature_identity.MATERIAL).
+            from feature_identity import material_icon
+
+            self.assertEqual(label, f"{material_icon(page) or feat.icon} {feat.name}", page)
 
     def test_previous_labels_still_resolve_to_their_page(self) -> None:
         app = _app()

@@ -56,6 +56,16 @@ __all__ = (
 )
 
 
+def _plain_page(label: str) -> str:
+    """HTML shows no Markdown: the page name without a :material/…: code."""
+    try:
+        from feature_identity import plain_name
+
+        return plain_name(label)
+    except ImportError:
+        return label
+
+
 def grouped_page_options(page_options: list[str]) -> list[str]:
     """``page_options`` reordered so same-group pages sit together.
 
@@ -157,7 +167,12 @@ def render_mobile_quick_nav(
         st.session_state[QUICK_NAV_SECTION_KEY] = section
 
     def _format(page: str) -> str:
-        return page_option_label(page)
+        try:  # a dropdown shows plain text: no :material/…: code (feature_identity.plain_name)
+            from feature_identity import plain_name
+
+            return plain_name(page_option_label(page))
+        except ImportError:
+            return page_option_label(page)
 
     def _format_section(group: str) -> str:
         try:
@@ -198,7 +213,7 @@ def render_mobile_quick_nav(
             # <nav> is a CommonMark block tag like <div>, so parsing is unchanged too.
             # The pin emoji is decorative and hidden from the accessibility tree.
             + f'<nav class="m-quick-nav-current" aria-label="Current page">'
-            + f'<span aria-hidden="true">📍</span> {page_option_label(active_page)}</nav>',
+            + f'<span aria-hidden="true">📍</span> {_plain_page(page_option_label(active_page))}</nav>',
             unsafe_allow_html=True,
         )
         if len(sections) > 1 and hasattr(st, "pills"):

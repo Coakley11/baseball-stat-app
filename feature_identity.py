@@ -99,6 +99,54 @@ FEATURES: dict[str, Feature] = {f.page: f for f in _FEATURES}
 AMI = Feature("__ami__", "💬", "Ask AMI", "ami", "Ask a baseball question in plain English.")
 
 
+# Navigation icons (owner decision 2026-11-06): Material Symbols, the same library as the action
+# buttons (action_icons). Used where Streamlit renders Markdown (sidebar page list, buttons,
+# captions); dropdown options and raw HTML get the plain name (plain_name), never a code.
+MATERIAL: dict[str, str] = {
+    "Home": ":material/home:",
+    "Historical Explorer": ":material/manage_search:",
+    "Career Totals": ":material/menu_book:",
+    "Comparison Tool": ":material/compare_arrows:",
+    "Leaderboards": ":material/leaderboard:",
+    "Trend Value": ":material/trending_up:",
+    "Valuation": ":material/paid:",
+    "ML Predictions": ":material/model_training:",
+    "Fantasy Sleepers & Busts": ":material/diamond:",
+    "Live Draft Room": ":material/sensors:",
+    "Draft Room Simulator": ":material/grid_view:",
+    "Draft Assistant Simulator": ":material/tips_and_updates:",
+    "Draft Strategy Assistant": ":material/psychology:",
+    "Draft Lab / Simulation": ":material/science:",
+    "Saved Draft Library": ":material/folder_open:",
+    "Fantasy Standings Tracker": ":material/table_chart:",
+    "Fantasy Lineup Assistant": ":material/assignment:",
+    "Waiver Wire / Add-Drop Center": ":material/person_search:",
+    "Pricing & Upgrade": ":material/credit_card:",
+    "Trade Analyzer / Roster Move Assistant": ":material/swap_horiz:",
+}
+SECTION_MATERIAL: dict[str, str] = {
+    "home": ":material/home:", "players": ":material/sports_baseball:", "insights": ":material/insights:",
+    "draft": ":material/edit_note:", "league": ":material/stadium:", "account": ":material/person:",
+    "ami": ":material/chat:",
+}
+
+
+def material_icon(page: str) -> str:
+    return MATERIAL.get(str(page or "").strip(), "")
+
+
+def plain_name(label: str) -> str:
+    """A navigation label without its leading icon (an emoji or a :material/…: code)."""
+    text = str(label or "").strip()
+    if text.startswith(":material/"):
+        end = text.find(":", len(":material/"))
+        return text[end + 1:].strip() if end > 0 else text
+    head, _, rest = text.partition(" ")
+    if rest and not any(ch.isalnum() for ch in head):
+        return rest.strip()
+    return text
+
+
 def feature(page: str) -> Feature | None:
     return FEATURES.get(str(page or "").strip())
 
