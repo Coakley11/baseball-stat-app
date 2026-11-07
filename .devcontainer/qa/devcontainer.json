@@ -1,0 +1,10 @@
+{
+  // QA-only container for the isolated two-account acceptance run (private Codespace).
+  // Same image as the default config, plus an SSH server so the run can be driven with
+  // `gh codespace ssh`. No app is started automatically and no port is forwarded.
+  "name": "Baseball Explorer QA (private)",
+  "image": "mcr.microsoft.com/devcontainers/python:1-3.11-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/sshd:1": { "version": "latest" }
+  }
+}
