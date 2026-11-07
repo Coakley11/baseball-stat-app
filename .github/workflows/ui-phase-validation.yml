@@ -1,0 +1,137 @@
+# UI phase validation on GitHub-hosted runners: synthetic seeded data only, no secrets, no deploy.
+# Runs only on pushes to the ci/ui-phase-remote-validation branch (no Streamlit Cloud app tracks it).
+# Each suite runs on the candidate (this push) and on the released baseline (6442d8d, origin/dev) so a
+# failure is reported as new or pre-existing. Screenshots come from the seeded offline preview.
+name: UI phase validation
+
+on:
+  push:
+    branches: ["ci/ui-phase-remote-validation"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-phase-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BASELINE_SHA: 6442d8d7c9f27c5fb668c445e847dd42c1e425cd
+  PYTHONUNBUFFERED: "1"
+  PYTHONIOENCODING: utf-8
+  # Belt and braces: the app's local stores only (the harness sets these too).
+  SUITE_STORAGE_ISOLATED: "1"
+  BASEBALL_SHARED_DRAFT_ROOM_BACKEND: local
+
+jobs:
+  tests:
+    name: ${{ matrix.suite }} on ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [queue, strategy_layout]
+        target: [candidate, baseline]
+    steps:
+      - name: Suite lists (this branch)
+        uses: actions/checkout@v4
+        with:
+          path: ci-src
+          persist-credentials: false
+      - name: Code under test
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.target == 'baseline' && env.BASELINE_SHA || github.sha }}
+          path: app
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: app/requirements.txt
+      - name: Install
+        run: python -m pip install -r app/requirements.txt pytest
+      - name: No credentials present
+        run: |
+          test ! -e app/.streamlit/secrets.toml
+          env | grep -iE '^(SUPABASE|STRIPE)' && exit 1 || true
+      - name: Run ${{ matrix.suite }} suite
+        working-directory: app
+        run: |
+          mkdir -p ../junit
+          files=""; missing=""
+          while read -r f; do
+            [ -z "$f" ] && continue
+            if [ -f "$f" ]; then files="$files $f"; else missing="$missing $f"; fi
+          done < ../ci-src/ci/${{ matrix.suite }}_suite.txt
+          echo "Missing on ${{ matrix.target }}:${missing:- none}" | tee -a "$GITHUB_STEP_SUMMARY"
+          python -m pytest -p no:cacheprovider -q -rfE --junitxml=../junit/result.xml $files || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.suite }}-${{ matrix.target }}
+          path: junit/
+          retention-days: 14
+
+  compare:
+    name: New vs pre-existing failures
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: results
+      - name: Compare with the baseline
+        run: |
+          rc=0
+          for s in queue strategy_layout; do
+            python ci/compare_failures.py "$s" "results/junit-$s-candidate" "results/junit-$s-baseline" \
+              | tee -a "$GITHUB_STEP_SUMMARY" || rc=1
+          done
+          exit $rc
+
+  screenshots:
+    name: Seeded preview screenshots (desktop + phone)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install
+        run: |
+          python -m pip install -r requirements.txt playwright
+          python -m playwright install --with-deps chromium
+      - name: No credentials present
+        run: test ! -e .streamlit/secrets.toml
+      - name: Start the seeded offline preview
+        run: |
+          nohup python -m streamlit run ci/preview_app.py --server.headless true --server.port 8611 \
+            --browser.gatherUsageStats false > streamlit.log 2>&1 &
+          for i in $(seq 1 90); do
+            curl -sf http://localhost:8611/_stcore/health && exit 0
+            sleep 2
+          done
+          cat streamlit.log; exit 1
+      - name: Capture screenshots
+        run: python ci/shoot.py http://localhost:8611 shots
+      - name: Report
+        if: always()
+        run: |
+          cp streamlit.log shots/ 2>/dev/null || true
+          cat shots/report.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-preview-screenshots
+          path: shots/
+          retention-days: 14
