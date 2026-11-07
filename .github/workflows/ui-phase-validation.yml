@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash  # bash -eo pipefail: a failing script before a pipe fails the step
+
 concurrency:
   group: ui-phase-validation-${{ github.ref }}
   cancel-in-progress: true
@@ -115,6 +119,7 @@ jobs:
         run: test ! -e .streamlit/secrets.toml
       - name: Start the seeded offline preview
         run: |
+          ln -s ../static ci/static  # Streamlit serves static/ next to the main script (ci/preview_app.py)
           nohup python -m streamlit run ci/preview_app.py --server.headless true --server.port 8611 \
             --browser.gatherUsageStats false > streamlit.log 2>&1 &
           for i in $(seq 1 90); do
@@ -124,6 +129,17 @@ jobs:
           cat streamlit.log; exit 1
       - name: Capture screenshots
         run: python ci/shoot.py http://localhost:8611 shots
+      - name: Shared Draft room documents carry no personal queue or research
+        if: always()
+        run: |
+          rooms=$(ls -d /tmp/ldr_parity_rooms_* 2>/dev/null || true)
+          echo "Room stores: ${rooms:-none}" | tee -a "$GITHUB_STEP_SUMMARY"
+          test -n "$rooms"
+          find $rooms -type f | head -20
+          if grep -rlE '"(draft_queue|draft_queue_mode|draft_queue_plan|draft_queue_adaptive|_draft_strategy_loaded|draft_strategy_approach|watchlist|notes)"' $rooms; then
+            echo "Personal data found in a room document" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1
+          fi
+          echo "Room documents: no personal queue, strategy or research keys." | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Report
         if: always()
         run: |

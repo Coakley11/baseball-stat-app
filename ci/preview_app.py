@@ -46,6 +46,12 @@ if "_bx_preview_seeded" not in st.session_state:
     page = str(st.query_params.get("page") or "").strip()
     if page:
         st.session_state["_navigate_to_page"] = page
+    if st.query_params.get("queue") == "demo":  # a researched-looking queue (synthetic names only)
+        st.session_state["draft_queue"] = [f"Player {i:03d}" for i in (40, 12, 30, 6, 9, 22, 14, 3, 18, 27)]
+    if st.query_params.get("qmode") in ("fixed", "adaptive"):
+        st.session_state["draft_queue_mode"] = st.query_params.get("qmode")
+    if st.query_params.get("approach"):
+        st.session_state["draft_strategy_approach"] = st.query_params.get("approach")
     st.session_state["_bx_preview_seeded"] = mode
 
 runpy.run_path(os.path.join(REPO, "streamlit_app.py"), run_name="__main__")
