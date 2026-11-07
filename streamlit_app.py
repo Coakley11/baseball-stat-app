@@ -472,6 +472,15 @@ ML_DERIVED_FEATURE_STATS = ["PA_est", "BB_rate", "K_rate", "SB_rate", "XBH", "XB
 st.set_page_config(page_title="⚾ Daniel Cohen Baseball Explorer ⚾", page_icon=str(Path(__file__).resolve().parent / "static/brand/dcbe_logo_128.png"), layout="wide")
 
 try:
+    # Before any widget: keep the Draft Strategy and Queue mode choices on pages that don't draw
+    # their controls (Streamlit drops a widget's value on runs that don't render it).
+    from draft_queue_modes import keep_personal_choices
+
+    keep_personal_choices(st.session_state)
+except ImportError:
+    pass
+
+try:
     from live_draft_stage1_parent_boundary import capture_stage1_diagnostic_intents
 
     capture_stage1_diagnostic_intents(st, st.session_state)

@@ -87,6 +87,16 @@ class SimulatorRosterSlotTests(unittest.TestCase):
         self.assertEqual(room["config"]["slots_source"], "")
 
 
+class MissingProjectionTests(unittest.TestCase):
+    def test_rostered_players_without_projections_are_not_called_strong(self) -> None:
+        s = _session()
+        _assign(s, 1, "Someone Not In The Pool")
+        room = dqm.simulator_room(s, _pool(), teams=TEAMS, your_team="Daniel", fmt="5x5 Roto")
+        needs = dqm.team_needs(room, "Daniel", room["pool"], "5x5 Roto")
+        self.assertEqual((needs["roster_size"], needs["roster_projected"]), (1, 0))
+        self.assertEqual(needs["weak"], [])
+
+
 class StrategyTrainingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.s, self.pool = _session(), _pool()
