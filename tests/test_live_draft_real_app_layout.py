@@ -163,9 +163,37 @@ class SharedDraftingScreenTests(_RealAppCase):
         self.assertIsNone(_button(self.guest, "live_draft_discard_btn"))
 
 
+def _verified(seed: dict) -> dict:
+    """A verified sign-in for this browser (the Shared Draft write check, security release
+    6442d8d, accepts only verified accounts inside a user request)."""
+    return {**seed, "_suite_auth_session": {"user": {"id": seed["_suite_auth_user_id"]}}}
+
+
 class SharedPickRerunTests(_RealAppCase):
+    def setUp(self) -> None:
+        super().setUp()
+        from unittest import mock
+
+        import fantasy_shared_league_authz
+
+        patcher = mock.patch.object(fantasy_shared_league_authz, "sign_in_enabled", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_signed_out_commissioner_is_told_to_sign_in_not_to_retry(self) -> None:
+        _code, host_seed, _guest_seed = harness.shared_seeds()
+        host = harness.run_page(host_seed)  # sign-in on, but this browser is not signed in
+        draft = [b for b in host.button if str(b.key or "").startswith("rec_card_draft_") and not b.disabled]
+        self.assertTrue(draft)
+        draft[0].click().run()
+        self.assertEqual(len(host.session_state["live_draft_room"].get("draft_board") or []), 0)
+        shown = " ".join(str(w.value) for w in list(host.warning) + list(host.error))
+        self.assertIn("Sign in to make picks in a Shared Draft", shown)
+        self.assertNotIn("Another participant updated the room", shown)
+
     def test_commissioner_pick_then_reruns_keep_the_layout_for_both_browsers(self) -> None:
         code, host_seed, guest_seed = harness.shared_seeds()
+        host_seed, guest_seed = _verified(host_seed), _verified(guest_seed)
         host = harness.run_page(host_seed)
         guest = harness.run_page(guest_seed)
         draft = [b for b in host.button if str(b.key or "").startswith("rec_card_draft_") and not b.disabled]

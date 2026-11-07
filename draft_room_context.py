@@ -36,6 +36,13 @@ from draft_room_shared_state import (
 from live_draft_state import LIVE_DRAFT_ROOM_KEY, has_active_live_draft, prepare_live_draft_state
 
 
+
+_SHARED_WRITE_REFUSAL_MESSAGES = {
+    "sign_in_required": "Sign in to make picks in a Shared Draft. Nothing was changed.",
+    "not_seated": "Only managers seated in this Shared Draft can make picks. Nothing was changed.",
+    "status_host_only": "Only the commissioner can pause, resume or end this draft. Nothing was changed.",
+}
+
 def abort_shared_room_create(
     session: dict[str, Any],
     *,
@@ -1643,6 +1650,7 @@ def commit_shared_room_state(
     if record_draft_commit_diagnostics is not None:
         record_draft_commit_diagnostics(session, commit_shared_room_pick_called=True, shared_room_commit_called=True)
 
+    session.pop("_shared_room_write_refused", None)  # only this commit's refusal counts below
     ok, saved = commit_shared_room_pick(
         session,
         live_room,
@@ -1674,6 +1682,13 @@ def commit_shared_room_state(
     if not ok:
         sync_shared_draft_room(session, force=True, store=store)
         conflict_msg = "Another participant updated the room. Board refreshed — try your pick again."
+        refused = session.get("_shared_room_write_refused")
+        if isinstance(refused, dict) and refused.get("reason"):
+            # The room refused this account's write (fantasy_shared_league_authz): say why, not
+            # "someone else updated the room", which sends the user into a retry loop.
+            conflict_msg = _SHARED_WRITE_REFUSAL_MESSAGES.get(
+                str(refused["reason"]), "This Shared Draft didn't accept your pick. Nothing was changed."
+            )
         session["_draft_room_conflict_notice"] = conflict_msg
         if record_draft_commit_diagnostics is not None:
             record_draft_commit_diagnostics(
