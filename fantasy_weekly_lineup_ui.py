@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from contextlib import nullcontext
 from typing import Any, Callable
 
@@ -667,11 +669,11 @@ def render_weekly_lineup_section(
                 on_click=lambda: session.__setitem__(suggest_flag, True),
             )
         elif action == "waivers":
-            col.button("Check Waivers", key=f"u3lu_waivers_{prefix}_{int(selected_week)}_btn", use_container_width=True,
+            col.button("Check Waivers", key=f"u3lu_waivers_{prefix}_{int(selected_week)}_btn", use_container_width=True, icon=_icons.WAIVERS,
                        type="primary" if answer["primary"] == "waivers" else "secondary",
                        on_click=nav_callback("Waiver Wire / Add-Drop Center"))
         else:
-            col.button("Explore Trades", key=f"u3lu_trades_{prefix}_{int(selected_week)}_btn", use_container_width=True,
+            col.button("Explore Trades", key=f"u3lu_trades_{prefix}_{int(selected_week)}_btn", use_container_width=True, icon=_icons.TRADE,
                        on_click=lambda: session.__setitem__("_lineup_focus_trade_center", True))
     board_payload = build_interactive_board_payload(
         slot_labels,

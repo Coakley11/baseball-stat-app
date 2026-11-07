@@ -60,6 +60,9 @@ STATS = ":material/bar_chart:"
 PAUSE = ":material/pause:"
 RESUME = ":material/play_arrow:"
 AUTO_PICK = ":material/bolt:"
+CLAIM_TEAM = ":material/how_to_reg:"
+ANALYZE = ":material/analytics:"
+WAIVERS = ":material/person_search:"
 
 DANGER_KEY_PREFIX = "bx-danger-"
 

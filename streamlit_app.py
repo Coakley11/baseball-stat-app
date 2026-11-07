@@ -1,4 +1,6 @@
 
+import action_icons as _icons
+
 import streamlit as st
 try:
     import solo_countdown_component  # noqa: F401 — register wake component at app import
@@ -1861,7 +1863,7 @@ def _render_u4_draft_room_answer(board, *, room_df, your_team, team_names, team_
                 st.error(res.get("message") or res.get("error") or "Assignment failed.")
     cols[1].button("Import Draft", key="u4_dr_import_btn", use_container_width=True,
                    on_click=lambda: st.session_state.__setitem__("_u4_draft_import_open", True))
-    cols[2].button("Save Draft", key="u4_dr_save_btn", use_container_width=True,
+    cols[2].button("Save Draft", key="u4_dr_save_btn", use_container_width=True, icon=_icons.SAVE,
                    type="primary" if answer["tiles"][-1][1] == "Unsaved" else "secondary",
                    help="Same as Save Draft Board Now on the Board tab.",
                    on_click=lambda: record_manual_save_button_click(st.session_state))
@@ -10690,7 +10692,7 @@ def _render_trade_acquire_flow_ui(*, key_prefix: str) -> None:
         key=f"{key_prefix}_trade_flow_context",
     )
     selected_idx = labels.index(selected_label) if selected_label in labels else 0
-    if st.button("Apply Trade / Acquire", key=f"{key_prefix}_trade_flow_apply"):
+    if st.button("Apply Trade / Acquire", key=f"{key_prefix}_trade_flow_apply", icon=_icons.TRADE):
         msg = complete_trade_acquire_flow(
             st.session_state,
             mode=str(flow.get("mode") or TRADE_ACTION_ACQUIRE),
