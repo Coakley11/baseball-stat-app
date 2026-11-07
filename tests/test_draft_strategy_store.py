@@ -74,8 +74,8 @@ class SnapshotTests(_Base):
 
         result = dss.load_strategy(s, strategy["id"])  # queue not empty -> ask first
         self.assertTrue(result["needs_confirmation"])
-        self.assertIn("replace your current 2-player queue with the 10 players", result["message"])
-        self.assertEqual(s[DRAFT_QUEUE_KEY], TEN[8:])
+        self.assertIn("replace your current 10-player queue with the 10 players", result["message"])
+        self.assertEqual(s[DRAFT_QUEUE_KEY], TEN)  # unchanged until confirmed
         dss.load_strategy(s, strategy["id"], confirm_replace=True)
         self.assertEqual(s[DRAFT_QUEUE_KEY], TEN)  # replaced in saved order, not merged
         self.assertEqual([p["name"] for p in dss.get_strategy(s, strategy["id"])["players"]], TEN)
