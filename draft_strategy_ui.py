@@ -173,7 +173,8 @@ def _render_queue(st: Any, session: dict[str, Any], *, drafted: set[str] | None 
                              help="Remove from the working queue (saved strategies are not changed)",
                              use_container_width=True):
                 _queue_action(st, session, remove_player_from_user_draft_queue, name)
-        st.caption("Drafting takes players off this queue; it never changes a saved strategy.")
+        st.caption("A player drafted in a draft is marked there and stays in this queue for your other "
+                   "drafts; drafting never changes a saved strategy.")
     return queue
 
 

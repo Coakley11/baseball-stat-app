@@ -18,8 +18,12 @@ import draft_queue_modes as dqm
 EDIT_RULE = (
     "Edits you make to your queue (add, remove, drag) always change your **Fixed** queue, your plan. "
     "Adaptive never changes it: it re-orders a separate copy for this draft only. Pin a player to keep "
-    "him at his Fixed place in Adaptive. Picks are always yours: auto-pick on the timer follows your "
-    "Fixed queue, never the Adaptive order."
+    "him at his Fixed place in Adaptive. Picks are always yours."
+)
+AUTO_PICK_NOTICE = (
+    "**Auto Pick still uses your Fixed queue.** If your timer runs out, the first available player in your "
+    "Fixed order is drafted, not the Adaptive order shown here. Adaptive only re-orders your plan; it "
+    "never makes a pick."
 )
 
 
@@ -121,7 +125,11 @@ def _render_needs(st: Any, view: dict[str, Any]) -> None:
         st.markdown("**Projected strengths:** " + ", ".join(needs["strong"]))
     open_slots = needs.get("open_slots") or {}
     if needs.get("slots_assumed"):
-        st.caption("This board has no roster-slot settings, so standard starter slots are assumed.")
+        assumed = ", ".join(f"{n} {p}" if int(n) > 1 else p for p, n in (needs.get("slots") or {}).items())
+        st.caption("No league roster settings were found for this board, so standard starter slots are assumed"
+                   + (f" ({assumed})" if assumed else "") + ". Set an active league to use its real slots.")
+    elif needs.get("slots_source"):
+        st.caption(f"Open slots use {needs['slots_source']}.")
     if open_slots:
         st.markdown("**Open slots:** " + ", ".join(f"{p} {n}" for p, n in open_slots.items() if n > 0) or "none")
 
@@ -229,6 +237,8 @@ def render_draft_strategy_panel(st: Any, session: dict[str, Any], room: dict[str
         st.radio("Draft Queue mode", list(dqm.MODES), format_func=lambda m: dqm.MODE_LABELS[m],
                  key=dqm.MODE_KEY, horizontal=True)
         st.caption(EDIT_RULE)
+        if dqm.current_mode(session) == "adaptive":
+            st.info(AUTO_PICK_NOTICE, icon=":material/bolt:")
         compare, changes, needs, original, pins = st.tabs(
             ["Fixed vs Adaptive", "What changed and why?", "Team needs", "Original plan", "Pins & notes"])
         with compare:

@@ -59,6 +59,34 @@ class SimulatorAdapterTests(unittest.TestCase):
         self.assertEqual(dqm.simulator_source(s), "sim:3")
 
 
+class SimulatorRosterSlotTests(unittest.TestCase):
+    def test_active_league_roster_settings_are_used_and_named(self) -> None:
+        from unittest import mock
+
+        import fantasy_league_context
+
+        ctx = {"league_name": "Danny League", "roster_settings": {"roster_slots": {"C": 2, "1B": 1, "OF": 5, "BN": 3}}}
+        with mock.patch.object(fantasy_league_context, "get_active_league_context", return_value=ctx):
+            room = dqm.simulator_room(_session(), _pool(), teams=TEAMS, your_team="Daniel", fmt="5x5 Roto")
+        self.assertEqual(room["config"]["slots"].get("C"), 2)
+        self.assertEqual(room["config"]["slots"].get("OF"), 5)
+        self.assertFalse(room["config"]["slots_assumed"])
+        self.assertIn("Danny League", room["config"]["slots_source"])
+        needs = dqm.team_needs(room, "Daniel", room["pool"], "5x5 Roto")
+        self.assertEqual(needs["open_slots"]["OF"], 5)
+
+    def test_shared_draft_settings_are_used_when_there_is_no_league(self) -> None:
+        s = _session(draft_shared_settings={"slots": {"C": 1, "SS": 2}})
+        room = dqm.simulator_room(s, _pool(), teams=TEAMS, your_team="Daniel", fmt="5x5 Roto")
+        self.assertEqual(room["config"]["slots"], {"C": 1, "SS": 2})
+        self.assertEqual(room["config"]["slots_source"], "your draft settings")
+
+    def test_fallback_is_disclosed(self) -> None:
+        room = dqm.simulator_room(_session(), _pool(), teams=TEAMS, your_team="Daniel", fmt="5x5 Roto")
+        self.assertTrue(room["config"]["slots_assumed"])
+        self.assertEqual(room["config"]["slots_source"], "")
+
+
 class StrategyTrainingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.s, self.pool = _session(), _pool()
@@ -190,6 +218,7 @@ class SimulatorPanelTests(unittest.TestCase):
         self.assertFalse(at.exception)
         self.assertEqual(at.session_state["draft_queue"], QUEUE)
         self.assertTrue(any("standard starter slots are assumed" in str(c.value) for c in at.caption))
+        self.assertTrue(any("Auto Pick still uses your Fixed queue" in str(i.value) for i in at.info))
 
 
 if __name__ == "__main__":

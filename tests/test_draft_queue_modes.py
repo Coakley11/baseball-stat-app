@@ -442,11 +442,13 @@ class PanelTests(unittest.TestCase):
         at.run()
         self.assertFalse(at.exception)
         self.assertTrue(any("Draft Strategy · Balanced · Fixed queue" in label for label in _panel_labels(at)))
+        self.assertFalse(any("Auto Pick still uses your Fixed queue" in str(i.value) for i in at.info))
         room_before = copy.deepcopy({k: v for k, v in at.session_state["live_draft_room"].items() if k != "pool"})
         at.radio(key=dqm.MODE_KEY).set_value("adaptive").run()
         self.assertFalse(at.exception)
         self.assertEqual(at.session_state[dqm.MODE_KEY], "adaptive")
         self.assertTrue(any("Adaptive queue" in label for label in _panel_labels(at)))
+        self.assertTrue(any("Auto Pick still uses your Fixed queue" in str(i.value) for i in at.info))
         at.run()  # a rerun keeps the mode
         self.assertEqual(at.session_state[dqm.MODE_KEY], "adaptive")
         self.assertEqual(at.session_state["draft_queue"], QUEUE)
