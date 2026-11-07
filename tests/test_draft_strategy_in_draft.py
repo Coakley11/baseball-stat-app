@@ -50,14 +50,14 @@ class RankingTests(unittest.TestCase):
     def test_best_available_is_pure_projected_value(self) -> None:
         ranked = sid.rank_pool(pool(), "best_available", room=room())
         self.assertEqual(ranked["fullName"].tolist()[:3], ["Big OF", "OF Two", "OF Three"])
-        self.assertTrue(ranked["Strategy Reason"].iloc[0].startswith("Best available: projects 300"))
+        self.assertEqual(ranked["Strategy Reason"].iloc[0], "Best available: #1 by projected value")
 
     def test_value_based_prefers_value_over_replacement(self) -> None:
         # 2 teams × 1 SS starter: replacement SS is the 2nd SS (120) → Top SS is +120;
         # 2 teams × 3 OF: replacement OF is the 6th (250) → Big OF is only +50.
         ranked = sid.rank_pool(pool(), "value_based", room=room())
         self.assertEqual(ranked["fullName"].iloc[0], "Top SS")
-        self.assertEqual(ranked["Strategy Reason"].iloc[0], "Value-based: +120 over replacement at SS")
+        self.assertEqual(ranked["Strategy Reason"].iloc[0], "Value-based: 40% above the SS replacement level")  # 120 of 300
 
     def test_positional_scarcity_lifts_the_thin_position(self) -> None:
         ranked = sid.rank_pool(pool(), "positional_scarcity", room=room())
@@ -91,7 +91,7 @@ class RankingTests(unittest.TestCase):
         from live_draft_room_ui import build_why_this_pick_summary
 
         row = sid.rank_pool(pool(), "value_based", room=room()).iloc[0]
-        self.assertTrue(build_why_this_pick_summary(row, "SS").startswith("Value-based: +120 over replacement at SS"))
+        self.assertTrue(build_why_this_pick_summary(row, "SS").startswith("Value-based: 40% above the SS replacement level"))
 
 
 def _selector_script() -> None:

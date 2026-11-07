@@ -96,7 +96,7 @@ def rank_pool(pool: pd.DataFrame, approach: str, *, room: dict[str, Any] | None 
     if approach == "best_available":
         score = value + _num(df, "Decision Score") * 1e-6
         board_rank = value.rank(ascending=False, method="min").astype(int)
-        reasons = "Best available: projects " + value.round(0).astype(int).astype(str) + " fantasy value (#" + board_rank.astype(str) + " left)"
+        reasons = "Best available: #" + board_rank.astype(str) + " by projected value"
     elif approach == "value_based":
         starters, teams = _starters(room), _team_count(room)
         vor = pd.Series(0.0, index=df.index)
@@ -106,7 +106,13 @@ def rank_pool(pool: pd.DataFrame, approach: str, *, room: dict[str, Any] | None 
             repl = float(vals.iloc[min(k, len(vals)) - 1]) if len(vals) else 0.0
             vor.loc[idx] = value.loc[idx] - repl
         score = vor
-        reasons = "Value-based: " + vor.round(0).astype(int).map(lambda v: f"{v:+d}") + " over replacement at " + pos
+        # Shown as a share of the best available value: right whatever the value scale (the scoring
+        # pass normalizes Expected Fantasy Value to 0..1; raw projections are in points).
+        best = float(value.max()) if len(value) else 0.0
+        share = (vor / best * 100.0) if best > 0 else vor * 0.0
+        reasons = share.round(0).astype(int).map(
+            lambda v: f"Value-based: {v}% above the " if v >= 0 else f"Value-based: {abs(v)}% below the "
+        ) + pos + " replacement level"
     elif approach == "positional_scarcity":
         scarcity = _num(df, "Position Scarcity Score")
         if not scarcity.any():
