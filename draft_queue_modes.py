@@ -302,7 +302,8 @@ def team_needs(room: dict[str, Any] | None, team: str, pool: pd.DataFrame, fmt: 
         open_slots[str(pos).upper()] = n - counts.get(str(pos).upper(), 0)
     return {"format": fmt, "points": is_points_league(fmt), "weak": weak, "strong": strong,
             "open_slots": open_slots, "roster_size": len(roster), "has_categories": bool(specs),
-            "slots_assumed": bool(cfg.get("slots_assumed"))}
+            "slots_assumed": bool(cfg.get("slots_assumed")), "slots_source": str(cfg.get("slots_source") or ""),
+            "slots": {str(p).upper(): n for p, n in slots.items()}}
 
 
 def _category_impact(available: pd.DataFrame, weak: list[dict[str, Any]], full: pd.DataFrame) -> dict[str, pd.Series]:
@@ -801,8 +802,43 @@ def simulator_room(session: dict[str, Any], pool: pd.DataFrame | None, *, teams:
             entries.append(rec)
             rosters.setdefault(rec["Team"], []).append(rec)
     positions = set(pool["Primary Position"].astype(str).str.upper()) if "Primary Position" in pool.columns else set()
-    slots = {p: n for p, n in _DEFAULT_STARTERS.items() if not positions or p in positions}
+    slots, slots_source = simulator_roster_slots(session)
+    if not slots:
+        slots = {p: n for p, n in _DEFAULT_STARTERS.items() if not positions or p in positions}
+        slots_source = ""
     return {"draft_room_id": simulator_source(session), "teams": list(teams), "draft_board": entries,
             "rosters": rosters, "pool": pool,
             "config": {"fantasy_format": fmt, "num_teams": len(teams), "your_team": your_team, "slots": slots,
-                       "slots_assumed": True}}
+                       "slots_assumed": not slots_source, "slots_source": slots_source}}
+
+
+def simulator_roster_slots(session: dict[str, Any]) -> tuple[dict[str, int], str]:
+    """Roster slots for the simulator from real league settings, with where they came from:
+    the active league's roster settings, else the draft settings shared with the draft tools.
+    ({}, "") when neither has slots; the caller then assumes standard starters and says so."""
+    candidates: list[tuple[Any, str]] = []
+    try:
+        from fantasy_league_context import get_active_league_context, resolve_context_draft_slot_config
+
+        ctx = get_active_league_context(session)
+        name = str((ctx or {}).get("league_name") or (ctx or {}).get("name") or "").strip()
+        candidates.append((resolve_context_draft_slot_config(ctx).get("slots"),
+                           f"your active league{(' ' + name) if name else ''}'s roster settings"))
+    except Exception:
+        pass
+    shared = session.get("draft_shared_settings")
+    if isinstance(shared, dict):
+        candidates.append((shared.get("slots") or shared.get("roster_slots"), "your draft settings"))
+    for raw, label in candidates:
+        if not isinstance(raw, dict):
+            continue
+        slots: dict[str, int] = {}
+        for pos, n in raw.items():
+            try:
+                if int(n) > 0:
+                    slots[str(pos).upper()] = int(n)
+            except (TypeError, ValueError):
+                continue
+        if any(p not in {"BN", "BENCH", "IL"} for p in slots):
+            return slots, label
+    return {}, ""
