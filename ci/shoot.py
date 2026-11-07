@@ -21,24 +21,24 @@ out.mkdir(parents=True, exist_ok=True)
 # (view, query, text that proves the view rendered (case-insensitive), open the sidebar first,
 # view controls to click: ("expander"|"tab", label text), optional = absent on branches without it)
 DEMO = "&queue=demo&qmode=adaptive&approach=roster_aware"
-PANEL = ("expander", "Draft Strategy ·")
+PANEL = ("expander", "Draft Strategy")
 VIEWS = [
     ("solo_draft", "mode=solo", "On the clock", False, (), False),
     ("shared_draft_host", "mode=host", "On the clock", False, (), False),
     ("draft_strategy_page", "mode=solo&page=" + quote("Draft Strategy Assistant"), "Strateg", False, (), False),
     ("sidebar_navigation", "mode=solo", "Account & Workspace", True, (), False),
-    ("solo_strategy_panel_fixed", "mode=solo&queue=demo", "Draft Strategy ·", False, (PANEL,), True),
-    ("solo_strategy_panel_adaptive", "mode=solo" + DEMO, "Draft Strategy ·", False, (PANEL,), True),
-    ("solo_what_changed", "mode=solo" + DEMO, "Draft Strategy ·", False, (PANEL, ("tab", "What changed and why?")), True),
-    ("shared_strategy_panel_adaptive", "mode=host" + DEMO, "Draft Strategy ·", False, (PANEL,), True),
-    ("simulator_strategy_panel", "mode=solo" + DEMO + "&page=" + quote("Draft Room Simulator"), "Draft Strategy ·",
+    ("solo_strategy_panel_fixed", "mode=solo&queue=demo", "Your draft plan:", False, (PANEL,), True),
+    ("solo_strategy_panel_adaptive", "mode=solo" + DEMO, "Your draft plan:", False, (PANEL,), True),
+    ("solo_what_changed", "mode=solo" + DEMO, "Your draft plan:", False, (PANEL, ("tab", "What changed and why?")), True),
+    ("shared_strategy_panel_adaptive", "mode=host" + DEMO, "Your draft plan:", False, (PANEL,), True),
+    ("simulator_strategy_panel", "mode=solo" + DEMO + "&page=" + quote("Draft Room Simulator"), "Your draft plan:",
      False, (PANEL,), True),
-    ("simulator_team_needs", "mode=solo" + DEMO + "&page=" + quote("Draft Room Simulator"), "Draft Strategy ·",
+    ("simulator_team_needs", "mode=solo" + DEMO + "&page=" + quote("Draft Room Simulator"), "Your draft plan:",
      False, (PANEL, ("tab", "Team needs")), True),
 ]
 DEVICES = [("desktop", 1366, 900, 2400), ("phone", 390, 844, 2600)]
-CHECKS = ("On the clock", "Up next", "Your next pick", "Recent picks", "Draft Strategy ·", "Team rosters",
-          "Fixed vs Adaptive", "Why they moved", "Auto Pick still uses your Fixed queue")
+CHECKS = ("On the clock", "Up next", "Your next pick", "Recent picks", "Your draft plan:", "Team rosters",
+          "Fixed vs Adaptive", "Why they moved", "Auto Pick doesn't use your queue")
 BAD = ("Traceback (most recent call last)", "StreamlitAPIException", "ModuleNotFoundError")
 
 

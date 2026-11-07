@@ -16,3 +16,4 @@ tests/test_u1_navigation_home.py
 tests/test_ui_confirm.py
 tests/test_draft_queue_modes.py
 tests/test_draft_queue_modes_simulator.py
+tests/test_draft_strategy_stabilization.py
