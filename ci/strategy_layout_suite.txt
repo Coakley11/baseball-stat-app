@@ -14,3 +14,5 @@ tests/test_mobile_nav_m2.py
 tests/test_suite_navigation_icons.py
 tests/test_u1_navigation_home.py
 tests/test_ui_confirm.py
+tests/test_draft_queue_modes.py
+tests/test_draft_queue_modes_simulator.py
