@@ -38,7 +38,7 @@ VIEWS = [
 ]
 DEVICES = [("desktop", 1366, 900, 2400), ("phone", 390, 844, 2600)]
 CHECKS = ("On the clock", "Up next", "Your next pick", "Recent picks", "Draft Strategy ·", "Team rosters",
-          "Fixed vs Adaptive", "Auto Pick still uses your Fixed queue")
+          "Fixed vs Adaptive", "Why they moved", "Auto Pick still uses your Fixed queue")
 BAD = ("Traceback (most recent call last)", "StreamlitAPIException", "ModuleNotFoundError")
 
 
