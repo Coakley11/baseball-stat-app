@@ -18,12 +18,17 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 base, out = sys.argv[1], Path(sys.argv[2])
 out.mkdir(parents=True, exist_ok=True)
 
-# (view, query, text that proves the view rendered, open the sidebar first)
+# (view, query, text that proves the view rendered, open the sidebar first, texts to click (view
+# controls only: tabs and expanders), optional = absent on branches without that feature)
 VIEWS = [
-    ("solo_draft", "mode=solo", "On the clock", False),
-    ("shared_draft_host", "mode=host", "On the clock", False),
-    ("draft_strategy_page", "mode=solo&page=" + quote("Draft Strategy Assistant"), "Strateg", False),
-    ("sidebar_navigation", "mode=solo", "Account & Workspace", True),
+    ("solo_draft", "mode=solo", "On the clock", False, (), False),
+    ("shared_draft_host", "mode=host", "On the clock", False, (), False),
+    ("draft_strategy_page", "mode=solo&page=" + quote("Draft Strategy Assistant"), "Strateg", False, (), False),
+    ("sidebar_navigation", "mode=solo", "Account & Workspace", True, (), False),
+    ("solo_strategy_panel_open", "mode=solo", "Draft Strategy ·", False, ("Draft Strategy ·",), True),
+    ("shared_strategy_panel_open", "mode=host", "Draft Strategy ·", False, ("Draft Strategy ·",), True),
+    ("simulator_strategy_panel", "mode=solo&page=" + quote("Draft Room Simulator"), "Draft Room Simulator", False,
+     ("Board", "Draft Strategy ·"), True),
 ]
 DEVICES = [("desktop", 1366, 900, 2400), ("phone", 390, 844, 2600)]
 CHECKS = ("On the clock", "Up next", "Your next pick", "Recent picks", "Draft strategy", "Team rosters")
@@ -45,7 +50,7 @@ def wait_for(page, needle, timeout=300):
 results = []
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
-    for view, query, needle, sidebar in VIEWS:
+    for view, query, needle, sidebar, clicks, optional in VIEWS:
         for device, width, height, tall in DEVICES:
             ctx = browser.new_context(viewport={"width": width, "height": height},
                                       is_mobile=device == "phone", has_touch=device == "phone")
@@ -53,6 +58,12 @@ with sync_playwright() as p:
             page.goto(f"{base}/?{query}", wait_until="domcontentloaded", timeout=180000)
             ready = wait_for(page, needle)
             time.sleep(8)  # let the last rerun paint
+            for text in clicks:
+                try:
+                    page.get_by_text(text).first.click(timeout=8000)
+                    time.sleep(4)
+                except Exception:
+                    pass
             if sidebar:
                 try:
                     if device == "phone":
@@ -75,7 +86,7 @@ with sync_playwright() as p:
                 page.set_viewport_size({"width": width, "height": tall})
                 time.sleep(4)
                 page.screenshot(path=str(out / f"{view}_{device}_tall.png"))
-            row = {"view": view, "device": device, "ready": ready,
+            row = {"view": view, "device": device, "ready": ready, "optional": optional,
                    "errors": [b for b in BAD if b in body],
                    "landmarks": {c: c in body for c in CHECKS}}
             results.append(row)
@@ -91,4 +102,4 @@ for r in results:
                  f"{', '.join(r['errors']) or '-'} | {marks} |")
 (out / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 (out / "report.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
-sys.exit(0 if all(r["ready"] and not r["errors"] for r in results) else 1)
+sys.exit(0 if all((r["ready"] or r["optional"]) and not r["errors"] for r in results) else 1)
