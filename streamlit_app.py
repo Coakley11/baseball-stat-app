@@ -26855,12 +26855,17 @@ elif active_page == "Live Draft Room":
                 except ImportError:
                     pass
                 try:
-                    # The viewer's own Draft Strategy for the cards below (never written to the room).
+                    # The viewer's own Draft Strategy panel: strategy for the cards below, Fixed /
+                    # Adaptive queue, comparison and history. Never written to the room.
+                    from draft_queue_panel import render_draft_strategy_panel
+
+                    render_draft_strategy_panel(
+                        st, st.session_state, room, viewer_team=str(user_team or ""), key_prefix="ldr"
+                    )
+                except ImportError:
                     from draft_strategy_in_draft import render_strategy_selector
 
                     render_strategy_selector(st, st.session_state, key_prefix="ldr")
-                except ImportError:
-                    pass
         else:
             on_clock_team = str(
                 (_paint.get("team_on_clock") if isinstance(_paint, dict) else None)

@@ -133,4 +133,20 @@ def paint_live_draft_sidebar_queue_mirror(st: Any, session: dict[str, Any]) -> l
                     pass
     if len(names) > 12:
         st.sidebar.caption(f"+{len(names) - 12} more")
+    try:
+        import draft_queue_modes as dqm
+
+        if dqm.current_mode(session) == "adaptive":
+            state = dqm.draft_state(session, dqm.draft_source(session)) or {}
+            orders = state.get("orders") or {}
+            if orders:
+                order = orders[max(orders, key=int)]
+                fixed = {n.strip().lower(): i for i, n in enumerate(n for n in names if n.strip().lower() not in taken)}
+                marks = []
+                for i, n in enumerate(order[:8]):
+                    d = fixed.get(n.strip().lower(), i) - i
+                    marks.append(f"{i + 1}. {n}" + (" ↑" if d >= 2 else (" ↓" if d <= -2 else "")))
+                st.sidebar.caption("Adaptive order (this draft): " + " · ".join(marks))
+    except Exception:
+        pass
     return list(names)
