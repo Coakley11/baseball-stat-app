@@ -47,6 +47,12 @@ _PRIVATE_DOCUMENT_KEYS = frozenset(
         "draft_room_participant_state",
         "draft_assistant_focus_players",
         "workflow_recently_viewed",
+        # Draft Queue modes and strategy are personal (draft_queue_modes).
+        "draft_queue_mode",
+        "draft_queue_plan",
+        "draft_queue_adaptive",
+        "_draft_strategy_loaded",
+        "draft_strategy_approach",
     }
 )
 

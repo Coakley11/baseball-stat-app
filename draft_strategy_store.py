@@ -278,6 +278,12 @@ def load_strategy(session: dict[str, Any], strategy_id: str, *, confirm_replace:
                          "team": (meta.get(key) or {}).get("team") or "—"}
     sync_draft_queue(session, names, reason="load_saved_strategy")
     session["_queue_player_meta"] = meta
+    # What the queue was built from, for Adaptive Queue explanations (draft_queue_modes).
+    session["_draft_strategy_loaded"] = {
+        "id": strategy.get("id"), "name": strategy.get("name"), "approach": strategy.get("approach"),
+        "notes": {str(p.get("name") or ""): str(p.get("note") or "") for p in strategy.get("players") or []
+                  if str(p.get("note") or "").strip()},
+    }
     return {"needs_confirmation": False, "loaded": len(names), "warnings": _context_warnings(strategy, session)}
 
 

@@ -487,6 +487,13 @@ def sync_draft_queue(
     current = (canonical_draft_workflow(session) or {}).get("queue")
     if current is None:
         current = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
+    if reason_s.startswith(("move_queue", "drag_reorder", "reorder_queue", "reorder_user")) and q != current:
+        try:  # "players I deliberately moved": only the user's own reorder of the same players
+            from draft_queue_modes import note_manual_moves
+
+            note_manual_moves(session, list(current or []), list(q))
+        except Exception:
+            pass
     write_canonical_draft_state(
         session,
         queue=q,
