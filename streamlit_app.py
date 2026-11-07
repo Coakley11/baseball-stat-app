@@ -21676,6 +21676,7 @@ elif active_page == "Draft Room Simulator":
                     submitted = st.form_submit_button(
                         "Set player on pick",
                         type="primary",
+                        icon=_icons.SIMULATE_PICK,
                     )
 
                 if submitted:

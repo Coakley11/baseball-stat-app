@@ -3886,12 +3886,14 @@ def render_live_draft_completion_panel(
         review_open = st.button(
             "Review Draft Results",
             key=f"{key_prefix}_review_btn",
+            icon=":material/fact_check:",
             use_container_width=True,
         )
     with save_col:
         st.button(
-            "📁 Save to Draft Library",
+            "Save to Draft Library",
             key=f"{key_prefix}_save_btn",
+            icon=_icons.SAVE,
             type="primary",
             use_container_width=True,
             help="Save a historical copy of the completed draft for viewing and analysis.",
@@ -3906,6 +3908,7 @@ def render_live_draft_completion_panel(
         st.button(
             "Analyze Draft",
             key=f"{key_prefix}_analyze_btn",
+            icon=_icons.ANALYZE,
             use_container_width=True,
             on_click=_on_analyze_draft_click,
             kwargs={"key_prefix": key_prefix},
@@ -3915,6 +3918,7 @@ def render_live_draft_completion_panel(
         st.button(
             "Create Shared League",
             key=f"{key_prefix}_shared_league_btn",
+            icon=_icons.SHARED_LEAGUE,
             use_container_width=True,
             disabled=bool(create_blocked),
             help=create_blocked or None,
@@ -4217,6 +4221,7 @@ def _render_live_draft_shared_league_confirmation(
             st.button(
                 "Confirm Create Shared League",
                 key=f"{key_prefix}_confirm_shared_league",
+                icon=_icons.SHARED_LEAGUE,
                 type="primary",
                 use_container_width=True,
                 on_click=on_confirm_live_draft_shared_league,
