@@ -709,6 +709,24 @@ def comparison_rows(view: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def comparison_moves(view: dict[str, Any]) -> list[dict[str, Any]]:
+    """The meaningful moves in the comparison, one per player, in Adaptive order, with the reason.
+
+    Listed below the comparison table (one player per line, the reason wrapping underneath) so a
+    phone never squeezes the explanation into a clipped table column.
+    """
+    out = []
+    for i, row in enumerate(comparison_rows(view)):
+        if not row["Move"]:
+            continue
+        name = (view.get("adaptive") or [])[i]
+        delta = int(row["Move"])
+        out.append({"player": name, "adaptive": i + 1, "fixed": i + 1 + delta, "delta": delta,
+                    "direction": "up" if delta > 0 else "down",
+                    "reason": row["Why"] or "Other players moved around him."})
+    return out
+
+
 def significant_changes(view: dict[str, Any], *, since_pick: int = 0, limit: int = 5) -> list[dict[str, Any]]:
     """The biggest net movements since a pick (one entry per player, latest event)."""
     latest: dict[str, dict[str, Any]] = {}

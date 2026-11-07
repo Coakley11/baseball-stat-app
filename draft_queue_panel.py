@@ -56,10 +56,19 @@ def _render_compare(st: Any, session: dict[str, Any], view: dict[str, Any], kp: 
     if not rows:
         st.caption("Your queue has no available players in this draft. Add players from the cards or the pool.")
     else:
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        # Three short columns fit a 390 px phone; the reasons are listed underneath, where they wrap.
+        st.dataframe(pd.DataFrame([{k: r[k] for k in ("Fixed Queue", "Adaptive Queue", "Move")} for r in rows]),
+                     hide_index=True, width="stretch")
         st.caption("↑ / ↓ marks a move of two or more places from your Fixed queue. "
                    + ("Adaptive is on: this is your working order for this draft."
                       if view["mode"] == "adaptive" else "Fixed is on: the Adaptive column is a preview only."))
+        moves = dqm.comparison_moves(view)
+        if moves:
+            st.markdown("**Why they moved**")
+            for m in moves:
+                arrow = "↑" if m["direction"] == "up" else "↓"
+                st.markdown(f"{arrow} **{m['player']}** · Fixed #{m['fixed']} → Adaptive #{m['adaptive']}  \n"
+                            f"{m['reason']}")
     if view.get("drafted_here"):
         st.caption("Drafted in this draft (still in your queue for other drafts): " + ", ".join(view["drafted_here"]))
     if st.checkbox("Show supporting data", key=f"{kp}_dq_show_data"):
