@@ -63,6 +63,7 @@ AUTO_PICK = ":material/bolt:"
 CLAIM_TEAM = ":material/how_to_reg:"
 ANALYZE = ":material/analytics:"
 WAIVERS = ":material/person_search:"
+REFRESH = ":material/refresh:"
 
 DANGER_KEY_PREFIX = "bx-danger-"
 

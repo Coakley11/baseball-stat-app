@@ -21834,7 +21834,7 @@ elif active_page == "Draft Room Simulator":
                 key="draft_room_show_all_rosters"
             )
 
-        if st.button("Generate Roster View"):
+        if st.button("Generate Roster View", icon=_icons.ROSTER):
             st.session_state["draft_room_roster_view_requested"] = True
 
         if st.session_state.get("draft_room_roster_view_requested", False):
@@ -22124,7 +22124,7 @@ elif active_page == DRAFT_LAB_PAGE:
     render_shared_scoring_consistency_check(yearly_df, lab_market_df, key_suffix="draft_lab")
 
     with lab_run_slot:
-        run_lab = st.button("Run 4-Team Draft Simulation", type="primary", key="run_draft_lab_simulation")
+        run_lab = st.button("Run 4-Team Draft Simulation", type="primary", key="run_draft_lab_simulation", icon=_icons.SIMULATE_PICK)
     if run_lab:
         try:
             from page_perf import perf_end, perf_timer
@@ -25598,7 +25598,7 @@ elif active_page == "Live Draft Room":
                 st.warning("Replace your saved Live Draft setup with application defaults?")
                 c_yes, c_no = st.columns(2)
                 with c_yes:
-                    if st.button("Confirm reset", key="live_draft_reset_setup_confirm_btn"):
+                    if st.container(key="bx-danger-live_draft_reset_setup_confirm").button("Confirm reset", key="live_draft_reset_setup_confirm_btn", icon=_icons.RESET):
                         try:
                             from user_page_preferences import reset_live_draft_setup_to_defaults
 
@@ -26306,7 +26306,7 @@ elif active_page == "Live Draft Room":
                                         key=f"live_draft_lobby_team_{i}",
                                     )
                                 )
-                            if st.button("Save setup changes", key="live_draft_lobby_save_setup"):
+                            if st.button("Save setup changes", key="live_draft_lobby_save_setup", icon=_icons.SAVE):
                                 try:
                                     from live_draft_team_identity import sync_room_team_display_names
 
@@ -30014,7 +30014,7 @@ elif active_page == "Fantasy Standings Tracker":
                 pitcher_stats = pd.DataFrame()
             if not current_stats.empty or not pitcher_stats.empty:
                 st.caption("Using saved stats from your workspace. Click **Refresh MLB stats** to pull a new API snapshot.")
-        if st.button("Refresh MLB stats", key="standings_refresh_mlb_stats_btn"):
+        if st.button("Refresh MLB stats", key="standings_refresh_mlb_stats_btn", icon=_icons.REFRESH):
             st.session_state["_standings_refresh_mlb_stats_requested"] = True
             st.rerun()
         _should_fetch_api = bool(
