@@ -18,20 +18,27 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 base, out = sys.argv[1], Path(sys.argv[2])
 out.mkdir(parents=True, exist_ok=True)
 
-# (view, query, text that proves the view rendered, open the sidebar first, texts to click (view
-# controls only: tabs and expanders), optional = absent on branches without that feature)
+# (view, query, text that proves the view rendered (case-insensitive), open the sidebar first,
+# view controls to click: ("expander"|"tab", label text), optional = absent on branches without it)
+DEMO = "&queue=demo&qmode=adaptive&approach=roster_aware"
+PANEL = ("expander", "Draft Strategy ·")
 VIEWS = [
     ("solo_draft", "mode=solo", "On the clock", False, (), False),
     ("shared_draft_host", "mode=host", "On the clock", False, (), False),
     ("draft_strategy_page", "mode=solo&page=" + quote("Draft Strategy Assistant"), "Strateg", False, (), False),
     ("sidebar_navigation", "mode=solo", "Account & Workspace", True, (), False),
-    ("solo_strategy_panel_open", "mode=solo", "Draft Strategy ·", False, ("Draft Strategy ·",), True),
-    ("shared_strategy_panel_open", "mode=host", "Draft Strategy ·", False, ("Draft Strategy ·",), True),
-    ("simulator_strategy_panel", "mode=solo&page=" + quote("Draft Room Simulator"), "Draft Room Simulator", False,
-     ("Board", "Draft Strategy ·"), True),
+    ("solo_strategy_panel_fixed", "mode=solo&queue=demo", "Draft Strategy ·", False, (PANEL,), True),
+    ("solo_strategy_panel_adaptive", "mode=solo" + DEMO, "Draft Strategy ·", False, (PANEL,), True),
+    ("solo_what_changed", "mode=solo" + DEMO, "Draft Strategy ·", False, (PANEL, ("tab", "What changed and why?")), True),
+    ("shared_strategy_panel_adaptive", "mode=host" + DEMO, "Draft Strategy ·", False, (PANEL,), True),
+    ("simulator_strategy_panel", "mode=solo" + DEMO + "&page=" + quote("Draft Room Simulator"), "Draft Strategy ·",
+     False, (PANEL,), True),
+    ("simulator_team_needs", "mode=solo" + DEMO + "&page=" + quote("Draft Room Simulator"), "Draft Strategy ·",
+     False, (PANEL, ("tab", "Team needs")), True),
 ]
 DEVICES = [("desktop", 1366, 900, 2400), ("phone", 390, 844, 2600)]
-CHECKS = ("On the clock", "Up next", "Your next pick", "Recent picks", "Draft strategy", "Team rosters")
+CHECKS = ("On the clock", "Up next", "Your next pick", "Recent picks", "Draft Strategy ·", "Team rosters",
+          "Fixed vs Adaptive", "Auto Pick still uses your Fixed queue")
 BAD = ("Traceback (most recent call last)", "StreamlitAPIException", "ModuleNotFoundError")
 
 
@@ -39,7 +46,7 @@ def wait_for(page, needle, timeout=300):
     end = time.time() + timeout
     while time.time() < end:
         try:
-            if needle in page.inner_text("body"):
+            if needle.lower() in page.inner_text("body").lower():  # CSS may upper-case labels
                 return True
         except Exception:
             pass
@@ -58,12 +65,17 @@ with sync_playwright() as p:
             page.goto(f"{base}/?{query}", wait_until="domcontentloaded", timeout=180000)
             ready = wait_for(page, needle)
             time.sleep(8)  # let the last rerun paint
-            for text in clicks:
+            for kind, text in clicks:  # the control itself, never a same-named sidebar link
                 try:
-                    page.get_by_text(text).first.click(timeout=8000)
+                    if kind == "expander":
+                        loc = page.locator('[data-testid="stMain"] [data-testid="stExpander"] summary').filter(has_text=text)
+                    else:
+                        loc = page.locator('[data-testid="stMain"] [role="tab"]').filter(has_text=text)
+                    loc.first.scroll_into_view_if_needed(timeout=8000)
+                    loc.first.click(timeout=8000)
                     time.sleep(4)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    print(f"{view}/{device}: could not open {kind} {text!r}: {type(exc).__name__}")
             if sidebar:
                 try:
                     if device == "phone":
@@ -75,6 +87,7 @@ with sync_playwright() as p:
                 except Exception:
                     pass
             body = page.inner_text("body")
+            low = body.lower()
             page.screenshot(path=str(out / f"{view}_{device}.png"))
             if sidebar:
                 try:
@@ -88,7 +101,7 @@ with sync_playwright() as p:
                 page.screenshot(path=str(out / f"{view}_{device}_tall.png"))
             row = {"view": view, "device": device, "ready": ready, "optional": optional,
                    "errors": [b for b in BAD if b in body],
-                   "landmarks": {c: c in body for c in CHECKS}}
+                   "landmarks": {c: c.lower() in low for c in CHECKS}}
             results.append(row)
             print(json.dumps(row))
             ctx.close()
