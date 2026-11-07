@@ -66,9 +66,9 @@ class RankingTests(unittest.TestCase):
         self.assertIn("startable SS left", ranked["Strategy Reason"].iloc[0])
 
     def test_roster_aware_lifts_the_needed_position(self) -> None:
-        ranked = sid.rank_pool(pool(), "roster_aware", room=room())
+        ranked = sid.rank_pool(pool(), "roster_aware", room=room(), open_slots={"C": 1, "SS": 1, "OF": 3})
         self.assertEqual(ranked["fullName"].iloc[0], "Need C")
-        self.assertEqual(ranked["Strategy Reason"].iloc[0], "Roster-aware: fills a C need")
+        self.assertEqual(ranked["Strategy Reason"].iloc[0], "Roster-aware: fills an open C slot")
 
     def test_only_this_drafts_available_players_and_the_room_is_untouched(self) -> None:
         session = {sid.APPROACH_KEY: "best_available"}

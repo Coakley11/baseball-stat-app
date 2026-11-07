@@ -85,7 +85,103 @@ def _team_count(room: dict[str, Any] | None) -> int:
         return max(len(teams), 1)
 
 
-def rank_pool(pool: pd.DataFrame, approach: str, *, room: dict[str, Any] | None = None) -> pd.DataFrame:
+def strategy_changed(session: Any, *_args: Any) -> None:
+    """Widget callback: save the new selection with the workspace at the end of this run."""
+    try:
+        from draft_queue_modes import mark_personal_change
+
+        mark_personal_change(session)
+    except ImportError:
+        pass
+
+
+_NOT_STARTING = {"BN", "BENCH", "IL", "NA"}
+_UTILITY = {"UTIL", "DH", "DH / UTIL", "DH/UTIL"}
+_PITCHING = {"SP", "RP", "P"}
+
+
+def league_slots(room: dict[str, Any] | None) -> dict[str, int] | None:
+    """The league's own starting slots {pos: count} from the room's roster settings, or None when the
+    room carries no roster settings (then no positional need is claimed)."""
+    cfg = (room or {}).get("config") if isinstance((room or {}).get("config"), dict) else {}
+    slots = cfg.get("slots") if isinstance(cfg.get("slots"), dict) else None
+    if not slots:
+        return None
+    out: dict[str, int] = {}
+    for pos, n in slots.items():
+        try:
+            out[str(pos).upper().strip()] = max(int(n), 0)
+        except (TypeError, ValueError):
+            continue
+    return out or None
+
+
+def on_clock_team(room: dict[str, Any] | None) -> str:
+    room = room or {}
+    order = room.get("pick_order") if isinstance(room.get("pick_order"), list) else []
+    board = room.get("draft_board") if isinstance(room.get("draft_board"), list) else []
+    try:
+        idx = int(room.get("current_pick_index") or len(board))
+    except (TypeError, ValueError):
+        idx = len(board)
+    for i in (idx, len(board)):
+        if 0 <= i < len(order):
+            slot = order[i]
+            name = (slot.get("team") or slot.get("Team") or slot.get("team_name")) if isinstance(slot, dict) else slot
+            if name:
+                return str(name)
+    return str(room.get("your_team") or (room.get("config") or {}).get("your_team") or "")
+
+
+def open_slots_for(room: dict[str, Any] | None, team: str) -> dict[str, int] | None:
+    """Open starting slots for ``team`` under the league's roster settings: {pos: open count}, with
+    positions the league does not have left out. None when the settings or the team are unknown."""
+    slots = league_slots(room)
+    if slots is None or not str(team or "").strip():
+        return None
+    rosters = (room or {}).get("rosters")
+    roster: list[dict[str, Any]] = []
+    if isinstance(rosters, dict) and isinstance(rosters.get(team), list):
+        roster = [r for r in rosters[team] if isinstance(r, dict)]
+    else:
+        board = (room or {}).get("draft_board") if isinstance((room or {}).get("draft_board"), list) else []
+        roster = [e for e in board if isinstance(e, dict) and str(e.get("Team") or e.get("Fantasy Team") or "") == team]
+    used: dict[str, int] = {}
+    utility_used = 0
+    for r in roster:
+        pos = str(r.get("Primary Position") or r.get("Position") or "").upper().strip()
+        if not pos:
+            continue
+        if slots.get(pos, 0) - used.get(pos, 0) > 0:
+            used[pos] = used.get(pos, 0) + 1
+        elif pos not in _PITCHING:
+            utility_used += 1
+    out = {p: n - used.get(p, 0) for p, n in slots.items() if n > 0 and p not in _NOT_STARTING and p not in _UTILITY}
+    util_total = sum(n for p, n in slots.items() if p in _UTILITY)
+    if util_total:
+        out["UTIL"] = max(util_total - utility_used, 0)
+    return out
+
+
+def _roster_reason(pos: str, strong: bool, open_slots: dict[str, int] | None, slots: dict[str, int] | None) -> str:
+    if open_slots is None:
+        return "Roster-aware: ranked by roster fit (this league's roster settings aren't available)"
+    if open_slots.get(pos, 0) > 0:
+        return f"Roster-aware: fills an open {pos} slot" if strong else f"Roster-aware: fits an open {pos} slot"
+    if pos not in _PITCHING and open_slots.get("UTIL", 0) > 0:
+        return f"Roster-aware: fits your open utility slot ({pos})"
+    if slots is not None and slots.get(pos, 0) <= 0:
+        return f"Roster-aware: this league has no {pos} slot (bench only)"
+    return f"Roster-aware: your {pos} slots are filled (bench only)"
+
+
+def rank_pool(
+    pool: pd.DataFrame,
+    approach: str,
+    *,
+    room: dict[str, Any] | None = None,
+    open_slots: dict[str, int] | None = None,
+) -> pd.DataFrame:
     """The available pool ordered by ``approach``, with a ``Strategy Reason`` column. Pure."""
     if pool is None or not isinstance(pool, pd.DataFrame) or pool.empty or approach == "balanced":
         return pool
@@ -128,12 +224,14 @@ def rank_pool(pool: pd.DataFrame, approach: str, *, room: dict[str, Any] | None 
         # Filling a need earns up to 0.6 of the best player's value: a needed player beats a somewhat
         # better one, never a far better one.
         fit_scaled = _scaled(fit)
+        if open_slots is not None:
+            # The league's real roster: fit counts only where this team still has a starting slot.
+            has_open = pos.map(lambda p: open_slots.get(p, 0) > 0 or (p not in _PITCHING and open_slots.get("UTIL", 0) > 0))
+            fit_scaled = fit_scaled.where(has_open, 0.0)
         score = _value_share(value) + 0.6 * fit_scaled
         strong = fit_scaled >= 0.75
-        reasons = pd.Series(
-            ["Roster-aware: fills a " + p + " need" if s else "Roster-aware: fits your roster" for p, s in zip(pos, strong)],
-            index=df.index,
-        )
+        slots = league_slots(room)
+        reasons = pd.Series([_roster_reason(p, bool(s), open_slots, slots) for p, s in zip(pos, strong)], index=df.index)
     else:
         return pool
     df["_strategy_score"] = score
@@ -183,7 +281,7 @@ def apply_strategy_to_recommendations(
         pool = filter_df_excluding_drafted(pool, dict(room or {}))
     except ImportError:
         pass
-    ranked = rank_pool(pool, approach, room=room)
+    ranked = rank_pool(pool, approach, room=room, open_slots=open_slots_for(room, on_clock_team(room)))
     if not isinstance(ranked, pd.DataFrame) or ranked.empty:
         return tables
     return ranked.head(max(int(top_n or 8), 1)), best_avail, pos_fit, value_sleep
@@ -196,6 +294,7 @@ def _apply_saved_strategy(session: Any, picker_key: str, saved: list[dict[str, A
     approach = str((strategy or {}).get("approach") or "")
     if approach in APPROACHES:
         session[APPROACH_KEY] = approach
+        strategy_changed(session)
 
 
 def render_strategy_selector(st: Any, session: Any, *, key_prefix: str = "ldr", cards: bool = True) -> str:
@@ -220,6 +319,8 @@ def render_strategy_selector(st: Any, session: Any, *, key_prefix: str = "ldr", 
             list(APPROACHES),
             format_func=lambda a: LABELS.get(a, a),
             key=APPROACH_KEY,
+            on_change=strategy_changed,
+            args=(session,),
             help=("Shapes these recommendation cards for you only. Balanced is the Draft Assistant's own ranking."
                   if cards else "Shapes your Adaptive Queue and the strategy analysis here. Balanced is the "
                   "Draft Assistant's own ranking."),

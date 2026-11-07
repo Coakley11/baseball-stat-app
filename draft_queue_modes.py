@@ -7,8 +7,9 @@ Fixed Queue — "Keep my original order"
 Adaptive Queue — "Automatically adjust my draft plan"
     A *separate*, per-draft working order computed from the Fixed queue. It never writes the
     Fixed queue: the user's plan is the baseline, and every user edit (add, remove, drag) changes
-    that baseline. Pinned players keep their Fixed position. Auto-pick and every pick still follow
-    the Fixed queue and the user's own clicks; the Adaptive order never makes a selection.
+    that baseline. Pinned players keep their Fixed position. Auto Pick never reads a queue (Fixed
+    or Adaptive): when a timer runs out, the room's auto-pick rule chooses. Every other pick is the
+    user's own click; the Adaptive order never makes a selection.
 
 How a player's adaptive score is built (deterministic for a given draft state and settings):
     score = W_plan * plan + W_strategy * strategy + W_need * need
@@ -94,6 +95,36 @@ def current_mode(session: Any) -> str:
 PERSISTENT_CHOICE_KEYS = (MODE_KEY, "draft_strategy_approach")
 
 
+SAVE_PENDING_KEY = "_draft_strategy_save_pending"
+
+
+def mark_personal_change(session: Any, *_args: Any) -> None:
+    """Widget callback: the strategy, queue mode, a note, pins or a loaded plan changed.
+
+    Routine autosave is throttled (45 s, 90 s during a Shared Draft), so a refresh soon after a
+    change used to lose it. The app saves once at the end of this run instead (flush_personal_changes).
+    """
+    try:
+        session[SAVE_PENDING_KEY] = True
+    except Exception:
+        pass
+
+
+def flush_personal_changes(st: Any) -> bool:
+    """End of a run: one explicit workspace save for panel changes (a user edit, so it is not
+    throttled or held by the post-restore cooldown, like other draft edits)."""
+    session = st.session_state
+    if not session.get(SAVE_PENDING_KEY):
+        return False
+    session.pop(SAVE_PENDING_KEY, None)
+    try:
+        from baseball_persistent_state import force_save_baseball_state
+
+        return bool(force_save_baseball_state(st, reason="draft_edit"))
+    except Exception:
+        return False
+
+
 def keep_personal_choices(session: Any) -> None:
     """Call at the top of every run, before any widget. Streamlit deletes a widget-bound key at
     the end of a run that doesn't draw the widget (e.g. after navigating to another page), which
@@ -120,6 +151,7 @@ def plan(session: dict[str, Any]) -> dict[str, Any]:
 
 def set_pins(session: dict[str, Any], names: list[str]) -> None:
     plan(session)["pins"] = [str(n).strip() for n in names if str(n).strip()]
+    mark_personal_change(session)
 
 
 def set_note(session: dict[str, Any], name: str, note: str) -> None:
@@ -131,6 +163,7 @@ def set_note(session: dict[str, Any], name: str, note: str) -> None:
         notes[key] = text[:500]
     else:
         notes.pop(key, None)
+    mark_personal_change(session)
 
 
 def notes_for(session: dict[str, Any]) -> dict[str, str]:
@@ -321,8 +354,16 @@ def team_needs(room: dict[str, Any] | None, team: str, pool: pd.DataFrame, fmt: 
         if str(pos).upper() in {"BN", "BENCH", "IL"} or n <= 0:
             continue
         open_slots[str(pos).upper()] = n - counts.get(str(pos).upper(), 0)
+    # Positional reasons use the league's real roster only: none when its settings are missing or
+    # are the disclosed generic fallback (draft_strategy_in_draft then says so instead).
+    strategy_open = None
+    if slots and not cfg.get("slots_assumed"):
+        from draft_strategy_in_draft import open_slots_for
+
+        strategy_open = open_slots_for(room, team)
     return {"format": fmt, "points": is_points_league(fmt), "weak": weak, "strong": strong,
-            "open_slots": open_slots, "roster_size": len(roster), "has_categories": bool(specs),
+            "open_slots": open_slots, "strategy_open_slots": strategy_open,
+            "roster_size": len(roster), "has_categories": bool(specs),
             "roster_projected": projected,
             "slots_assumed": bool(cfg.get("slots_assumed")), "slots_source": str(cfg.get("slots_source") or ""),
             "slots": {str(p).upper(): n for p, n in slots.items()}}
@@ -348,7 +389,8 @@ def _category_impact(available: pd.DataFrame, weak: list[dict[str, Any]], full: 
 # --- adaptive order -----------------------------------------------------------------------
 
 
-def _strategy_rank(available: pd.DataFrame, approach: str, room: dict[str, Any] | None) -> tuple[dict[str, int], dict[str, str]]:
+def _strategy_rank(available: pd.DataFrame, approach: str, room: dict[str, Any] | None,
+                   open_slots: dict[str, int] | None = None) -> tuple[dict[str, int], dict[str, str]]:
     """(lower-case name -> 1-based rank among available, name -> the strategy's own reason)."""
     if available.empty or "fullName" not in available.columns:
         return {}, {}
@@ -359,7 +401,7 @@ def _strategy_rank(available: pd.DataFrame, approach: str, room: dict[str, Any] 
     else:
         from draft_strategy_in_draft import rank_pool
 
-        ranked = rank_pool(available, approach, room=room)
+        ranked = rank_pool(available, approach, room=room, open_slots=open_slots)
         reasons = {}
         if "Strategy Reason" in ranked.columns:
             reasons = {_low(n): str(r) for n, r in zip(ranked["fullName"], ranked["Strategy Reason"]) if str(r)}
@@ -376,7 +418,7 @@ def score_queue(
     """Per queued available player: score components and the facts behind them. Pure."""
     w_plan, w_strat, w_need = WEIGHTS.get(approach, WEIGHTS["balanced"])
     n = max(len(queue), 1)
-    ranks, reasons = _strategy_rank(available, approach, room)
+    ranks, reasons = _strategy_rank(available, approach, room, needs.get("strategy_open_slots"))
     total = max(len(ranks), 1)
     by_name: dict[str, pd.Series] = {}
     if not available.empty and "fullName" in available.columns:
@@ -751,7 +793,7 @@ def suggestions(fixed_available: list[str], drafted_here: list[str], available: 
     automatically: the user decides."""
     if available.empty or "fullName" not in available.columns:
         return []
-    ranks, reasons = _strategy_rank(available, approach, room)
+    ranks, reasons = _strategy_rank(available, approach, room, needs.get("strategy_open_slots"))
     queued = {_low(n) for n in fixed_available + drafted_here}
     best_queued = min((ranks[_low(n)] for n in fixed_available if _low(n) in ranks), default=None)
     impact = _category_impact(available, needs.get("weak") or [], full) if needs.get("weak") else {}

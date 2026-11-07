@@ -31891,6 +31891,15 @@ if developer_mode_enabled():
         st.caption("Heavy charts, scatterplots, and relationship scans render only when enabled.")
 
 try:
+    # Draft Strategy panel changes (strategy, queue mode, notes, pins): one explicit save, so a
+    # refresh right after a change keeps it (routine autosave is throttled during drafts).
+    from draft_queue_modes import flush_personal_changes
+
+    flush_personal_changes(st)
+except Exception:
+    pass
+
+try:
     from baseball_persistent_state import autosave_baseball_state
 
     autosave_baseball_state(st)

@@ -144,6 +144,7 @@ _WORKFLOW_KEYS = (
     "_draft_queue_consumed",
     "_simulator_board_epoch",
     "draft_queue_mode",
+    "draft_strategy_approach",
     "draft_queue_plan",
     "draft_queue_adaptive",
     "_draft_strategy_loaded",

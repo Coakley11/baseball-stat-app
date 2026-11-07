@@ -1,9 +1,12 @@
 """The Draft Strategy panel at the top of Solo and Live/Shared drafts.
 
-One compact expander ("Draft Strategy · <strategy> · <mode> queue"). Opening or closing it is
-client-side only, so the clock, the current selection, the queue and the room are untouched; it
-can be opened at any time, including while another manager is picking. Everything in it is this
-viewer's own (draft_queue_modes keeps it out of the Shared Draft room).
+One compact expander with a constant label (PANEL_LABEL) and a one-line status above it
+("<strategy> strategy · <mode> queue"). The label never changes, so Streamlit keeps the same
+expander when the strategy or mode changes inside it and it stays open (a label that carried the
+settings made a new, collapsed expander on every change). Opening or closing it is client-side only,
+so the clock, the current selection, the queue and the room are untouched; it can be opened at any
+time, including while another manager is picking. Everything in it is this viewer's own
+(draft_queue_modes keeps it out of the Shared Draft room).
 """
 
 from __future__ import annotations
@@ -20,19 +23,30 @@ EDIT_RULE = (
     "Adaptive never changes it: it re-orders a separate copy for this draft only. Pin a player to keep "
     "him at his Fixed place in Adaptive. Picks are always yours."
 )
-AUTO_PICK_NOTICE = (
-    "**Auto Pick still uses your Fixed queue.** If your timer runs out, the first available player in your "
-    "Fixed order is drafted, not the Adaptive order shown here. Adaptive only re-orders your plan; it "
-    "never makes a pick."
+PANEL_LABEL = "Draft Strategy"
+SIMULATOR_PICK_NOTICE = (
+    "Nothing here makes a pick: in the Simulator you log every pick yourself. Adaptive only re-orders "
+    "your plan."
 )
 
 
-def _label(session: Any) -> str:
+def auto_pick_notice(room: dict[str, Any] | None) -> str:
+    """What really happens when a timer runs out (live_draft_autopick: the room's auto-pick rule,
+    never a manager's queue)."""
+    cfg = (room or {}).get("config") if isinstance((room or {}).get("config"), dict) else {}
+    rule = str(cfg.get("auto_pick_rule") or "").strip()
+    rule_text = f"this room's auto-pick rule ({rule})" if rule else "this room's auto-pick rule"
+    return (f"**Auto Pick doesn't use your queue.** If your timer runs out, {rule_text} picks for you — "
+            "not your Fixed queue and not the Adaptive order shown here. Adaptive only re-orders your plan; "
+            "it never makes a pick.")
+
+
+def status_line(session: Any) -> str:
     from draft_strategy_in_draft import LABELS, current_approach
 
     approach = LABELS.get(current_approach(session), "Balanced").split(" (")[0]
     mode = "Adaptive" if dqm.current_mode(session) == "adaptive" else "Fixed"
-    return f"Draft Strategy · {approach} · {mode} queue"
+    return f"{approach} strategy · {mode} queue"
 
 
 def _add_to_queue(session: dict[str, Any], name: str) -> None:
@@ -181,6 +195,7 @@ def _load_plan(session: dict[str, Any], strategy: dict[str, Any], flash_key: str
         return
     if strategy.get("approach") in APPROACHES:
         session[APPROACH_KEY] = strategy["approach"]
+    dqm.mark_personal_change(session)  # the loaded strategy record and approach go with the workspace
     session[flash_key] = {"kind": "success", "notes": list(result.get("warnings") or []),
                           "text": f"Loaded {result.get('loaded', 0)} players from “{strategy.get('name')}” into your Fixed queue."}
 
@@ -244,13 +259,18 @@ def render_draft_strategy_panel(st: Any, session: dict[str, Any], room: dict[str
         session[dqm.MODE_KEY] = "fixed"
     # Widget values are already in the session at the start of the run, so one refresh is enough.
     view = dqm.refresh(session, room, viewer_team, source=source)
-    with st.expander(_label(session), icon=":material/psychology:", expanded=False):
+    st.caption(f"Your draft plan: **{status_line(session)}**")
+    with st.expander(PANEL_LABEL, icon=":material/psychology:", expanded=False):
         render_strategy_selector(st, session, key_prefix=key_prefix, cards=cards)
         st.radio("Draft Queue mode", list(dqm.MODES), format_func=lambda m: dqm.MODE_LABELS[m],
-                 key=dqm.MODE_KEY, horizontal=True)
+                 key=dqm.MODE_KEY, horizontal=True, on_change=dqm.mark_personal_change, args=(session,))
         st.caption(EDIT_RULE)
-        if dqm.current_mode(session) == "adaptive":
-            st.info(AUTO_PICK_NOTICE, icon=":material/bolt:")
+        if not cards:
+            st.caption(SIMULATOR_PICK_NOTICE)
+        elif dqm.current_mode(session) == "adaptive":
+            st.info(auto_pick_notice(room), icon=":material/bolt:")
+        else:
+            st.caption(auto_pick_notice(room).replace("**", ""))
         compare, changes, needs, original, pins = st.tabs(
             ["Fixed vs Adaptive", "What changed and why?", "Team needs", "Original plan", "Pins & notes"])
         with compare:

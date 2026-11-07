@@ -111,8 +111,16 @@ def _render_settings(st: Any, session: dict[str, Any]) -> None:
             index=list(store.APPROACHES).index(current),
             format_func=lambda v: APPROACH_LABELS.get(v, v),
             key=APPROACH_KEY,
+            on_change=_approach_changed,
+            args=(session,),
             help="Saved with each new strategy so you remember how it was built.",
         )
+
+
+def _approach_changed(session: dict[str, Any]) -> None:
+    from draft_strategy_in_draft import strategy_changed
+
+    strategy_changed(session)
 
 
 def loaded_strategy_state(session: dict[str, Any], queue: list[str]) -> dict[str, Any] | None:
