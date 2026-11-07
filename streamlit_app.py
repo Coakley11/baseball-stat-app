@@ -946,8 +946,8 @@ def render_global_app_chrome(active_page: str) -> None:
         from action_icons import inject_action_styles
 
         inject_action_styles(st)  # button icon sizing, danger styling, suite navigation row
-    except ImportError:
-        pass
+    except Exception:
+        pass  # styling is cosmetic: it must never block the page
     try:
         from mobile_nav_m2 import render_mobile_quick_nav
 
