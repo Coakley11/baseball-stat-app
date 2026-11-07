@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import unittest
+from unittest import mock
 
 import pandas as pd
 from streamlit.testing.v1 import AppTest
@@ -99,14 +100,21 @@ def _selector_script() -> None:
 
     import draft_strategy_in_draft as sid
 
-    import draft_strategy_store
-
-    draft_strategy_store.list_strategies = lambda _s: [{"id": "1", "name": "Punt saves", "approach": "positional_scarcity"}]
     sid.render_strategy_selector(st, st.session_state, key_prefix="t")
     st.write("approach:", sid.current_approach(st.session_state))
 
 
 class SelectorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Patched for this test only: replacing the module attribute for good made every later
+        # test in the run see this one fake library (CI 2026-11-07: 15 strategy store/page failures).
+        import draft_strategy_store
+
+        patcher = mock.patch.object(draft_strategy_store, "list_strategies",
+                                    lambda _s: [{"id": "1", "name": "Punt saves", "approach": "positional_scarcity"}])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_defaults_to_balanced_and_a_saved_strategy_applies_its_approach(self) -> None:
         at = AppTest.from_function(_selector_script, default_timeout=30)
         at.run()
