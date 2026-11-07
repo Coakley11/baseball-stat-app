@@ -26792,6 +26792,12 @@ elif active_page == "Live Draft Room":
                     render_draft_status_strip(st, room, viewer_team=str(user_team or ""))
                 except ImportError:
                     pass
+                try:
+                    from live_draft_team_rosters import render_team_rosters
+
+                    render_team_rosters(st, room, viewer_team=str(user_team or ""))
+                except ImportError:
+                    pass
         else:
             on_clock_team = str(
                 (_paint.get("team_on_clock") if isinstance(_paint, dict) else None)
