@@ -285,6 +285,13 @@ def _live_draft_recommendations_impl(
             pass
 
     scored = ensure_recommendation_ranking_schema(scored)
+    try:
+        # The whole scored pool for this pick, so a Draft Strategy can re-rank beyond the top cards.
+        from draft_strategy_in_draft import remember_scored_pool
+
+        remember_scored_pool(session, room, scored)
+    except ImportError:
+        pass
     top_recommended = scored.head(top_n)
     best_available = safe_sort_recommendations(
         scored, ["Decision Score", "Expected Fantasy Value"], ascending=[False, False]

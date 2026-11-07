@@ -1631,6 +1631,10 @@ def build_why_this_pick_summary(
 ) -> str:
     """One-line recommendation rationale — main drivers only, no duplicate Proj: prose."""
     parts: list[str] = []
+    # A Draft Strategy other than Balanced explains its influence first (draft_strategy_in_draft).
+    strategy_reason = str(row.get("Strategy Reason") or "").strip() if hasattr(row, "get") else ""
+    if strategy_reason and strategy_reason.lower() != "nan":
+        parts.append(strategy_reason)
 
     surv = pd.to_numeric(row.get("Survival Probability", np.nan), errors="coerce")
     if pd.notna(surv) and float(surv) < 0.35:
@@ -2177,6 +2181,16 @@ def render_live_draft_rec_cards(
     if rec_df is None or getattr(rec_df, "empty", True):
         st.caption("No recommendations available.")
         return
+    try:
+        # Every card path ends here: apply the viewer's Draft Strategy (Balanced leaves rec_df as is).
+        from draft_strategy_in_draft import apply_strategy_to_recommendations
+
+        import pandas as _pd
+
+        _empty = _pd.DataFrame()
+        rec_df = apply_strategy_to_recommendations(session, room, (rec_df, _empty, _empty, _empty), top_n=max(max_cards, 8))[0]
+    except Exception:
+        pass
 
     rows = list(rec_df.head(max_cards).iterrows())
     if not rows:

@@ -9915,6 +9915,17 @@ def live_draft_recommendations(room, top_n=8, team=None, session=None):
     return _mod.live_draft_recommendations(room, top_n=top_n, team=team, session=session)
 
 def cached_live_draft_recommendations(session, room, top_n=8, team=None):
+    """Recommendation tables for this pick, shaped by the viewer's Draft Strategy (Balanced: as scored)."""
+    tables = _cached_live_draft_recommendations_base(session, room, top_n=top_n, team=team)
+    try:
+        from draft_strategy_in_draft import apply_strategy_to_recommendations
+
+        return apply_strategy_to_recommendations(session, room, tables, top_n=top_n)
+    except Exception:
+        return tables
+
+
+def _cached_live_draft_recommendations_base(session, room, top_n=8, team=None):
     """Reuse recommendation tables within the same pick when the board has not changed."""
     try:
         from shared_draft_local_pool import (
@@ -26823,6 +26834,13 @@ elif active_page == "Live Draft Room":
                     from live_draft_team_rosters import render_team_rosters
 
                     render_team_rosters(st, room, viewer_team=str(user_team or ""))
+                except ImportError:
+                    pass
+                try:
+                    # The viewer's own Draft Strategy for the cards below (never written to the room).
+                    from draft_strategy_in_draft import render_strategy_selector
+
+                    render_strategy_selector(st, st.session_state, key_prefix="ldr")
                 except ImportError:
                     pass
         else:
