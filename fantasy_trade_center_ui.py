@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 import html as html_lib
 from typing import Any, Callable
 
@@ -543,7 +545,7 @@ def _render_idea_card(
                 action="analyze",
             )
             st.rerun()
-        if c3.button("Propose", key=f"tc_propose_{idx}", disabled=not (give_names and receive_names and other)):
+        if c3.button("Propose", key=f"tc_propose_{idx}", disabled=not (give_names and receive_names and other), icon=_icons.TRADE):
             _queue_idea_builder_update(
                 session,
                 scope_key,
@@ -858,7 +860,7 @@ def _render_build_analyze(
     # Phones: ~2-up action tiles instead of five full-width buttons (desktop unchanged).
     with phone_wrap_row(st, "trade-actions"):
         c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 1, 1])
-    find_ideas_btn = c1.button("Find Trade Ideas", key="tc_find_ideas", type="primary")
+    find_ideas_btn = c1.button("Find Trade Ideas", key="tc_find_ideas", type="primary", icon=_icons.TRADE)
     analyze_btn = c2.button(
         "Analyze Exact Trade",
         key="tc_analyze_trade",

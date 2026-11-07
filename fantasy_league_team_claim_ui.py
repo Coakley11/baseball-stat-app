@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from typing import Any, Callable
 
 from fantasy_league_context import get_active_league_context, get_league_context
@@ -93,7 +95,7 @@ def render_team_claim_panel(
     ]
     choices = unclaimed or teams
     pick = st.selectbox("Choose your team", choices, key=f"{key_prefix}_team_pick")
-    if st.button("Claim team", key=f"{key_prefix}_claim_btn"):
+    if st.button("Claim team", key=f"{key_prefix}_claim_btn", icon=_icons.CLAIM_TEAM):
         saved, err = assign_my_team(session, pick)
         if err:
             st.error(err)

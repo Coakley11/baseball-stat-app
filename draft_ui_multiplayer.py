@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 import time
 from typing import Any
 
@@ -335,7 +337,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                     open_teams,
                     key="shared_draft_join_team_pick",
                 )
-            if st.button("Join Room by Code", key="shared_draft_join_btn", type="primary"):
+            if st.button("Join Room by Code", key="shared_draft_join_btn", type="primary", icon=_icons.JOIN_ROOM):
                 trace_join_step(session, "join_button_clicked", room_code_entered=code or None)
                 if not code:
                     session["_draft_join_error"] = "Enter a 6-character draft room code."

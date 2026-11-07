@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from typing import Any
 
 from fantasy_league_context import get_active_league_context
@@ -61,7 +63,7 @@ def render_trade_notification_sidebar(st: Any, session: dict[str, Any]) -> None:
         else:
             st.sidebar.info(msg)
 
-        if st.sidebar.button("Open in Trade Analyzer", key=f"trade_alert_open_{key}"):
+        if st.sidebar.button("Open in Trade Analyzer", key=f"trade_alert_open_{key}", icon=_icons.ANALYZE):
             navigate_to_trade_proposal(
                 session,
                 proposal_id=pid,

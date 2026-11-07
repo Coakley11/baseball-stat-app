@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from typing import Mapping, MutableMapping
 
 from baseball_monetization import (
@@ -161,6 +163,7 @@ def render_subscription_actions(
         if st.button(
             "Manage Subscription",
             key=f"{key_prefix}_billing_portal_start",
+            icon=_icons.SUBSCRIPTION,
             use_container_width=True,
         ):
             try:
@@ -197,7 +200,7 @@ def render_feature_gate(st, session: MutableMapping, page: str) -> None:
     st.info("Your page context is preserved. The premium tool has not been initialized or changed.")
     left, right = st.columns(2)
     with left:
-        if st.button("View Pricing & Upgrade", type="primary", key="monetization_gate_pricing"):
+        if st.button("View Pricing & Upgrade", type="primary", key="monetization_gate_pricing", icon=_icons.UPGRADE):
             schedule_page(session, PRICING_PAGE)
             st.rerun()
     with right:

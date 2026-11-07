@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
@@ -296,7 +298,7 @@ def _process_incoming_accept_forms(
                 )
             except ImportError:
                 pass
-            submitted = st.form_submit_button("Accept Trade", type="primary")
+            submitted = st.form_submit_button("Accept Trade", type="primary", icon=_icons.ACCEPT)
         if not submitted:
             continue
         active_ctx = get_active_league_context(session)
@@ -507,7 +509,7 @@ def _render_proposal_card(
         else:
             btn_analyze, btn_counter, btn_accept, btn_decline = st.columns(4)
         with btn_analyze:
-            if st.button("Analyze This Trade", key=f"{key_prefix}_analyze_in_{pid}"):
+            if st.button("Analyze This Trade", key=f"{key_prefix}_analyze_in_{pid}", icon=_icons.ANALYZE):
                 if on_analyze_offer:
                     on_analyze_offer(proposal)
                     st.rerun()
@@ -542,7 +544,7 @@ def _render_proposal_card(
             if not skip_accept_button:
                 st.caption("Use **Accept Trade** above the offer list.")
         with btn_decline:
-            if st.button("Decline Trade", key=f"{key_prefix}_decline_{pid}"):
+            if st.button("Decline Trade", key=f"{key_prefix}_decline_{pid}", icon=_icons.DECLINE):
                 declined, err = decline_trade_proposal(session, pid)
                 if err:
                     st.error(err)
@@ -556,7 +558,7 @@ def _render_proposal_card(
     elif direction == "outgoing" and display_status == TRADE_PROPOSAL_STATUS_PENDING:
         btn_analyze, btn_cancel = st.columns(2)
         with btn_analyze:
-            if st.button("Analyze This Trade", key=f"{key_prefix}_analyze_out_{pid}"):
+            if st.button("Analyze This Trade", key=f"{key_prefix}_analyze_out_{pid}", icon=_icons.ANALYZE):
                 navigate_to_trade_proposal(session, proposal_id=pid, view_as_team=my_team_name)
                 st.rerun()
         with btn_cancel:
@@ -570,7 +572,7 @@ def _render_proposal_card(
                     st.info("Offer canceled.")
                     st.rerun()
     elif direction == "outgoing":
-        if st.button("Analyze This Trade", key=f"{key_prefix}_analyze_out_done_{pid}"):
+        if st.button("Analyze This Trade", key=f"{key_prefix}_analyze_out_done_{pid}", icon=_icons.ANALYZE):
             if on_analyze_offer:
                 on_analyze_offer(proposal)
                 st.rerun()
