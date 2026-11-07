@@ -115,6 +115,9 @@ def _render_needs(st: Any, view: dict[str, Any]) -> None:
                    "points value and your open roster slots.")
     elif not needs.get("has_categories"):
         st.caption("This draft's pool has no category projections, so Adaptive uses value, strategy and open slots only.")
+    elif needs.get("roster_size") and not needs.get("roster_projected"):
+        st.caption("None of your rostered players have projections in this pool, so category needs can't be "
+                   "judged yet. Adaptive uses value, strategy and open slots.")
     elif needs.get("weak"):
         st.markdown("**Projected weaknesses:** " + ", ".join(f"{w['label']} ({w['level']})" for w in needs["weak"]))
     elif needs.get("roster_size"):

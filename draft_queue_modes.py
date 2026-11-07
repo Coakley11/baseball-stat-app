@@ -91,6 +91,22 @@ def current_mode(session: Any) -> str:
     return mode if mode in MODES else "fixed"
 
 
+PERSISTENT_CHOICE_KEYS = (MODE_KEY, "draft_strategy_approach")
+
+
+def keep_personal_choices(session: Any) -> None:
+    """Call at the top of every run, before any widget. Streamlit deletes a widget-bound key at
+    the end of a run that doesn't draw the widget (e.g. after navigating to another page), which
+    reset the queue mode and strategy to Fixed/Balanced and saved that to the workspace.
+    Re-assigning the key detaches it from the old widget instance (Streamlit's documented fix)."""
+    for key in PERSISTENT_CHOICE_KEYS:
+        try:
+            if key in session:
+                session[key] = session[key]
+        except Exception:
+            continue
+
+
 def plan(session: dict[str, Any]) -> dict[str, Any]:
     p = session.get(PLAN_KEY)
     if not isinstance(p, dict):
@@ -256,6 +272,11 @@ def team_needs(room: dict[str, Any] | None, team: str, pool: pd.DataFrame, fmt: 
     if rows.empty and roster:
         rows = pd.DataFrame(roster)
     specs = _category_specs(fmt, full if isinstance(full, pd.DataFrame) else pool)
+    # Rostered players whose projections are in this pool (category needs rest on these only).
+    projected = 0
+    if specs and not rows.empty:
+        cols = [c for c, _l, _k in specs if c in rows.columns]
+        projected = int(rows[cols].apply(pd.to_numeric, errors="coerce").notna().any(axis=1).sum()) if cols else 0
     weak: list[dict[str, Any]] = []
     strong: list[str] = []
     if specs and not rows.empty and isinstance(full, pd.DataFrame) and not full.empty:
@@ -302,6 +323,7 @@ def team_needs(room: dict[str, Any] | None, team: str, pool: pd.DataFrame, fmt: 
         open_slots[str(pos).upper()] = n - counts.get(str(pos).upper(), 0)
     return {"format": fmt, "points": is_points_league(fmt), "weak": weak, "strong": strong,
             "open_slots": open_slots, "roster_size": len(roster), "has_categories": bool(specs),
+            "roster_projected": projected,
             "slots_assumed": bool(cfg.get("slots_assumed")), "slots_source": str(cfg.get("slots_source") or ""),
             "slots": {str(p).upper(): n for p, n in slots.items()}}
 

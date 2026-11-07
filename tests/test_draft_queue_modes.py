@@ -459,5 +459,41 @@ class PanelTests(unittest.TestCase):
         self.assertTrue(any("moved up" in str(m.value) for m in at.markdown))
 
 
+def _navigation_script() -> None:
+    import streamlit as st
+
+    import draft_queue_modes as dqm
+
+    dqm.keep_personal_choices(st.session_state)  # as streamlit_app does before any widget
+    if st.session_state.get("page", "draft") == "draft":
+        st.radio("Draft Queue mode", list(dqm.MODES), key=dqm.MODE_KEY)
+        st.selectbox("Draft strategy", ["balanced", "value_based"], key="draft_strategy_approach")
+
+
+class NavigationPersistenceTests(unittest.TestCase):
+    def test_mode_and_strategy_survive_visiting_another_page(self) -> None:
+        at = AppTest.from_function(_navigation_script, default_timeout=30)
+        at.run()
+        at.radio(key=dqm.MODE_KEY).set_value("adaptive").run()
+        at.selectbox(key="draft_strategy_approach").select("value_based").run()
+        at.session_state["page"] = "home"
+        at.run()
+        self.assertEqual(at.session_state[dqm.MODE_KEY], "adaptive")  # kept for the workspace save
+        self.assertEqual(at.session_state["draft_strategy_approach"], "value_based")
+        at.session_state["page"] = "draft"
+        at.run()
+        self.assertEqual(at.radio(key=dqm.MODE_KEY).value, "adaptive")
+        self.assertEqual(at.selectbox(key="draft_strategy_approach").value, "value_based")
+
+    def test_the_app_keeps_them_before_any_widget(self) -> None:
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parents[1].joinpath("streamlit_app.py").read_text(encoding="utf-8")
+        keep = src.index("keep_personal_choices(st.session_state)")
+        self.assertLess(src.index("st.set_page_config("), keep)
+        self.assertLess(keep, src.index("st.radio("))
+        self.assertLess(keep, src.index("st.selectbox("))
+
+
 if __name__ == "__main__":
     unittest.main()
