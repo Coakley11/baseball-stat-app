@@ -143,7 +143,8 @@ def clear_queue_for_account_change(session: dict[str, Any]) -> None:
     account's own queue loads from its workspace. Never called for room joins or page changes.
     """
     for key in ("draft_queue", LEDGER_KEY, "_queue_player_meta", "_draft_queue_revision",
-                "draft_queue_plan", "draft_queue_adaptive", "_draft_strategy_loaded"):
+                "draft_queue_plan", "draft_queue_adaptive", "_draft_strategy_loaded",
+                "draft_strategy_approach", "_draft_strategy_save_pending"):
         session.pop(key, None)
     state = session.get("draft_state")
     if isinstance(state, dict):

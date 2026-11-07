@@ -228,7 +228,9 @@ class SimulatorPanelTests(unittest.TestCase):
         self.assertFalse(at.exception)
         self.assertEqual(at.session_state["draft_queue"], QUEUE)
         self.assertTrue(any("standard starter slots are assumed" in str(c.value) for c in at.caption))
-        self.assertTrue(any("Auto Pick still uses your Fixed queue" in str(i.value) for i in at.info))
+        # The Simulator has no timer: it says nothing about Auto Pick, only that nothing here picks.
+        self.assertFalse(any("Auto Pick" in str(i.value) for i in at.info))
+        self.assertTrue(any("you log every pick yourself" in str(c.value) for c in at.caption))
 
 
 if __name__ == "__main__":
