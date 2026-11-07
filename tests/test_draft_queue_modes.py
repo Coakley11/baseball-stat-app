@@ -357,6 +357,16 @@ class SnapshotAndHistoryTests(unittest.TestCase):
         top = dqm.significant_changes(view)
         self.assertTrue(all(abs(h["net"]) >= dqm.MEANINGFUL_MOVE for h in top))
 
+    def test_moves_are_listed_with_their_reasons_for_narrow_screens(self) -> None:
+        view = dqm.refresh(self.s, self.room, "Team A")
+        rows, moves = dqm.comparison_rows(view), dqm.comparison_moves(view)
+        self.assertEqual(len(moves), len([r for r in rows if r["Move"]]))
+        for m in moves:
+            self.assertEqual(view["adaptive"][m["adaptive"] - 1], m["player"])
+            self.assertEqual(view["fixed"][m["fixed"] - 1], m["player"])
+            self.assertEqual(m["direction"], "up" if m["fixed"] > m["adaptive"] else "down")
+            self.assertTrue(m["reason"])
+
 
 class PerDraftPrivacyTests(unittest.TestCase):
     def test_drafted_players_are_unavailable_only_in_that_draft(self) -> None:
@@ -457,6 +467,11 @@ class PanelTests(unittest.TestCase):
         for label in ("Fixed vs Adaptive", "What changed and why?", "Team needs", "Original plan", "Pins & notes"):
             self.assertIn(label, tabs)
         self.assertTrue(any("moved up" in str(m.value) for m in at.markdown))
+        # The comparison table keeps three short columns; the reasons are stacked below it (390 px phones).
+        self.assertTrue(any(list(df.value.columns) == ["Fixed Queue", "Adaptive Queue", "Move"] for df in at.dataframe))
+        self.assertFalse(any("Why" in df.value.columns for df in at.dataframe))
+        self.assertTrue(any("Why they moved" in str(m.value) for m in at.markdown))
+        self.assertTrue(any("Fixed #" in str(m.value) and "Adaptive #" in str(m.value) for m in at.markdown))
 
 
 def _navigation_script() -> None:
