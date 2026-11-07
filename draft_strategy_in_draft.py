@@ -198,7 +198,7 @@ def _apply_saved_strategy(session: Any, picker_key: str, saved: list[dict[str, A
         session[APPROACH_KEY] = approach
 
 
-def render_strategy_selector(st: Any, session: Any, *, key_prefix: str = "ldr") -> str:
+def render_strategy_selector(st: Any, session: Any, *, key_prefix: str = "ldr", cards: bool = True) -> str:
     """A compact "Draft strategy" control above the recommendation cards (this viewer only).
 
     The control is bound to the same session key as the Draft Strategy page, so both always agree.
@@ -220,7 +220,9 @@ def render_strategy_selector(st: Any, session: Any, *, key_prefix: str = "ldr") 
             list(APPROACHES),
             format_func=lambda a: LABELS.get(a, a),
             key=APPROACH_KEY,
-            help="Shapes these recommendation cards for you only. Balanced is the Draft Assistant's own ranking.",
+            help=("Shapes these recommendation cards for you only. Balanced is the Draft Assistant's own ranking."
+                  if cards else "Shapes your Adaptive Queue and the strategy analysis here. Balanced is the "
+                  "Draft Assistant's own ranking."),
         )
     if saved:
         picker_key = f"{key_prefix}_saved_strategy_select"
@@ -235,5 +237,6 @@ def render_strategy_selector(st: Any, session: Any, *, key_prefix: str = "ldr") 
             )
     approach = current_approach(session)
     if approach != "balanced":
-        st.caption(f"Cards ranked by **{LABELS[approach]}**. Each card's first reason shows why.")
+        st.caption(f"Cards ranked by **{LABELS[approach]}**. Each card's first reason shows why." if cards
+                   else f"Strategy: **{LABELS[approach]}**. It shapes the Adaptive Queue and the analysis below.")
     return approach

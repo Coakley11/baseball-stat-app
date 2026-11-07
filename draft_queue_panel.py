@@ -120,6 +120,8 @@ def _render_needs(st: Any, view: dict[str, Any]) -> None:
     if needs.get("strong"):
         st.markdown("**Projected strengths:** " + ", ".join(needs["strong"]))
     open_slots = needs.get("open_slots") or {}
+    if needs.get("slots_assumed"):
+        st.caption("This board has no roster-slot settings, so standard starter slots are assumed.")
     if open_slots:
         st.markdown("**Open slots:** " + ", ".join(f"{p} {n}" for p, n in open_slots.items() if n > 0) or "none")
 
@@ -139,11 +141,54 @@ def _render_original(st: Any, session: dict[str, Any], view: dict[str, Any], kp:
         st.caption("Your queue was empty when this draft started.")
     for line in dqm.research_limitations(session, snap):
         st.caption(line)
+    _render_load_saved_plan(st, session, kp)
     if players:
         ok = st.checkbox("Replace my current queue with this original plan", key=f"{kp}_dq_restore_ok")
         if st.button("Restore original plan", key=f"{kp}_dq_restore", icon=":material/restore:", disabled=not ok):
             dqm.restore_snapshot_to_queue(session, confirmed=True)
             st.success("Your Fixed queue is back to the plan you started this draft with.")
+
+
+def _load_plan(session: dict[str, Any], strategy: dict[str, Any], flash_key: str) -> None:
+    """Callback (before the next paint, so the strategy selector may change)."""
+    import draft_strategy_store as store
+    from draft_strategy_in_draft import APPROACH_KEY, APPROACHES
+
+    try:
+        result = store.load_strategy(session, str(strategy.get("id")), confirm_replace=True)
+    except store.StrategyError as exc:
+        session[flash_key] = {"kind": "warning", "text": str(exc), "notes": []}
+        return
+    if strategy.get("approach") in APPROACHES:
+        session[APPROACH_KEY] = strategy["approach"]
+    session[flash_key] = {"kind": "success", "notes": list(result.get("warnings") or []),
+                          "text": f"Loaded {result.get('loaded', 0)} players from “{strategy.get('name')}” into your Fixed queue."}
+
+
+def _render_load_saved_plan(st: Any, session: dict[str, Any], kp: str) -> None:
+    """Load a saved Draft Strategy's players as the Fixed queue (confirmed). The saved strategy is
+    never changed by drafting; this draft's original snapshot stays as it was."""
+    flash_key = f"_{kp}_dq_load_flash"
+    flash = session.pop(flash_key, None)
+    if isinstance(flash, dict):
+        (st.success if flash.get("kind") == "success" else st.warning)(flash.get("text"))
+        for w in flash.get("notes") or []:
+            st.caption(w)
+    try:
+        import draft_strategy_store as store
+
+        saved = [s for s in store.list_strategies(session) if isinstance(s, dict)]
+    except Exception:
+        saved = []
+    if not saved:
+        return
+    names = {str(s.get("name") or "Strategy"): s for s in saved}
+    pick = st.selectbox("Load a saved plan into my queue", ["—"] + list(names), key=f"{kp}_dq_load_pick")
+    if pick == "—":
+        return
+    ok = st.checkbox(f"Replace my queue with “{pick}”", key=f"{kp}_dq_load_ok")
+    st.button("Load plan", key=f"{kp}_dq_load", icon=":material/download:", disabled=not ok,
+              on_click=_load_plan, args=(session, names[pick], flash_key))
 
 
 def _render_pins_notes(st: Any, session: dict[str, Any], view: dict[str, Any], kp: str) -> None:
@@ -166,16 +211,21 @@ def _render_pins_notes(st: Any, session: dict[str, Any], view: dict[str, Any], k
 
 
 def render_draft_strategy_panel(st: Any, session: dict[str, Any], room: dict[str, Any] | None, *,
-                                viewer_team: str, key_prefix: str = "ldr") -> dict[str, Any]:
-    """The panel; returns the adaptive view (for the caller and tests)."""
+                                viewer_team: str, key_prefix: str = "ldr", source: str | None = None,
+                                cards: bool = True) -> dict[str, Any]:
+    """The panel; returns the adaptive view (for the caller and tests).
+
+    Solo and Live/Shared pass the room (cards=True). The Draft Room Simulator passes
+    draft_queue_modes.simulator_room(...) with its own ``source`` and cards=False: same engine,
+    no recommendation cards, no clock."""
     from draft_strategy_in_draft import render_strategy_selector
 
     if session.get(dqm.MODE_KEY) not in dqm.MODES:
         session[dqm.MODE_KEY] = "fixed"
     # Widget values are already in the session at the start of the run, so one refresh is enough.
-    view = dqm.refresh(session, room, viewer_team)
+    view = dqm.refresh(session, room, viewer_team, source=source)
     with st.expander(_label(session), icon=":material/psychology:", expanded=False):
-        render_strategy_selector(st, session, key_prefix=key_prefix)
+        render_strategy_selector(st, session, key_prefix=key_prefix, cards=cards)
         st.radio("Draft Queue mode", list(dqm.MODES), format_func=lambda m: dqm.MODE_LABELS[m],
                  key=dqm.MODE_KEY, horizontal=True)
         st.caption(EDIT_RULE)

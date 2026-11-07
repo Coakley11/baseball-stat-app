@@ -21590,6 +21590,29 @@ elif active_page == "Draft Room Simulator":
                 st.rerun()
 
         try:
+            # Draft Strategy panel for this mock (same engine as Solo/Live; no recommendation cards,
+            # no clock). Reads the board; never changes it, the queue order or any other draft.
+            from draft_queue_modes import simulator_room, simulator_source
+            from draft_queue_panel import render_draft_strategy_panel
+
+            render_draft_strategy_panel(
+                st,
+                st.session_state,
+                simulator_room(
+                    st.session_state,
+                    room_df,
+                    teams=list(room_team_names),
+                    your_team=str(your_team or ""),
+                    fmt=str(room_format),
+                ),
+                viewer_team=str(your_team or ""),
+                key_prefix="sim",
+                source=simulator_source(st.session_state),
+                cards=False,
+            )
+        except ImportError:
+            pass
+        try:
             from draft_ui import render_draft_queue_panel
 
             if render_draft_queue_panel(

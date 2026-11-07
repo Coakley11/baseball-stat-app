@@ -53,6 +53,7 @@ MAX_DRAFTS = 8           # per-draft states kept (oldest dropped)
 MAX_HISTORY = 200
 MAX_ORDERS = 60
 MAX_SUGGESTIONS = 3
+_VIEW_CACHE_KEY = "_draft_queue_modes_view_cache"
 
 # (plan, strategy, need) weights per Draft Strategy.
 WEIGHTS = {
@@ -300,7 +301,8 @@ def team_needs(room: dict[str, Any] | None, team: str, pool: pd.DataFrame, fmt: 
             continue
         open_slots[str(pos).upper()] = n - counts.get(str(pos).upper(), 0)
     return {"format": fmt, "points": is_points_league(fmt), "weak": weak, "strong": strong,
-            "open_slots": open_slots, "roster_size": len(roster), "has_categories": bool(specs)}
+            "open_slots": open_slots, "roster_size": len(roster), "has_categories": bool(specs),
+            "slots_assumed": bool(cfg.get("slots_assumed"))}
 
 
 def _category_impact(available: pd.DataFrame, weak: list[dict[str, Any]], full: pd.DataFrame) -> dict[str, pd.Series]:
@@ -538,15 +540,31 @@ def draft_state(session: dict[str, Any], source: str) -> dict[str, Any] | None:
     return st if isinstance(st, dict) else None
 
 
-def refresh(session: dict[str, Any], room: dict[str, Any] | None, team: str) -> dict[str, Any]:
+def _board_fingerprint(room: dict[str, Any] | None) -> list[list[Any]]:
+    return [[int(e.get("Pick") or i + 1), _low(e.get("fullName") or e.get("Player")),
+             str(e.get("Team") or e.get("Fantasy Team") or "")] for i, e in enumerate(_board(room))]
+
+
+def refresh(session: dict[str, Any], room: dict[str, Any] | None, team: str, *, source: str | None = None) -> dict[str, Any]:
     """Bring this draft's adaptive state up to date and return a view of it. Safe every rerun:
     nothing is recomputed unless the picks, the queue, the strategy or the pins changed. Never
-    writes the Fixed queue or the room."""
+    writes the Fixed queue or the room.
+
+    ``source`` names the draft explicitly (the Draft Room Simulator passes its own board even
+    while a Live Draft is the active draft); availability then comes from ``room``'s board."""
     from draft_queue_contract import split_queue_for_active_draft
     from draft_strategy_in_draft import current_approach
 
-    source = draft_source(session)
-    fixed_available, drafted_here = split_queue_for_active_draft(session)
+    if source is None:
+        source = draft_source(session)
+        fixed_available, drafted_here = split_queue_for_active_draft(session)
+    else:
+        from draft_state import DRAFT_QUEUE_KEY, _normalize_player_list
+
+        taken = {_low(e.get("fullName") or e.get("Player")) for e in _board(room)}
+        queue = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
+        fixed_available = [q for q in queue if _low(q) not in taken]
+        drafted_here = [q for q in queue if _low(q) in taken]
     approach = current_approach(session)
     mode = current_mode(session)
     view = {"source": source, "mode": mode, "approach": approach, "fixed": fixed_available,
@@ -569,13 +587,32 @@ def refresh(session: dict[str, Any], room: dict[str, Any] | None, team: str) -> 
     pins = [p for p in plan(session)["pins"] if _low(p) in {_low(x) for x in fixed_available}]
     # JSON-friendly (the state is saved with the workspace), so a restored state still matches.
     sig = [picks, [_low(x) for x in fixed_available], approach, sorted(_low(p) for p in pins), str(team or ""), mode]
-    if picks < int(state.get("picks_seen") or 0):  # undo: forget what came after
-        state["history"] = [h for h in state["history"] if int(h.get("pick") or 0) <= picks]
-        state["orders"] = {k: v for k, v in state["orders"].items() if int(k) <= picks}
-        state["reviewed_at"] = min(int(state.get("reviewed_at") or 0), picks)
+    board = _board_fingerprint(room)
+    old_board = state.get("board") if isinstance(state.get("board"), list) else None
+    if old_board is not None:
+        # Undo, removal or a changed earlier selection: forget everything after the first pick
+        # that differs, then recalculate from the order as it stood before it.
+        same = 0
+        while same < min(len(old_board), len(board)) and list(old_board[same]) == list(board[same]):
+            same += 1
+        if same < len(old_board):
+            state["history"] = [h for h in state["history"] if int(h.get("pick") or 0) <= same]
+            state["orders"] = {k: v for k, v in state["orders"].items() if int(k) <= same}
+            state["reviewed_at"] = min(int(state.get("reviewed_at") or 0), same)
+            state["picks_seen"] = same
+            state["sig"] = None
+    state["board"] = board
     pool = _pool(room, session)
-    available = _available(pool, room)
     fmt = _room_format(room, session)
+    cache_key = repr([source, sig, board, fmt, id(pool), len(pool), mode])
+    cached = session.get(_VIEW_CACHE_KEY)
+    if (isinstance(cached, dict) and cached.get("key") == cache_key and state.get("sig") == sig
+            and str(picks) in state["orders"]):
+        out = dict(cached["view"])
+        out.update({"history": list(state["history"]), "reviewed_at": int(state.get("reviewed_at") or 0),
+                    "snapshot": state["snapshot"]})
+        return out
+    available = _available(pool, room)
     full = (room or {}).get("pool") if isinstance((room or {}).get("pool"), pd.DataFrame) else pool
     needs = team_needs(room, team, available, fmt)
     view["needs"] = needs
@@ -588,7 +625,7 @@ def refresh(session: dict[str, Any], room: dict[str, Any] | None, team: str) -> 
         previous = state["orders"][str(prev_keys[0])] if prev_keys else list(fixed_available)
         order = adaptive_order(fixed_available, scores, pins, previous)
         # Switching Fixed -> Adaptive: explain every difference from the Fixed order once.
-        was_fixed = not state.get("sig") or (len(state["sig"]) > 5 and state["sig"][5] != "adaptive")
+        was_fixed = state.get("last_mode") != "adaptive"
         explain_from = list(fixed_available) if (mode == "adaptive" and was_fixed) else previous
         prev_live = [n for n in explain_from if _low(n) in {_low(x) for x in fixed_available}]
         prev_rank = {_low(n): i + 1 for i, n in enumerate(prev_live)}
@@ -612,11 +649,13 @@ def refresh(session: dict[str, Any], room: dict[str, Any] | None, team: str) -> 
         for k in sorted(state["orders"], key=int)[:-MAX_ORDERS]:
             state["orders"].pop(k, None)
         state["sig"] = sig
+        state["last_mode"] = mode
         state["picks_seen"] = picks
     view["adaptive"] = order
     view["history"] = list(state["history"])
     view["reviewed_at"] = int(state.get("reviewed_at") or 0)
     view["suggestions"] = suggestions(fixed_available, drafted_here, available, approach, needs, room, full)
+    session[_VIEW_CACHE_KEY] = {"key": cache_key, "view": view}  # this run only; never saved
     return view
 
 
@@ -723,3 +762,47 @@ def research_limitations(session: dict[str, Any], snapshot: dict[str, Any] | Non
     if not plan(session).get("moves") and not snap.get("moves"):
         out.append("No manual reorders were recorded for this queue.")
     return out
+
+
+# --- Draft Room Simulator -----------------------------------------------------------------
+
+
+def simulator_source(session: dict[str, Any]) -> str:
+    """The simulator board's draft identity (the same one draft_queue_contract uses)."""
+    return f"sim:{int(session.get('_simulator_board_epoch') or 0)}"
+
+
+def simulator_room(session: dict[str, Any], pool: pd.DataFrame | None, *, teams: list[str], your_team: str,
+                   fmt: str) -> dict[str, Any]:
+    """The simulator board in the shape the engine reads (read-only view; the board is unchanged).
+
+    Each filled pick becomes a board entry with that player's projections from the simulator's own
+    scored pool, so a player the user assigns to an opposing team is unavailable in this mock only.
+    The simulator has no roster-slot settings, so starter slots are assumed (marked as such)."""
+    from draft_room_state import DRAFT_ROOM_TABLE_KEY, _player_cell_filled, coerce_board_table
+    from draft_strategy_in_draft import _DEFAULT_STARTERS
+
+    pool = pool if isinstance(pool, pd.DataFrame) else pd.DataFrame()
+    by_name: dict[str, dict[str, Any]] = {}
+    if not pool.empty and "fullName" in pool.columns:
+        for rec in pool.to_dict("records"):
+            by_name.setdefault(_low(rec.get("fullName")), rec)
+    df = coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY))
+    entries: list[dict[str, Any]] = []
+    rosters: dict[str, list[dict[str, Any]]] = {str(t): [] for t in teams}
+    if not df.empty and "Player" in df.columns:
+        work = df.sort_values("Pick", kind="stable") if "Pick" in df.columns else df
+        for i, row in enumerate(work.to_dict("records")):
+            if not _player_cell_filled(row.get("Player")):
+                continue
+            name = str(row.get("Player")).strip()
+            rec = dict(by_name.get(_low(name)) or {"fullName": name})
+            rec.update({"fullName": name, "Pick": int(row.get("Pick") or i + 1), "Team": str(row.get("Team") or "")})
+            entries.append(rec)
+            rosters.setdefault(rec["Team"], []).append(rec)
+    positions = set(pool["Primary Position"].astype(str).str.upper()) if "Primary Position" in pool.columns else set()
+    slots = {p: n for p, n in _DEFAULT_STARTERS.items() if not positions or p in positions}
+    return {"draft_room_id": simulator_source(session), "teams": list(teams), "draft_board": entries,
+            "rosters": rosters, "pool": pool,
+            "config": {"fantasy_format": fmt, "num_teams": len(teams), "your_team": your_team, "slots": slots,
+                       "slots_assumed": True}}
