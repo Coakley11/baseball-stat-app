@@ -1,0 +1,16 @@
+tests/test_draft_strategy_in_draft.py
+tests/test_draft_strategy_quality.py
+tests/test_draft_strategy_intel.py
+tests/test_draft_strategy_page.py
+tests/test_draft_strategy_plan.py
+tests/test_draft_strategy_store.py
+tests/test_live_draft_real_app_layout.py
+tests/test_live_draft_status_strip.py
+tests/test_live_draft_team_rosters.py
+tests/test_live_draft_mobile_layout.py
+tests/test_live_draft_control_center_layout.py
+tests/test_visual_identity.py
+tests/test_mobile_nav_m2.py
+tests/test_suite_navigation_icons.py
+tests/test_u1_navigation_home.py
+tests/test_ui_confirm.py
