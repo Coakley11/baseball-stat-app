@@ -662,7 +662,17 @@ def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
         blob_q = [str(x).strip() for x in (state.get("draft_queue") or []) if str(x).strip()]
         ds = state.get("draft_state") if isinstance(state.get("draft_state"), dict) else {}
         blob_ds_q = [str(x).strip() for x in (ds.get("queue") or []) if str(x).strip()]
-        if sess_q and not blob_q and not blob_ds_q:
+        blob_cleared_newer = False
+        try:  # another device's intentional clear, newer than this session's last queue change
+            from draft_state import QUEUE_CHANGED_AT, intentionally_cleared, parse_queue_stamp
+
+            marker = parse_queue_stamp(intentionally_cleared(ds))
+            sess_meta = ss.get("draft_state") if isinstance(ss.get("draft_state"), dict) else {}
+            sess_changed = parse_queue_stamp(sess_meta.get(QUEUE_CHANGED_AT))
+            blob_cleared_newer = marker is not None and (sess_changed is None or marker >= sess_changed)
+        except ImportError:
+            pass
+        if sess_q and not blob_q and not blob_ds_q and not blob_cleared_newer:
             skip_draft_workflow = True
             ss["_live_draft_queue_blob_restore_skipped"] = "refuse_empty_blob_over_session"
             try:
