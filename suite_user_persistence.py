@@ -119,7 +119,7 @@ def clear_account_session_state(session: Any) -> None:
 
     Everything the previous account's workspace put in this session goes, so the next account
     (or the signed-out guest) starts like a fresh browser and can neither see nor save it.
-    A guest's own edits are not touched by signing in (they carry into that account by design).
+    Signing in from a signed-out guest runs this too: a guest's work never carries into an account.
     """
     for fn in list(_ACCOUNT_STATE_CLEARERS.values()):
         try:

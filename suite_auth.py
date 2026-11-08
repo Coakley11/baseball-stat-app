@@ -998,6 +998,39 @@ def _sync_auth_account_identity(session_state: dict[str, Any], *, st: Any | None
     return suite_user_id
 
 
+def _clear_previous_session_work(session_state: dict[str, Any]) -> None:
+    """Drop the work the session held before this account: another account's, or a signed-out
+    guest's (queue, watchlists, strategy, notes, simulator board, "edited here, not saved"
+    markers), so this account's saved workspace loads exactly as saved and is never overwritten.
+
+    A guest's queue edits used to keep their "unsaved" markers through sign-in: the restore then
+    kept the guest queue and the next save wrote it over the account's queue (QA 2026-11-08)."""
+    try:
+        from suite_user_persistence import clear_account_session_state
+
+        clear_account_session_state(session_state)
+    except ImportError:
+        pass
+    try:
+        from workflow_persist_guard import clear_draft_library_on_account_scope_change
+
+        clear_draft_library_on_account_scope_change(session_state)
+    except ImportError:
+        pass
+    try:
+        from live_draft_navigation import clear_private_baseball_simulator_runtime
+
+        clear_private_baseball_simulator_runtime(session_state, reason="auth_account_scope_changed")
+    except ImportError:
+        pass
+    try:
+        from draft_queue_contract import clear_queue_for_account_change
+
+        clear_queue_for_account_change(session_state)
+    except ImportError:
+        pass
+
+
 def _persist_auth_session(
     session_state: dict[str, Any],
     *,
@@ -1009,6 +1042,9 @@ def _persist_auth_session(
     old_uid = str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
     old_ext = str(session_state.get(AUTH_EXTERNAL_ID_KEY) or "").strip()
     old_cloud = str(session_state.get("_suite_cloud_user_id") or "").strip()
+    # A signed-out guest's work is temporary: it must never carry into (and be saved over) the
+    # account that signs in. Captured before the account is applied.
+    was_signed_out_guest = not old_uid and is_anonymous_guest(session_state)
     _apply_authenticated_user(session_state, user, tokens=tokens, email_fallback=email_fallback, st=st)
     new_uid = str(session_state.get(AUTH_USER_ID_KEY) or "").strip()
     session_state[AUTH_JUST_LOGGED_IN_KEY] = True
@@ -1020,6 +1056,9 @@ def _persist_auth_session(
         suite_user_id = _sync_auth_account_identity(session_state, st=st)
     except Exception:
         pass
+    if was_signed_out_guest:
+        # Before anything can return: the account is applied, so the guest's work goes now.
+        _clear_previous_session_work(session_state)
     browser_persistence: dict[str, Any] | None = None
     if st is not None:
         try:
@@ -1044,34 +1083,8 @@ def _persist_auth_session(
         or (old_ext and new_ext and old_ext != new_ext)
         or (old_cloud and new_cloud and old_cloud != new_cloud)
     )
-    if scope_changed:
-        try:
-            from suite_user_persistence import clear_account_session_state
-
-            clear_account_session_state(session_state)  # the previous account's work stays with it
-        except ImportError:
-            pass
-        try:
-            from workflow_persist_guard import clear_draft_library_on_account_scope_change
-
-            clear_draft_library_on_account_scope_change(session_state)
-        except ImportError:
-            pass
-        try:
-            from live_draft_navigation import clear_private_baseball_simulator_runtime
-
-            clear_private_baseball_simulator_runtime(
-                session_state,
-                reason="auth_account_scope_changed",
-            )
-        except ImportError:
-            pass
-        try:
-            from draft_queue_contract import clear_queue_for_account_change
-
-            clear_queue_for_account_change(session_state)
-        except ImportError:
-            pass
+    if scope_changed and not was_signed_out_guest:
+        _clear_previous_session_work(session_state)  # the previous account's work stays with it
     if old_uid != new_uid:
         try:
             from draft_room_participant_state import on_auth_user_switch
