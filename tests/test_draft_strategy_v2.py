@@ -60,7 +60,8 @@ GLOBAL_KEYS = (DRAFT_QUEUE_KEY, "_queue_player_meta", "_draft_strategy_loaded", 
 
 class _Base(unittest.TestCase):
     def setUp(self) -> None:
-        self.backends = {t: _Backend() for t in (v2.ITEM_TYPE, v2.BACKUP_ITEM_TYPE, v2.RESEARCH_ITEM_TYPE)}
+        self.backends = {t: _Backend() for t in (v2.ITEM_TYPE, v2.BACKUP_ITEM_TYPE, v2.RESEARCH_ITEM_TYPE,
+                                                 v2.TRASH_ITEM_TYPE)}
         for p in (mock.patch("draft_strategy_store._backend", side_effect=lambda t=v2.ITEM_TYPE: self.backends[t]),
                   mock.patch("suite_auth.is_auth_enabled", return_value=False)):
             p.start()
@@ -92,7 +93,7 @@ class UpgradeTests(_Base):
         self.assertEqual(s["revision"], 0)
         self.assertEqual([e["name"] for e in s["queue"]], ["Aaron Judge", "Juan Soto", "Bobby Witt"])
         self.assertEqual(s["queue"][0], {"name": "Aaron Judge", "player_id": "id1", "position": "OF", "team": "",
-                                         "added_at": T0, "source": "v1"})
+                                         "added_at": T0, "source": "v1", "mlbam_id": "", "id_status": ""})
         self.assertEqual(s["notes"], {"aaron judge": {"text": "power", "updated_at": T0, "source": "user"}})
         self.assertEqual(s["players"], self.rows["A"]["players"])  # the v1 mirror is exactly the v1 list
         for key in ("id", "name", "approach", "context", "explanations", "created_at", "updated_at"):
@@ -233,6 +234,7 @@ class CapTests(_Base):
         with self.assertRaises(dss.StrategyError):
             v2.pin(s, f"P{v2.PINS_MAX}")
 
+    @mock.patch.object(v2, "MAX_BYTES", 32 * 1024)  # S2 raised the cap to 512 KB; same rule at a small size
     def test_size_cap_is_a_clear_error_and_saves_nothing(self) -> None:
         s = v2.upgrade(self.rows["A"])
         s = v2.set_preferences(s, {f"k{i}": "x" * 400 for i in range(40)})  # ~16 KB
