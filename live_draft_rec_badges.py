@@ -28,12 +28,26 @@ def _num(row: Any, col: str, default: float = np.nan) -> float:
     return pd.to_numeric(row.get(col, default), errors="coerce")
 
 
-def _best_name_at_position(rec_df: Any, pos: str) -> str:
-    if rec_df is None or getattr(rec_df, "empty", True) or not pos:
+def _eligible_tokens(row: Any) -> set[str]:
+    toks: set[str] = set()
+    for col in ("Primary Position", "Positions", "Eligible Positions", "Position"):
+        raw = row.get(col) if hasattr(row, "get") else None
+        if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+            continue
+        toks.update(str(p).strip().upper() for p in str(raw).replace("/", ",").split(",") if str(p).strip())
+    if toks & {"LF", "CF", "RF"}:
+        toks.add("OF")
+    return toks
+
+
+def _best_name_at_position(pool_df: Any, pos: str) -> str:
+    """THE best available player eligible at ``pos`` (multi-position players included), by Decision Score,
+    the ranking the cards state. ``pool_df`` is the available pool for this pick when known."""
+    if pool_df is None or getattr(pool_df, "empty", True) or not pos:
         return ""
-    if "Primary Position" not in rec_df.columns:
-        return ""
-    subset = rec_df[rec_df["Primary Position"].astype(str) == str(pos)]
+    want = str(pos).strip().upper()
+    mask = pool_df.apply(lambda r: want in _eligible_tokens(r), axis=1)
+    subset = pool_df[mask]
     if subset.empty:
         return ""
     for sort_col in ("Decision Score", "Expected Fantasy Value", "Draft Fit Score"):
@@ -97,6 +111,7 @@ def _eligible_trait_badges(
     category_needs: list[str] | None,
     strengths: list[str] | None,
     rec_df: Any,
+    pool_df: Any = None,
 ) -> list[tuple[float, str, str, str]]:
     """Return scored (score, label, css, concept) trait candidates — higher = better."""
     traits: list[tuple[float, str, str, str]] = []
@@ -105,27 +120,29 @@ def _eligible_trait_badges(
     needs = {str(c).strip().upper() for c in (category_needs or []) if str(c).strip()}
     strength_set = {str(s).strip().upper() for s in (strengths or []) if str(s).strip()}
 
+    # Projections first (proj_BA is the AVG projection column), then the pool's own stats.
     hr = _proj(row, "proj_HR", "HR", "Projected HR")
     rbi = _proj(row, "proj_RBI", "RBI", "Projected RBI")
     sb = _proj(row, "proj_SB", "SB", "Projected SB")
-    avg = _proj(row, "proj_AVG", "AVG", "BA", "Projected AVG")
+    avg = _proj(row, "proj_AVG", "proj_BA", "AVG", "BA", "Projected AVG")
     runs = _proj(row, "proj_R", "R", "Runs", "Projected R")
 
-    hr_pct = _pool_percentile(rec_df, ("proj_HR", "HR", "Projected HR"), hr)
-    rbi_pct = _pool_percentile(rec_df, ("proj_RBI", "RBI", "Projected RBI"), rbi)
-    sb_pct = _pool_percentile(rec_df, ("proj_SB", "SB", "Projected SB"), sb)
-    avg_pct = _pool_percentile(rec_df, ("proj_AVG", "proj_BA", "AVG", "BA"), avg)
-    runs_pct = _pool_percentile(rec_df, ("proj_R", "R", "Runs"), runs)
+    # Percentiles against the whole available pool for this pick (``pool_df``), not just the 6–8 cards:
+    # among the cards, whoever hits the most HR always ranked "top 15%", even at 15 HR.
+    ref = pool_df if pool_df is not None and not getattr(pool_df, "empty", True) else rec_df
+    hr_pct = _pool_percentile(ref, ("proj_HR", "HR", "Projected HR"), hr)
+    rbi_pct = _pool_percentile(ref, ("proj_RBI", "RBI", "Projected RBI"), rbi)
+    sb_pct = _pool_percentile(ref, ("proj_SB", "SB", "Projected SB"), sb)
+    avg_pct = _pool_percentile(ref, ("proj_AVG", "proj_BA", "AVG", "BA"), avg)
+    runs_pct = _pool_percentile(ref, ("proj_R", "R", "Runs"), runs)
 
-    # Elite Power: top ~12% of THIS candidate pool, or truly elite absolute HR.
+    # Elite Power: top 15% of the available pool AND a real power number (30+ HR), or 40+ HR outright.
     if pd.notna(hr):
-        hr_rank, hr_n = _pool_rank(rec_df, ("proj_HR", "HR", "Projected HR"), hr)
-        elite_by_pct = pd.notna(hr_pct) and hr_pct >= 0.85
-        elite_by_rank = hr_n >= 4 and hr_rank > 0 and hr_rank <= max(1, int(hr_n * 0.12 + 0.999))
-        elite_by_abs = float(hr) >= 40
-        if elite_by_pct or elite_by_rank or elite_by_abs:
+        elite = (pd.notna(hr_pct) and hr_pct >= 0.85 and float(hr) >= 30) or float(hr) >= 40
+        strong = (pd.notna(hr_pct) and hr_pct >= 0.70 and float(hr) >= 22) or float(hr) >= 30
+        if elite:
             traits.append((92.0 + float(hr) / 20.0, "Elite Power", _BADGE_CSS["upside"], "power"))
-        elif (pd.notna(hr_pct) and hr_pct >= 0.70) or float(hr) >= 30:
+        elif strong:
             traits.append((74.0 + float(hr) / 20.0, "Strong Power", _BADGE_CSS["category"], "power"))
         elif "HR" in needs and float(hr) >= 18:
             traits.append((80.0, "Category Need: HR", _BADGE_CSS["category"], "cat_hr"))
@@ -148,7 +165,7 @@ def _eligible_trait_badges(
 
     if pd.notna(sb):
         speed_needed = "SB" in needs or "SB" in strength_set
-        if (pd.notna(sb_pct) and sb_pct >= 0.80) or (pd.isna(sb_pct) and float(sb) >= 20):
+        if (pd.notna(sb_pct) and sb_pct >= 0.80 and float(sb) >= 12) or float(sb) >= 20:
             traits.append((84.0 + float(sb) / 15.0, "Speed Boost", _BADGE_CSS["upside"], "speed"))
         elif speed_needed and float(sb) >= 10:
             traits.append((76.0, "Fills SB Need", _BADGE_CSS["category"], "speed_need"))
@@ -156,7 +173,7 @@ def _eligible_trait_badges(
             traits.append((73.0, f"Speed at {pos}", _BADGE_CSS["upside"], "speed"))
 
     if pd.notna(avg):
-        if (pd.notna(avg_pct) and avg_pct >= 0.85) or (pd.isna(avg_pct) and float(avg) >= 0.295):
+        if (pd.notna(avg_pct) and avg_pct >= 0.85 and float(avg) >= 0.270) or float(avg) >= 0.295:
             traits.append((70.0 + float(avg) * 10.0, "High AVG", _BADGE_CSS["category"], "avg"))
         elif ("AVG" in needs or "BA" in needs) and float(avg) >= 0.265:
             traits.append((68.0, "Fills Low-AVG Need", _BADGE_CSS["category"], "avg_need"))
@@ -174,9 +191,12 @@ def _eligible_trait_badges(
         bargain_edge = rank_edge
     elif pd.notna(rank_edge):
         bargain_edge = max(float(bargain_edge), float(rank_edge))
+    # A bargain is relative to where the player goes: 10 spots matters at pick 15, not at pick 250.
+    bargain_floor = max(10.0, 0.15 * float(mkt)) if pd.notna(mkt) else 10.0
+    value_floor = max(6.0, 0.08 * float(mkt)) if pd.notna(mkt) else 6.0
     if (
         pd.notna(bargain_edge)
-        and float(bargain_edge) >= 10
+        and float(bargain_edge) >= bargain_floor
         and pd.notna(mdl)
         and pd.notna(mkt)
         and float(mdl) < float(mkt)
@@ -186,7 +206,7 @@ def _eligible_trait_badges(
         )
     elif (
         pd.notna(bargain_edge)
-        and float(bargain_edge) >= 6
+        and float(bargain_edge) >= value_floor
         and pd.notna(mdl)
         and pd.notna(mkt)
         and float(mdl) < float(mkt)
@@ -206,7 +226,7 @@ def _eligible_trait_badges(
         traits.append((55.0 + len(uniq), "Multi-Position", _BADGE_CSS["position"], "multi_pos"))
 
     if pos and gaps and pos in gaps:
-        best_at_pos = _best_name_at_position(rec_df, pos)
+        best_at_pos = _best_name_at_position(ref, pos)
         if best_at_pos and name and best_at_pos == name:
             traits.append((82.0, f"Best Available {pos}", _BADGE_CSS["position"], f"best_{pos}"))
         elif pos == "C":
@@ -222,12 +242,13 @@ def _eligible_trait_badges(
         elif float(scarcity) >= 0.80:
             traits.append((58.0 + float(scarcity) * 10.0, f"{pos} Scarcity", _BADGE_CSS["scarcity"], "scarcity"))
 
+    # The Player Grade shown on the card (Expected Fantasy Value on a 0–100 scale): 85 or higher. (It used to
+    # rank a ×100 value against the raw 0–1 column, so nearly every card qualified.)
     grade = _num(row, "Expected Fantasy Value")
     if pd.notna(grade):
         g = float(grade)
         g100 = g * 100.0 if g <= 1.5 else g
-        grade_pct = _pool_percentile(rec_df, ("Expected Fantasy Value", "Player Grade"), g100 if g <= 1.5 else g)
-        if (pd.notna(grade_pct) and grade_pct >= 0.85) or g100 >= 85:
+        if g100 >= 85:
             traits.append((71.0, "High Player Grade", _BADGE_CSS["gold"], "grade"))
 
     return traits
@@ -241,8 +262,10 @@ def build_smart_recommendation_badges(
     gaps: list[str] | None = None,
     category_needs: list[str] | None = None,
     strengths: list[str] | None = None,
+    pool_df: Any = None,
 ) -> list[tuple[str, str]]:
-    """Return up to two specific (label, css_class) badges — player-distinctive traits."""
+    """Return up to two specific (label, css_class) badges — player-distinctive traits.
+    ``pool_df``: the available pool for this pick (percentiles and "best available"); defaults to rec_df."""
     badges: list[tuple[str, str]] = []
     seen_labels: set[str] = set()
     seen_concepts: set[str] = set()
@@ -261,7 +284,7 @@ def build_smart_recommendation_badges(
 
     ranked = sorted(
         _eligible_trait_badges(
-            row, gaps=gaps, category_needs=category_needs, strengths=strengths, rec_df=rec_df
+            row, gaps=gaps, category_needs=category_needs, strengths=strengths, rec_df=rec_df, pool_df=pool_df
         ),
         key=lambda t: t[0],
         reverse=True,
@@ -332,3 +355,38 @@ def primary_recommendation_reason(
     if rank == 1:
         return "Highest decision score among available fits"
     return "Strong blend of production, fit, and availability"
+
+
+_TOOLTIPS: dict[str, str] = {
+    "Elite Power": "Projected HR in the top 15% of the available players (and 30+), or 40+ HR.",
+    "Strong Power": "Projected HR in the top 30% of the available players (and 22+), or 30+ HR.",
+    "Speed Boost": "Projected SB in the top 20% of the available players (and 12+), or 20+ SB.",
+    "High AVG": "Projected AVG in the top 15% of the available players (and .270+), or .295+.",
+    "High Player Grade": "Player Grade 85 or higher (expected fantasy value, 0–100).",
+    "Model Bargain": "The model ranks him well ahead of his market rank (ADP): at least 10 spots and 15% of his ADP.",
+    "Market Value": "The model ranks him somewhat ahead of his market rank (ADP).",
+    "Elite Run Production": "Projected RBI in the top 15% of the available players.",
+    "Strong RBI": "Projected RBI in the top 35% of the available players.",
+    "Elite Run Producer": "Projected runs in the top 15% of the available players.",
+    "Run Producer": "Projected runs in the top 35% of the available players.",
+    "Multi-Position": "Eligible at more than one position.",
+    "Scarce Position": "Few strong players left at a position you still need.",
+}
+
+
+def badge_tooltip(label: str) -> str:
+    """One plain sentence explaining a badge (shown on hover / long-press)."""
+    text = str(label or "")
+    if text in _TOOLTIPS:
+        return _TOOLTIPS[text]
+    if text.startswith("Best Available "):
+        return f"The highest Decision Score among available players eligible at {text.rsplit(' ', 1)[-1]}, a position you still need."
+    if text.startswith("Fills ") and text.endswith(" Need"):
+        return f"Fills a {text[6:-5]} slot or category your team still needs."
+    if text.startswith("Category Need: ") or text.startswith("Helps "):
+        return "Helps a category where your team is behind."
+    if text.endswith(" Scarcity") or text.startswith("Speed at "):
+        return "Uncommon at this position among the available players."
+    if text in _GENERIC_RANK_BADGES:
+        return "Its place in this list of recommendations (by Decision Score)."
+    return ""

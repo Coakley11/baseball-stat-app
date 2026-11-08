@@ -1336,6 +1336,7 @@ def _rec_card_badges(
     gaps: list[str] | None = None,
     category_needs: list[str] | None = None,
     strengths: list[str] | None = None,
+    pool_df: Any = None,
 ) -> list[tuple[str, str]]:
     """Return (label, css_class) badge tuples for a recommendation card."""
     try:
@@ -1348,6 +1349,7 @@ def _rec_card_badges(
             gaps=gaps,
             category_needs=category_needs,
             strengths=strengths,
+            pool_df=pool_df,
         )
     except ImportError:
         pass
@@ -2198,6 +2200,17 @@ def render_live_draft_rec_cards(
     if not rows:
         st.caption("No recommendations available.")
         return
+    # The available pool for this pick (badge percentiles and "Best Available <pos>"), drafted players removed.
+    badge_pool = None
+    try:
+        from draft_strategy_in_draft import SCORED_POOL_KEY, _pick_marker
+        from live_draft_ui_cache import filter_df_excluding_drafted
+
+        _entry = session.get(SCORED_POOL_KEY) if isinstance(session, dict) else None
+        if isinstance(_entry, dict) and _entry.get("pick") == _pick_marker(room):
+            badge_pool = filter_df_excluding_drafted(_entry.get("df"), room)
+    except Exception:
+        badge_pool = None
 
     # First interactive paint: arm the pick clock here, not from the sidebar.
     try:
@@ -2337,7 +2350,8 @@ def render_live_draft_rec_cards(
                 except ImportError:
                     strengths = []
                 badges = _rec_card_badges(
-                    i, r, rec_df, gaps=gaps, category_needs=category_needs, strengths=strengths
+                    i, r, rec_df, gaps=gaps, category_needs=category_needs, strengths=strengths,
+                    pool_df=badge_pool,
                 )
                 tier_lbl, _tier_css = _rec_tier_badge(i, r, badges=badges)
                 edge_txt, _edge_css = _display_edge(edge if pd.notna(edge) else None)
@@ -2353,8 +2367,15 @@ def render_live_draft_rec_cards(
                 explanation = build_draft_insight_text(
                     r, badges=badges, strengths=None, gaps=gaps, rank=i
                 )
+                from html import escape as _esc
+
+                try:
+                    from live_draft_rec_badges import badge_tooltip as _badge_tip
+                except ImportError:
+                    _badge_tip = lambda _l: ""  # noqa: E731
                 badge_html = "".join(
-                    f'<span class="ld-rec-badge {css}{" rank" if label in ("Best Overall", "Second Best", "Third Best") else ""}">{label}</span>'
+                    f'<span class="ld-rec-badge {css}{" rank" if label in ("Best Overall", "Second Best", "Third Best") else ""}"'
+                    f' title="{_esc(_badge_tip(label))}">{label}</span>'
                     for label, css in badges
                 )
                 surv_pct = f"{int(round(float(surv) * 100))}% avail next round" if pd.notna(surv) else "—"
