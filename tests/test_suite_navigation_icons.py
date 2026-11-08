@@ -51,23 +51,26 @@ class SuiteNavigationTests(unittest.TestCase):
         self.assertTrue(at.session_state["_suite_page_user_nav"])
         self.assertFalse(any("Command Center" in str(getattr(b, "label", "")) for b in at.button))
 
-    def test_one_icon_library_and_the_star_only_means_add_to_queue(self) -> None:
+    def test_action_icon_values_are_valid_streamlit_icons(self) -> None:
+        """The icons the redesign added where no original existed (Material codes), plus the ⭐."""
         values = {k: v for k, v in vars(action_icons).items() if k.isupper() and not k.startswith("_") and isinstance(v, str) and k != "DANGER_KEY_PREFIX"}
         for name, value in values.items():
             if name == "ADD_TO_QUEUE":
                 self.assertEqual(value, "⭐")
                 continue
             self.assertRegex(value, r"^:material/[a-z_]+:$", name)
-        self.assertEqual([k for k, v in values.items() if v == "⭐"], ["ADD_TO_QUEUE"])
 
-    def test_dangerous_actions_are_styled_and_the_set_active_star_is_gone(self) -> None:
+    def test_dangerous_actions_are_styled_and_the_original_set_active_star_is_back(self) -> None:
         import inspect
 
         import draft_archive_ui
         import fantasy_league_invite_ui
 
         library = inspect.getsource(draft_archive_ui)
-        self.assertNotIn("⭐ Set Active", library)
+        # Owner decision 2026-11-07: the original colourful labels are restored.
+        self.assertIn('"⭐ Set Active League" if is_league else "⭐ Set Active Draft"', library)
+        self.assertIn('"✅ Active League" if is_league else "✅ Active Draft"', library)
+        self.assertNotIn("icon=_icons.SET_ACTIVE", library)
         self.assertIn("_icons.danger_container(st, f\"{widget_key_prefix}_del_{draft_id}\")", library)
         invites = inspect.getsource(fantasy_league_invite_ui)
         self.assertIn('key=f"bx-danger-invite_revoke_{iid}"', invites)

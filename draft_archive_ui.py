@@ -2925,9 +2925,8 @@ def _render_shared_league_success_navigation(
         st.success(f"✅ {league_label or 'This league'} is your Active League.")
     else:
         st.button(
-            "Set Active League",
+            "⭐ Set Active League",
             key=f"{key_prefix}_set_active_league_{draft_id[:8]}",
-            icon=_icons.SET_ACTIVE,
             type="primary",
             use_container_width=True,
             on_click=_on_click_set_active_league,
@@ -3891,9 +3890,8 @@ def render_live_draft_completion_panel(
         )
     with save_col:
         st.button(
-            "Save to Draft Library",
+            "📁 Save to Draft Library",
             key=f"{key_prefix}_save_btn",
-            icon=_icons.SAVE,
             type="primary",
             use_container_width=True,
             help="Save a historical copy of the completed draft for viewing and analysis.",
@@ -4488,7 +4486,7 @@ def _render_active_draft_section(
     if not context:
         st.warning(
             "Active draft archive and league context are out of sync. "
-            "Use **Set Active League** on the correct saved draft below."
+            "Use **⭐ Set Active League** on the correct saved draft below."
         )
         return
     title = str(active.get("draft_name") or "Saved Draft")
@@ -4656,15 +4654,14 @@ def _render_archive_manage_actions(
 ) -> None:
     context = context or get_league_context_for_archive(session, entry)
     is_league = _archive_card_is_real_league(entry, context)
-    set_active_label = "Set Active League" if is_league else "Set Active Draft"  # icon: _icons.SET_ACTIVE (the star means Add to Queue)
+    set_active_label = "⭐ Set Active League" if is_league else "⭐ Set Active Draft"
     rename_label = "Rename League" if is_league else "Rename Draft"
     delete_label = "Delete League" if is_league else "Delete Draft"
     league_title = str(entry.get("draft_name") or "League").strip()
     if is_active:
         st.button(
-            "Active League" if is_league else "Active Draft",
+            "✅ Active League" if is_league else "✅ Active Draft",
             key=f"{widget_key_prefix}_active_{draft_id}",
-            icon=_icons.SET_ACTIVE,
             disabled=True,
             use_container_width=True,
         )
@@ -4694,7 +4691,6 @@ def _render_archive_manage_actions(
             if st.button(
                 set_active_label,
                 key=f"{widget_key_prefix}_set_active_{draft_id}",
-                icon=_icons.SET_ACTIVE,
                 type="primary",
                 use_container_width=True,
             ):
@@ -4837,7 +4833,7 @@ def _render_library_answer(
                     ("open_lineup", _nav_label(FANTASY_LINEUP_PAGE, "Lineup & Trades", page_label_fn))]
     recent_id = answer["recent_id"]
     if recent_id and not answer["recent_is_active"]:
-        buttons.append(("set_active", f"Set Active: {answer['recent_name']}"))
+        buttons.append(("set_active", f"⭐ Set Active: {answer['recent_name']}"))
     if recent_id:
         buttons.append(("rename", f"Rename {answer['recent_name']}"))
     if not buttons:
@@ -4851,7 +4847,7 @@ def _render_library_answer(
     with wrap:
         cols = st.columns(len(buttons))
     for (action, label), col in zip(buttons, cols):
-        icon = {"set_active": _icons.SET_ACTIVE, "rename": _icons.EDIT}.get(action)
+        icon = {"rename": _icons.EDIT}.get(action)  # Set Active keeps its original ⭐ in the label
         if not col.button(label, key=f"u4_library_{action}_btn", use_container_width=True, icon=icon,
                           type="primary" if action == "set_active" else "secondary"):
             continue
@@ -5385,7 +5381,7 @@ def _render_saved_draft_library_page_body(
             except ImportError:
                 pass
         if is_focus:
-            st.caption(f"Focused league `{draft_id}` — use **Set Active League** to manage this league.")
+            st.caption(f"Focused league `{draft_id}` — use **⭐ Set Active League** to manage this league.")
         elif is_active:
             st.caption(
                 "Active league — use **Manage this draft** in the **Active Draft** section above."

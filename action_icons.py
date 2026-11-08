@@ -3,7 +3,12 @@
 One library throughout: Google Material Symbols through Streamlit's built-in ``icon=":material/…:"``
 (no extra package, no network fetch beyond Streamlit's own font). Names and values match the
 ``action_icons`` module on ``feature/baseball-completion`` so the two branches agree; this module adds
-the actions that branch did not cover. The gold star means "Add to Queue" and nothing else.
+the actions that branch did not cover.
+
+Owner decision 2026-11-07: wherever a control had an original colourful emoji before the redesign
+(page labels, "⭐ Set Active League", "✅ Active Draft", "📁 Save to Draft Library", "⏸ Pause Draft",
+"▶ Resume Draft", "⚡ Auto Pick Now", "🚪 Leave Room"), that emoji is back in its label and no
+Material icon is set there. These Material codes remain only on controls that had no icon before.
 
 Significant actions keep their words next to the icon ("Manage Subscription", "Delete Draft").
 The suite navigation controls (Home, Command Center logo) are icon-only and carry a tooltip.
