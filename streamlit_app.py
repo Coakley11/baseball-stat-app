@@ -1,4 +1,13 @@
 
+# First, before any app module: after an in-place Streamlit Cloud pull the process can still hold the
+# previous release's modules (D4J 2026-11-08: AttributeError 'action_icons' has no 'DRAFT_PLAYER').
+try:
+    import stale_module_guard as _stale_module_guard
+
+    _stale_module_guard.refresh_stale_app_modules()
+except Exception:  # never block start-up
+    pass
+
 import action_icons as _icons
 
 import streamlit as st
