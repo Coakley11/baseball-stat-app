@@ -168,10 +168,22 @@ def _clean_name(name: str, existing: list[dict[str, Any]], *, exclude_id: str = 
     return clean
 
 
+def _schema_version(row: dict[str, Any]) -> int:
+    try:
+        return int(row.get("schema_version") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def list_strategies(session: dict[str, Any]) -> list[dict[str, Any]]:
-    """Saved strategies, most recently updated first."""
+    """Saved strategies, most recently updated first.
+
+    Any ``schema_version >= 1`` is listed: later versions keep the v1 fields (``players`` in
+    rank order, ``name``, ``approach``, ``context``), so this release still reads rows a newer
+    release upgraded, and a rollback never hides a strategy.
+    """
     _require_access(session)
-    rows = [s for s in _store_call(_backend().all) if s.get("schema_version") == SCHEMA_VERSION and s.get("id")]
+    rows = [s for s in _store_call(_backend().all) if _schema_version(s) >= 1 and s.get("id")]
     return sorted(rows, key=lambda s: str(s.get("updated_at") or ""), reverse=True)
 
 
@@ -215,12 +227,19 @@ def save_strategy(
     return _put(strategy)
 
 
-def update_strategy(session: dict[str, Any], strategy_id: str, *, confirm_overwrite: bool) -> dict[str, Any]:
-    """Overwrite a strategy's players with the current working queue (explicit, confirmed)."""
+def update_strategy(session: dict[str, Any], strategy_id: str, *, confirm_overwrite: bool,
+                    notes: dict[str, str] | None = None) -> dict[str, Any]:
+    """Overwrite a strategy's players with the current working queue (explicit, confirmed).
+
+    The strategy's own notes are kept; ``notes`` (the user's current queue notes) are laid over them.
+    """
     if not confirm_overwrite:
         raise StrategyError("Confirm before replacing this strategy's players with your current queue.")
     current = get_strategy(session, strategy_id)
-    entries = _entries_from_queue(session, {p["name"]: p.get("note", "") for p in current.get("players") or []})
+    merged = {p["name"]: p.get("note", "") for p in current.get("players") or [] if p.get("name")}
+    merged = {str(k).lower(): v for k, v in merged.items()}
+    merged.update({str(k).lower(): v for k, v in (notes or {}).items() if str(v or "").strip()})
+    entries = _entries_from_queue(session, merged)
     if not entries:
         raise StrategyError("Your queue is empty; the strategy was not changed.")
     updated = {**copy.deepcopy(current), "players": entries, "context": current_draft_context(session), "updated_at": _now()}
@@ -246,6 +265,23 @@ def delete_strategy(session: dict[str, Any], strategy_id: str, *, confirmed: boo
         raise StrategyError("Confirm before deleting this strategy.")
     get_strategy(session, strategy_id)
     _store_call(_backend().delete, strategy_id)
+
+
+LOADED_KEY = "_draft_strategy_loaded"
+
+
+def loaded_record(strategy: dict[str, Any], queue: list[str]) -> dict[str, Any]:
+    """What the working queue was built from (session ``_draft_strategy_loaded``).
+
+    ``notes``/``approach`` feed Adaptive Queue explanations (draft_queue_modes); ``queue`` is the
+    working queue right after loading, so the page can tell whether it was edited since.
+    """
+    return {
+        "id": strategy.get("id"), "name": strategy.get("name"), "approach": strategy.get("approach"),
+        "notes": {str(p.get("name") or ""): str(p.get("note") or "") for p in strategy.get("players") or []
+                  if str(p.get("note") or "").strip()},
+        "queue": list(queue),
+    }
 
 
 def load_strategy(session: dict[str, Any], strategy_id: str, *, confirm_replace: bool = False) -> dict[str, Any]:
@@ -278,12 +314,7 @@ def load_strategy(session: dict[str, Any], strategy_id: str, *, confirm_replace:
                          "team": (meta.get(key) or {}).get("team") or "—"}
     sync_draft_queue(session, names, reason="load_saved_strategy")
     session["_queue_player_meta"] = meta
-    # What the queue was built from, for Adaptive Queue explanations (draft_queue_modes).
-    session["_draft_strategy_loaded"] = {
-        "id": strategy.get("id"), "name": strategy.get("name"), "approach": strategy.get("approach"),
-        "notes": {str(p.get("name") or ""): str(p.get("note") or "") for p in strategy.get("players") or []
-                  if str(p.get("note") or "").strip()},
-    }
+    session[LOADED_KEY] = loaded_record(strategy, _queue(session))
     return {"needs_confirmation": False, "loaded": len(names), "warnings": _context_warnings(strategy, session)}
 
 

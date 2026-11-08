@@ -298,8 +298,9 @@ PAGES: tuple[PageHelp, ...] = (
         sources=("draft_strategy_ui.py", MONOLITH),
         aliases=("draft strategy", "strategy assistant", "saved strategies", "draft plan"),
         headline="Turn your research into a draft plan: build a queue, save it as a strategy, load it into any draft.",
-        reading=("A saved strategy is a snapshot of your queue: drafting takes players off the queue, never off a "
-                 "saved strategy. **Load into queue** replaces the whole queue, after asking when it is not empty.",),
+        reading=("A saved strategy is a snapshot of your queue. Drafting never removes anyone: a drafted player is "
+                 "marked in that draft and stays in your queue, and a saved strategy never changes. **Load into "
+                 "queue** replaces the whole queue, after asking when it is not empty.",),
     ),
     PageHelp(
         "Live Draft Room",

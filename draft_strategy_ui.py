@@ -196,6 +196,16 @@ def _render_queue(st: Any, session: dict[str, Any], *, drafted: set[str] | None 
     return queue
 
 
+def _queue_notes(session: dict[str, Any]) -> dict[str, str]:
+    """The user's research notes for queued players (Pins & notes, and a loaded strategy's notes)."""
+    try:
+        from draft_queue_modes import notes_for
+
+        return notes_for(session)
+    except Exception:
+        return {}
+
+
 def _render_save(st: Any, session: dict[str, Any], queue: list[str]) -> None:
     with st.container(border=True):
         st.markdown("**Save this queue as a strategy**")
@@ -204,16 +214,17 @@ def _render_save(st: Any, session: dict[str, Any], queue: list[str]) -> None:
         if st.button("Save strategy", key="draft_strategy_save_btn", type="primary", icon=_icons.SAVE,
                      disabled=not queue, use_container_width=True):
             saved = _run(st, store.save_strategy, session, name,
-                         approach=str(session.get(APPROACH_KEY) or "balanced"))
+                         approach=str(session.get(APPROACH_KEY) or "balanced"), notes=_queue_notes(session))
             if saved:
                 _flash(st, "success", f"Saved **{saved['name']}** ({len(saved['players'])} players).")
             st.rerun()
 
 
-def _load(st: Any, session: dict[str, Any], sid: str, name: str = "") -> None:
+def _load(st: Any, session: dict[str, Any], sid: str) -> None:
+    # The store records the loaded strategy (LOADED_KEY) itself: id, name, approach, notes and the
+    # queue as loaded. Overwriting it here used to drop the notes and approach.
     out = _run(st, store.load_strategy, session, sid, confirm_replace=True)
     if out:
-        session[LOADED_KEY] = {"id": sid, "name": name, "queue": list(store._queue(session))}
         _persist(st)
         msg = f"Loaded {out['loaded']} players into your queue."
         for warning in out.get("warnings") or []:
@@ -237,7 +248,7 @@ def _render_strategy(st: Any, session: dict[str, Any], strategy: dict[str, Any],
             if not queue:
                 if st.button("Load into queue", key=f"strategy_{sid}_load_btn", icon=_icons.OPEN,
                              use_container_width=True):
-                    _load(st, session, sid, strategy["name"])
+                    _load(st, session, sid)
                     st.rerun()
             elif confirm_destructive_action(
                 st,
@@ -250,7 +261,7 @@ def _render_strategy(st: Any, session: dict[str, Any], strategy: dict[str, Any],
                 confirm_label="Replace queue",
                 target=sid,
             ):
-                _load(st, session, sid, strategy["name"])
+                _load(st, session, sid)
                 st.rerun()
         with update_col:
             if confirm_destructive_action(
@@ -264,9 +275,10 @@ def _render_strategy(st: Any, session: dict[str, Any], strategy: dict[str, Any],
                 confirm_label="Update strategy",
                 target=sid,
             ):
-                if _run(st, store.update_strategy, session, sid, confirm_overwrite=True,
-                        ok=f"Updated **{strategy['name']}** from your queue."):
-                    session[LOADED_KEY] = {"id": sid, "name": strategy["name"], "queue": list(store._queue(session))}
+                updated = _run(st, store.update_strategy, session, sid, confirm_overwrite=True,
+                               notes=_queue_notes(session), ok=f"Updated **{strategy['name']}** from your queue.")
+                if updated:
+                    session[LOADED_KEY] = store.loaded_record(updated, store._queue(session))
                 st.rerun()
         with st.expander("Rename, duplicate or delete", icon=_icons.EDIT):
             new_name = st.text_input("New name", value=strategy["name"], key=f"strategy_{sid}_rename_input",
