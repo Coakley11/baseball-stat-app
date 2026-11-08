@@ -70,7 +70,7 @@ jobs:
             if [ -f "$f" ]; then files="$files $f"; else missing="$missing $f"; fi
           done < ../ci-src/ci/${{ matrix.suite }}_suite.txt
           echo "Missing on ${{ matrix.target }}:${missing:- none}" | tee -a "$GITHUB_STEP_SUMMARY"
-          python -m pytest -p no:cacheprovider -q -rfE --junitxml=../junit/result.xml $files || true
+          python -m pytest -p no:cacheprovider -q -rfE --continue-on-collection-errors --junitxml=../junit/result.xml $files || true
       - uses: actions/upload-artifact@v4
         with:
           name: junit-${{ matrix.suite }}-${{ matrix.target }}
