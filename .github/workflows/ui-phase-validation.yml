@@ -1,0 +1,153 @@
+# UI phase validation on GitHub-hosted runners: synthetic seeded data only, no secrets, no deploy.
+# Runs only on pushes to the two ci/ validation branches (no Streamlit Cloud app tracks them).
+# Each suite runs on the candidate (this push) and on the released baseline (eaf3d03, origin/dev) so a
+# failure is reported as new or pre-existing. Screenshots come from the seeded offline preview.
+name: UI phase validation
+
+on:
+  push:
+    branches: ["ci/ui-phase-remote-validation", "ci/adaptive-queue-validation", "ci/post-release-validation"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash  # bash -eo pipefail: a failing script before a pipe fails the step
+
+concurrency:
+  group: ui-phase-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BASELINE_SHA: eaf3d035ce3eb10706e30e33c233f68b4f7fc270
+  PYTHONUNBUFFERED: "1"
+  PYTHONIOENCODING: utf-8
+  # Belt and braces: the app's local stores only (the harness sets these too).
+  SUITE_STORAGE_ISOLATED: "1"
+  BASEBALL_SHARED_DRAFT_ROOM_BACKEND: local
+
+jobs:
+  tests:
+    name: ${{ matrix.suite }} on ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [queue, strategy_layout, post_release]
+        target: [candidate, baseline]
+    steps:
+      - name: Suite lists (this branch)
+        uses: actions/checkout@v4
+        with:
+          path: ci-src
+          persist-credentials: false
+      - name: Code under test
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.target == 'baseline' && env.BASELINE_SHA || github.sha }}
+          path: app
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: app/requirements.txt
+      - name: Install
+        run: python -m pip install -r app/requirements.txt pytest
+      - name: No credentials present
+        run: |
+          test ! -e app/.streamlit/secrets.toml
+          env | grep -iE '^(SUPABASE|STRIPE)' && exit 1 || true
+      - name: Run ${{ matrix.suite }} suite
+        working-directory: app
+        run: |
+          mkdir -p ../junit
+          files=""; missing=""
+          while read -r f; do
+            [ -z "$f" ] && continue
+            if [ -f "$f" ]; then files="$files $f"; else missing="$missing $f"; fi
+          done < ../ci-src/ci/${{ matrix.suite }}_suite.txt
+          echo "Missing on ${{ matrix.target }}:${missing:- none}" | tee -a "$GITHUB_STEP_SUMMARY"
+          python -m pytest -p no:cacheprovider -q -rfE --junitxml=../junit/result.xml $files || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.suite }}-${{ matrix.target }}
+          path: junit/
+          retention-days: 14
+
+  compare:
+    name: New vs pre-existing failures
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          path: results
+      - name: Compare with the baseline
+        run: |
+          rc=0
+          for s in queue strategy_layout post_release; do
+            python ci/compare_failures.py "$s" "results/junit-$s-candidate" "results/junit-$s-baseline" \
+              | tee -a "$GITHUB_STEP_SUMMARY" || rc=1
+          done
+          exit $rc
+
+  screenshots:
+    name: Seeded preview screenshots (desktop + phone)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install
+        run: |
+          python -m pip install -r requirements.txt playwright
+          python -m playwright install --with-deps chromium
+      - name: No credentials present
+        run: test ! -e .streamlit/secrets.toml
+      - name: Start the seeded offline preview
+        run: |
+          ln -s ../static ci/static  # Streamlit serves static/ next to the main script (ci/preview_app.py)
+          nohup python -m streamlit run ci/preview_app.py --server.headless true --server.port 8611 \
+            --browser.gatherUsageStats false > streamlit.log 2>&1 &
+          for i in $(seq 1 90); do
+            curl -sf http://localhost:8611/_stcore/health && exit 0
+            sleep 2
+          done
+          cat streamlit.log; exit 1
+      - name: Capture screenshots
+        run: python ci/shoot.py http://localhost:8611 shots
+      - name: Shared Draft room documents carry no personal queue or research
+        if: always()
+        run: |
+          rooms=$(ls -d /tmp/ldr_parity_rooms_* 2>/dev/null || true)
+          echo "Room stores: ${rooms:-none}" | tee -a "$GITHUB_STEP_SUMMARY"
+          test -n "$rooms"
+          find $rooms -type f | head -20
+          if grep -rlE '"(draft_queue|draft_queue_mode|draft_queue_plan|draft_queue_adaptive|_draft_strategy_loaded|draft_strategy_approach|watchlist|notes)"' $rooms; then
+            echo "Personal data found in a room document" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1
+          fi
+          echo "Room documents: no personal queue, strategy or research keys." | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Report
+        if: always()
+        run: |
+          cp streamlit.log shots/ 2>/dev/null || true
+          cat shots/report.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-preview-screenshots
+          path: shots/
+          retention-days: 14
