@@ -41,16 +41,31 @@ def _now() -> str:
 
 
 class _CloudBackend:
+    """Account-scoped ``suite_saved_items`` rows of one item type."""
+
+    def __init__(self, item_type: str = ITEM_TYPE) -> None:
+        self.item_type = item_type
+
     def put(self, key: str, title: str, payload: dict[str, Any]) -> None:
         import suite_storage_supabase as sss
 
-        sss.upsert_saved_item(APP_ID, ITEM_TYPE, key, title=title, payload=payload)
+        sss.upsert_saved_item(APP_ID, self.item_type, key, title=title, payload=payload)
 
     def all(self) -> list[dict[str, Any]]:
         import suite_storage_supabase as sss
 
-        rows = sss.load_saved_items(app=APP_ID, item_type=ITEM_TYPE, limit=200)
+        rows = sss.load_saved_items(app=APP_ID, item_type=self.item_type, limit=200)
         return [r["payload"] for r in rows or [] if isinstance(r, dict) and isinstance(r.get("payload"), dict)]
+
+    def fetch(self, key: str) -> dict[str, Any] | None:
+        """One row read fresh from the database (never the per-session read cache)."""
+        import suite_storage_supabase as sss
+
+        rows = sss.load_saved_items(app=APP_ID, item_type=self.item_type, item_key=key, limit=1, use_cache=False)
+        for r in rows or []:
+            if isinstance(r, dict) and isinstance(r.get("payload"), dict):
+                return r["payload"]
+        return None
 
     def delete(self, key: str) -> None:
         from strategy_deletion_guard import assert_strategy_deletion_allowed
@@ -58,26 +73,34 @@ class _CloudBackend:
         assert_strategy_deletion_allowed(ITEM_TYPE)
         import suite_storage_supabase as sss
 
-        sss.invalidate_saved_item(APP_ID, ITEM_TYPE, key)
+        sss.invalidate_saved_item(APP_ID, self.item_type, key)
 
 
 class _LocalBackend:
-    """Single-user install without cloud storage: one JSON file in the active workspace."""
+    """Single-user install without cloud storage: one JSON file per item type in the active workspace
+    (``draft_strategies.json`` for strategies, ``<item_type>.json`` beside it for the others)."""
+
+    def __init__(self, item_type: str = ITEM_TYPE) -> None:
+        self.item_type = item_type
 
     def _path(self):
         from suite_workspace import resolve_workspace_id, workspace_dir
 
         return workspace_dir(resolve_workspace_id()) / "draft_strategies.json"
 
-    def _read(self) -> dict[str, Any]:
+    def _file(self):
         path = self._path()
+        return path if self.item_type == ITEM_TYPE else path.with_name(f"{self.item_type}.json")
+
+    def _read(self) -> dict[str, Any]:
+        path = self._file()
         if not path.is_file():
             return {}
         raw = json.loads(path.read_text(encoding="utf-8"))
         return raw if isinstance(raw, dict) else {}
 
     def _write(self, data: dict[str, Any]) -> None:
-        path = self._path()
+        path = self._file()
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=1, default=str), encoding="utf-8")
@@ -92,6 +115,10 @@ class _LocalBackend:
     def all(self) -> list[dict[str, Any]]:
         return [v for v in self._read().values() if isinstance(v, dict)]
 
+    def fetch(self, key: str) -> dict[str, Any] | None:
+        row = self._read().get(key)
+        return row if isinstance(row, dict) else None
+
     def delete(self, key: str) -> None:
         from strategy_deletion_guard import assert_strategy_deletion_allowed
 
@@ -101,15 +128,15 @@ class _LocalBackend:
         self._write(data)
 
 
-def _backend():
+def _backend(item_type: str = ITEM_TYPE):
     try:
         from suite_storage_config import cloud_storage_enabled
 
         if cloud_storage_enabled():
-            return _CloudBackend()
+            return _CloudBackend(item_type)
     except ImportError:
         pass
-    return _LocalBackend()
+    return _LocalBackend(item_type)
 
 
 def _require_access(session: dict[str, Any]) -> None:
