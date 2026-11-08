@@ -260,7 +260,9 @@ def render_draft_strategy_panel(st: Any, session: dict[str, Any], room: dict[str
     # Widget values are already in the session at the start of the run, so one refresh is enough.
     view = dqm.refresh(session, room, viewer_team, source=source)
     st.caption(f"Your draft plan: **{status_line(session)}**")
-    with st.expander(PANEL_LABEL, icon=":material/psychology:", expanded=False):
+    # A key gives the expander a block id from the key alone (Streamlit 1.59), so it is the same
+    # expander whatever moves above it: it stays open when a change inside it reruns the page.
+    with st.expander(PANEL_LABEL, icon=":material/psychology:", expanded=False, key=f"{key_prefix}_dq_panel"):
         render_strategy_selector(st, session, key_prefix=key_prefix, cards=cards)
         st.radio("Draft Queue mode", list(dqm.MODES), format_func=lambda m: dqm.MODE_LABELS[m],
                  key=dqm.MODE_KEY, horizontal=True, on_change=dqm.mark_personal_change, args=(session,))
