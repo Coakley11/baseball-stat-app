@@ -10,6 +10,10 @@ and guest isolation of suite_storage_supabase applies; a single-user install wit
 storage keeps a JSON file in its workspace. Signed-out guests cannot save. Every operation checks
 the ``draft_strategy_library`` capability (FeatureId.DRAFT_STRATEGIES), which becomes Pro-only
 when that feature is enforced.
+
+Rows are v1 (written here) or v2 (draft_strategy_v2: the strategy's own editable queue, with the
+v1 ``players`` kept as a mirror). Reading works for both; update, rename and duplicate of a v2
+row go through draft_strategy_v2 so its queue, revision and edit history stay consistent.
 """
 
 from __future__ import annotations
@@ -275,6 +279,18 @@ def update_strategy(session: dict[str, Any], strategy_id: str, *, confirm_overwr
     entries = _entries_from_queue(session, merged)
     if not entries:
         raise StrategyError("Your queue is empty; the strategy was not changed.")
+    if _schema_version(current) >= 2:  # keep a v2 strategy's own queue, revision and history
+        import draft_strategy_v2 as v2
+
+        s = v2.upgrade(current)
+        base = s["revision"]
+        meta = session.get("_queue_player_meta") if isinstance(session.get("_queue_player_meta"), dict) else {}
+        s = v2.replace_queue(s, [{**e, "team": str((meta.get(e["name"].lower()) or {}).get("team") or "")}
+                                 for e in entries], context=current_draft_context(session))
+        for e in entries:
+            if e["note"].strip():
+                s = v2.set_note(s, e["name"], e["note"][:v2.NOTE_MAX])
+        return v2.save_strategy_v2(session, s, base)
     updated = {**copy.deepcopy(current), "players": entries, "context": current_draft_context(session), "updated_at": _now()}
     return _put(updated)
 
@@ -282,6 +298,11 @@ def update_strategy(session: dict[str, Any], strategy_id: str, *, confirm_overwr
 def rename_strategy(session: dict[str, Any], strategy_id: str, new_name: str) -> dict[str, Any]:
     current = get_strategy(session, strategy_id)
     name = _clean_name(new_name, list_strategies(session), exclude_id=strategy_id)
+    if _schema_version(current) >= 2:
+        import draft_strategy_v2 as v2
+
+        s = v2.upgrade(current)
+        return v2.save_strategy_v2(session, v2.rename(s, name), s["revision"])
     return _put({**copy.deepcopy(current), "name": name, "updated_at": _now()})
 
 
@@ -290,6 +311,14 @@ def duplicate_strategy(session: dict[str, Any], strategy_id: str, new_name: str 
     existing = list_strategies(session)
     name = _clean_name(new_name or f"{current['name']} (copy)", existing)
     now = _now()
+    if _schema_version(current) >= 2:  # a fresh history for the copy
+        import draft_strategy_v2 as v2
+
+        s = v2.upgrade(current)
+        s.update({"id": uuid.uuid4().hex[:12], "name": name, "created_at": now, "updated_at": now, "revision": 0,
+                  "edits": [], "provenance": {"migrated_from": None, "migrated_at": None,
+                                              "created_from": f"duplicate:{current['id']}"}})
+        return v2.save_strategy_v2(session, s, None)
     return _put({**copy.deepcopy(current), "id": uuid.uuid4().hex[:12], "name": name, "created_at": now, "updated_at": now})
 
 
