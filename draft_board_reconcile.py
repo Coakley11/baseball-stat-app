@@ -17,6 +17,8 @@ now, between exactly two outcomes — never by comparing pick counts:
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 import copy
 from typing import Any
 
@@ -132,20 +134,20 @@ def render_board_conflict_controls(st: Any, session: dict[str, Any]) -> None:
         f"The board saved in your account has **{conflict.get('cloud_picks', 0)}** pick(s) and this page has "
         f"**{conflict.get('local_picks', 0)}**, and they are different boards. Choose which one to keep. "
         "Nothing is changed until you do.",
-        icon=":material/sync_problem:",
+        icon=_icons.WARNING,
     )
     load_col, keep_col = st.columns(2)
     with load_col:
         load_ok = st.checkbox("I understand this page's picks will be replaced", key="dr_conflict_load_ack_btn")
         if st.button("Load the saved board", key="dr_conflict_load_btn", disabled=not load_ok,
-                     use_container_width=True, icon=":material/cloud_download:"):
+                     use_container_width=True, icon=_icons.OPEN):
             if adopt_cloud_board(session):
                 st.rerun()
             st.error("The saved board could not be loaded right now. Your picks on this page are unchanged.")
     with keep_col:
         keep_ok = st.checkbox("I understand the saved board will be replaced", key="dr_conflict_keep_ack_btn")
         if st.button("Save this page's board instead", key="dr_conflict_keep_btn", disabled=not keep_ok,
-                     use_container_width=True, icon=":material/cloud_upload:"):
+                     use_container_width=True, icon=_icons.SAVE):
             if accept_replacing_cloud_board(session):
                 session["_draft_room_manual_save_requested"] = True
                 st.rerun()

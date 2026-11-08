@@ -80,7 +80,7 @@ def _render_suite_navigation(st: Any) -> None:
     try:
         from action_icons import HOME
     except ImportError:
-        HOME = ":material/home:"
+        HOME = "🏠"
     url = _command_center_href(st)
     with st.container(key="bx-suite-nav"):
         logo_col, home_col, _spacer = st.columns([1, 1, 3])
@@ -143,6 +143,7 @@ def _render_saved_sessions_section(
                     "app_id": app_id,
                     "on_reset": on_reset,
                 },
+                icon=_icons.RESET,
             )
         with c2:
             st.button(
