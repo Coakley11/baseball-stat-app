@@ -43,6 +43,8 @@ without the owner's approval.
 
 ### A1: the selected strategy as AMI context (read-only), the first slice
 
+**Status (2026-11-08):** implemented on this branch; see `docs/AMI_A1_MY_STRATEGY.md`. It builds on the KI-1 correction (`fix/s2-stale-loaded-strategy`), so AMI never reads a deleted strategy.
+
 - `ami_assistant/tools/strategy.py`, read-only tools with `plan_capability="draft_strategy_library"`:
   - `get_selected_strategy`: name, approach, preferences, queue size, top of the queue with pins,
     note and research counts, saved/unsaved state. It reads the open working copy, so unsaved edits

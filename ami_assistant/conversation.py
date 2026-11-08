@@ -36,6 +36,9 @@ class ConversationState:
     # Fantasy follow-ups: the roster player last discussed (as typed) and the week.
     subject_player: str = ""
     week: int | None = None
+    # my_strategy follow-ups: the strategy name the user typed (empty = the selected one) and the focus.
+    strategy: str = ""
+    strategy_focus: str = ""
     turns: list[Turn] = field(default_factory=list)
 
     def remember(
@@ -51,6 +54,8 @@ class ConversationState:
         page: str = "",
         subject_player: str = "",
         week: int | None = None,
+        strategy: str | None = None,
+        strategy_focus: str = "",
     ) -> None:
         """Update the subject only with what this turn actually established."""
         self.intent = intent
@@ -71,6 +76,10 @@ class ConversationState:
             self.subject_player = subject_player
         if week:
             self.week = int(week)
+        if strategy is not None:
+            self.strategy = str(strategy)[:60]
+        if strategy_focus:
+            self.strategy_focus = strategy_focus
         self.page = page or self.page
 
     def add_turn(self, turn: Turn) -> None:
@@ -92,6 +101,8 @@ class ConversationState:
             "page": self.page,
             "subject_player": self.subject_player,
             "week": self.week,
+            "strategy": self.strategy,
+            "strategy_focus": self.strategy_focus,
             "turns": [t.__dict__.copy() for t in self.turns],
         }
 
@@ -110,6 +121,8 @@ class ConversationState:
             page=str(raw.get("page") or ""),
             subject_player=str(raw.get("subject_player") or ""),
             week=raw.get("week") if isinstance(raw.get("week"), int) else None,
+            strategy=str(raw.get("strategy") or "")[:60],
+            strategy_focus=str(raw.get("strategy_focus") or "")[:20],
         )
         for t in raw.get("turns") or []:
             if isinstance(t, dict):

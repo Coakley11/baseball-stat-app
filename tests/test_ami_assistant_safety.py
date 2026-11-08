@@ -224,11 +224,18 @@ class EntitlementGateTests(unittest.TestCase):
         from baseball_monetization import CAPABILITY_FEATURES, FeatureId
 
         tagged = {s.name: s.plan_capability for s in REGISTRY.specs() if s.plan_capability}
-        self.assertEqual(tagged, {"get_draft_recommendations": "draft_recommendations",
-                                  "explain_draft_recommendation": "draft_recommendation_explanation",
-                                  "get_team_needs": "draft_team_needs"})
-        for cap in tagged.values():
+        draft_tools = {"get_draft_recommendations": "draft_recommendations",
+                       "explain_draft_recommendation": "draft_recommendation_explanation",
+                       "get_team_needs": "draft_team_needs"}
+        # A1 (2026-11-08): the user's saved strategies, gated like Draft Strategy · PRO itself.
+        strategy_tools = {"list_my_strategies": "draft_strategy_library", "get_my_strategy": "draft_strategy_library",
+                          "compare_strategy_to_global": "draft_strategy_library"}
+        self.assertEqual(tagged, {**draft_tools, **strategy_tools})
+        for cap in draft_tools.values():
             self.assertEqual(CAPABILITY_FEATURES[cap], FeatureId.ADVANCED_DRAFT_INTELLIGENCE)
+        for cap in strategy_tools.values():
+            self.assertEqual(CAPABILITY_FEATURES[cap], FeatureId.DRAFT_STRATEGIES)
+        self.assertIsNone(REGISTRY.get("get_global_list").plan_capability or None)  # the Global Queue stays free
         # Draft Lab and ML Predictions are plan capabilities too; AMI has no tool that serves them
         # (it declines projection questions and doesn't read Draft Lab results). A tool that ever reads
         # them must carry the matching tag, so its reuses must not name those sources untagged.

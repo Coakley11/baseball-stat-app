@@ -62,6 +62,16 @@ CAPABILITIES: tuple[Capability, ...] = (
         notes="Reads the recommendations Draft Assistant / Live Draft Room computed; never recomputes or drafts.",
     ),
     Capability(
+        "my_strategies", "Your saved Draft Strategies (read-only)", LIVE,
+        ("Where did I rank Aaron Judge?", "What players are in my Power strategy?", "Is Juan Soto in this queue?",
+         "What notes did I save about Bobby Witt Jr.?", "How many catchers do I have in this strategy?",
+         "How does this strategy differ from my Global Queue?", "Which saved strategies do I have?"),
+        ("list_my_strategies", "get_my_strategy", "get_global_list", "compare_strategy_to_global"),
+        notes=("Reads the signed-in account's own strategies through the strategy store (same Pro entitlement as "
+               "the page); deleted strategies are never read; saved and unsaved editor changes are kept apart. "
+               "Never changes a strategy, queue or note."),
+    ),
+    Capability(
         "fantasy_team", "Fantasy league (read-only)", LIVE,
         ("Where am I in the standings?", "Is my lineup saved?", "Who should I consider adding?",
          "What do you think of this trade?", "What happened last week?", "Can Springer play shortstop?",
