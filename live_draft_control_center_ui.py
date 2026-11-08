@@ -572,24 +572,28 @@ def render_commissioner_draft_actions(
                 widget_key="live_draft_discard_btn",
                 is_commissioner=True,
             )
-            st.button(
-                "🗑 End/Delete Draft for Everyone",
-                key="live_draft_discard_btn",
-                type="primary",
-                help="Permanently delete this draft and room for every participant. This cannot be undone.",
-                use_container_width=True,
-                on_click=on_show_end_delete_confirm,
-            )
+            # Destructive: red, not the theme's blue primary (owner review 2026-11-08). A confirmation follows.
+            with _icons.danger_container(st, "live_draft_discard"):
+                st.button(
+                    "🗑 End/Delete Draft for Everyone",
+                    key="live_draft_discard_btn",
+                    type="secondary",
+                    help="Permanently delete this draft and room for every participant. This cannot be undone.",
+                    use_container_width=True,
+                    on_click=on_show_end_delete_confirm,
+                )
             if developer_mode:
                 render_delete_trace_panel(st, session)
         except ImportError:
-            if st.button(
-                "🗑 End/Delete Draft for Everyone",
-                key="live_draft_discard_btn",
-                type="primary",
-                use_container_width=True,
-                help="Permanently delete this draft and room for every participant. This cannot be undone.",
-            ):
+            with _icons.danger_container(st, "live_draft_discard_fallback"):
+                clicked = st.button(
+                    "🗑 End/Delete Draft for Everyone",
+                    key="live_draft_discard_btn",
+                    type="secondary",
+                    use_container_width=True,
+                    help="Permanently delete this draft and room for every participant. This cannot be undone.",
+                )
+            if clicked:
                 session["_live_draft_discard_confirm"] = True
         st.caption("Permanent — cannot be undone.")
 
@@ -652,19 +656,22 @@ def render_commissioner_draft_actions(
                     "confirmation_shown",
                     widget_key="live_draft_discard_confirm_btn",
                 )
-                st.button(
-                    "🗑 Confirm End/Delete",
-                    key="live_draft_discard_confirm_btn",
-                    type="primary",
-                    on_click=on_confirm_end_delete_for_everyone,
-                    use_container_width=True,
-                )
+                with _icons.danger_container(st, "live_draft_discard_confirm"):  # solid red final step
+                    st.button(
+                        "🗑 Confirm End/Delete",
+                        key="live_draft_discard_confirm_btn",
+                        type="primary",
+                        on_click=on_confirm_end_delete_for_everyone,
+                        use_container_width=True,
+                    )
             except ImportError:
-                if st.button(
-                    "🗑 Confirm End/Delete",
-                    key="live_draft_discard_confirm_btn",
-                    type="primary",
-                ):
+                with _icons.danger_container(st, "live_draft_discard_confirm_fallback"):
+                    confirmed = st.button(
+                        "🗑 Confirm End/Delete",
+                        key="live_draft_discard_confirm_btn",
+                        type="primary",
+                    )
+                if confirmed:
                     from live_draft_termination import discard_live_draft_and_start_over
 
                     session.pop("_live_draft_discard_confirm", None)

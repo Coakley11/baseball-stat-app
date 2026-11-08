@@ -129,6 +129,17 @@ div[class*="st-key-bx-danger-"] button:hover,
 div[class*="st-key-bx-danger-"] button:focus-visible {
   color: #7f1d1d !important; border-color: #b91c1c !important; background: #fef2f2 !important;
 }
+/* The final confirmation of a destructive action: solid red, never the theme's blue. */
+div[class*="st-key-bx-danger-"] button[kind="primary"],
+div[class*="st-key-bx-danger-"] button[data-testid="stBaseButton-primary"] {
+  background: #b91c1c !important; border-color: #b91c1c !important; color: #ffffff !important;
+}
+div[class*="st-key-bx-danger-"] button[kind="primary"] p,
+div[class*="st-key-bx-danger-"] button[data-testid="stBaseButton-primary"] p { color: #ffffff !important; }
+div[class*="st-key-bx-danger-"] button[kind="primary"]:hover,
+div[class*="st-key-bx-danger-"] button[data-testid="stBaseButton-primary"]:hover {
+  background: #7f1d1d !important; border-color: #7f1d1d !important; color: #ffffff !important;
+}
 /* Suite navigation row (Command Center logo, Home): equal 44 px targets. */
 div[class*="st-key-bx-suite-nav"] [data-testid="stHorizontalBlock"] { gap: 0.5rem; align-items: center; }
 div[class*="st-key-bx-suite-nav"] button { min-height: 44px; min-width: 44px; }
