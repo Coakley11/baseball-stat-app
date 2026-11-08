@@ -51,19 +51,92 @@ def status_line(session: Any) -> str:
     return f"{approach} strategy · {mode} queue"
 
 
+STRATEGY_PLAN_RULE = (
+    "This draft follows a **copy** of your saved strategy: its order is your Fixed plan here, and Adaptive "
+    "re-orders a separate copy. Pins and notes you change here stay with this draft until you save them back. "
+    "Your saved strategy and your Global Queue are not changed. Picks are always yours."
+)
+
+
+def _plan_options(session: dict[str, Any]) -> dict[str, str]:
+    """``{"global": "Global Queue", <id>: <name>}``; strategies only when the store allows access."""
+    out = {"global": "Global Queue"}
+    try:
+        import draft_strategy_store as store
+
+        for s in store.list_strategies(session):
+            if isinstance(s, dict) and s.get("id"):
+                out[str(s["id"])] = f"♟️ {s.get('name') or 'Strategy'}"
+    except Exception:
+        pass
+    return out
+
+
+def _choose_plan(session: dict[str, Any], source: str, key: str, flash_key: str) -> None:
+    import draft_plan_source as dps
+    import draft_strategy_store as store
+
+    try:
+        msg = dps.choose(session, source, str(session.get(key) or "global"))
+        session[flash_key] = {"kind": "success", "text": msg}
+    except store.StrategyError as exc:
+        session[flash_key] = {"kind": "warning", "text": str(exc)}
+
+
+def render_plan_selector(st: Any, session: dict[str, Any], view: dict[str, Any], kp: str) -> None:
+    """Starting plan for this draft: the Global Queue or a saved Pro strategy (a per-draft copy)."""
+    source = str(view.get("source") or "")
+    options = _plan_options(session)
+    current = view.get("plan_source") or {"kind": "global"}
+    current_id = str(current.get("id") or "global") if current.get("kind") == "strategy" else "global"
+    if current_id not in options:  # deleted or renamed elsewhere: keep showing this draft's copy
+        options[current_id] = f"♟️ {current.get('name') or 'Strategy'} (this draft's copy)"
+    key = f"{kp}_dq_plan_pick"
+    if session.get(key) != current_id:
+        session[key] = current_id
+    flash_key = f"_{kp}_dq_plan_flash"
+    st.selectbox("Starting plan for this draft", list(options), format_func=lambda i: options.get(i, i), key=key,
+                 disabled=not source or len(options) < 2, on_change=_choose_plan,
+                 args=(session, source, key, flash_key),
+                 help="Fixed follows this plan's order; Adaptive re-orders a copy of it as players are picked. "
+                      "Choosing a strategy never changes it or your Global Queue.")
+    flash = session.pop(flash_key, None)
+    if isinstance(flash, dict):
+        (st.success if flash.get("kind") == "success" else st.warning)(flash.get("text"))
+
+
 def _add_to_queue(session: dict[str, Any], name: str) -> None:
+    import draft_plan_source as dps
     from draft_state import DRAFT_QUEUE_KEY, _normalize_player_list, sync_draft_queue
+
+    source = dqm.draft_source(session)
+    if dps.current(session, source) is not None:  # a strategy plan: add to this draft's copy only
+        dps.add_player(session, source, name)
+        dqm.mark_personal_change(session)
+        return
 
     queue = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
     if name.lower() not in {q.lower() for q in queue}:
         sync_draft_queue(session, queue + [name], reason="add_to_queue_adaptive_suggestion")
 
 
-def _save_pins(session: dict[str, Any], key: str) -> None:
+def _save_pins(session: dict[str, Any], key: str, source: str = "") -> None:
+    import draft_plan_source as dps
+
+    if source and dps.current(session, source) is not None:
+        dps.set_pins(session, source, list(session.get(key) or []))
+        dqm.mark_personal_change(session)
+        return
     dqm.set_pins(session, list(session.get(key) or []))
 
 
-def _save_note(session: dict[str, Any], who_key: str, text_key: str) -> None:
+def _save_note(session: dict[str, Any], who_key: str, text_key: str, source: str = "") -> None:
+    import draft_plan_source as dps
+
+    if source and dps.current(session, source) is not None:
+        dps.set_note(session, source, str(session.get(who_key) or ""), str(session.get(text_key) or ""))
+        dqm.mark_personal_change(session)
+        return
     dqm.set_note(session, str(session.get(who_key) or ""), str(session.get(text_key) or ""))
 
 
@@ -229,22 +302,60 @@ def _render_load_saved_plan(st: Any, session: dict[str, Any], kp: str) -> None:
 
 
 def _render_pins_notes(st: Any, session: dict[str, Any], view: dict[str, Any], kp: str) -> None:
+    import draft_plan_source as dps
+
+    source = str(view.get("source") or "")
+    strategy_plan = dps.current(session, source)
+    suffix = f"_{strategy_plan['id']}" if strategy_plan else ""
     options = list(view.get("fixed") or [])
-    pins_key = f"{kp}_dq_pins"
-    current = [p for p in dqm.plan(session)["pins"] if p in options]
+    pins_key = f"{kp}_dq_pins{suffix}"
+    if strategy_plan:
+        current = [p for p in options if p.lower() in set(strategy_plan.get("pins") or [])]
+        notes = dict(strategy_plan.get("notes") or {})
+        st.caption(f"Pins and notes for this draft's copy of “{strategy_plan.get('name')}”.")
+    else:
+        current = [p for p in dqm.plan(session)["pins"] if p in options]
+        notes = dqm.notes_for(session)
     if pins_key not in session or [p for p in session.get(pins_key) or [] if p not in options]:
         session[pins_key] = current
     st.multiselect("Pinned players (Adaptive keeps them at their Fixed place)", options, key=pins_key,
-                   on_change=_save_pins, args=(session, pins_key))
+                   on_change=_save_pins, args=(session, pins_key, source))
     if options:
         who_key = f"{kp}_dq_note_who"
         st.selectbox("Research note for", options, key=who_key)
         who = str(session.get(who_key) or options[0])
-        text_key = f"{kp}_dq_note_text_{zlib.crc32(who.lower().encode()):x}"  # one box per player
-        st.text_input("Note", key=text_key, value=dqm.notes_for(session).get(who.lower(), ""),
+        text_key = f"{kp}_dq_note_text_{zlib.crc32(who.lower().encode()):x}{suffix}"  # one box per player
+        st.text_input("Note", key=text_key, value=notes.get(who.lower(), ""),
                       help="Shown in that player's explanations. Leave empty to remove.")
         st.button("Save note", key=f"{kp}_dq_note_save", icon=_icons.SAVE,
-                  on_click=_save_note, args=(session, who_key, text_key))
+                  on_click=_save_note, args=(session, who_key, text_key, source))
+    if strategy_plan:
+        _render_save_back(st, session, source, strategy_plan, kp)
+
+
+def _save_back(session: dict[str, Any], source: str, flash_key: str) -> None:
+    import draft_plan_source as dps
+    import draft_strategy_store as store
+
+    try:
+        saved = dps.save_back(session, source, confirmed=True)
+        session[flash_key] = {"kind": "success", "text": f"Saved this draft's plan back to “{saved['name']}”."}
+    except store.StrategyError as exc:
+        session[flash_key] = {"kind": "warning", "text": str(exc)}
+
+
+def _render_save_back(st: Any, session: dict[str, Any], source: str, strategy_plan: dict[str, Any], kp: str) -> None:
+    flash_key = f"_{kp}_dq_saveback_flash"
+    flash = session.pop(flash_key, None)
+    if isinstance(flash, dict):
+        (st.success if flash.get("kind") == "success" else st.warning)(flash.get("text"))
+    name = strategy_plan.get("name") or "the strategy"
+    st.caption("Changes here stay with this draft."
+               + (" This draft's copy has changes." if strategy_plan.get("edited") else ""))
+    ok = st.checkbox(f"Update my saved strategy “{name}” with this draft's order, pins and notes",
+                     key=f"{kp}_dq_saveback_ok")
+    st.button(f"Save back to “{name}”", key=f"{kp}_dq_saveback", icon=_icons.SAVE, disabled=not ok,
+              on_click=_save_back, args=(session, source, flash_key))
 
 
 def render_draft_strategy_panel(st: Any, session: dict[str, Any], room: dict[str, Any] | None, *,
@@ -261,14 +372,18 @@ def render_draft_strategy_panel(st: Any, session: dict[str, Any], room: dict[str
         session[dqm.MODE_KEY] = "fixed"
     # Widget values are already in the session at the start of the run, so one refresh is enough.
     view = dqm.refresh(session, room, viewer_team, source=source)
-    st.caption(f"Your draft plan: **{status_line(session)}**")
+    plan_src = view.get("plan_source") or {}
+    plan_txt = f" · following **{plan_src.get('name')}**" if plan_src.get("kind") == "strategy" else ""
+    st.caption(f"Your draft plan: **{status_line(session)}**{plan_txt}")
     # A key gives the expander a block id from the key alone (Streamlit 1.59), so it is the same
     # expander whatever moves above it: it stays open when a change inside it reruns the page.
-    with st.expander(PANEL_LABEL, icon=_icons.STRATEGY, expanded=False, key=f"{key_prefix}_dq_panel"):
+    with st.expander(PANEL_LABEL, icon=":material/psychology:", expanded=False, key=f"{key_prefix}_dq_panel"):
+        render_plan_selector(st, session, view, key_prefix)
         render_strategy_selector(st, session, key_prefix=key_prefix, cards=cards)
         st.radio("Draft Queue mode", list(dqm.MODES), format_func=lambda m: dqm.MODE_LABELS[m],
                  key=dqm.MODE_KEY, horizontal=True, on_change=dqm.mark_personal_change, args=(session,))
-        st.caption(EDIT_RULE)
+        is_strategy = (view.get("plan_source") or {}).get("kind") == "strategy"
+        st.caption(STRATEGY_PLAN_RULE if is_strategy else EDIT_RULE)
         if not cards:
             st.caption(SIMULATOR_PICK_NOTICE)
         elif dqm.current_mode(session) == "adaptive":
