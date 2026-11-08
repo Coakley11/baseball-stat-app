@@ -480,8 +480,15 @@ def render_lineup_management_page(
 
                     # One source — the league ranks shown in the snapshot — so a category is never
                     # listed as both a strength and a weakness.
-                    _strength_cats = league_strength_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
-                    _weakness_cats = league_weakness_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
+                    # The table's own assessment: a listed weakness is always a "Weakness" row, ordered by
+                    # how far below the league average it is (z-score), never alphabetically.
+                    if _needs.get("category_status"):
+                        _strength_cats = list(_needs.get("strengths") or [])[:2]
+                        _weakness_cats = list(_needs.get("weaknesses") or [])[:2]
+                    else:
+                        _z = dict(_needs.get("category_z") or {})
+                        _strength_cats = league_strength_categories(_cat_ranks, n_teams=_n_teams, category_z=_z) if _cat_ranks else []
+                        _weakness_cats = league_weakness_categories(_cat_ranks, n_teams=_n_teams, category_z=_z) if _cat_ranks else []
                     _outlook, _confidence, _stars = team_outlook_summary(
                         strong_cats=_strength_cats,
                         weak_cats=_weakness_cats,
@@ -584,6 +591,12 @@ def render_lineup_management_page(
                 _cat_action = build_category_action_table(_needs)
                 if not _cat_action.empty:
                     st.markdown("#### Category standings vs league")
+                    st.caption(
+                        "Your whole roster (starters and bench), current-season stats, against every team in the "
+                        "league. Status: top third of the league = Strength, bottom third = Weakness. Top "
+                        "weaknesses are ordered by how far below the league average a category is (in standard "
+                        "deviations), since raw gaps like 6 HR and .045 AVG aren't comparable."
+                    )
                     st.dataframe(
                         style_category_action_table(_cat_action),
                         width="stretch",

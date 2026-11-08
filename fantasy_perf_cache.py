@@ -184,6 +184,7 @@ def lineup_diagnosis_cache_key(
     missing_slots: tuple[str, ...],
 ) -> tuple[Any, ...]:
     return (
+        "category_rule_v2",  # 2026-11-08: rank-third status + z-score order (old cached summaries mismatched)
         str(context_id or ""),
         str(team or ""),
         str(roster_sig or ""),

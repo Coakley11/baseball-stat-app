@@ -10,7 +10,9 @@ from typing import Any, Callable
 import pandas as pd
 
 from fantasy_lineup_interactive_board import (
+    BENCH_ZONE,
     apply_drop_event_with_message,
+    resolve_board_move,
     build_interactive_board_payload,
     parse_board_drop_result,
     parse_board_player_select,
@@ -357,6 +359,54 @@ def _on_save_lineup_click(scope: Any, proxy_control: Any, **save_kwargs: Any) ->
         session[_SAVE_ERROR_KEY] = "; ".join(result.get("errors") or []) or "Couldn't save changes. Try again."
 
 
+def _roster_names(roster_df: pd.DataFrame | None) -> list[str]:
+    if roster_df is None or roster_df.empty:
+        return []
+    col = next((c for c in ("Player", "fullName", "Name") if c in roster_df.columns), None)
+    if not col:
+        return []
+    return list(dict.fromkeys(str(v).strip() for v in roster_df[col].tolist() if str(v).strip()))
+
+
+def move_targets(assignments: dict[str, str], slot_keys: list[tuple[str, str]], player: str,
+                 roster_df: pd.DataFrame | None) -> list[tuple[str, str]]:
+    """``[(target, label)]`` where ``player`` may legally go: eligible starting slots (a swap when taken),
+    then the bench when the player is starting. Uses the board's own move rules (resolve_board_move)."""
+    out: list[tuple[str, str]] = []
+    if not player:
+        return out
+    for key, label in slot_keys:
+        if assignments.get(key) == player:
+            continue  # already there
+        result, _msg = resolve_board_move(dict(assignments), slot_keys, player=player, target=key, roster_df=roster_df)
+        if result is not None:
+            taken = assignments.get(key)
+            out.append((key, f"{label} (swap with {taken})" if taken else str(label)))
+    if player in assignments.values():
+        out.append((BENCH_ZONE, "Bench"))
+    return out
+
+
+def _render_move_player_form(st: Any, *, prefix: str, assignments: dict[str, str],
+                             slot_keys: list[tuple[str, str]], roster_df: pd.DataFrame | None) -> dict[str, Any] | None:
+    """A non-drag way to place players. Returns a drop-style event ``{player, target}`` on Move."""
+    names = _roster_names(roster_df)
+    if not names:
+        return None
+    with st.expander("Move a player without dragging", expanded=False):
+        player = st.selectbox("Player", names, key=f"lineup_move_player_{prefix}")
+        targets = move_targets(assignments, slot_keys, str(player or ""), roster_df)
+        if not targets:
+            st.caption(f"{player} has no other eligible slot in this lineup.")
+            return None
+        labels = {t: lab for t, lab in targets}
+        target = st.selectbox("Move to", [t for t, _ in targets], format_func=lambda t: labels.get(t, t),
+                              key=f"lineup_move_target_{prefix}")
+        if st.button("Move player", key=f"lineup_move_btn_{prefix}", use_container_width=True, icon=_icons.LINEUP):
+            return {"player": str(player), "target": str(target), "source": "move_form"}
+    return None
+
+
 def _lineup_write_check(scope: Any, proxy_control: Any) -> tuple[bool, str]:
     if proxy_control is not None and proxy_control.is_proxy:
         return True, ""
@@ -677,11 +727,19 @@ def render_weekly_lineup_section(
         else:
             col.button("Explore Trades", key=f"u3lu_trades_{prefix}_{int(selected_week)}_btn", use_container_width=True, icon=_icons.TRADE,
                        on_click=lambda: session.__setitem__("_lineup_focus_trade_center", True))
+    # Owner review 2026-11-08: drops snapped back to the bench. Every move goes through the write-identity
+    # check (signed in, owns this team), but the board was still drawn as editable when that check failed,
+    # so each drop was refused and the player returned to the bench. Now the board is read-only, with the
+    # reason and the next step above it, whenever this account can't change this lineup.
+    write_ok, write_err = _lineup_write_check(scope, proxy_control)
+    board_editable = (not lineup_locked) and write_ok
+    if not lineup_locked and not write_ok:
+        st.warning(f"**You can't change this lineup yet:** {write_err} The board below is read-only until then.")
     board_payload = build_interactive_board_payload(
         slot_labels,
         assignments,
         team_roster,
-        editable=not lineup_locked,
+        editable=board_editable,
         session=session,
     )
     board_notice = session.pop(_BOARD_NOTICE_KEY, None)
@@ -702,6 +760,15 @@ def render_weekly_lineup_section(
 
     selected_player_key = f"{scope.fingerprint}|selected_player" if scope else f"{prefix}_selected_player"
     drop_event = parse_board_drop_result(board_result)
+    if board_editable:
+        # Dragging must not be the only way to build a lineup (phones, accessibility): pick a player, then an
+        # eligible slot or the bench. It becomes the same move event a drop sends, so it is validated and
+        # saved exactly the same way.
+        form_event = _render_move_player_form(
+            st, prefix=f"{prefix}_{int(selected_week)}_{board_nonce}", assignments=assignments,
+            slot_keys=slot_keys, roster_df=team_roster)
+        if form_event:
+            drop_event = form_event
     selected_player = parse_board_player_select(board_result) if lineup_locked else ""
     if selected_player and lineup_locked:
         session[selected_player_key] = selected_player
@@ -729,7 +796,9 @@ def render_weekly_lineup_section(
         session[board_nonce_key] = board_nonce + 1
         st.rerun()
 
-    if drop_event and not lineup_locked and drop_event.get("action") != "select_player":
+    if drop_event and board_editable is False and not lineup_locked and drop_event.get("action") != "select_player":
+        _refuse_move(write_err or "You can't change this lineup.")
+    if drop_event and board_editable and drop_event.get("action") != "select_player":
         write_ok, write_err = _lineup_write_check(scope, proxy_control)
         if not write_ok:
             _refuse_move(write_err)

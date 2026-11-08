@@ -71,8 +71,9 @@ def league_strength_categories(
     *,
     n_teams: int = 0,
     limit: int = 2,
+    category_z: dict[str, float] | None = None,
 ) -> list[str]:
-    """League rank 1 = strongest category for this team.
+    """League rank 1 = strongest category for this team (ties: higher z-score first when given).
 
     With ``n_teams`` known, only top-half ranks count, so a category is never both a
     strength and a weakness (see league_weakness_categories).
@@ -83,7 +84,8 @@ def league_strength_categories(
     if int(n_teams or 0) > 0:
         cut = max(1, int(n_teams) // 2)
         ranks = {cat: r for cat, r in ranks.items() if int(r) <= cut}
-    ordered = sorted(ranks.items(), key=lambda kv: (int(kv[1]), kv[0]))
+    z = category_z or {}
+    ordered = sorted(ranks.items(), key=lambda kv: (int(kv[1]), -float(z.get(kv[0], 0.0)), kv[0]))
     return [cat for cat, _ in ordered[: max(1, int(limit))]]
 
 
@@ -92,8 +94,10 @@ def league_weakness_categories(
     *,
     n_teams: int = 0,
     limit: int = 2,
+    category_z: dict[str, float] | None = None,
 ) -> list[str]:
-    """Highest league rank = weakest category for this team (bottom half when ``n_teams`` is known)."""
+    """Highest league rank = weakest category for this team (bottom half when ``n_teams`` is known;
+    ties: lower z-score first when given, so it never falls back to alphabetical order)."""
     ranks = dict(category_ranks or {})
     if not ranks:
         return []
@@ -102,7 +106,8 @@ def league_weakness_categories(
         ranks = {cat: r for cat, r in ranks.items() if int(r) > cut}
         if not ranks:
             return []
-    ordered = sorted(ranks.items(), key=lambda kv: (-int(kv[1]), kv[0]))
+    z = category_z or {}
+    ordered = sorted(ranks.items(), key=lambda kv: (-int(kv[1]), float(z.get(kv[0], 0.0)), kv[0]))
     return [cat for cat, _ in ordered[: max(1, int(limit))]]
 
 
@@ -351,7 +356,8 @@ def build_condensed_team_summary(
     elif strengths:
         summary = f"Leads with **{', '.join(strengths[:3])}**."
     elif biggest_weak:
-        summary = f"Biggest improvement opportunities: **{', '.join(weaknesses[:3])}**."
+        summary = (f"Biggest improvement opportunities: **{', '.join(weaknesses[:3])}** "
+                   "(furthest below the league average).")
     else:
         summary = "Balanced roster profile across categories."
     return {
