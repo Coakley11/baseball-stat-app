@@ -1951,9 +1951,12 @@ def _render_u4_draft_lab_answer(team_summary, pick_analysis, *, total_picks, fro
     kicker = "Your completed live draft" if from_live else "Draft Lab · simulated draft"
     u1.answer_card(st, answer["headline"], answer["body"], kicker=kicker)
     u1.metric_tiles(st, answer["tiles"])
+    from draft_lab_state import draft_lab_tab_label
+
     u1.action_row(st, [
-        ("Team Analysis", lambda: st.session_state.__setitem__("draft_lab_active_tab", "Team Analysis")),
-        ("Best / Questionable Picks", lambda: st.session_state.__setitem__("draft_lab_active_tab", "Best / Questionable Picks")),
+        (draft_lab_tab_label("Team Analysis"), lambda: st.session_state.__setitem__("draft_lab_active_tab", "Team Analysis")),
+        (draft_lab_tab_label("Best / Questionable Picks"),
+         lambda: st.session_state.__setitem__("draft_lab_active_tab", "Best / Questionable Picks")),
         (_u1_act("Draft Assistant Simulator", "Draft Assistant"), _u1_nav_cb("Draft Assistant Simulator")),
     ], key="draft-lab", primary=None)
 
@@ -22371,8 +22374,9 @@ elif active_page == DRAFT_LAB_PAGE:
             draft_lab_board_display_columns,
             format_snake_draft_caption,
         )
-        from draft_lab_state import DRAFT_LAB_RESULT_TABS, draft_lab_roster_view_options
+        from draft_lab_state import DRAFT_LAB_RESULT_TABS, draft_lab_roster_view_options, draft_lab_tab_label
     except ImportError:
+        draft_lab_tab_label = str
         FANTASY_EDGE_HELP = ""
         DRAFT_LAB_RESULT_TABS = (
             "Draft Board",
@@ -22461,6 +22465,7 @@ elif active_page == DRAFT_LAB_PAGE:
             key="draft_lab_active_tab",
             label_visibility="collapsed",
             on_change=_draft_lab_tab_changed,
+            format_func=draft_lab_tab_label,  # icons for display; the value stays the plain tab name
         )
 
         _ctx = analysis_context_from_session(st.session_state, lab_state)

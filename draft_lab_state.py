@@ -17,6 +17,21 @@ DRAFT_LAB_RESULT_TABS: tuple[str, ...] = (
     "Exports",
 )
 
+# Display icons for the result tabs (action_icons, the app's original icons where one exists). The tab
+# values themselves stay plain, so saved results and the "Team Analysis" handoff keep working.
+def _tab_icons() -> dict[str, str]:
+    import action_icons as icons
+
+    return {"Draft Board": icons.BOARD, "Team Rosters": icons.ROSTER, "Team Analysis": icons.ANALYZE,
+            "Best / Questionable Picks": icons.REVIEW, "Exports": icons.EXPORT}
+
+
+def draft_lab_tab_label(tab: str) -> str:
+    """``"📈 Team Analysis"`` for display (``format_func``); the stored value is still ``"Team Analysis"``."""
+    icon = _tab_icons().get(str(tab), "")
+    return f"{icon} {tab}" if icon else str(tab)
+
+
 _LAB_WINDOW_OPTIONS = [3, 4, 5]
 _LAB_FORMAT_OPTIONS = ["5x5 Roto", "Points League"]
 
