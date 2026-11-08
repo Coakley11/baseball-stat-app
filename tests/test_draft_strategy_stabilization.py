@@ -189,6 +189,29 @@ def _panel_script() -> None:
     draft_queue_panel.render_draft_strategy_panel(st, ss, ss["live_draft_room"], viewer_team="Team A")
 
 
+def _keyed_panel_script() -> None:
+    import streamlit as st
+
+    import draft_queue_panel
+    from tests.test_draft_queue_modes import _room, _session
+
+    ss = st.session_state
+    if "live_draft_room" not in ss:
+        for k, v in _session(_room()).items():
+            ss[k] = v
+    ss.setdefault("_expander_keys", [])
+
+    class _Recorder:
+        def __getattr__(self, name):
+            return getattr(st, name)
+
+        def expander(self, *args, **kwargs):
+            ss["_expander_keys"].append(kwargs.get("key"))
+            return st.expander(*args, **kwargs)
+
+    draft_queue_panel.render_draft_strategy_panel(_Recorder(), ss, ss["live_draft_room"], viewer_team="Team A")
+
+
 def _labels(at) -> list[str]:
     return [str(e.label) for e in list(at.expander) + list(at.status)]
 
@@ -206,6 +229,20 @@ class PanelStabilityTests(unittest.TestCase):
             self.assertEqual(_labels(at), first)  # same expander identity, so it stays open
             self.assertTrue(any("Roster-aware strategy · Adaptive queue" in str(c.value) for c in at.caption))
             self.assertEqual(at.session_state["draft_queue"][0], "Speed One")  # the queue is untouched
+
+    def test_the_panel_expander_always_has_the_same_key(self) -> None:
+        # Streamlit 1.59 builds a keyed expander's block id from the key alone, so the browser keeps
+        # it (open) however the page above it changes. AppTest does not expose block ids; record the
+        # key passed to st.expander instead.
+        with mock.patch("draft_strategy_store.list_strategies", return_value=[]):
+            at = AppTest.from_function(_keyed_panel_script, default_timeout=60)
+            at.run()
+            at.selectbox(key=APPROACH_KEY).select("value_based").run()
+            at.radio(key=dqm.MODE_KEY).set_value("adaptive").run()
+            self.assertFalse(at.exception)
+            keys = list(at.session_state["_expander_keys"])
+            self.assertGreaterEqual(len(keys), 3)
+            self.assertEqual(set(keys), {"ldr_dq_panel"})
 
     def test_label_has_no_changing_settings(self) -> None:
         self.assertEqual(draft_queue_panel.PANEL_LABEL, "Draft Strategy")
