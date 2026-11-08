@@ -299,7 +299,7 @@ PAGES: tuple[PageHelp, ...] = (
         questions=("What can I do on this page?",),
         sources=("draft_strategy_ui.py", "draft_strategy_pro_ui.py", MONOLITH),
         aliases=("draft strategy", "strategy assistant", "saved strategies", "draft plan", "pro strategy"),
-        headline="Turn your research into draft plans: your Global Queue, plus Pro strategies with their own queues.",
+        headline="Turn your research into a draft plan: build a queue, save it as a strategy, load it into any draft.",
         reading=("Your **Global Queue** is your general-purpose queue. Each Pro strategy keeps its own queue, notes, "
                  "research and preferences; editing one never changes another or your Global Queue, and you "
                  "**Save** or **Discard** its changes. Drafting never removes anyone: a drafted player is marked in "
