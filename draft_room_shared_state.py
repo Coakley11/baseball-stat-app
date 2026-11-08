@@ -53,6 +53,10 @@ _PRIVATE_DOCUMENT_KEYS = frozenset(
         "draft_queue_adaptive",
         "_draft_strategy_loaded",
         "draft_strategy_approach",
+        # Pro strategy working copies and the open strategy (draft_strategy_work).
+        "_draft_strategy_work",
+        "_draft_strategy_open_id",
+        "draft_plan_source",
     }
 )
 

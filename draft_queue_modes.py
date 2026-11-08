@@ -508,8 +508,9 @@ def _fmt_proj(value: float | None, kind: str) -> str:
 def explain_move(
     name: str, from_rank: int, to_rank: int, fixed_rank: int | None, facts: dict[str, Any],
     approach: str, needs: dict[str, Any], snapshot: dict[str, Any], session: dict[str, Any],
-    passed: list[str],
+    passed: list[str], notes: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    """``notes`` is a strategy plan's notes (draft_plan_source); None means the Global Queue's."""
     from draft_strategy_in_draft import LABELS
 
     up = to_rank < from_rank
@@ -539,10 +540,10 @@ def explain_move(
     if up and passed:
         reasons.append("Moves ahead of " + ", ".join(passed[:3]) + (" (and others)" if len(passed) > 3 else "")
                        + ", whom you ranked higher.")
-    note = notes_for(session).get(_low(name))
+    note = (notes if notes is not None else notes_for(session)).get(_low(name))
     if note:
         reasons.append(f"Your note: “{note}”.")
-    for m in moves_for(session, name)[-1:]:
+    for m in (moves_for(session, name) if notes is None else [])[-1:]:
         verb = "up" if m["to"] < m["from"] else "down"
         reasons.append(f"You moved him {verb} yourself (#{m['from']} → #{m['to']}).")
     saved = snapshot.get("saved_strategy") if isinstance(snapshot.get("saved_strategy"), dict) else None
@@ -600,6 +601,22 @@ def _snapshot(session: dict[str, Any], queue: list[str], room: dict[str, Any] | 
     }
 
 
+def _global_queue(session: dict[str, Any]) -> list[str]:
+    from draft_state import DRAFT_QUEUE_KEY, _normalize_player_list
+
+    return _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
+
+
+def _strategy_snapshot(session: dict[str, Any], strategy_plan: dict[str, Any], room: dict[str, Any] | None,
+                       approach: str) -> dict[str, Any]:
+    snap = _snapshot(session, list(strategy_plan.get("queue") or []), room, approach)
+    snap.update({"saved_strategy": {"id": strategy_plan.get("id"), "name": strategy_plan.get("name"),
+                                    "approach": strategy_plan.get("approach")},
+                 "pins": list(strategy_plan.get("pins") or []), "notes": dict(strategy_plan.get("notes") or {}),
+                 "moves": [], "plan_source": "strategy"})
+    return snap
+
+
 def draft_state(session: dict[str, Any], source: str) -> dict[str, Any] | None:
     st = _states(session).get(source)
     return st if isinstance(st, dict) else None
@@ -620,21 +637,30 @@ def refresh(session: dict[str, Any], room: dict[str, Any] | None, team: str, *, 
     from draft_queue_contract import split_queue_for_active_draft
     from draft_strategy_in_draft import current_approach
 
-    if source is None:
+    import draft_plan_source as dps
+
+    explicit = source is not None
+    if not explicit:
         source = draft_source(session)
-        fixed_available, drafted_here = split_queue_for_active_draft(session)
+    # The draft's plan: the Global Queue, or this draft's copy of a saved Pro strategy.
+    strategy_plan = dps.current(session, source) if source else None
+    plan_list = list(strategy_plan.get("queue") or []) if strategy_plan else None
+    if not explicit:
+        fixed_available, drafted_here = split_queue_for_active_draft(session, queue=plan_list)
     else:
         from draft_state import DRAFT_QUEUE_KEY, _normalize_player_list
 
         taken = {_low(e.get("fullName") or e.get("Player")) for e in _board(room)}
-        queue = _normalize_player_list(session.get(DRAFT_QUEUE_KEY))
+        queue = _normalize_player_list(plan_list if plan_list is not None else session.get(DRAFT_QUEUE_KEY))
         fixed_available = [q for q in queue if _low(q) not in taken]
         drafted_here = [q for q in queue if _low(q) in taken]
     approach = current_approach(session)
     mode = current_mode(session)
     view = {"source": source, "mode": mode, "approach": approach, "fixed": fixed_available,
             "drafted_here": drafted_here, "adaptive": list(fixed_available), "history": [], "suggestions": [],
-            "needs": {}, "snapshot": None, "facts": {}}
+            "needs": {}, "snapshot": None, "facts": {},
+            "plan_source": ({"kind": "strategy", "id": strategy_plan.get("id"), "name": strategy_plan.get("name"),
+                             "edited": bool(strategy_plan.get("edited"))} if strategy_plan else {"kind": "global"})}
     if not source:
         return view
     states = _states(session)
@@ -648,8 +674,16 @@ def refresh(session: dict[str, Any], room: dict[str, Any] | None, team: str, *, 
         states[source] = state
         for stale in list(states)[:-MAX_DRAFTS]:
             states.pop(stale, None)
+    if not isinstance(state.get("snapshot"), dict):  # the plan was just changed (draft_plan_source.choose)
+        state["snapshot"] = (_strategy_snapshot(session, strategy_plan, room, approach) if strategy_plan else
+                             _snapshot(session, _global_queue(session), room, approach))
     view["snapshot"] = state["snapshot"]
-    pins = [p for p in plan(session)["pins"] if _low(p) in {_low(x) for x in fixed_available}]
+    if strategy_plan:
+        pin_keys = set(strategy_plan.get("pins") or [])
+        pins = [n for n in fixed_available if _low(n) in pin_keys]
+    else:
+        pins = [p for p in plan(session)["pins"] if _low(p) in {_low(x) for x in fixed_available}]
+    plan_notes = dps.notes(strategy_plan) if strategy_plan else None
     # JSON-friendly (the state is saved with the workspace), so a restored state still matches.
     sig = [picks, [_low(x) for x in fixed_available], approach, sorted(_low(p) for p in pins), str(team or ""), mode]
     board = _board_fingerprint(room)
@@ -706,7 +740,8 @@ def refresh(session: dict[str, Any], room: dict[str, Any] | None, team: str, *, 
             # Players the user ranked above him whom he is now ahead of.
             passed = [n for n in fixed_available[: fixed_rank[_low(name)] - 1] if _low(n) in below_now]
             event = explain_move(name, before, i, fixed_rank.get(_low(name)), scores.get(_low(name)) or {},
-                                 approach, needs, state["snapshot"], session, passed if i < before else [])
+                                 approach, needs, state["snapshot"], session, passed if i < before else [],
+                                 notes=plan_notes)
             event.update({"pick": picks, "trigger": trigger, "at": _now()})
             state["history"].append(event)
         del state["history"][:-MAX_HISTORY]
@@ -824,8 +859,16 @@ def restore_snapshot_to_queue(session: dict[str, Any], *, confirmed: bool) -> li
     """Put this draft's saved original plan back as the Fixed queue (explicit and confirmed)."""
     if not confirmed:
         raise ValueError("Confirm before replacing your queue with the saved original plan.")
-    state = draft_state(session, draft_source(session))
+    source = draft_source(session)
+    state = draft_state(session, source)
     players = list(((state or {}).get("snapshot") or {}).get("players") or [])
+    import draft_plan_source as dps
+
+    strategy_plan = dps.current(session, source)
+    if strategy_plan is not None:  # a strategy plan: reset this draft's copy, never the Global Queue
+        strategy_plan["queue"] = list(players)
+        strategy_plan["edited"] = True
+        return players
     if players:
         from draft_state import sync_draft_queue
 
