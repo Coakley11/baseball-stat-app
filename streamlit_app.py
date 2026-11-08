@@ -12482,15 +12482,15 @@ try:
 except ImportError:
     pass
 try:
-    # Navigation icons: Material Symbols on the page labels (sidebar list, buttons, captions). The
-    # emoji labels above stay readable for saved sessions (_PAGE_LABEL_TO_KEY keeps them).
+    # Navigation labels keep their original colourful emoji (above). The Material Symbols labels
+    # a short-lived redesign showed (":material/home: Home", ...) are only read back, never shown,
+    # so a session saved with one still opens its page.
     from feature_identity import material_icon as _material_icon, plain_name as _plain_name
 
     for _page_key, _label in list(PAGE_OPTION_LABELS.items()):
         _mi = _material_icon(_page_key)
         if _mi:
-            PAGE_OPTION_LABELS[_page_key] = f"{_mi} {_plain_name(_label)}"
-    _PAGE_LABEL_TO_KEY.update({label: key for key, label in PAGE_OPTION_LABELS.items()})
+            _PAGE_LABEL_TO_KEY.setdefault(f"{_mi} {_plain_name(_label)}", _page_key)
 except ImportError:
     _plain_name = lambda label: str(label)  # noqa: E731
 
