@@ -1064,11 +1064,19 @@ def build_draft_score_metrics_html(
     """Labeled draft metrics block for profile cards."""
 
     def _line(label: str, value: str) -> str:
-        # One fact per cell: a small label over its value (same words and values as before).
+        # One fact per cell: a small label over its value (same words and values as before), with hover text
+        # saying what it measures and how to read the number.
+        try:
+            from draft_score_display import score_explanation
+
+            tip = html.escape(score_explanation(label), quote=True)
+        except ImportError:
+            tip = ""
+        title = f' title="{tip}"' if tip else ""
         if not value or value == "Not available":
-            return (f'<div class="bb-fact"><span class="bb-fact-l">{label}</span>'
+            return (f'<div class="bb-fact"{title}><span class="bb-fact-l">{label}</span>'
                     f'<span class="bb-profile-na">Not available</span></div>')
-        return (f'<div class="bb-fact"><span class="bb-fact-l">{label}</span>'
+        return (f'<div class="bb-fact"{title}><span class="bb-fact-l">{label}</span>'
                 f'<span class="ld-rec-grade bb-fact-v">{value}</span></div>')
 
     lines: list[str] = []

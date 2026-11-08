@@ -490,3 +490,26 @@ def format_detail_line(internal_col: str, val: Any) -> tuple[str, str]:
         except (TypeError, ValueError):
             return internal_col, str(val)
     return internal_col, str(val) if val is not None else "—"
+
+
+# How to read each card metric: what it measures and its scale (owner review, 2026-11-08).
+SCORE_SCALES: dict[str, str] = {
+    DISPLAY_PICK_SCORE: "Higher is better; compare players at this pick (top values can pass 100).",
+    DISPLAY_PLAYER_GRADE: "0–100: expected fantasy value across the player pool.",
+    DISPLAY_ROSTER_FIT: "Higher is better; how much the player adds to your roster as it stands now.",
+    "Positional Scarcity": "0–1: higher means strong players at that position are running out.",
+    "Market Rank": "Where drafters usually take the player (ADP); lower is earlier.",
+    "Model Rank": "Where this app's model ranks the player; lower is better.",
+}
+SCORE_TOOLTIPS.setdefault(
+    "Positional Scarcity", "How few strong players are left at this player's position compared with others."
+)
+SCORE_TOOLTIPS.setdefault("Market Rank", "The typical draft position (ADP) in public drafts.")
+SCORE_TOOLTIPS.setdefault("Model Rank", "The rank by this app's projections and model.")
+
+
+def score_explanation(label: str) -> str:
+    """One sentence: what the metric measures and how to read its number (hover text on the cards)."""
+    what = SCORE_TOOLTIPS.get(label, "")
+    scale = SCORE_SCALES.get(label, "")
+    return " ".join(x for x in (what, scale) if x)

@@ -2211,6 +2211,15 @@ def render_live_draft_rec_cards(
             badge_pool = filter_df_excluding_drafted(_entry.get("df"), room)
     except Exception:
         badge_pool = None
+    try:  # Phones have no hover, so the card metrics are also explained here (collapsed: one line).
+        from draft_score_display import SCORE_SCALES, SCORE_TOOLTIPS
+
+        with st.expander("What do these scores mean?", expanded=False):
+            for _lbl in ("Decision Score", "Player Grade", "Roster Fit Score", "Positional Scarcity"):
+                st.markdown(f"**{_lbl}:** {SCORE_TOOLTIPS.get(_lbl, '')} _{SCORE_SCALES.get(_lbl, '')}_")
+            st.caption("Badges explain one standout reason each; hover or long-press a badge for its rule.")
+    except Exception:
+        pass
 
     # First interactive paint: arm the pick clock here, not from the sidebar.
     try:
