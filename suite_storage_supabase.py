@@ -1334,7 +1334,14 @@ def load_saved_items(
     app: str | None = None,
     item_type: str | None = None,
     limit: int = 100,
+    item_key: str | None = None,
+    use_cache: bool | None = None,
 ) -> list[dict[str, Any]]:
+    """Valid saved items for the scoped user, newest first.
+
+    ``item_key`` narrows to one item; ``use_cache=False`` bypasses the per-session read cache
+    (a fresh read before a conditional write, e.g. draft_strategy_v2.save_strategy_v2).
+    """
     from suite_workspace import logical_storage_app_key
 
     allowed = set(_workspace_storage_app_keys())
@@ -1351,7 +1358,9 @@ def load_saved_items(
         params["app"] = f"in.({','.join(sorted(allowed))})"
     if item_type:
         params["item_type"] = f"eq.{item_type}"
-    rows = _request("GET", _TABLE_SAVED, params=params, prefer="return=representation")
+    if item_key:
+        params["item_key"] = f"eq.{item_key}"
+    rows = _request("GET", _TABLE_SAVED, params=params, prefer="return=representation", use_cache=use_cache)
     if not isinstance(rows, list):
         return []
     out: list[dict[str, Any]] = []
