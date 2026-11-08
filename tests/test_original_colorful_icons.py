@@ -7,13 +7,16 @@ Pins, against the pre-redesign Dev revision 6442d8d:
 - page keys and label -> page resolution are unchanged (including labels saved during the redesign);
 - the Live Draft controls and the Saved Draft Library / completion buttons carry their original
   emoji in the label and no Material icon, with the same keys.
-Icons the redesign added where no original existed are out of scope here (left for the owner).
+Second pass (owner rule 2026-11-08): every important action carries a colourful emoji from one
+mapping (action_icons), the same icon for the same action everywhere, and no Material Symbol remains.
 """
 
 from __future__ import annotations
 
+import ast
 import inspect
 import unittest
+from pathlib import Path
 
 import feature_identity as fi
 import mobile_nav_m2 as nav
@@ -148,10 +151,147 @@ class ActionButtonTests(unittest.TestCase):
             "use **⭐ Set Active League** to manage this league.",
         ):
             self.assertIn(text, src)
-        self.assertNotIn("_icons.SET_ACTIVE", src)
+        import action_icons
+
+        self.assertEqual(action_icons.SET_ACTIVE, "⭐")  # any icon= Set Active shows the same star
         save = inspect.getsource(lib.render_live_draft_completion_panel)
         self.assertIn('key=f"{key_prefix}_save_btn",', save)
-        self.assertNotIn("icon=_icons.SAVE", save)
+        self.assertNotIn("icon=_icons.SAVE", save)  # its 📁 is in the label
+
+
+# --- second pass (owner rule 2026-11-08): every important action has a colourful icon -------------
+
+ROOT = Path(__file__).resolve().parents[1]
+_WIDGETS = {"button", "form_submit_button", "link_button", "download_button", "popover", "expander"}
+
+
+def _widget_icons(filename: str) -> dict[str, list[str]]:
+    """{first-argument label (or <expr>): [resolved icon, ...]} for every widget call in a module."""
+    import action_icons
+
+    tree = ast.parse((ROOT / filename).read_text(encoding="utf-8"))
+    out: dict[str, list[str]] = {}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _WIDGETS):
+            continue
+        arg = node.args[0] if node.args else None
+        if isinstance(arg, ast.Constant):
+            label = str(arg.value)
+        else:
+            label = "<" + (ast.unparse(arg) if arg is not None else "") + ">"
+        icon = next((k.value for k in node.keywords if k.arg == "icon"), None)
+        if icon is None:
+            value = ""
+        elif isinstance(icon, ast.Constant):
+            value = str(icon.value)
+        else:
+            try:
+                value = str(eval(ast.unparse(icon), {"_icons": action_icons}))  # noqa: S307 - our own source
+            except Exception:
+                value = "<" + ast.unparse(icon) + ">"
+        out.setdefault(label, []).append(value)
+    return out
+
+
+class OwnerNamedActionTests(unittest.TestCase):
+    def test_the_owner_named_icons(self) -> None:
+        import action_icons as icons
+
+        self.assertEqual(icons.ADD_TO_QUEUE, "⭐")
+        self.assertEqual(icons.COMPARE, "⚖️")
+        self.assertEqual(icons.TREND, "🔥")
+        self.assertEqual(icons.DRAFT_PLAYER, "🔴")
+        self.assertEqual(icons.HOME, "🏠")
+        for name in ("WATCHLIST", "IMPORT", "ROSTER", "SETTINGS", "SIMULATE_PICK", "STRATEGY", "SAVE", "OPEN"):
+            self.assertNotIn(":material/", getattr(icons, name), name)
+
+    def test_player_actions_menu(self) -> None:
+        import action_icons as icons
+
+        src = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
+        table = next(
+            n for n in ast.parse(src).body
+            if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "_PLAYER_ACTION_ICONS" for t in n.targets)
+        )
+        mapping = eval(ast.unparse(table.value), {"_icons": icons})  # noqa: S307 - our own source
+        self.assertEqual(mapping["add_draft_queue"], "⭐")
+        self.assertEqual(mapping["add_watchlist"], icons.WATCHLIST)
+        self.assertEqual(mapping["draft_player"], "🔴")
+        # Compare / Trend buttons carry their page label, which opens with the original emoji.
+        self.assertIn('(page_option_label("Comparison Tool"), "Send to Comparison Tool", "send_comparison")', src)
+        self.assertIn('(page_option_label("Trend Value"), "Send to Trend Page", "send_trends")', src)
+        app = _widget_icons("streamlit_app.py")
+        self.assertEqual(app["Simulate Draft Pick"], [icons.SIMULATE_PICK] * 2)
+        self.assertEqual(app["Projection breakdown"], [icons.PROJECTION] * 2)
+        self.assertEqual(app["<label>"].count("<_PLAYER_ACTION_ICONS.get(slug)>"), 6)
+
+    def test_compare_and_trend_are_the_same_icons_everywhere(self) -> None:
+        import action_icons as icons
+
+        waiver = _widget_icons("fantasy_waiver_wire_ui.py")
+        self.assertEqual(waiver["Compare"], ["⚖️"])
+        self.assertEqual(waiver["See trend"], ["🔥"])
+        self.assertEqual(icons.COMPARE, fi.feature("Comparison Tool").icon)
+        self.assertEqual(icons.TREND, fi.feature("Trend Value").icon)
+
+    def test_draft_room_simulator_sections(self) -> None:
+        src = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
+        self.assertIn(
+            'st.tabs([f"{_icons.BOARD} Board", f"{_icons.ROSTER} Rosters & grades", f"{_icons.SETTINGS} League setup"])',
+            src,
+        )
+        app = _widget_icons("streamlit_app.py")
+        self.assertEqual(app["Import existing draft"], ["📥"])
+        self.assertEqual(app["Import Draft"], ["📥"])
+        self.assertEqual(app["Draft Player"], ["🔴"])  # the board's Draft Player popover
+        self.assertEqual(app["Save Draft Board Now"], ["💾"])
+        self.assertEqual(app["Run 4-Team Draft Simulation"], ["🧪"])
+        self.assertEqual(app["Set player on pick"], ["🔴"])
+
+    def test_every_draft_pick_button_uses_the_one_draft_icon(self) -> None:
+        draft_ui = _widget_icons("draft_ui.py")
+        self.assertEqual(draft_ui["Draft Player"], ["🔴"] * 4)
+        self.assertEqual(draft_ui["<label>"].count("<draft_icon>"), 3)  # render_draft_button: 🔴 unless the label has it
+        self.assertIn("draft_icon = None if str(label).startswith(_icons.DRAFT_PLAYER) else _icons.DRAFT_PLAYER",
+                      (ROOT / "draft_ui.py").read_text(encoding="utf-8"))
+        self.assertIn('btn_label = "🔴 Draft Player"', (ROOT / "live_draft_room_ui.py").read_text(encoding="utf-8"))
+
+    def test_add_to_queue_is_the_gold_star_everywhere(self) -> None:
+        self.assertEqual(_widget_icons("draft_strategy_ui.py")["Add to Queue"], ["⭐"])
+        self.assertEqual(_widget_icons("draft_queue_panel.py")["Add"], ["⭐"])
+        self.assertEqual(_widget_icons("live_draft_room_ui.py")["Queued"], ["⭐"])
+        for name in ("draft_ui.py", "live_draft_room_ui.py"):
+            self.assertIn('"⭐ Add to Queue",', (ROOT / name).read_text(encoding="utf-8"), name)
+
+    def test_no_material_symbols_remain_on_actions(self) -> None:
+        """No widget passes a :material/…: icon; only the legacy read-back table spells one."""
+        allow = {
+            "feature_identity.py": "legacy page labels read back to their page, never shown",
+            "streamlit_app.py": "one comment naming the legacy labels",
+        }
+        for path in sorted(ROOT.glob("*.py")):
+            if path.name.startswith("Old"):
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if ":material/" not in text:
+                continue
+            self.assertIn(path.name, allow, path.name)
+            for icons in _widget_icons(path.name).values():
+                for icon in icons:
+                    self.assertFalse(icon.startswith(":material/"), (path.name, icon))
+        app_lines = (ROOT / "streamlit_app.py").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(sum(":material/" in line for line in app_lines), 1)
+
+    def test_widget_icons_are_valid_streamlit_icons(self) -> None:
+        from streamlit.string_util import validate_icon_or_emoji
+
+        for name in ("streamlit_app.py", "draft_ui.py", "draft_archive_ui.py", "draft_strategy_ui.py",
+                     "draft_queue_panel.py", "fantasy_waiver_wire_ui.py", "fantasy_trade_center_ui.py",
+                     "live_draft_setup_ui.py", "suite_auth.py", "live_draft_control_center_ui.py", "ui_confirm.py"):
+            for label, icons in _widget_icons(name).items():
+                for icon in icons:
+                    if icon and not icon.startswith("<"):
+                        self.assertEqual(validate_icon_or_emoji(icon), icon, (name, label))
 
 
 if __name__ == "__main__":
