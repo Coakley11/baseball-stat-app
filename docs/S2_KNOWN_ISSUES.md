@@ -2,7 +2,7 @@
 
 ## KI-1 · Global Queue still says "Loaded from <strategy>" after that strategy is deleted
 
-**Status:** open. Scheduled for a later focused correction (owner, 2026-11-08). Not a release blocker.
+**Status:** fixed on `fix/s2-stale-loaded-strategy` (not deployed). The owner raised it from cosmetic to a focused correction on 2026-11-08: a deleted strategy must stop acting as an active source.
 
 **Seen in:** browser QA of the Slice 2 candidate on the QA project (qa_other). The Global Queue was replaced
 from a strategy; the strategy was later deleted, then permanently deleted. The Global Queue section kept the
@@ -34,3 +34,48 @@ strategies (live or deleted), or any other account.
 3. Restore from Recently deleted does not bring the caption back unless the Global Queue is reloaded from it.
 4. Tests: delete → reload shows no caption; permanent delete; second device; restore; notes no longer
    carried into a new strategy.
+
+## KI-1 fix (2026-11-08)
+
+**Confirmed cause:** the Delete button dropped the record only in the browser session and never scheduled
+a workspace save, so a reload restored it from the saved workspace. Permanent delete, the older delete path
+and deletions on another device never dropped it at all.
+
+**Changes:**
+- `draft_strategy_store.forget_loaded(session, strategy_id=None)` drops the record and marks the workspace
+  for the end-of-run save (`draft_queue_modes.mark_personal_change`).
+- `active_loaded_record` / `reconcile_loaded_strategy` keep the record only while its strategy is live
+  for this account:
+  - confirmed gone: the record is dropped;
+  - access refused or storage unreachable: the record is not treated as active that run, but is kept,
+    because a transient failure never erases anything.
+- Every delete path:
+  - the Pro editor's Delete and the store's `delete_strategy` drop the record when it names that strategy;
+  - permanent delete re-checks what is live, because a copy kept before Restore Original shares the live
+    strategy's id.
+- Checked before anything reads the record:
+  - the Draft Strategy page (before the Global Queue caption and notes are drawn);
+  - the Adaptive panel (before explanations are built);
+  - `draft_strategy_work.create` (a new strategy from the Global Queue);
+  - AMI, which uses `active_loaded_record` (A1).
+- **Drafts already in progress keep their own history.** Their "original plan" says the strategy was
+  deleted since:
+  - a Global Queue draft adds "its notes are no longer used";
+  - a strategy-copy draft adds "this draft keeps its own copy". Its Save back is refused, because the
+    strategy no longer exists.
+
+**Unchanged:**
+- the Global Queue's players, order and its own notes;
+- other strategies;
+- the deleted strategy's notes, pins and research (kept in Recently deleted).
+
+Restore brings the strategy back under its id with its notes, pins and research, and changes nothing else.
+It does not make it the Global Queue's source again; loading it again does that.
+
+**Another device:** the deletion takes effect at the next refresh on this one (the strategy list read
+cache lasts for the browser session, as it does for the page's own strategy list).
+
+**Tests:**
+- `tests/test_deleted_strategy_references.py` (17);
+- `tests/test_draft_strategy_page.py`: 2 page tests (the Delete button, deletion on another device). Both
+  fail on 255db97 and pass with the fix.

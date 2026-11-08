@@ -297,6 +297,10 @@ def _render_plan(st: Any, session: dict[str, Any], pool_fn) -> dict[str, Any]:
 def render_draft_strategy_page(st: Any, session: dict[str, Any], *, pool_fn=None) -> None:
     """``pool_fn`` returns the canonical projection pool scored for the active team (optional)."""
     can_use, reason, is_pro = _access(st, session)
+    if can_use:  # a deleted strategy stops being the Global Queue's "loaded from" source (KI-1)
+        from draft_strategy_store import reconcile_loaded_strategy
+
+        reconcile_loaded_strategy(session)
     if is_pro:
         st.caption("♟️ **PRO** · included in your plan")
     elif can_use:

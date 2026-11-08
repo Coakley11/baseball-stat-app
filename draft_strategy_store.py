@@ -334,6 +334,7 @@ def delete_strategy(session: dict[str, Any], strategy_id: str, *, confirmed: boo
     import draft_strategy_v2 as v2
 
     v2.soft_delete(session, strategy_id, confirmed=True)
+    forget_loaded(session, strategy_id)
 
 
 LOADED_KEY = "_draft_strategy_loaded"
@@ -351,6 +352,68 @@ def loaded_record(strategy: dict[str, Any], queue: list[str]) -> dict[str, Any]:
                   if str(p.get("note") or "").strip()},
         "queue": list(queue),
     }
+
+
+def forget_loaded(session: dict[str, Any], strategy_id: str | None = None) -> bool:
+    """Drop the "loaded from" record (all of it, or only when it names ``strategy_id``) and mark
+    the workspace for the end-of-run save. Returns True when something was dropped.
+
+    The record is a session copy of where the Global Queue came from. Dropping it never touches the
+    Global Queue's players, order or its own notes, or any stored strategy, trash row or research.
+    """
+    loaded = session.get(LOADED_KEY)
+    if loaded is None:
+        return False
+    if strategy_id is not None and isinstance(loaded, dict) and str(loaded.get("id") or "") != str(strategy_id):
+        return False
+    session.pop(LOADED_KEY, None)
+    try:
+        from draft_queue_modes import mark_personal_change
+
+        mark_personal_change(session)
+    except ImportError:
+        pass
+    return True
+
+
+def active_loaded_record(session: dict[str, Any], *, strategies: list[dict[str, Any]] | None = None
+                         ) -> dict[str, Any] | None:
+    """The "loaded from" record only while its strategy is a live (not deleted) strategy of this account.
+
+    * The strategy is confirmed gone (deleted here or on another device, purged): the record is
+      dropped (``forget_loaded``), so it stops feeding the caption, Adaptive notes and new strategies.
+      The deleted strategy keeps its own notes, pins and research in Recently deleted.
+    * Access refused (signed out, not entitled) or storage unreachable: None for this run, and the
+      record is kept, because a transient failure must never erase anything.
+    """
+    loaded = session.get(LOADED_KEY)
+    if not isinstance(loaded, dict) or not loaded.get("id"):
+        if loaded is not None:
+            forget_loaded(session)  # malformed: it can't name a strategy
+        return None
+    if strategies is None:
+        try:
+            _require_access(session)
+        except StrategyError:
+            return None
+        try:
+            strategies = list_strategies(session)
+        except StrategyError:
+            return None
+    live = {str(s.get("id")) for s in strategies if isinstance(s, dict) and s.get("id")}
+    if str(loaded["id"]) in live:
+        return loaded
+    forget_loaded(session)
+    return None
+
+
+def reconcile_loaded_strategy(session: dict[str, Any], *, strategies: list[dict[str, Any]] | None = None) -> None:
+    """Call before anything reads the "loaded from" record in a run (the page, the Adaptive panel,
+    new strategies from the Global Queue, AMI). Never raises."""
+    try:
+        active_loaded_record(session, strategies=strategies)
+    except Exception:
+        pass
 
 
 def load_strategy(session: dict[str, Any], strategy_id: str, *, confirm_replace: bool = False) -> dict[str, Any]:

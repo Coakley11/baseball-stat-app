@@ -58,6 +58,25 @@ STRATEGY_PLAN_RULE = (
 )
 
 
+def _live_strategy_ids(session: dict[str, Any]) -> set[str] | None:
+    """Ids of this account's live (not deleted) strategies; None when they can't be read (signed out,
+    not entitled, storage unreachable). Also drops a "loaded from" record whose strategy is gone (KI-1),
+    before the panel builds Adaptive explanations from the Global Queue's notes."""
+    try:
+        import draft_strategy_store as store
+
+        store._require_access(session)
+        live = store.list_strategies(session)
+    except Exception:
+        return None
+    store.reconcile_loaded_strategy(session, strategies=live)
+    return {str(s.get("id")) for s in live if isinstance(s, dict) and s.get("id")}
+
+
+def _deleted_since(live_ids: set[str] | None, strategy_id: Any) -> bool:
+    return live_ids is not None and bool(strategy_id) and str(strategy_id) not in live_ids
+
+
 def _plan_options(session: dict[str, Any]) -> dict[str, str]:
     """``{"global": "Global Queue", <id>: <name>}``; strategies only when the store allows access."""
     out = {"global": "Global Queue"}
@@ -241,9 +260,13 @@ def _render_original(st: Any, session: dict[str, Any], view: dict[str, Any], kp:
     from draft_strategy_in_draft import LABELS
 
     saved = snap.get("saved_strategy") or {}
+    gone = _deleted_since(view.get("live_strategy_ids"), saved.get("id"))
     st.caption(f"Saved when this draft started ({snap.get('taken_at', '—')}) · strategy "
                f"{LABELS.get(snap.get('approach'), snap.get('approach') or '—')}"
-               + (f" · saved strategy “{saved.get('name')}”" if saved.get("name") else ""))
+               + (f" · saved strategy “{saved.get('name')}”" if saved.get("name") else "")
+               + ((" (deleted since; this draft keeps its own copy)"
+                   if (view.get("plan_source") or {}).get("kind") == "strategy"
+                   else " (deleted since; its notes are no longer used)") if gone else ""))
     if players:
         st.markdown("  \n".join(f"{i}. {p}" for i, p in enumerate(players, start=1)))
     else:
@@ -371,9 +394,13 @@ def render_draft_strategy_panel(st: Any, session: dict[str, Any], room: dict[str
     if session.get(dqm.MODE_KEY) not in dqm.MODES:
         session[dqm.MODE_KEY] = "fixed"
     # Widget values are already in the session at the start of the run, so one refresh is enough.
+    live_ids = _live_strategy_ids(session)  # before refresh: explanations read the Global Queue's notes
     view = dqm.refresh(session, room, viewer_team, source=source)
+    view["live_strategy_ids"] = live_ids
     plan_src = view.get("plan_source") or {}
     plan_txt = f" · following **{plan_src.get('name')}**" if plan_src.get("kind") == "strategy" else ""
+    if plan_txt and _deleted_since(live_ids, plan_src.get("id")):
+        plan_txt += " (deleted since; this draft keeps its own copy)"
     st.caption(f"Your draft plan: **{status_line(session)}**{plan_txt}")
     # A key gives the expander a block id from the key alone (Streamlit 1.59), so it is the same
     # expander whatever moves above it: it stays open when a change inside it reruns the page.
