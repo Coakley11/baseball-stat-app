@@ -323,14 +323,17 @@ def duplicate_strategy(session: dict[str, Any], strategy_id: str, new_name: str 
 
 
 def delete_strategy(session: dict[str, Any], strategy_id: str, *, confirmed: bool) -> None:
+    """Move the strategy to Recently deleted (recoverable for 30 days; draft_strategy_v2.soft_delete)."""
     from strategy_deletion_guard import PAUSED_MESSAGE, deletion_allowed
 
-    if not deletion_allowed():  # Slice 0: no strategy is removed until recoverable deletion exists
+    if not deletion_allowed():  # the Slice 0 pause doubles as a switch
         raise StrategyError(PAUSED_MESSAGE)
     if not confirmed:
         raise StrategyError("Confirm before deleting this strategy.")
     get_strategy(session, strategy_id)
-    _store_call(_backend().delete, strategy_id)
+    import draft_strategy_v2 as v2
+
+    v2.soft_delete(session, strategy_id, confirmed=True)
 
 
 LOADED_KEY = "_draft_strategy_loaded"

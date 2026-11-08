@@ -41,13 +41,21 @@ SCHEMA_VERSION = 2
 ITEM_TYPE = store.ITEM_TYPE
 BACKUP_ITEM_TYPE = "draft_strategy_v1_backup"
 RESEARCH_ITEM_TYPE = "draft_strategy_research"
-MAX_BYTES = 32 * 1024
-QUEUE_MAX = 120
+# 300 players with a full-length note on every one is ~370 KB (notes are kept twice: in ``notes`` and
+# in the v1 ``players`` mirror); a typical 300-player strategy with notes on a third is ~190 KB.
+# Measured on a 227 KB strategy: one edit ~13 ms, JSON encode ~2 ms. These caps only refuse growth:
+# a stored strategy that is already larger still loads, edits that shrink it still save, and
+# nothing is ever trimmed on read or save.
+MAX_BYTES = 512 * 1024
+QUEUE_MAX = 300
 NOTE_MAX = 500
 PINS_MAX = 25
 EDITS_MAX = 50
 RESEARCH_MAX = 100
 RESEARCH_TEXT_MAX = 1000
+TRASH_ITEM_TYPE = "draft_strategy_trash"
+RECOVERY_DAYS = 30
+ID_OK, ID_AMBIGUOUS = "ok", "ambiguous"
 NOTE_SOURCES = ("user", "ami_confirmed")
 _SOURCE_MAX = 40
 _PREF_KEY_MAX = 40
@@ -80,6 +88,9 @@ def _entry(raw: Any, *, added_at: str, source: str) -> dict[str, str] | None:
         "team": _text(raw.get("team"), 20),
         "added_at": _text(raw.get("added_at"), 40) or added_at,
         "source": _text(raw.get("source"), _SOURCE_MAX) or source,
+        # Stable MLBAM id when it resolved unambiguously offline (draft_strategy_ids); "" otherwise.
+        "mlbam_id": _text(raw.get("mlbam_id"), 20),
+        "id_status": _text(raw.get("id_status"), 20),
     }
 
 
@@ -144,7 +155,7 @@ def _reconcile_mirror(s: dict[str, Any], raw_players: Any) -> None:
         text = str(p.get("note") or "").strip()
         key = player_key(p.get("name"))
         if text and text != str((s["notes"].get(key) or {}).get("text") or ""):
-            s["notes"][key] = {"text": text[:NOTE_MAX], "updated_at": stamp, "source": "user"}
+            s["notes"][key] = {**(s["notes"].get(key) or {}), "text": text, "updated_at": stamp, "source": "user"}
 
 
 def _dedupe(entries: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -164,10 +175,13 @@ def _clean_notes(raw: Any) -> dict[str, dict[str, str]]:
             v = {"text": v}
         if not isinstance(v, dict):
             continue
-        key, text = player_key(k), str(v.get("text") or "").strip()[:NOTE_MAX]
+        # Stored text is never trimmed (NOTE_MAX applies to new notes only).
+        key, text = player_key(k), str(v.get("text") or "").strip()
         if key and text:
             src = v.get("source") if v.get("source") in NOTE_SOURCES else "user"
             out[key] = {"text": text, "updated_at": str(v.get("updated_at") or ""), "source": src}
+            if str(v.get("mlbam_id") or "").strip():
+                out[key]["mlbam_id"] = str(v["mlbam_id"]).strip()[:20]
     return out
 
 
@@ -196,7 +210,7 @@ def upgrade(row: dict[str, Any]) -> dict[str, Any]:
         k = player_key(p)
         if k in queued and k not in pins:
             pins.append(k)
-    s["pins"] = pins[:PINS_MAX]
+    s["pins"] = pins  # never trimmed on read; PINS_MAX only refuses new pins
     for key in ("priorities", "preferences", "settings", "context"):
         s[key] = s.get(key) if isinstance(s.get(key), dict) else {}
     s["explanations"] = [str(x) for x in s.get("explanations") or []][:20] if isinstance(s.get("explanations"), list) else []
@@ -207,13 +221,27 @@ def upgrade(row: dict[str, Any]) -> dict[str, Any]:
     return s
 
 
+def note_for(strategy: dict[str, Any], name: Any, mlbam_id: Any = None) -> dict[str, str] | None:
+    """A player's note: by stable MLBAM id first (survives a name change), then by name key."""
+    notes = strategy.get("notes") or {}
+    mid = str(mlbam_id or "").strip()
+    if mid:
+        for note in notes.values():
+            if isinstance(note, dict) and str(note.get("mlbam_id") or "") == mid:
+                return note
+    note = notes.get(player_key(name))
+    return note if isinstance(note, dict) else None
+
+
 def encoded_size(s: dict[str, Any]) -> int:
     return len(json.dumps(s, separators=(",", ":"), ensure_ascii=False, default=str).encode("utf-8"))
 
 
-def check_size(s: dict[str, Any], what: str = "This strategy") -> None:
+def check_size(s: dict[str, Any], what: str = "This strategy", *, before: dict[str, Any] | None = None) -> None:
+    """Refuse a strategy over MAX_BYTES, unless it is no larger than ``before`` (an existing large
+    strategy may still be reordered, trimmed or renamed; only growth past the cap is refused)."""
     size = encoded_size(s)
-    if size > MAX_BYTES:
+    if size > MAX_BYTES and (before is None or size > encoded_size(before)):
         raise StrategyError(f"{what} is too large to save ({size // 1024 + 1} KB; the limit is "
                             f"{MAX_BYTES // 1024} KB). Remove some players or shorten notes.")
 
@@ -253,7 +281,7 @@ def _apply(strategy: dict[str, Any], op: dict[str, Any], mutate: Callable[[dict[
     s["revision"] = before["revision"] + 1
     s["edits"] = (s["edits"] + [{"rev": s["revision"], "at": at or store._now(), "ops": [op],
                                  "actor": _text(actor, _SOURCE_MAX) or "user"}])[-EDITS_MAX:]
-    check_size(s)
+    check_size(s, before=before)
     return s
 
 
@@ -347,6 +375,9 @@ def set_note(strategy: dict[str, Any], name: str, text: str, *, source: str = "u
             s["notes"].pop(key, None)
         elif (s["notes"].get(key) or {}).get("text") != body or s["notes"][key].get("source") != source:
             s["notes"][key] = {"text": body, "updated_at": stamp, "source": source}
+            entry = next((e for e in s["queue"] if player_key(e["name"]) == key), None)
+            if entry and entry.get("mlbam_id") and entry.get("id_status") == ID_OK:
+                s["notes"][key]["mlbam_id"] = entry["mlbam_id"]
 
     return _apply(strategy, {"op": "set_note", "player": key, "source": source}, m, actor=actor, at=stamp)
 
@@ -406,6 +437,17 @@ def set_preferences(strategy: dict[str, Any], values: dict[str, Any], *, actor: 
     """Merge ``values`` into ``preferences`` (a ``None`` value removes that preference)."""
     return _apply(strategy, {"op": "set_preferences", "keys": sorted(values or {})},
                   _merge_values("preferences", values), actor=actor, at=at)
+
+
+def set_approach(strategy: dict[str, Any], approach: str, *, actor: str = "user", at: str | None = None) -> dict[str, Any]:
+    """The strategy's own ranking approach (what Adaptive uses when this strategy is a draft's plan)."""
+    if approach not in store.APPROACHES:
+        raise StrategyError("Choose one of the listed approaches.")
+
+    def m(s: dict[str, Any]) -> None:
+        s["approach"] = approach
+
+    return _apply(strategy, {"op": "set_approach", "approach": approach}, m, actor=actor, at=at)
 
 
 def rename(strategy: dict[str, Any], new_name: str, *, actor: str = "user", at: str | None = None) -> dict[str, Any]:
@@ -485,7 +527,7 @@ def save_strategy_v2(session: dict[str, Any], strategy: dict[str, Any], base_rev
     s["updated_at"] = now
     if stored is not None and store._schema_version(stored) < SCHEMA_VERSION and not s["provenance"].get("migrated_at"):
         s["provenance"]["migrated_at"] = now
-    check_size(s)
+    check_size(s, before=stored)
     if stored is not None and store._schema_version(stored) < SCHEMA_VERSION:
         backups = store._backend(BACKUP_ITEM_TYPE)
         if _fetch(backups, s["id"]) is None:
@@ -526,3 +568,173 @@ def append_research(session: dict[str, Any], strategy_id: str, text: str, *, kin
     check_size(payload, "This research log")
     store._store_call(backend.put, strategy_id, str(strategy.get("name") or strategy_id), payload)
     return entry
+
+
+# --- recoverable deletion and restore -------------------------------------------------------------
+#
+# A deleted strategy moves to its own item type (``draft_strategy_trash``, one row per deletion,
+# key ``<strategy id>~<deleted_at>``) and its row is removed from ``draft_strategy``. Releases that
+# predate trash only read ``draft_strategy``, so a deleted strategy never reappears there, and
+# nothing is lost: Restore moves it back. Trash rows older than RECOVERY_DAYS are purged when the
+# owner lists their own Recently deleted strategies (lazily; there is no background job). A
+# permanent delete, and the purge, also remove the strategy's research and v1-backup rows unless
+# the strategy (or another deleted copy of it) still exists.
+
+
+def _parse_ts(value: Any):
+    from datetime import datetime, timezone
+
+    try:
+        dt = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _delete(backend: Any, key: str) -> None:
+    store._store_call(backend.delete, key)
+
+
+def _to_trash(stored: dict[str, Any], *, reason: str, at: str) -> dict[str, Any]:
+    sid = str(stored.get("id") or "")
+    row = {"schema_version": 1, "trash_id": f"{sid}~{at}", "strategy_id": sid,
+           "name": str(stored.get("name") or ""), "deleted_at": at, "reason": reason,
+           "strategy": copy.deepcopy(stored)}
+    store._store_call(store._backend(TRASH_ITEM_TYPE).put, row["trash_id"], row["name"] or sid, row)
+    return row
+
+
+def _check_base(stored: dict[str, Any], base_revision: int | None, base_updated_at: str | None) -> None:
+    """Refuse when the stored row changed since the caller's copy (when the caller passed one)."""
+    if base_revision is None and base_updated_at is None:
+        return
+    stored_rev = upgrade(stored)["revision"] if store._schema_version(stored) >= SCHEMA_VERSION else 0
+    if (base_revision is not None and stored_rev != int(base_revision)) or (
+            base_updated_at is not None and str(stored.get("updated_at") or "") != str(base_updated_at)):
+        raise StrategyError("This strategy was changed somewhere else (another tab or device) since you "
+                            "opened it. Reload it first; nothing was changed.")
+
+
+def soft_delete(session: dict[str, Any], strategy_id: str, *, confirmed: bool,
+                base_revision: int | None = None, base_updated_at: str | None = None) -> dict[str, Any]:
+    """Move a strategy to Recently deleted (recoverable for RECOVERY_DAYS). Returns the trash row."""
+    if not confirmed:
+        raise StrategyError("Confirm before deleting this strategy.")
+    store._require_access(session)
+    backend = store._backend(ITEM_TYPE)
+    stored = _fetch(backend, strategy_id)
+    if stored is None:
+        raise StrategyError("That strategy no longer exists.")
+    _check_base(stored, base_revision, base_updated_at)
+    row = _to_trash(stored, reason="deleted", at=store._now())  # the copy first: a failed delete loses nothing
+    _delete(backend, strategy_id)
+    return row
+
+
+def _trash_rows(session: dict[str, Any]) -> list[dict[str, Any]]:
+    store._require_access(session)
+    rows = store._store_call(store._backend(TRASH_ITEM_TYPE).all)
+    return [r for r in rows or [] if isinstance(r, dict) and r.get("trash_id") and isinstance(r.get("strategy"), dict)]
+
+
+def _drop_side_rows_if_orphaned(session: dict[str, Any], strategy_id: str, *, ignore_trash_id: str = "") -> None:
+    if not strategy_id or _fetch(store._backend(ITEM_TYPE), strategy_id) is not None:
+        return
+    if any(r.get("strategy_id") == strategy_id and r.get("trash_id") != ignore_trash_id for r in _trash_rows(session)):
+        return
+    for item_type in (RESEARCH_ITEM_TYPE, BACKUP_ITEM_TYPE):
+        backend = store._backend(item_type)
+        if _fetch(backend, strategy_id) is not None:
+            _delete(backend, strategy_id)
+
+
+def list_trash(session: dict[str, Any], *, now: str | None = None) -> list[dict[str, Any]]:
+    """Recently deleted strategies, newest first, each with ``days_left``. Purges expired rows."""
+    from datetime import timedelta
+
+    current = _parse_ts(now or store._now())
+    keep = []
+    for row in _trash_rows(session):
+        deleted = _parse_ts(row.get("deleted_at"))
+        expires = (deleted + timedelta(days=RECOVERY_DAYS)) if deleted else None
+        if expires is not None and current is not None and current >= expires:
+            _delete(store._backend(TRASH_ITEM_TYPE), row["trash_id"])
+            _drop_side_rows_if_orphaned(session, str(row.get("strategy_id") or ""), ignore_trash_id=row["trash_id"])
+            continue
+        if expires is not None and current is not None:
+            remaining = expires - current
+            left = remaining.days + (1 if remaining.seconds else 0)
+        else:
+            left = RECOVERY_DAYS
+        keep.append({**row, "days_left": max(0, left)})
+    return sorted(keep, key=lambda r: str(r.get("deleted_at") or ""), reverse=True)
+
+
+def _trash_row(session: dict[str, Any], trash_id: str) -> dict[str, Any]:
+    row = _fetch(store._backend(TRASH_ITEM_TYPE), trash_id)
+    if not isinstance(row, dict) or not isinstance(row.get("strategy"), dict):
+        raise StrategyError("That deleted strategy is no longer available.")
+    return row
+
+
+def restore_from_trash(session: dict[str, Any], trash_id: str) -> dict[str, Any]:
+    """Put a deleted strategy back. If its id or name is taken again, it comes back as a copy."""
+    import uuid
+
+    store._require_access(session)
+    row = _trash_row(session, trash_id)
+    saved = copy.deepcopy(row["strategy"])
+    backend = store._backend(ITEM_TYPE)
+    if _fetch(backend, str(saved.get("id"))) is not None:  # e.g. the version kept before Restore Original
+        saved["id"] = uuid.uuid4().hex[:12]
+        prov = saved.get("provenance") if isinstance(saved.get("provenance"), dict) else {}
+        saved["provenance"] = {**prov, "created_from": f"restored_copy:{row.get('strategy_id')}"}
+    names = {str(s.get("name") or "").lower() for s in store.list_strategies(session)}
+    base = str(saved.get("name") or "Strategy")
+    name, n = base, 1
+    while name.lower() in names:
+        n += 1
+        name = f"{base} (restored)" if n == 2 else f"{base} (restored {n - 1})"
+    saved["name"] = name[:store.NAME_MAX]
+    store._store_call(backend.put, str(saved["id"]), saved["name"], saved)  # back first, then out of the trash
+    _delete(store._backend(TRASH_ITEM_TYPE), trash_id)
+    return saved
+
+
+def permanent_delete(session: dict[str, Any], trash_id: str, *, confirmed: bool) -> None:
+    """Delete a Recently deleted strategy for good (separately confirmed). Its research and v1
+    backup go too, unless the strategy itself, or another deleted copy of it, still exists."""
+    if not confirmed:
+        raise StrategyError("Confirm before deleting this strategy permanently.")
+    store._require_access(session)
+    row = _trash_row(session, trash_id)
+    _delete(store._backend(TRASH_ITEM_TYPE), trash_id)
+    _drop_side_rows_if_orphaned(session, str(row.get("strategy_id") or ""), ignore_trash_id=trash_id)
+
+
+def restore_original_version(session: dict[str, Any], strategy_id: str, *, confirmed: bool,
+                             base_revision: int | None = None, base_updated_at: str | None = None) -> dict[str, Any]:
+    """Bring back the strategy as it was before its first v2 save (the v1 backup).
+
+    The current version is kept under Recently deleted first (reason ``before_restore_original``),
+    so newer work is never lost, and the usual revision/updated_at check still applies."""
+    if not confirmed:
+        raise StrategyError("Confirm before restoring the original version.")
+    store._require_access(session)
+    backup = get_v1_backup(session, strategy_id)
+    if not isinstance(backup, dict) or not isinstance(backup.get("strategy"), dict):
+        raise StrategyError("There is no original version saved for this strategy.")
+    stored = _fetch(store._backend(ITEM_TYPE), strategy_id)
+    if stored is None:
+        raise StrategyError("That strategy no longer exists.")
+    _check_base(stored, base_revision, base_updated_at)
+    current = upgrade(stored)
+    original = upgrade({**copy.deepcopy(backup["strategy"]), "id": strategy_id})
+    now = store._now()
+    restored = {**original, "revision": current["revision"] + 1, "updated_at": current["updated_at"],
+                "created_at": current["created_at"] or original["created_at"],
+                "provenance": {**original["provenance"], "restored_original_at": now},
+                "edits": (current["edits"] + [{"rev": current["revision"] + 1, "at": now,
+                                               "ops": [{"op": "restore_original"}], "actor": "user"}])[-EDITS_MAX:]}
+    _to_trash(stored, reason="before_restore_original", at=now)
+    return save_strategy_v2(session, restored, current["revision"])
