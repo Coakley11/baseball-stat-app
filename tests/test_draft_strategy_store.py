@@ -120,9 +120,13 @@ class LibraryTests(_Base):
         dss.update_strategy(s, a["id"], confirm_overwrite=True)
         self.assertEqual([p["name"] for p in dss.get_strategy(s, a["id"])["players"]], ["New Guy"])
         self.assertEqual(len(dss.get_strategy(s, copy_["id"])["players"]), 10)  # the copy is independent
-        with self.assertRaises(dss.StrategyError):
-            dss.delete_strategy(s, a["id"], confirmed=False)
-        dss.delete_strategy(s, a["id"], confirmed=True)
+        with self.assertRaises(dss.StrategyError):  # Slice 0: deletion is paused
+            dss.delete_strategy(s, a["id"], confirmed=True)
+        self.assertEqual(len(dss.list_strategies(s)), 2)
+        with mock.patch("strategy_deletion_guard.DELETION_PAUSED", False):  # the delete path itself, for when Slice 2 lifts the pause
+            with self.assertRaises(dss.StrategyError):
+                dss.delete_strategy(s, a["id"], confirmed=False)
+            dss.delete_strategy(s, a["id"], confirmed=True)
         self.assertEqual([x["id"] for x in dss.list_strategies(s)], [copy_["id"]])
 
     def test_saving_an_empty_queue_is_refused(self) -> None:
@@ -168,7 +172,8 @@ class BackendTests(unittest.TestCase):
             b = dss._CloudBackend()
             b.put("k", "Name", {"id": "k"})
             self.assertEqual(b.all(), [{"id": "x"}])
-            b.delete("k")
+            with mock.patch("strategy_deletion_guard.DELETION_PAUSED", False):
+                b.delete("k")
         self.assertEqual(up.call_args.args[:3], ("baseball", "draft_strategy", "k"))
         self.assertEqual(load.call_args.kwargs["item_type"], "draft_strategy")
         self.assertEqual(inv.call_args.args, ("baseball", "draft_strategy", "k"))
@@ -179,7 +184,8 @@ class BackendTests(unittest.TestCase):
                 b = dss._LocalBackend()
                 b.put("k", "Name", {"id": "k", "name": "Name"})
                 self.assertEqual(b.all(), [{"id": "k", "name": "Name"}])
-                b.delete("k")
+                with mock.patch("strategy_deletion_guard.DELETION_PAUSED", False):
+                    b.delete("k")
                 self.assertEqual(b.all(), [])
 
 

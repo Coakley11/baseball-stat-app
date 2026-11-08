@@ -1311,6 +1311,12 @@ def invalidate_browser_auth_session(session_id: str) -> dict[str, Any]:
 
 
 def invalidate_saved_item(app: str, item_type: str, item_key: str) -> None:
+    try:
+        from strategy_deletion_guard import assert_strategy_deletion_allowed
+    except ImportError:  # pragma: no cover - module ships with this file
+        assert_strategy_deletion_allowed = None
+    if assert_strategy_deletion_allowed is not None:
+        assert_strategy_deletion_allowed(item_type)  # Draft Strategies cannot be removed (Slice 0)
     app_key = _scoped_storage_app(app)
     key = str(item_key or "").strip()
     itype = str(item_type or "item").strip() or "item"

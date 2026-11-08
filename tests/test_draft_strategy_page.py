@@ -98,9 +98,13 @@ class DraftStrategyPageTests(unittest.TestCase):
         _click(at, "Update strategy")
         saved = next(iter(json.loads(self.path.read_text(encoding="utf-8")).values()))
         self.assertEqual([p["name"] for p in saved["players"]], ["Juan Soto", "Bobby Witt"])
-        _click(at, "Delete strategy")
-        self.assertTrue(self.path.read_text(encoding="utf-8").count("Plan"))  # still there until confirmed
-        _click(at, "Delete")
+        delete_btn = next(b for b in at.button if b.label == "Delete strategy")
+        self.assertTrue(delete_btn.disabled)  # Slice 0: deletion is paused (strategy_deletion_guard)
+        with mock.patch("strategy_deletion_guard.DELETION_PAUSED", False):  # the confirm-then-delete flow, for when Slice 2 lifts the pause
+            at.run()
+            _click(at, "Delete strategy")
+            self.assertTrue(self.path.read_text(encoding="utf-8").count("Plan"))  # still there until confirmed
+            _click(at, "Delete")
         self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {})
 
     def test_duplicate_and_rename(self) -> None:

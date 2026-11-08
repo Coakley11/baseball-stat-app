@@ -1,0 +1,4440 @@
+{
+ "source": "feature/pro-strategy-queues@55dd6f3",
+ "files": {
+  "draft_strategies.json": {
+   "9b8377ae4915": {
+    "schema_version": 1,
+    "id": "9b8377ae4915",
+    "name": "Legacy v1",
+    "approach": "balanced",
+    "players": [
+     {
+      "rank": 1,
+      "name": "Bobby Witt Jr.",
+      "player_id": "",
+      "position": "",
+      "note": "speed"
+     },
+     {
+      "rank": 2,
+      "name": "Gunnar Henderson",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     }
+    ],
+    "explanations": [],
+    "context": {},
+    "created_at": "2026-11-08T14:10:07+00:00",
+    "updated_at": "2026-11-08T14:10:07+00:00"
+   },
+   "d4cb99c04e10": {
+    "schema_version": 2,
+    "id": "d4cb99c04e10",
+    "name": "Big",
+    "approach": "balanced",
+    "queue": [
+     {
+      "name": "Aaron Judge",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "592450",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 0",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900000",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 1",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900001",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 2",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900002",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 3",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900003",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 4",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900004",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 5",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900005",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 6",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900006",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 7",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900007",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 8",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900008",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 9",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900009",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 10",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900010",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 11",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900011",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 12",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900012",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 13",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900013",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 14",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900014",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 15",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900015",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 16",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900016",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 17",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900017",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 18",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900018",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 19",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900019",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 20",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900020",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 21",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900021",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 22",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900022",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 23",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900023",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 24",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900024",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 25",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900025",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 26",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900026",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 27",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900027",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 28",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900028",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 29",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900029",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 30",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900030",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 31",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900031",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 32",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900032",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 33",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900033",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 34",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900034",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 35",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900035",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 36",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900036",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 37",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900037",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 38",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900038",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 39",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900039",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 40",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900040",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 41",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900041",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 42",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900042",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 43",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900043",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 44",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900044",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 45",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900045",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 46",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900046",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 47",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900047",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 48",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900048",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 49",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900049",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 50",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900050",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 51",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900051",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 52",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900052",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 53",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900053",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 54",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900054",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 55",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900055",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 56",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900056",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 57",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900057",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 58",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900058",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 59",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900059",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 60",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900060",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 61",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900061",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 62",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900062",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 63",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900063",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 64",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900064",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 65",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900065",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 66",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900066",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 67",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900067",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 68",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900068",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 69",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900069",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 70",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900070",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 71",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900071",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 72",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900072",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 73",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900073",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 74",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900074",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 75",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900075",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 76",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900076",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 77",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900077",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 78",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900078",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 79",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900079",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 80",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900080",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 81",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900081",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 82",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900082",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 83",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900083",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 84",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900084",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 85",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900085",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 86",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900086",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 87",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900087",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 88",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900088",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 89",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900089",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 90",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900090",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 91",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900091",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 92",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900092",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 93",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900093",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 94",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900094",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 95",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900095",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 96",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900096",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 97",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900097",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 98",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900098",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 99",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900099",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 100",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900100",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 101",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900101",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 102",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900102",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 103",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900103",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 104",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900104",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 105",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900105",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 106",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900106",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 107",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900107",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 108",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900108",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 109",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900109",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 110",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900110",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 111",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900111",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 112",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900112",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 113",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900113",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 114",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900114",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 115",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900115",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 116",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900116",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 117",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900117",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 118",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900118",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 119",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900119",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 120",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900120",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 121",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900121",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 122",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900122",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 123",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900123",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 124",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900124",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 125",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900125",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 126",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900126",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 127",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900127",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 128",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900128",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 129",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900129",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 130",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900130",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 131",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900131",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 132",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900132",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 133",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900133",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 134",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900134",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 135",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900135",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 136",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900136",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 137",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900137",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 138",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900138",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 139",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900139",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 140",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900140",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 141",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900141",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 142",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900142",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 143",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900143",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 144",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900144",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 145",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900145",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 146",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900146",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 147",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900147",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 148",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900148",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 149",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900149",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 150",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900150",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 151",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900151",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 152",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900152",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 153",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900153",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 154",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900154",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 155",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900155",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 156",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900156",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 157",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900157",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 158",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900158",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 159",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900159",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 160",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900160",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 161",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900161",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 162",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900162",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 163",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900163",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 164",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900164",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 165",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900165",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 166",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900166",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 167",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900167",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 168",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900168",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 169",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900169",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 170",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900170",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 171",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900171",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 172",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900172",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 173",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900173",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 174",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900174",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 175",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900175",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 176",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900176",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 177",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900177",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 178",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900178",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 179",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900179",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 180",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900180",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 181",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900181",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 182",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900182",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 183",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900183",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 184",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900184",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 185",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900185",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 186",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900186",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 187",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900187",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 188",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900188",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 189",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900189",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 190",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900190",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 191",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900191",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 192",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900192",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 193",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900193",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 194",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900194",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 195",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900195",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 196",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900196",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 197",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900197",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 198",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900198",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 199",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900199",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 200",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900200",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 201",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900201",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 202",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900202",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 203",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900203",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 204",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900204",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 205",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900205",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 206",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900206",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 207",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900207",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 208",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900208",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 209",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900209",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 210",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900210",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 211",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900211",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 212",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900212",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 213",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900213",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 214",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900214",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 215",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900215",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 216",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900216",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 217",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900217",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 218",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900218",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 219",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900219",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 220",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900220",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 221",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900221",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 222",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900222",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 223",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900223",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 224",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900224",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 225",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900225",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 226",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900226",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 227",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900227",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 228",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900228",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 229",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900229",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 230",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900230",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 231",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900231",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 232",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900232",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 233",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900233",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 234",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900234",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 235",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900235",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 236",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900236",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 237",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900237",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 238",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900238",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 239",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900239",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 240",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900240",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 241",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900241",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 242",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900242",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 243",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900243",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 244",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900244",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 245",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900245",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 246",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900246",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 247",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900247",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 248",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900248",
+      "id_status": "ok"
+     },
+     {
+      "name": "Player 249",
+      "player_id": "",
+      "position": "",
+      "team": "",
+      "added_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "900249",
+      "id_status": "ok"
+     }
+    ],
+    "context": {},
+    "created_at": "2026-11-08T14:10:07+00:00",
+    "updated_at": "2026-11-08T14:10:07+00:00",
+    "revision": 3,
+    "provenance": {
+     "migrated_from": null,
+     "migrated_at": null,
+     "created_from": "blank"
+    },
+    "notes": {
+     "aaron judge": {
+      "text": "power",
+      "updated_at": "2026-11-08T14:10:07+00:00",
+      "source": "user",
+      "mlbam_id": "592450"
+     }
+    },
+    "pins": [
+     "aaron judge"
+    ],
+    "priorities": {},
+    "preferences": {},
+    "settings": {},
+    "explanations": [],
+    "edits": [
+     {
+      "rev": 1,
+      "at": "2026-11-08T14:10:07+00:00",
+      "ops": [
+       {
+        "op": "set_note",
+        "player": "aaron judge",
+        "source": "user"
+       }
+      ],
+      "actor": "user"
+     },
+     {
+      "rev": 2,
+      "at": "2026-11-08T14:10:07+00:00",
+      "ops": [
+       {
+        "op": "pin",
+        "player": "aaron judge"
+       }
+      ],
+      "actor": "user"
+     },
+     {
+      "rev": 3,
+      "at": "2026-11-08T14:10:07+00:00",
+      "ops": [
+       {
+        "op": "move",
+        "player": "aaron judge",
+        "to": 0
+       }
+      ],
+      "actor": "user"
+     }
+    ],
+    "players": [
+     {
+      "rank": 1,
+      "name": "Aaron Judge",
+      "player_id": "",
+      "position": "",
+      "note": "power"
+     },
+     {
+      "rank": 2,
+      "name": "Player 0",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 3,
+      "name": "Player 1",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 4,
+      "name": "Player 2",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 5,
+      "name": "Player 3",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 6,
+      "name": "Player 4",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 7,
+      "name": "Player 5",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 8,
+      "name": "Player 6",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 9,
+      "name": "Player 7",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 10,
+      "name": "Player 8",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 11,
+      "name": "Player 9",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 12,
+      "name": "Player 10",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 13,
+      "name": "Player 11",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 14,
+      "name": "Player 12",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 15,
+      "name": "Player 13",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 16,
+      "name": "Player 14",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 17,
+      "name": "Player 15",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 18,
+      "name": "Player 16",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 19,
+      "name": "Player 17",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 20,
+      "name": "Player 18",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 21,
+      "name": "Player 19",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 22,
+      "name": "Player 20",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 23,
+      "name": "Player 21",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 24,
+      "name": "Player 22",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 25,
+      "name": "Player 23",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 26,
+      "name": "Player 24",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 27,
+      "name": "Player 25",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 28,
+      "name": "Player 26",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 29,
+      "name": "Player 27",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 30,
+      "name": "Player 28",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 31,
+      "name": "Player 29",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 32,
+      "name": "Player 30",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 33,
+      "name": "Player 31",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 34,
+      "name": "Player 32",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 35,
+      "name": "Player 33",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 36,
+      "name": "Player 34",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 37,
+      "name": "Player 35",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 38,
+      "name": "Player 36",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 39,
+      "name": "Player 37",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 40,
+      "name": "Player 38",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 41,
+      "name": "Player 39",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 42,
+      "name": "Player 40",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 43,
+      "name": "Player 41",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 44,
+      "name": "Player 42",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 45,
+      "name": "Player 43",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 46,
+      "name": "Player 44",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 47,
+      "name": "Player 45",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 48,
+      "name": "Player 46",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 49,
+      "name": "Player 47",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 50,
+      "name": "Player 48",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 51,
+      "name": "Player 49",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 52,
+      "name": "Player 50",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 53,
+      "name": "Player 51",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 54,
+      "name": "Player 52",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 55,
+      "name": "Player 53",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 56,
+      "name": "Player 54",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 57,
+      "name": "Player 55",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 58,
+      "name": "Player 56",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 59,
+      "name": "Player 57",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 60,
+      "name": "Player 58",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 61,
+      "name": "Player 59",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 62,
+      "name": "Player 60",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 63,
+      "name": "Player 61",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 64,
+      "name": "Player 62",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 65,
+      "name": "Player 63",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 66,
+      "name": "Player 64",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 67,
+      "name": "Player 65",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 68,
+      "name": "Player 66",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 69,
+      "name": "Player 67",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 70,
+      "name": "Player 68",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 71,
+      "name": "Player 69",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 72,
+      "name": "Player 70",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 73,
+      "name": "Player 71",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 74,
+      "name": "Player 72",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 75,
+      "name": "Player 73",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 76,
+      "name": "Player 74",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 77,
+      "name": "Player 75",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 78,
+      "name": "Player 76",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 79,
+      "name": "Player 77",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 80,
+      "name": "Player 78",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 81,
+      "name": "Player 79",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 82,
+      "name": "Player 80",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 83,
+      "name": "Player 81",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 84,
+      "name": "Player 82",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 85,
+      "name": "Player 83",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 86,
+      "name": "Player 84",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 87,
+      "name": "Player 85",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 88,
+      "name": "Player 86",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 89,
+      "name": "Player 87",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 90,
+      "name": "Player 88",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 91,
+      "name": "Player 89",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 92,
+      "name": "Player 90",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 93,
+      "name": "Player 91",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 94,
+      "name": "Player 92",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 95,
+      "name": "Player 93",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 96,
+      "name": "Player 94",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 97,
+      "name": "Player 95",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 98,
+      "name": "Player 96",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 99,
+      "name": "Player 97",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 100,
+      "name": "Player 98",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 101,
+      "name": "Player 99",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 102,
+      "name": "Player 100",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 103,
+      "name": "Player 101",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 104,
+      "name": "Player 102",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 105,
+      "name": "Player 103",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 106,
+      "name": "Player 104",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 107,
+      "name": "Player 105",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 108,
+      "name": "Player 106",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 109,
+      "name": "Player 107",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 110,
+      "name": "Player 108",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 111,
+      "name": "Player 109",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 112,
+      "name": "Player 110",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 113,
+      "name": "Player 111",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 114,
+      "name": "Player 112",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 115,
+      "name": "Player 113",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 116,
+      "name": "Player 114",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 117,
+      "name": "Player 115",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 118,
+      "name": "Player 116",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 119,
+      "name": "Player 117",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 120,
+      "name": "Player 118",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 121,
+      "name": "Player 119",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 122,
+      "name": "Player 120",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 123,
+      "name": "Player 121",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 124,
+      "name": "Player 122",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 125,
+      "name": "Player 123",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 126,
+      "name": "Player 124",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 127,
+      "name": "Player 125",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 128,
+      "name": "Player 126",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 129,
+      "name": "Player 127",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 130,
+      "name": "Player 128",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 131,
+      "name": "Player 129",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 132,
+      "name": "Player 130",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 133,
+      "name": "Player 131",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 134,
+      "name": "Player 132",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 135,
+      "name": "Player 133",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 136,
+      "name": "Player 134",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 137,
+      "name": "Player 135",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 138,
+      "name": "Player 136",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 139,
+      "name": "Player 137",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 140,
+      "name": "Player 138",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 141,
+      "name": "Player 139",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 142,
+      "name": "Player 140",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 143,
+      "name": "Player 141",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 144,
+      "name": "Player 142",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 145,
+      "name": "Player 143",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 146,
+      "name": "Player 144",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 147,
+      "name": "Player 145",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 148,
+      "name": "Player 146",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 149,
+      "name": "Player 147",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 150,
+      "name": "Player 148",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 151,
+      "name": "Player 149",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 152,
+      "name": "Player 150",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 153,
+      "name": "Player 151",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 154,
+      "name": "Player 152",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 155,
+      "name": "Player 153",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 156,
+      "name": "Player 154",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 157,
+      "name": "Player 155",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 158,
+      "name": "Player 156",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 159,
+      "name": "Player 157",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 160,
+      "name": "Player 158",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 161,
+      "name": "Player 159",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 162,
+      "name": "Player 160",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 163,
+      "name": "Player 161",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 164,
+      "name": "Player 162",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 165,
+      "name": "Player 163",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 166,
+      "name": "Player 164",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 167,
+      "name": "Player 165",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 168,
+      "name": "Player 166",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 169,
+      "name": "Player 167",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 170,
+      "name": "Player 168",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 171,
+      "name": "Player 169",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 172,
+      "name": "Player 170",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 173,
+      "name": "Player 171",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 174,
+      "name": "Player 172",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 175,
+      "name": "Player 173",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 176,
+      "name": "Player 174",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 177,
+      "name": "Player 175",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 178,
+      "name": "Player 176",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 179,
+      "name": "Player 177",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 180,
+      "name": "Player 178",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 181,
+      "name": "Player 179",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 182,
+      "name": "Player 180",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 183,
+      "name": "Player 181",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 184,
+      "name": "Player 182",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 185,
+      "name": "Player 183",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 186,
+      "name": "Player 184",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 187,
+      "name": "Player 185",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 188,
+      "name": "Player 186",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 189,
+      "name": "Player 187",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 190,
+      "name": "Player 188",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 191,
+      "name": "Player 189",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 192,
+      "name": "Player 190",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 193,
+      "name": "Player 191",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 194,
+      "name": "Player 192",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 195,
+      "name": "Player 193",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 196,
+      "name": "Player 194",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 197,
+      "name": "Player 195",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 198,
+      "name": "Player 196",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 199,
+      "name": "Player 197",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 200,
+      "name": "Player 198",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 201,
+      "name": "Player 199",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 202,
+      "name": "Player 200",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 203,
+      "name": "Player 201",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 204,
+      "name": "Player 202",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 205,
+      "name": "Player 203",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 206,
+      "name": "Player 204",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 207,
+      "name": "Player 205",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 208,
+      "name": "Player 206",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 209,
+      "name": "Player 207",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 210,
+      "name": "Player 208",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 211,
+      "name": "Player 209",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 212,
+      "name": "Player 210",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 213,
+      "name": "Player 211",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 214,
+      "name": "Player 212",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 215,
+      "name": "Player 213",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 216,
+      "name": "Player 214",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 217,
+      "name": "Player 215",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 218,
+      "name": "Player 216",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 219,
+      "name": "Player 217",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 220,
+      "name": "Player 218",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 221,
+      "name": "Player 219",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 222,
+      "name": "Player 220",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 223,
+      "name": "Player 221",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 224,
+      "name": "Player 222",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 225,
+      "name": "Player 223",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 226,
+      "name": "Player 224",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 227,
+      "name": "Player 225",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 228,
+      "name": "Player 226",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 229,
+      "name": "Player 227",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 230,
+      "name": "Player 228",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 231,
+      "name": "Player 229",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 232,
+      "name": "Player 230",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 233,
+      "name": "Player 231",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 234,
+      "name": "Player 232",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 235,
+      "name": "Player 233",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 236,
+      "name": "Player 234",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 237,
+      "name": "Player 235",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 238,
+      "name": "Player 236",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 239,
+      "name": "Player 237",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 240,
+      "name": "Player 238",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 241,
+      "name": "Player 239",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 242,
+      "name": "Player 240",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 243,
+      "name": "Player 241",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 244,
+      "name": "Player 242",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 245,
+      "name": "Player 243",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 246,
+      "name": "Player 244",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 247,
+      "name": "Player 245",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 248,
+      "name": "Player 246",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 249,
+      "name": "Player 247",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 250,
+      "name": "Player 248",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     },
+     {
+      "rank": 251,
+      "name": "Player 249",
+      "player_id": "",
+      "position": "",
+      "note": ""
+     }
+    ]
+   }
+  },
+  "draft_strategy_research.json": {
+   "d4cb99c04e10": {
+    "schema_version": 1,
+    "strategy_id": "d4cb99c04e10",
+    "entries": [
+     {
+      "at": "2026-11-08T14:10:07+00:00",
+      "kind": "finding",
+      "text": "Judge: 58 HR in 2025",
+      "player_key": "",
+      "source": "user"
+     }
+    ],
+    "updated_at": "2026-11-08T14:10:07+00:00"
+   }
+  },
+  "draft_strategy_trash.json": {
+   "13a8b5d64819~2026-11-08T14:10:07+00:00": {
+    "schema_version": 1,
+    "trash_id": "13a8b5d64819~2026-11-08T14:10:07+00:00",
+    "strategy_id": "13a8b5d64819",
+    "name": "Gone",
+    "deleted_at": "2026-11-08T14:10:07+00:00",
+    "reason": "deleted",
+    "strategy": {
+     "schema_version": 2,
+     "id": "13a8b5d64819",
+     "name": "Gone",
+     "approach": "balanced",
+     "queue": [
+      {
+       "name": "Juan Soto",
+       "player_id": "",
+       "position": "",
+       "team": "",
+       "added_at": "2026-11-08T14:10:07+00:00",
+       "source": "user",
+       "mlbam_id": "",
+       "id_status": ""
+      }
+     ],
+     "context": {},
+     "created_at": "2026-11-08T14:10:07+00:00",
+     "updated_at": "2026-11-08T14:10:07+00:00",
+     "revision": 0,
+     "provenance": {
+      "migrated_from": null,
+      "migrated_at": null,
+      "created_from": "blank"
+     },
+     "notes": {},
+     "pins": [],
+     "priorities": {},
+     "preferences": {},
+     "settings": {},
+     "explanations": [],
+     "edits": [],
+     "players": [
+      {
+       "rank": 1,
+       "name": "Juan Soto",
+       "player_id": "",
+       "position": "",
+       "note": ""
+      }
+     ]
+    }
+   }
+  }
+ }
+}

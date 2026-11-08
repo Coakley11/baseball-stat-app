@@ -297,7 +297,13 @@ def _render_strategy(st: Any, session: dict[str, Any], strategy: dict[str, Any],
                              use_container_width=True):
                     _run(st, store.duplicate_strategy, session, sid, ok=f"Duplicated **{strategy['name']}**.")
                     st.rerun()
-            if confirm_destructive_action(
+            from strategy_deletion_guard import PAUSED_MESSAGE, deletion_allowed
+
+            if not deletion_allowed():
+                st.button("Delete strategy", key=f"strategy_{sid}_delete_btn", icon=ICON_DELETE,
+                          use_container_width=True, disabled=True, help=PAUSED_MESSAGE)
+                st.caption(PAUSED_MESSAGE)
+            elif confirm_destructive_action(
                 st,
                 key=f"strategy_{sid}_delete_btn",
                 label="Delete strategy",

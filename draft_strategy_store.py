@@ -53,6 +53,9 @@ class _CloudBackend:
         return [r["payload"] for r in rows or [] if isinstance(r, dict) and isinstance(r.get("payload"), dict)]
 
     def delete(self, key: str) -> None:
+        from strategy_deletion_guard import assert_strategy_deletion_allowed
+
+        assert_strategy_deletion_allowed(ITEM_TYPE)
         import suite_storage_supabase as sss
 
         sss.invalidate_saved_item(APP_ID, ITEM_TYPE, key)
@@ -90,6 +93,9 @@ class _LocalBackend:
         return [v for v in self._read().values() if isinstance(v, dict)]
 
     def delete(self, key: str) -> None:
+        from strategy_deletion_guard import assert_strategy_deletion_allowed
+
+        assert_strategy_deletion_allowed(ITEM_TYPE)
         data = self._read()
         data.pop(key, None)
         self._write(data)
@@ -261,6 +267,10 @@ def duplicate_strategy(session: dict[str, Any], strategy_id: str, new_name: str 
 
 
 def delete_strategy(session: dict[str, Any], strategy_id: str, *, confirmed: bool) -> None:
+    from strategy_deletion_guard import PAUSED_MESSAGE, deletion_allowed
+
+    if not deletion_allowed():  # Slice 0: no strategy is removed until recoverable deletion exists
+        raise StrategyError(PAUSED_MESSAGE)
     if not confirmed:
         raise StrategyError("Confirm before deleting this strategy.")
     get_strategy(session, strategy_id)
