@@ -27093,6 +27093,9 @@ elif active_page == "Live Draft Room":
         # Per-run like the two flags above: set only when Team Needs paints early in this
         # run. Left over from an earlier Solo run, it hid Team Needs in a later Shared draft.
         st.session_state.pop("_live_draft_team_needs_rendered", None)
+        # Same for the Solo timer deferral: set only by a Solo run, it blocked the Recommendation
+        # Rankings recompute in a later Shared draft (empty tables while the cards were full).
+        st.session_state.pop("_solo_recs_deferred_for_timer", None)
         # Fragment path: keep early latch across ScriptRuns so remounting
         # ``st.fragment`` does not destroy the clock. Live-clock path: clear so each
         # full ScriptRun remounts the keyed component once with fresh props.
@@ -27677,7 +27680,9 @@ elif active_page == "Live Draft Room":
                                         use_container_width=True,
                                     )
                                 else:
-                                    st.caption("Rankings ready.")
+                                    from live_draft_rankings_tables import REFRESHING as _RANK_REFRESHING
+
+                                    st.caption(_RANK_REFRESHING)
                     st.session_state["_solo_full_product_tail_painted"] = True
                     st.session_state["_live_draft_rankings_early_viewport"] = True
                 except Exception as _rank_exc:
@@ -29184,6 +29189,20 @@ elif active_page == "Live Draft Room":
 
                                     _pool_for_why = room.get("pool")
                                     try:
+                                        from live_draft_rankings_tables import fill_missing_ranking_tables
+
+                                        _filled, _rank_source = fill_missing_ranking_tables(
+                                            st.session_state, room,
+                                            {"top_rec": top_rec, "best_avail": best_avail, "pos_fit": pos_fit,
+                                             "value_sleep": value_sleep},
+                                            gaps=_gaps,
+                                        )
+                                        top_rec, best_avail = _filled["top_rec"], _filled["best_avail"]
+                                        pos_fit, value_sleep = _filled["pos_fit"], _filled["value_sleep"]
+                                        st.session_state["_live_draft_rankings_source"] = _rank_source
+                                    except ImportError:
+                                        pass
+                                    try:
                                         from live_draft_ui_cache import enrich_live_draft_recommendations_with_why
 
                                         _why_tables = enrich_live_draft_recommendations_with_why(
@@ -29235,9 +29254,13 @@ elif active_page == "Live Draft Room":
                                             pos_fit = pd.DataFrame()
                                         if value_sleep is None:
                                             value_sleep = pd.DataFrame()
+                                    from live_draft_rankings_tables import empty_tab_message as _rank_empty_msg
+
                                     with rec_tabs[0]:
                                         _top_show = _live_rec_table_frame(top_rec)
                                         _top_show = _prepare_live_rec_table(_top_show)
+                                        if _top_show.empty:
+                                            st.caption(_rank_empty_msg("top_rec", gaps=_gaps))
                                         try:
                                             from live_draft_perf import PHASE_REC_SECTION, live_draft_perf_action
 
@@ -29260,6 +29283,8 @@ elif active_page == "Live Draft Room":
                                     with rec_tabs[1]:
                                         _bpa_show = _live_rec_table_frame(best_avail)
                                         _bpa_show = _prepare_live_rec_table(_bpa_show)
+                                        if _bpa_show.empty:
+                                            st.caption(_rank_empty_msg("best_avail", gaps=_gaps))
                                         render_output_table(
                                             format_fantasy_table(clean_ui_columns(_bpa_show)),
                                             key="live_draft_rec_bpa",
@@ -29269,7 +29294,7 @@ elif active_page == "Live Draft Room":
                                         )
                                     with rec_tabs[2]:
                                         if pos_fit.empty:
-                                            st.caption("No specific positional need flagged — take best value.")
+                                            st.caption(_rank_empty_msg("pos_fit", gaps=_gaps))
                                         else:
                                             _pos_show = _live_rec_table_frame(pos_fit)
                                             _pos_show = _prepare_live_rec_table(_pos_show)
@@ -29283,6 +29308,8 @@ elif active_page == "Live Draft Room":
                                     with rec_tabs[3]:
                                         _val_show = _live_rec_table_frame(value_sleep)
                                         _val_show = _prepare_live_rec_table(_val_show)
+                                        if _val_show.empty:
+                                            st.caption(_rank_empty_msg("value_sleep", gaps=_gaps))
                                         render_output_table(
                                             format_fantasy_table(clean_ui_columns(_val_show)),
                                             key="live_draft_rec_value",

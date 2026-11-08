@@ -495,6 +495,11 @@ def enrich_live_draft_recommendations_with_why(
 
     if ui_cache_key is None:
         return {name: _enrich_one(df) for name, df in tables.items()}
+    from live_draft_rankings_tables import tables_signature
+
+    # The board fingerprint alone let one run's empty tables be served for the whole pick (empty
+    # Recommendation Rankings while the cards were full). Reuse only for these same input tables.
+    ui_cache_key = (ui_cache_key, tables_signature(tables))
     entry = session.get(WHY_COLUMN_CACHE_KEY)
     if isinstance(entry, dict) and entry.get("key") == ui_cache_key:
         stored = entry.get("tables")
@@ -513,6 +518,8 @@ def enrich_live_draft_recommendations_with_why(
     except ImportError:
         pass
     enriched: dict[str, pd.DataFrame] = {name: _enrich_one(df) for name, df in tables.items()}
+    if all(frame.empty for frame in enriched.values()):
+        return enriched  # never cache "nothing"; the next run with data enriches and caches
     session[WHY_COLUMN_CACHE_KEY] = {
         "key": ui_cache_key,
         "tables": {name: frame.copy() for name, frame in enriched.items()},

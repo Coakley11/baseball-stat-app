@@ -292,19 +292,6 @@ def _live_draft_recommendations_impl(
         remember_scored_pool(session, room, scored)
     except ImportError:
         pass
-    top_recommended = scored.head(top_n)
-    best_available = safe_sort_recommendations(
-        scored, ["Decision Score", "Expected Fantasy Value"], ascending=[False, False]
-    ).head(top_n)
-    if gaps and "Primary Position" in scored.columns:
-        positional = safe_sort_recommendations(
-            scored[scored["Primary Position"].isin(gaps)],
-            ["Positional Fit", "Draft Fit Score"],
-            ascending=[False, False],
-        ).head(top_n)
-    else:
-        positional = pd.DataFrame()
-    sleepers = safe_sort_recommendations(
-        scored, ["Sleeper Score", "Draft Fit Score"], ascending=[False, False]
-    ).head(top_n)
-    return top_recommended, best_available, positional, sleepers
+    from live_draft_rankings_tables import split_recommendation_tables
+
+    return split_recommendation_tables(scored, gaps, top_n)
