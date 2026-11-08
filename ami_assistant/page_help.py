@@ -292,15 +292,20 @@ PAGES: tuple[PageHelp, ...] = (
     ),
     PageHelp(
         "Draft Strategy Assistant",
-        controls=("Preferred approach", "Strategy name", "Save strategy",
-                  "Load into queue", "Update from queue", "Rename", "Duplicate", "Delete strategy"),
+        controls=("Preferred approach", "Strategy name", "Create strategy", "Open strategy", "Save strategy",
+                  "Discard changes", "Add to this strategy", "Save note", "Add finding", "Apply preferences",
+                  "Copy Global Queue into This Strategy", "Replace Global Queue with This Strategy", "Rename",
+                  "Duplicate", "Restore Original Version", "Delete strategy", "Restore", "Delete permanently"),
         questions=("What can I do on this page?",),
-        sources=("draft_strategy_ui.py", MONOLITH),
-        aliases=("draft strategy", "strategy assistant", "saved strategies", "draft plan"),
-        headline="Turn your research into a draft plan: build a queue, save it as a strategy, load it into any draft.",
-        reading=("A saved strategy is a snapshot of your queue. Drafting never removes anyone: a drafted player is "
-                 "marked in that draft and stays in your queue, and a saved strategy never changes. **Load into "
-                 "queue** replaces the whole queue, after asking when it is not empty.",),
+        sources=("draft_strategy_ui.py", "draft_strategy_pro_ui.py", MONOLITH),
+        aliases=("draft strategy", "strategy assistant", "saved strategies", "draft plan", "pro strategy"),
+        headline="Turn your research into draft plans: your Global Queue, plus Pro strategies with their own queues.",
+        reading=("Your **Global Queue** is your general-purpose queue. Each Pro strategy keeps its own queue, notes, "
+                 "research and preferences; editing one never changes another or your Global Queue, and you "
+                 "**Save** or **Discard** its changes. Drafting never removes anyone: a drafted player is marked in "
+                 "that draft and stays in your queue. **Copy Global Queue into This Strategy** and **Replace Global "
+                 "Queue with This Strategy** show what changes and ask before replacing players. Deleted strategies "
+                 "can be restored for 30 days.",),
     ),
     PageHelp(
         "Live Draft Room",
