@@ -8,6 +8,8 @@ synchronization and persistence are untouched.
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from typing import Any
 
 import pandas as pd
@@ -49,7 +51,7 @@ def render_team_rosters(st: Any, room: dict[str, Any] | None, *, viewer_team: st
     viewer = str(viewer_team or "").strip()
     if viewer in teams:
         teams = [viewer] + [t for t in teams if t != viewer]
-    with st.expander("Team rosters", expanded=False, icon=":material/groups:"):
+    with st.expander("Team rosters", expanded=False, icon=_icons.ROSTER):
         st.caption(" · ".join(f"**{t}** {len(rosters[t])}" for t in teams))
         choice = st.selectbox(
             "Team",

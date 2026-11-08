@@ -1877,7 +1877,7 @@ def _render_u4_draft_room_answer(board, *, room_df, your_team, team_names, team_
         st.success(flash)
     open_picks = open_pick_row_options(board)
     cols = _u4_action_cols("draft-room", 4)
-    with cols[0].popover("Draft Player", use_container_width=True, disabled=not open_picks):
+    with cols[0].popover("Draft Player", use_container_width=True, disabled=not open_picks, icon=_icons.DRAFT_PLAYER):
         if open_picks:
             from draft_player_names import build_draft_player_name_index, draft_pool_display_names
 
@@ -1886,7 +1886,7 @@ def _render_u4_draft_room_answer(board, *, room_df, your_team, team_names, team_
             names = draft_pool_display_names(room_df)
             choice = st.selectbox("Player", [n for n in names if n not in drafted], index=None,
                                   placeholder="Type a name", key="u4_dr_draft_player")
-            if st.button(f"Set player on {label}", key="u4_dr_draft_player_btn", type="primary", disabled=not choice):
+            if st.button(f"Set player on {label}", key="u4_dr_draft_player_btn", type="primary", disabled=not choice, icon=_icons.DRAFT_PLAYER):
                 res = submit_board_pick_assignment(
                     st.session_state, pick_label=label, player_match=str(choice or ""),
                     pick_row_by_label=pick_label_row_map(board), name_index=build_draft_player_name_index(room_df),
@@ -1897,13 +1897,13 @@ def _render_u4_draft_room_answer(board, *, room_df, your_team, team_names, team_
                     st.rerun()
                 st.error(res.get("message") or res.get("error") or "Assignment failed.")
     cols[1].button("Import Draft", key="u4_dr_import_btn", use_container_width=True,
-                   on_click=lambda: st.session_state.__setitem__("_u4_draft_import_open", True))
+                   on_click=lambda: st.session_state.__setitem__("_u4_draft_import_open", True), icon=_icons.IMPORT)
     cols[2].button("Save Draft", key="u4_dr_save_btn", use_container_width=True, icon=_icons.SAVE,
                    type="primary" if answer["tiles"][-1][1] == "Unsaved" else "secondary",
                    help="Same as Save Draft Board Now on the Board tab.",
                    on_click=lambda: record_manual_save_button_click(st.session_state))
     cols[3].button("Open Saved Drafts", key="u4_dr_library_btn", use_container_width=True,
-                   on_click=_u1_nav_cb("Saved Draft Library"))
+                   on_click=_u1_nav_cb("Saved Draft Library"), icon=_icons.SAVE_TO_LIBRARY)
 
 
 def _render_u4_draft_assistant_answer(best_fit, best_value, summary, gaps, team):
@@ -3043,6 +3043,7 @@ def render_output_table(
                 file_name=file_name,
                 mime="text/csv",
                 width="content",
+                icon=_icons.EXPORT,
             )
             return
         except Exception:
@@ -3131,6 +3132,7 @@ def render_output_table(
         file_name=file_name,
         mime="text/csv",
         width="content",
+        icon=_icons.EXPORT,
     )
 
 
@@ -11009,6 +11011,18 @@ def _on_player_action_click(
     st.rerun()
 
 
+# One colourful icon per player action (action_icons), the same on every research and draft page.
+_PLAYER_ACTION_ICONS = {
+    "add_draft_queue": _icons.ADD_TO_QUEUE,
+    "add_watchlist": _icons.WATCHLIST,
+    "draft_player": _icons.DRAFT_PLAYER,
+    "trade_away": _icons.TRADE,
+    "acquire": _icons.ACQUIRE,
+    "plan_add": _icons.PLAN_ADD,
+    "plan_drop": _icons.PLAN_DROP,
+}
+
+
 def _render_player_action_button_row(
     player_raw: str,
     *,
@@ -11056,6 +11070,8 @@ def _render_player_action_button_row(
                     label,
                     key=f"plr_act_{act_suffix}_{slug}_button",
                     use_container_width=True,
+                    # Compare / Trend labels already open with their page emoji (⚖️ / 🔥).
+                    icon=_PLAYER_ACTION_ICONS.get(slug),
                     on_click=_on_player_action_click,
                     kwargs={**kwargs_base, "action": action},
                 )
@@ -11115,6 +11131,8 @@ def _render_player_action_button_row(
                     label,
                     key=f"plr_act_{act_suffix}_{slug}_button",
                     use_container_width=True,
+                    # Compare / Trend labels already open with their page emoji (⚖️ / 🔥).
+                    icon=_PLAYER_ACTION_ICONS.get(slug),
                     on_click=_on_player_action_click,
                     kwargs={**kwargs_base, "action": action},
                 )
@@ -11131,6 +11149,7 @@ def _render_player_action_button_row(
                         disabled=not enabled,
                         on_click=_on_player_plan_add_click,
                         kwargs={"player_raw": player_raw},
+                        icon=_PLAYER_ACTION_ICONS.get(slug),
                     )
                 elif slug == "plan_drop":
                     st.button(
@@ -11140,6 +11159,7 @@ def _render_player_action_button_row(
                         disabled=not enabled,
                         on_click=_on_player_plan_drop_click,
                         kwargs={"player_raw": player_raw},
+                        icon=_PLAYER_ACTION_ICONS.get(slug),
                     )
                 elif slug == "trade_away":
                     st.button(
@@ -11149,6 +11169,7 @@ def _render_player_action_button_row(
                         disabled=not enabled,
                         on_click=_on_player_trade_away_click,
                         kwargs={"player_raw": player_raw},
+                        icon=_PLAYER_ACTION_ICONS.get(slug),
                     )
                 else:
                     st.button(
@@ -11158,6 +11179,7 @@ def _render_player_action_button_row(
                         disabled=not enabled,
                         on_click=_on_player_acquire_click,
                         kwargs={"player_raw": player_raw},
+                        icon=_PLAYER_ACTION_ICONS.get(slug),
                     )
                 if help_text:
                     st.caption(help_text)
@@ -11231,7 +11253,7 @@ def compact_player_action_center(
     if isinstance(sim_result, dict):
         st.markdown("##### Simulate Draft Pick")
         render_draft_simulation_result(sim_result)
-        if st.button("Clear simulation", key=f"{key}_clear_draft_simulation"):
+        if st.button("Clear simulation", key=f"{key}_clear_draft_simulation", icon=_icons.CLEAR):
             st.session_state.pop(f"{key}_draft_simulation_result", None)
             st.rerun()
 
@@ -11537,7 +11559,7 @@ def player_quick_actions_popover(
     if teams and team_for_draft not in teams:
         team_for_draft = teams[0]
 
-    with st.popover(label):
+    with st.popover(label, icon=_icons.PLAYER_ACTIONS):
         if help_text:
             st.caption(help_text)
         pick = st.selectbox(
@@ -11620,6 +11642,7 @@ def player_quick_actions_popover(
                         "lookup_df": sim_lookup_df,
                         "lookup_name_col": sim_lookup_col,
                     },
+                    icon=_icons.SIMULATE_PICK,
                 )
         with extra[1]:
             if active_current:
@@ -11633,6 +11656,7 @@ def player_quick_actions_popover(
                         "projection_lookup_df": projection_lookup_df,
                         "projection_lookup_name_col": projection_lookup_name_col,
                     },
+                    icon=_icons.PROJECTION,
                 )
 
 
@@ -11672,7 +11696,7 @@ def render_contextual_player_actions(
         draft_ok = False
     act_id = _qa_key_suffix(f"{key_prefix}|{player_name}")
     flow_key_prefix = f"ctx_{act_id}"
-    with st.popover(f"Actions: {player_name}"):
+    with st.popover(f"Actions: {player_name}", icon=_icons.PLAYER_ACTIONS):
         st.caption("Active/current player" if active_current else "Historical/inactive player")
         _render_player_action_button_row(
             label,
@@ -11734,6 +11758,7 @@ def render_contextual_player_actions(
                     "projection_lookup_df": projection_lookup_df,
                     "projection_lookup_name_col": projection_lookup_name_col,
                 },
+                icon=_icons.PROJECTION,
             )
             _maybe_show_projection_breakdown_dialog(ctx_proj_key)
 
@@ -11749,6 +11774,7 @@ def render_contextual_player_actions(
                     "lookup_df": ctx_sim_lookup,
                     "lookup_name_col": ctx_sim_col,
                 },
+                icon=_icons.SIMULATE_PICK,
             )
             sim_result = st.session_state.get(ctx_sim_key)
             if isinstance(sim_result, dict):
@@ -12353,6 +12379,7 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
         "Clear Draft Queue",
         key="sidebar_clear_draft_queue",
         disabled=not bool(st.session_state.get("draft_queue")) or _skip_sidebar_queue,
+        icon=_icons.CLEAR,
     ):
         _clear_workflow_list("draft_queue")
         st.rerun()
@@ -12376,7 +12403,7 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
                 st.rerun()
         if len(watch) > 12:
             st.sidebar.caption(f"+{len(watch) - 12} more")
-        if st.sidebar.button("Clear Watchlist", key="sidebar_clear_watchlist", disabled=not bool(watch)):
+        if st.sidebar.button("Clear Watchlist", key="sidebar_clear_watchlist", disabled=not bool(watch), icon=_icons.CLEAR):
             _clear_workflow_list("draft_assistant_focus_players")
             _clear_workflow_list("workflow_favorite_targets")
             st.rerun()
@@ -12408,6 +12435,7 @@ def render_persistent_workflow_sidebar(_yearly_df_local=None):
         "Clear Tracked Players",
         key="sidebar_clear_tracked_players",
         disabled=not bool(rv or pairs or transfer_batches),
+        icon=_icons.CLEAR,
     ):
         _clear_workflow_list("workflow_recently_viewed")
         _clear_workflow_list("workflow_recent_compare_pairs")
@@ -12482,15 +12510,15 @@ try:
 except ImportError:
     pass
 try:
-    # Navigation icons: Material Symbols on the page labels (sidebar list, buttons, captions). The
-    # emoji labels above stay readable for saved sessions (_PAGE_LABEL_TO_KEY keeps them).
+    # Navigation labels keep their original colourful emoji (above). The Material Symbols labels
+    # a short-lived redesign showed (":material/home: Home", ...) are only read back, never shown,
+    # so a session saved with one still opens its page.
     from feature_identity import material_icon as _material_icon, plain_name as _plain_name
 
     for _page_key, _label in list(PAGE_OPTION_LABELS.items()):
         _mi = _material_icon(_page_key)
         if _mi:
-            PAGE_OPTION_LABELS[_page_key] = f"{_mi} {_plain_name(_label)}"
-    _PAGE_LABEL_TO_KEY.update({label: key for key, label in PAGE_OPTION_LABELS.items()})
+            _PAGE_LABEL_TO_KEY.setdefault(f"{_mi} {_plain_name(_label)}", _page_key)
 except ImportError:
     _plain_name = lambda label: str(label)  # noqa: E731
 
@@ -13998,6 +14026,7 @@ def render_contextual_page_nav(
                 "source_page": source,
                 "meta_key": f"ctx_nav_meta_{source}_{placement_key}",
             },
+            icon=_icons.OPEN,
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -14922,6 +14951,7 @@ except Exception:
                 "Resume Live Draft",
                 key="resume_live_draft_sidebar",
                 on_click=_on_resume_live_draft_sidebar,
+                icon=_icons.RESUME,
             )
     except Exception:
         pass
@@ -15866,7 +15896,7 @@ def projections_filter_changed():
 if active_page == "__ENTITLEMENT_LOADING__":
     st.title("Checking your membership…")
     st.info("Your requested page is preserved while trusted account access loads. No premium feature state has been initialized.")
-    if st.button("Retry", key="entitlement_retry"):
+    if st.button("Retry", key="entitlement_retry", icon=_icons.REFRESH):
         st.rerun()
 
 
@@ -16616,6 +16646,7 @@ elif active_page == "Career Totals":
                 type="primary",
                 key="career_hof_case_analyze_btn",
                 disabled=True,
+                icon=_icons.ANALYZE,
             )
         elif hof_target_player and not hof_target_in_results:
             st.warning(
@@ -16633,7 +16664,7 @@ elif active_page == "Career Totals":
                 )
             except ImportError:
                 pass
-            if st.button(HOF_CASE_ANALYZE_BUTTON_LABEL, type="primary", key="career_hof_case_analyze_btn"):
+            if st.button(HOF_CASE_ANALYZE_BUTTON_LABEL, type="primary", key="career_hof_case_analyze_btn", icon=_icons.ANALYZE):
                 filters_summary = summarize_career_filters(st.session_state)
                 hof_packet = build_hof_case_packet(
                     hof_target_player,
@@ -18295,6 +18326,7 @@ elif active_page == "Trend Value":
         file_name="trend_value.csv",
         mime="text/csv",
         width="content",
+        icon=_icons.EXPORT,
     )
     _trend_xfer_df = (
         trend_value_df.sort_values(selected_trend_col, ascending=False).head(250)
@@ -20549,6 +20581,7 @@ elif active_page == "Draft Assistant Simulator":
                 if st.button(
                     "Restore automatic category priorities",
                     key="da_restore_category_priorities",
+                    icon=_icons.UNDO,
                 ):
                     st.session_state["_da_restore_category_priorities"] = True
                     st.rerun()
@@ -21303,7 +21336,7 @@ elif active_page == "Draft Room Simulator":
         )
         if _import_pending:
             st.session_state.pop("_u4_draft_import_open", None)
-        with st.expander("Import existing draft", expanded=bool(_import_pending or st.session_state.get("_u4_draft_import_open"))):
+        with st.expander("Import existing draft", expanded=bool(_import_pending or st.session_state.get("_u4_draft_import_open")), icon=_icons.IMPORT):
             render_draft_room_import_block(
                 st,
                 st.session_state,
@@ -21318,7 +21351,7 @@ elif active_page == "Draft Room Simulator":
     except Exception as _import_block_exc:
         st.error(f"Draft import section failed to load: {_import_block_exc}")
 
-    dr_tab_board, dr_tab_rosters, dr_tab_setup = st.tabs(["Board", "Rosters & grades", "League setup"])
+    dr_tab_board, dr_tab_rosters, dr_tab_setup = st.tabs([f"{_icons.BOARD} Board", f"{_icons.ROSTER} Rosters & grades", f"{_icons.SETTINGS} League setup"])
 
     with dr_tab_setup:
         def _draft_room_settings_changed():
@@ -21547,7 +21580,7 @@ elif active_page == "Draft Room Simulator":
             st.button(
                 "Undo Last Pick",
                 key="draft_room_undo_last_pick_btn",
-                icon=":material/undo:",
+                icon=_icons.UNDO,
                 help="Remove the most recent simulator pick and restore the previous on-clock team.",
                 on_click=_on_undo_last_simulator_pick_click,
             )
@@ -21717,7 +21750,7 @@ elif active_page == "Draft Room Simulator":
                     submitted = st.form_submit_button(
                         "Set player on pick",
                         type="primary",
-                        icon=_icons.SIMULATE_PICK,
+                        icon=_icons.DRAFT_PLAYER,
                     )
 
                 if submitted:
@@ -21790,6 +21823,7 @@ elif active_page == "Draft Room Simulator":
                 help=("Update this saved Mock Draft's board." if st.session_state.get("saved_mock_edit_draft_id")
                       else "Save the working board shown above. It does not add it to your Saved Draft Library."),
                 on_click=_on_manual_save_click,
+                icon=_icons.SAVE,
             )
             if save_clicked:
                 record_manual_save_button_click(st.session_state)
@@ -22160,7 +22194,7 @@ elif active_page == DRAFT_LAB_PAGE:
         prepare_draft_lab_page_widgets(st.session_state)
     except ImportError:
         pass
-    with st.expander("Simulation settings", expanded=not bool(st.session_state.get("draft_lab_results"))):
+    with st.expander("Simulation settings", expanded=not bool(st.session_state.get("draft_lab_results")), icon=_icons.SETTINGS):
         with mobile_wrap_row(st, "draft-lab-top-filters"):
             lc1, lc2, lc3, lc4 = st.columns(4)
         with lc1:
@@ -22239,7 +22273,7 @@ elif active_page == DRAFT_LAB_PAGE:
     render_shared_scoring_consistency_check(yearly_df, lab_market_df, key_suffix="draft_lab")
 
     with lab_run_slot:
-        run_lab = st.button("Run 4-Team Draft Simulation", type="primary", key="run_draft_lab_simulation", icon=_icons.SIMULATE_PICK)
+        run_lab = st.button("Run 4-Team Draft Simulation", type="primary", key="run_draft_lab_simulation", icon=_icons.RUN_SIMULATION)
     if run_lab:
         try:
             from page_perf import perf_end, perf_timer
@@ -22657,6 +22691,7 @@ elif active_page == DRAFT_LAB_PAGE:
                 file_name="draft_simulation_test_mode_export.csv",
                 mime="text/csv",
                 width="content",
+                icon=_icons.EXPORT,
             )
             try:
                 excel_bytes = draft_lab_excel_export(export_frames)
@@ -22666,6 +22701,7 @@ elif active_page == DRAFT_LAB_PAGE:
                     file_name="draft_simulation_test_mode_export.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     width="content",
+                    icon=_icons.EXPORT,
                 )
             except Exception as e:
                 st.info(f"Excel export is unavailable in this environment ({e}). CSV export is ready above.")
@@ -25268,6 +25304,7 @@ elif active_page == "Live Draft Room":
                     key="live_draft_confirm_sim_start",
                     disabled=not _settings_complete,
                     on_click=on_confirm_convert_simulator_to_live,
+                    icon=_icons.START,
                 )
             with cancel_col:
                 st.button(
@@ -25335,6 +25372,7 @@ elif active_page == "Live Draft Room":
                             help="Resume the unfinished draft you saved for later.",
                             use_container_width=True,
                             on_click=on_continue_saved_click,
+                            icon=_icons.RESUME,
                         )
                     with _c2:
                         st.button(
@@ -25343,6 +25381,7 @@ elif active_page == "Live Draft Room":
                             help="Permanently discard the unfinished saved draft and start a new draft using the settings currently selected below.",
                             use_container_width=True,
                             on_click=on_replace_request_click,
+                            icon=_icons.START,
                         )
                     if st.session_state.get("_live_draft_replace_confirm_pending"):
                         st.warning(
@@ -25357,6 +25396,7 @@ elif active_page == "Live Draft Room":
                                 key="live_draft_replace_saved_confirm_btn",
                                 type="primary",
                                 on_click=on_replace_confirm_click,
+                                icon=_icons.START,
                             )
                         with _rn:
                             st.button(
@@ -25373,7 +25413,7 @@ elif active_page == "Live Draft Room":
                         and _receipt.get("failure_message")
                     ):
                         st.error(str(_receipt["failure_message"]))
-                        if st.button("Retry last resumable action", key="live_draft_resumable_op_retry_btn"):
+                        if st.button("Retry last resumable action", key="live_draft_resumable_op_retry_btn", icon=_icons.REFRESH):
                             _action = str(_receipt.get("action") or "")
                             if _action == "continue_saved":
                                 on_continue_saved_click()
@@ -25673,6 +25713,7 @@ elif active_page == "Live Draft Room":
                 disabled=_start_disabled,
                 help=_start_help or None,
                 on_click=on_start_new_live_draft,
+                icon=_icons.START,
             )
             try:
                 from live_draft_start_stage1_observability import emit_start_button_value
@@ -25700,6 +25741,7 @@ elif active_page == "Live Draft Room":
                 "End/Delete Draft",
                 key="live_draft_reset_btn",
                 help="Permanently discard any leftover draft state and clear the resumable slot.",
+                icon=_icons.DELETE,
             )
         with b_restore:
             st.caption("Setup autosaves.")
@@ -25707,6 +25749,7 @@ elif active_page == "Live Draft Room":
                 "Reset Setup to Defaults",
                 key="live_draft_reset_setup_btn",
                 help="Restore application default setup values for future drafts. Does not wipe an in-progress draft board.",
+                icon=_icons.RESET,
             ):
                 st.session_state["_live_draft_reset_setup_confirm"] = True
             if st.session_state.get("_live_draft_reset_setup_confirm"):
@@ -25748,12 +25791,14 @@ elif active_page == "Live Draft Room":
                         key="live_draft_start_replace_confirm_btn",
                         type="primary",
                         on_click=on_replace_confirm_click,
+                        icon=_icons.START,
                     )
                 except ImportError:
                     if st.button(
                         "Disregard Saved Draft and Start New",
                         key="live_draft_start_replace_confirm_btn",
                         type="primary",
+                        icon=_icons.START,
                     ):
                         st.session_state["_live_draft_start_replace_resumable_ok"] = True
                         st.session_state.pop("_live_draft_start_replace_resumable_pending", None)
@@ -25780,6 +25825,7 @@ elif active_page == "Live Draft Room":
                     "Delete Draft Permanently",
                     key="live_draft_setup_delete_confirm_btn",
                     type="primary",
+                    icon=_icons.DELETE,
                 ):
                     from live_draft_termination import bump_live_draft_page_epoch
                     from live_draft_resumable_slot import clear_resumable_live_draft_slot
@@ -25798,7 +25844,7 @@ elif active_page == "Live Draft Room":
                     st.session_state.pop("_live_draft_discard_confirm", None)
                     st.rerun()
 
-        with st.expander("Advanced — Convert Simulator to Live Draft", expanded=False):
+        with st.expander("Advanced — Convert Simulator to Live Draft", expanded=False, icon=_icons.LIVE_DRAFT):
             st.caption(
                 "Advanced: converts your Draft Room Simulator board into a live draft with a clock. "
                 "Existing picks, queue, watchlist, and tracked players carry over. "
@@ -25809,6 +25855,7 @@ elif active_page == "Live Draft Room":
                 key="live_draft_convert_sim_btn",
                 help="Review simulator state and confirm before starting the live draft clock.",
                 on_click=on_open_simulator_convert_panel,
+                icon=_icons.LIVE_DRAFT,
             )
         try:
             if _setup_render_ctx is not None:
@@ -25988,6 +26035,7 @@ elif active_page == "Live Draft Room":
                                     "Re-enter My Draft",
                                     key="live_draft_commissioner_reattach_btn",
                                     type="primary",
+                                    icon=_icons.RESUME,
                                 ):
                                     st.session_state["active_shared_draft_room_code"] = _code_try
                                     try:
@@ -26001,7 +26049,7 @@ elif active_page == "Live Draft Room":
                                     st.rerun()
                     except ImportError:
                         pass
-                    if st.button("Back to Draft Setup", key="live_draft_membership_back_setup_btn"):
+                    if st.button("Back to Draft Setup", key="live_draft_membership_back_setup_btn", icon=_icons.SETTINGS):
                         st.session_state.pop("_live_draft_membership_gate_flash", None)
                         st.rerun()
                     try:
@@ -26334,6 +26382,7 @@ elif active_page == "Live Draft Room":
                             key="live_draft_resume_lobby_continue_btn",
                             disabled=not _ready,
                             help="Enabled once all reserved participants have rejoined.",
+                            icon=_icons.RESUME,
                         ):
                             _cont = continue_draft_from_resume_lobby(
                                 st.session_state, st=st, document=_rl_doc
@@ -26407,7 +26456,7 @@ elif active_page == "Live Draft Room":
                         except ImportError:
                             pass
                     if _is_room_host(st.session_state) and not setup_is_read_only(room):
-                        with st.expander("Edit Draft Setup (host only)", expanded=False):
+                        with st.expander("Edit Draft Setup (host only)", expanded=False, icon=_icons.SETTINGS):
                             st.caption(
                                 "Adjust team names before the first pick. Setup becomes read-only once picking begins."
                             )
@@ -28060,6 +28109,7 @@ elif active_page == "Live Draft Room":
                     "Draft controls (Pause · Auto Pick · Queue)",
                     expanded=False,
                     key=_cc_exp_key,
+                    icon=_icons.DRAFT_CONTROLS,
                 ):
                     _is_commissioner, _doc_h = _paint_live_draft_control_center()
             else:
@@ -29564,7 +29614,7 @@ elif active_page == "Live Draft Room":
                 )
             except ImportError:
                 if _save_team and _save_team != "—":
-                    with st.expander("Save completed draft team", expanded=False):
+                    with st.expander("Save completed draft team", expanded=False, icon=_icons.SAVE):
                         st.caption("Draft archive module unavailable.")
             if not roster_df.empty:
                 recap_team = str(
@@ -31497,6 +31547,7 @@ elif active_page == "ML Predictions":
             type="primary",
             key="ml_predictions_refresh_button",
             on_click=_on_ml_predictions_refresh_click,
+            icon=_icons.ML_PREDICTIONS,
         )
         ml_answer_slot = st.container()
         u1.section_label(st, "Explore more · lookback, minimums, scope, model tuning, accuracy, the full table and feature importance")
@@ -31570,6 +31621,7 @@ elif active_page == "ML Predictions":
                 "Apply tuning changes",
                 key="ml_apply_tuning_button",
                 help="Re-blend projections using current sliders without retraining Random Forest models.",
+                icon=_icons.SETTINGS,
             ):
                 st.session_state["ml_tuning_apply_requested"] = True
                 try:

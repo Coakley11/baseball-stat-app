@@ -40,7 +40,7 @@ def _show_join_auth_hint(st: Any, session: dict[str, Any]) -> bool:
     st.caption(
         "Open **Account & sign-in** in the sidebar (or tap below), then try Join again."
     )
-    if st.button("Open sign-in", key="shared_draft_open_sign_in_btn", type="secondary"):
+    if st.button("Open sign-in", key="shared_draft_open_sign_in_btn", type="secondary", icon=_icons.LOG_IN):
         request_account_sign_in_panel(session)
         return True
 
@@ -209,7 +209,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                 disabled=True,
                 help="Other managers enter this 6-character code to join — not the internal session ID.",
             )
-            if st.button("Refresh board now", key="shared_draft_refresh_btn"):
+            if st.button("Refresh board now", key="shared_draft_refresh_btn", icon=_icons.REFRESH):
                 sync_shared_draft_room(session, force=True)
                 return True
             from ui_confirm import ICON_LEAVE, confirm_destructive_action
@@ -270,6 +270,7 @@ def render_shared_draft_room_panel(st: Any, session: dict[str, Any]) -> bool:
                 type="primary",
                 disabled=create_disabled,
                 help="Requires an active live draft. Creates a 6-character Draft Room Code for other managers to join.",
+                icon=_icons.START,
             ):
                 if isinstance(room, dict):
                     try:

@@ -238,7 +238,7 @@ def render_trade_ideas_tab(
             )
             target_team = other_team
 
-    generate_clicked = st.button("Generate Trade Ideas", key="lineup_suggest_trades_button", type="primary", icon=_icons.TRADE)
+    generate_clicked = st.button("Generate Trade Ideas", key="lineup_suggest_trades_button", type="primary", icon=_icons.IDEAS)
     if generate_clicked:
         try:
             from fantasy_league_context import get_active_league_context

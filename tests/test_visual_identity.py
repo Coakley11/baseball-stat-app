@@ -55,16 +55,24 @@ class FeatureRegistryTests(unittest.TestCase):
         for page in app.PAGE_OPTIONS:
             label = app.page_option_label(page)
             feat = fi.feature(page)
-            # Owner decision 2026-11-06: navigation uses Material Symbols (feature_identity.MATERIAL).
-            from feature_identity import material_icon
-
-            self.assertEqual(label, f"{material_icon(page) or feat.icon} {feat.name}", page)
+            # Owner decision 2026-11-07: the original colourful emoji, never a :material/…: code.
+            self.assertEqual(label, f"{feat.icon} {feat.name}", page)
+            self.assertNotIn(":material/", label, page)
 
     def test_previous_labels_still_resolve_to_their_page(self) -> None:
         app = _app()
         self.assertEqual(app.normalize_page_key("📈 Compare Players"), "Comparison Tool")
         self.assertEqual(app.normalize_page_key("🧠 Lineup & Trades"), "Fantasy Lineup Assistant")
         self.assertEqual(app.normalize_page_key("📈 Comparison Tool"), "Comparison Tool")
+
+    def test_material_labels_from_the_short_lived_redesign_still_resolve(self) -> None:
+        """Sessions saved while the pages carried Material Symbols labels still open their page."""
+        app = _app()
+        for page in app.PAGE_OPTIONS:
+            code = fi.material_icon(page)
+            if code:
+                legacy = f"{code} {fi.feature(page).name}"
+                self.assertEqual(app.normalize_page_key(legacy), page, legacy)
 
     def test_family_colours_are_readable_on_white(self) -> None:
         for fam in fi.FAMILIES.values():

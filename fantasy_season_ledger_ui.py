@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from datetime import date, timedelta
 from typing import Any
 
@@ -74,7 +76,7 @@ def render_season_calendar_setup(
         with st.form("season_calendar_form", border=False):
             first_day = st.date_input("First day of Week 1", value=_default_first_day(), key="season_calendar_first_day")
             count = st.number_input("Number of weeks", min_value=1, max_value=30, value=26, step=1, key="season_calendar_count")
-            submitted = st.form_submit_button("Create season calendar", type="primary")
+            submitted = st.form_submit_button("Create season calendar", type="primary", icon=_icons.CALENDAR)
         if submitted:
             ok, err = configure_season_calendar(context, first_day=first_day, period_count=int(count))
             if not ok:

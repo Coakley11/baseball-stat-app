@@ -14,11 +14,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
-# Material icons used for destructive actions (see feature_identity for page icons).
-ICON_DELETE = ":material/delete:"
-ICON_RESET = ":material/restart_alt:"
-ICON_LEAVE = ":material/logout:"
-ICON_CANCEL = ":material/cancel:"
+# Colourful icons for destructive actions: the app-wide action mapping (action_icons).
+from action_icons import CANCEL as _CANCEL_STEP, ICON_CANCEL, ICON_DELETE, ICON_LEAVE, ICON_RESET, WARNING as _WARNING
 
 _LAPSE_SECONDS = 120.0
 _MAX_SESSIONS = 500
@@ -94,10 +91,10 @@ def confirm_destructive_action(
         st.button(label, key=f"{key}__ask_btn", icon=icon, help=help, use_container_width=use_container_width,
                   on_click=_arm, args=(pending, key, target))
         return False
-    st.warning(warning, icon=":material/warning:")
+    st.warning(warning, icon=_WARNING)
     yes_col, no_col = st.columns(2)
     yes_col.button(confirm_label, key=f"{key}__yes_btn", type="primary", icon=icon, use_container_width=True,
                    on_click=_fire, args=(pending, key, target))
-    no_col.button("Cancel", key=f"{key}__no_btn", icon=":material/close:", use_container_width=True,
+    no_col.button("Cancel", key=f"{key}__no_btn", icon=_CANCEL_STEP, use_container_width=True,
                   on_click=_disarm, args=(pending, key))
     return False

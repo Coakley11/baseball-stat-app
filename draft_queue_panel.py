@@ -11,6 +11,8 @@ time, including while another manager is picking. Everything in it is this viewe
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 import zlib
 from typing import Any
 
@@ -102,7 +104,7 @@ def _render_compare(st: Any, session: dict[str, Any], view: dict[str, Any], kp: 
             with c1:
                 st.markdown(f"**{s['player']}** ({s['position'] or '—'}) · " + " ".join(s["reasons"]))
             with c2:
-                st.button("Add", key=f"{kp}_dq_add_{i}", icon=":material/playlist_add:",
+                st.button("Add", key=f"{kp}_dq_add_{i}", icon=_icons.ADD_TO_QUEUE,
                           help=f"Add {s['player']} to the end of your Fixed queue",
                           on_click=_add_to_queue, args=(session, s["player"]))
 
@@ -122,7 +124,7 @@ def _render_changes(st: Any, session: dict[str, Any], view: dict[str, Any], kp: 
         st.caption(h["alignment"] + f" · after pick {h['pick']}")
     history = view.get("history") or []
     if history:
-        st.button("Mark as reviewed", key=f"{kp}_dq_reviewed", icon=":material/done_all:",
+        st.button("Mark as reviewed", key=f"{kp}_dq_reviewed", icon=_icons.ACCEPT,
                   on_click=dqm.mark_reviewed, args=(session,))
         if st.checkbox(f"Full history ({len(history)} changes)", key=f"{kp}_dq_history"):
             st.dataframe(pd.DataFrame([{"After pick": h["pick"], "Player": h["player"], "From": h["from"], "To": h["to"],
@@ -178,7 +180,7 @@ def _render_original(st: Any, session: dict[str, Any], view: dict[str, Any], kp:
     _render_load_saved_plan(st, session, kp)
     if players:
         ok = st.checkbox("Replace my current queue with this original plan", key=f"{kp}_dq_restore_ok")
-        if st.button("Restore original plan", key=f"{kp}_dq_restore", icon=":material/restore:", disabled=not ok):
+        if st.button("Restore original plan", key=f"{kp}_dq_restore", icon=_icons.UNDO, disabled=not ok):
             dqm.restore_snapshot_to_queue(session, confirmed=True)
             st.success("Your Fixed queue is back to the plan you started this draft with.")
 
@@ -222,7 +224,7 @@ def _render_load_saved_plan(st: Any, session: dict[str, Any], kp: str) -> None:
     if pick == "—":
         return
     ok = st.checkbox(f"Replace my queue with “{pick}”", key=f"{kp}_dq_load_ok")
-    st.button("Load plan", key=f"{kp}_dq_load", icon=":material/download:", disabled=not ok,
+    st.button("Load plan", key=f"{kp}_dq_load", icon=_icons.OPEN, disabled=not ok,
               on_click=_load_plan, args=(session, names[pick], flash_key))
 
 
@@ -241,7 +243,7 @@ def _render_pins_notes(st: Any, session: dict[str, Any], view: dict[str, Any], k
         text_key = f"{kp}_dq_note_text_{zlib.crc32(who.lower().encode()):x}"  # one box per player
         st.text_input("Note", key=text_key, value=dqm.notes_for(session).get(who.lower(), ""),
                       help="Shown in that player's explanations. Leave empty to remove.")
-        st.button("Save note", key=f"{kp}_dq_note_save", icon=":material/save:",
+        st.button("Save note", key=f"{kp}_dq_note_save", icon=_icons.SAVE,
                   on_click=_save_note, args=(session, who_key, text_key))
 
 
@@ -262,7 +264,7 @@ def render_draft_strategy_panel(st: Any, session: dict[str, Any], room: dict[str
     st.caption(f"Your draft plan: **{status_line(session)}**")
     # A key gives the expander a block id from the key alone (Streamlit 1.59), so it is the same
     # expander whatever moves above it: it stays open when a change inside it reruns the page.
-    with st.expander(PANEL_LABEL, icon=":material/psychology:", expanded=False, key=f"{key_prefix}_dq_panel"):
+    with st.expander(PANEL_LABEL, icon=_icons.STRATEGY, expanded=False, key=f"{key_prefix}_dq_panel"):
         render_strategy_selector(st, session, key_prefix=key_prefix, cards=cards)
         st.radio("Draft Queue mode", list(dqm.MODES), format_func=lambda m: dqm.MODE_LABELS[m],
                  key=dqm.MODE_KEY, horizontal=True, on_change=dqm.mark_personal_change, args=(session,))
@@ -270,7 +272,7 @@ def render_draft_strategy_panel(st: Any, session: dict[str, Any], room: dict[str
         if not cards:
             st.caption(SIMULATOR_PICK_NOTICE)
         elif dqm.current_mode(session) == "adaptive":
-            st.info(auto_pick_notice(room), icon=":material/bolt:")
+            st.info(auto_pick_notice(room), icon=_icons.AUTO_PICK)
         else:
             st.caption(auto_pick_notice(room).replace("**", ""))
         compare, changes, needs, original, pins = st.tabs(

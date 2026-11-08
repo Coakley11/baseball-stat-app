@@ -8,6 +8,8 @@ settings): this page reads them and links there instead of keeping its own copie
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 import time
 from typing import Any
 
@@ -176,16 +178,16 @@ def _render_queue(st: Any, session: dict[str, Any], *, drafted: set[str] | None 
                 label += f"  \nIf taken: {', '.join(alts)}"
             name_col, up_col, down_col, top_col, rm_col = st.columns([6, 1, 1, 1, 1])
             name_col.markdown(label)
-            if up_col.button("", key=f"dsq_up_{i}_btn", icon=":material/arrow_upward:", help="Move up",
+            if up_col.button("", key=f"dsq_up_{i}_btn", icon=_icons.MOVE_UP, help="Move up",
                              disabled=i == 0, use_container_width=True):
                 _queue_action(st, session, move_queue_item_up, i)
-            if down_col.button("", key=f"dsq_down_{i}_btn", icon=":material/arrow_downward:", help="Move down",
+            if down_col.button("", key=f"dsq_down_{i}_btn", icon=_icons.MOVE_DOWN, help="Move down",
                                disabled=i == len(queue) - 1, use_container_width=True):
                 _queue_action(st, session, move_queue_item_down, i)
-            if top_col.button("", key=f"dsq_top_{i}_btn", icon=":material/vertical_align_top:", help="Move to top",
+            if top_col.button("", key=f"dsq_top_{i}_btn", icon=_icons.MOVE_TOP, help="Move to top",
                               disabled=i == 0, use_container_width=True):
                 _queue_action(st, session, move_queue_item_to_top, i)
-            if rm_col.button("", key=f"dsq_rm_{i}_btn", icon=":material/remove_circle_outline:",
+            if rm_col.button("", key=f"dsq_rm_{i}_btn", icon=_icons.REMOVE_FROM_LIST,
                              help="Remove from the working queue (saved strategies are not changed)",
                              use_container_width=True):
                 _queue_action(st, session, remove_player_from_user_draft_queue, name)
@@ -199,7 +201,7 @@ def _render_save(st: Any, session: dict[str, Any], queue: list[str]) -> None:
         st.markdown("**Save this queue as a strategy**")
         name = st.text_input("Strategy name", key="draft_strategy_new_name", max_chars=store.NAME_MAX,
                              placeholder="e.g. 12-team points, early pitching")
-        if st.button("Save strategy", key="draft_strategy_save_btn", type="primary", icon=":material/save:",
+        if st.button("Save strategy", key="draft_strategy_save_btn", type="primary", icon=_icons.SAVE,
                      disabled=not queue, use_container_width=True):
             saved = _run(st, store.save_strategy, session, name,
                          approach=str(session.get(APPROACH_KEY) or "balanced"))
@@ -233,7 +235,7 @@ def _render_strategy(st: Any, session: dict[str, Any], strategy: dict[str, Any],
         load_col, update_col = st.columns(2)
         with load_col:
             if not queue:
-                if st.button("Load into queue", key=f"strategy_{sid}_load_btn", icon=":material/folder_open:",
+                if st.button("Load into queue", key=f"strategy_{sid}_load_btn", icon=_icons.OPEN,
                              use_container_width=True):
                     _load(st, session, sid, strategy["name"])
                     st.rerun()
@@ -241,7 +243,7 @@ def _render_strategy(st: Any, session: dict[str, Any], strategy: dict[str, Any],
                 st,
                 key=f"strategy_{sid}_load_btn",
                 label="Load into queue",
-                icon=":material/folder_open:",
+                icon=_icons.OPEN,
                 use_container_width=True,
                 warning=(f"Loading this strategy will replace your current {len(queue)}-player queue with the "
                          f"{len(players)} players in {strategy['name']}. Continue?"),
@@ -255,7 +257,7 @@ def _render_strategy(st: Any, session: dict[str, Any], strategy: dict[str, Any],
                 st,
                 key=f"strategy_{sid}_update_btn",
                 label="Update from queue",
-                icon=":material/sync:",
+                icon=_icons.REFRESH,
                 use_container_width=True,
                 warning=f"Replace the {len(players)} players saved in {strategy['name']} with your current "
                         f"{len(queue)}-player queue?",
@@ -266,12 +268,12 @@ def _render_strategy(st: Any, session: dict[str, Any], strategy: dict[str, Any],
                         ok=f"Updated **{strategy['name']}** from your queue."):
                     session[LOADED_KEY] = {"id": sid, "name": strategy["name"], "queue": list(store._queue(session))}
                 st.rerun()
-        with st.expander("Rename, duplicate or delete"):
+        with st.expander("Rename, duplicate or delete", icon=_icons.EDIT):
             new_name = st.text_input("New name", value=strategy["name"], key=f"strategy_{sid}_rename_input",
                                      max_chars=store.NAME_MAX)
             ren_col, dup_col = st.columns(2)
             with ren_col:
-                if st.button("Rename", key=f"strategy_{sid}_rename_btn", icon=":material/edit:",
+                if st.button("Rename", key=f"strategy_{sid}_rename_btn", icon=_icons.EDIT,
                              use_container_width=True):
                     renamed = _run(st, store.rename_strategy, session, sid, new_name, ok="Renamed.")
                     loaded = session.get(LOADED_KEY)
@@ -279,7 +281,7 @@ def _render_strategy(st: Any, session: dict[str, Any], strategy: dict[str, Any],
                         session[LOADED_KEY] = {**loaded, "name": renamed["name"]}
                     st.rerun()
             with dup_col:
-                if st.button("Duplicate", key=f"strategy_{sid}_dup_btn", icon=":material/content_copy:",
+                if st.button("Duplicate", key=f"strategy_{sid}_dup_btn", icon=_icons.DUPLICATE,
                              use_container_width=True):
                     _run(st, store.duplicate_strategy, session, sid, ok=f"Duplicated **{strategy['name']}**.")
                     st.rerun()
@@ -379,7 +381,7 @@ def _render_plan(st: Any, session: dict[str, Any], pool_fn) -> dict[str, Any]:
                 bits.append("fills a need")
             info_col.markdown(f"**{t['rank']}. {t['name']}** · " + " · ".join(bits)
                               + (f"  \n{t['reason']}" if t["reason"] else ""))
-            if add_col.button("Add to Queue", key=f"dsq_add_{t['name']}_btn", icon="⭐", use_container_width=True):
+            if add_col.button("Add to Queue", key=f"dsq_add_{t['name']}_btn", icon=_icons.ADD_TO_QUEUE, use_container_width=True):
                 _add_to_queue(st, session, t["name"], t["position"], t["team"])
         st.caption("Ranked by the same Decision Score as Draft Assistant, for your team and scoring format. "
                    "Nothing is added to your queue unless you choose it.")

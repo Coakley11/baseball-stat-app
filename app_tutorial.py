@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 import json
 from pathlib import Path
 from typing import Any
@@ -267,6 +269,7 @@ def render_tutorial_header_bar() -> None:
         key="tutorial_header_open_btn",
         use_container_width=True,
         type="primary",
+        icon=_icons.TUTORIAL,
     ):
         st.session_state[TUTORIAL_OPEN_KEY] = True
         st.session_state[TUTORIAL_STEP_KEY] = 0
@@ -331,7 +334,7 @@ def _render_advanced(advanced: dict[str, Any] | None) -> None:
 def _render_welcome_buttons() -> None:
     c1, c2, c3 = st.columns(3)
     with c1:
-        if st.button("Start Tour", key="tutorial_welcome_start", use_container_width=True, type="primary"):
+        if st.button("Start Tour", key="tutorial_welcome_start", use_container_width=True, type="primary", icon=_icons.TUTORIAL):
             _set_step(1)
             st.rerun()
     with c2:
@@ -352,7 +355,7 @@ def _render_end_buttons() -> None:
             _close_tutorial()
             st.rerun()
     with c2:
-        if st.button("Restart Tour", key="tutorial_end_restart", use_container_width=True):
+        if st.button("Restart Tour", key="tutorial_end_restart", use_container_width=True, icon=_icons.TUTORIAL):
             _set_step(0)
             st.rerun()
     with c3:

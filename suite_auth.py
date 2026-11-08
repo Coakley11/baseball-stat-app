@@ -11,6 +11,8 @@ Synced to sibling repos via ``scripts/sync_suite_cloud_modules.py``.
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 import os
 import re
 import time
@@ -2576,7 +2578,7 @@ def _render_password_recovery_panel(st: Any) -> None:
     st.caption("You opened a password reset link. Choose a new password to continue.")
     pw1 = st.text_input("New password", type="password", key="suite_auth_recovery_pw1")
     pw2 = st.text_input("Confirm password", type="password", key="suite_auth_recovery_pw2")
-    if st.button("Update password", key="suite_auth_recovery_submit", use_container_width=True):
+    if st.button("Update password", key="suite_auth_recovery_submit", use_container_width=True, icon=_icons.PASSWORD):
         if pw1 != pw2:
             st.error("Passwords do not match.")
         elif len(str(pw1 or "")) < 6:
@@ -2813,7 +2815,7 @@ def render_auth_panel(
     if auth_session_complete(session):
         if show_signed_in_status:
             st.success(f"Signed in as **{current_auth_email(session) or 'account'}**")
-        if st.button("Log out", key="suite_auth_logout_btn", use_container_width=True):
+        if st.button("Log out", key="suite_auth_logout_btn", use_container_width=True, icon=_icons.LOG_OUT):
             logout(session, st=st)
             st.rerun()
         return
@@ -2824,7 +2826,7 @@ def render_auth_panel(
             with st.form("suite_auth_login_form", clear_on_submit=False):
                 email = st.text_input("Email", key="suite_auth_login_email")
                 password = st.text_input("Password", type="password", key="suite_auth_login_password")
-                submitted = st.form_submit_button("Log in", use_container_width=True)
+                submitted = st.form_submit_button("Log in", use_container_width=True, icon=_icons.LOG_IN)
             if submitted:
                 session[AUTH_PENDING_LOGIN_KEY] = {
                     "email": email,
@@ -2835,7 +2837,7 @@ def render_auth_panel(
         with tab_signup:
             su_email = st.text_input("Email", key="suite_auth_signup_email")
             su_password = st.text_input("Password", type="password", key="suite_auth_signup_password")
-            if st.button("Create account", key="suite_auth_signup_btn", use_container_width=True):
+            if st.button("Create account", key="suite_auth_signup_btn", use_container_width=True, icon=_icons.ACCOUNT):
                 ok, msg = signup_with_email(session, email=su_email, password=su_password)
                 if ok:
                     st.success(msg)
@@ -2843,7 +2845,7 @@ def render_auth_panel(
                     st.error(msg)
         with tab_reset:
             reset_email = st.text_input("Email", key="suite_auth_reset_email")
-            if st.button("Send reset email", key="suite_auth_reset_btn", use_container_width=True):
+            if st.button("Send reset email", key="suite_auth_reset_btn", use_container_width=True, icon=_icons.EMAIL):
                 ok, msg = request_password_reset(reset_email)
                 if ok:
                     st.success(msg)

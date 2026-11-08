@@ -27,6 +27,8 @@ edit when this session made it, and is kept.
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 import copy
 import hashlib
 import json
@@ -654,17 +656,17 @@ def render_workspace_conflicts(st: Any, app_id: str = "baseball") -> None:
     st.warning(
         f"Another device changed **{shown}** while this one changed it too. This device still shows "
         "its own version; your account keeps the other device's. Choose which to keep.",
-        icon=":material/sync_problem:",
+        icon=_icons.WARNING,
     )
     keep_col, load_col = st.columns(2)
     with keep_col:
-        if st.button("Keep this device's version", key="ws_conflict_keep_local_btn", width="stretch"):
+        if st.button("Keep this device's version", key="ws_conflict_keep_local_btn", width="stretch", icon=_icons.SAVE):
             # Closing the conflict un-pins it: the next save writes this device's side.
             st.session_state.pop(CONFLICTS_KEY_PREFIX + app_id, None)
             st.session_state.pop(f"_suite_autosave_fp::{app_id}", None)  # so the next autosave writes
             st.rerun()
     with load_col:
-        if st.button("Use the saved version", key="ws_conflict_use_saved_btn", width="stretch"):
+        if st.button("Use the saved version", key="ws_conflict_use_saved_btn", width="stretch", icon=_icons.OPEN):
             st.session_state[RESOLUTION_KEY_PREFIX + app_id] = "remote"
             st.session_state[REAPPLY_KEY_PREFIX + app_id] = True
             st.rerun()

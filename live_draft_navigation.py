@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from typing import Any
 
 BROWSING_AWAY_KEY = "_live_draft_browsing_away"
@@ -1462,4 +1464,5 @@ def render_leave_draft_button(st: Any, session: dict[str, Any]) -> None:
         help="Draft continues running. Use the sidebar Return to Draft button to come back.",
         on_click=on_browse_other_pages,
         args=(session,),
+        icon=_icons.LEAVE,
     )

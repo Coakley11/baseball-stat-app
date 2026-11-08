@@ -7,6 +7,8 @@ Local JSON under ``data/workspaces/{workspace_id}/{app_id}_user_state.json`` plu
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 import copy
 import json
 from datetime import datetime, timezone
@@ -2116,6 +2118,7 @@ def render_reset_controls(
                         "on_reset": on_reset,
                         "extra_prefixes": extra_reset_clear_prefixes,
                     },
+                    icon=_icons.RESET,
                 )
             with c2:
                 st.button(

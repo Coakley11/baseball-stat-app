@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 import time
 from typing import Any
 
@@ -864,6 +866,8 @@ def render_draft_button(
     name = str(player_name or "").strip()
     container = column if column is not None else (st.sidebar if use_sidebar else st)
     btn_key = f"draft_btn_{source}_{key_suffix}"
+    # The one Draft Player icon (🔴), unless the caller's label already starts with it.
+    draft_icon = None if str(label).startswith(_icons.DRAFT_PLAYER) else _icons.DRAFT_PLAYER
 
     if extra_disabled:
         container.button(
@@ -872,6 +876,7 @@ def render_draft_button(
             disabled=True,
             use_container_width=True,
             type=button_type,
+            icon=draft_icon,
         )
         if show_disabled_reason and extra_disabled_reason:
             container.caption(draft_disabled_hint(extra_disabled_reason))
@@ -888,7 +893,7 @@ def render_draft_button(
     except ImportError:
         pass
     if allowed:
-        if container.button(label, key=btn_key, use_container_width=True, type=button_type):
+        if container.button(label, key=btn_key, use_container_width=True, type=button_type, icon=draft_icon):
             try:
                 from draft_commit_diagnostics import record_draft_commit_diagnostics
 
@@ -923,6 +928,7 @@ def render_draft_button(
         disabled=True,
         use_container_width=True,
         type=button_type,
+        icon=draft_icon,
     )
     if show_disabled_reason:
         try:
@@ -1274,7 +1280,7 @@ def _render_queue_drafted_here(container: Any, session: dict[str, Any], drafted_
     if container.button(
         "Remove players drafted in this draft",
         key=f"{key_prefix}_rm_drafted_here",
-        icon=":material/remove_circle_outline:",
+        icon=_icons.REMOVE_FROM_LIST,
         help="Takes these players off your personal queue for every draft.",
     ):
         try:
@@ -2261,6 +2267,7 @@ def _render_manual_draft_action_button(
         disabled=True,
         type="primary",
         help=str(disable_reason or "Cannot draft right now.")[:200],
+        icon=_icons.DRAFT_PLAYER,
     )
 
 
@@ -2679,6 +2686,7 @@ def render_live_manual_draft_panel(
                 disabled=True,
                 use_container_width=True,
                 help=wait_msg.replace("**", "")[:200],
+                icon=_icons.DRAFT_PLAYER,
             )
             _manual_add_to_queue_button(
                 name_key="live_draft_player_view_only",
@@ -2760,6 +2768,7 @@ def render_live_manual_draft_panel(
                 type="primary",
                 use_container_width=True,
                 on_click=_on_manual_draft_click,
+                icon=_icons.DRAFT_PLAYER,
             )
         else:
             reason_txt = disable_reason or "Cannot draft this player right now."
@@ -2770,6 +2779,7 @@ def render_live_manual_draft_panel(
                 disabled=True,
                 use_container_width=True,
                 help=str(reason_txt)[:200],
+                icon=_icons.DRAFT_PLAYER,
             )
             st.caption(reason_txt)
 

@@ -51,23 +51,29 @@ class SuiteNavigationTests(unittest.TestCase):
         self.assertTrue(at.session_state["_suite_page_user_nav"])
         self.assertFalse(any("Command Center" in str(getattr(b, "label", "")) for b in at.button))
 
-    def test_one_icon_library_and_the_star_only_means_add_to_queue(self) -> None:
-        values = {k: v for k, v in vars(action_icons).items() if k.isupper() and not k.startswith("_") and isinstance(v, str) and k != "DANGER_KEY_PREFIX"}
-        for name, value in values.items():
-            if name == "ADD_TO_QUEUE":
-                self.assertEqual(value, "⭐")
-                continue
-            self.assertRegex(value, r"^:material/[a-z_]+:$", name)
-        self.assertEqual([k for k, v in values.items() if v == "⭐"], ["ADD_TO_QUEUE"])
+    def test_action_icon_values_are_colourful_emoji_streamlit_accepts(self) -> None:
+        """Owner rule 2026-11-08: every action icon is a colourful emoji, never a Material Symbol."""
+        from streamlit.string_util import validate_icon_or_emoji
 
-    def test_dangerous_actions_are_styled_and_the_set_active_star_is_gone(self) -> None:
+        values = {k: v for k, v in vars(action_icons).items() if k.isupper() and not k.startswith("_") and isinstance(v, str) and k != "DANGER_KEY_PREFIX"}
+        self.assertGreater(len(values), 40)
+        for name, value in values.items():
+            self.assertNotIn(":material/", value, name)
+            self.assertEqual(validate_icon_or_emoji(value), value, name)
+        self.assertEqual(action_icons.ADD_TO_QUEUE, "⭐")
+        self.assertEqual(action_icons.HOME, "🏠")
+
+    def test_dangerous_actions_are_styled_and_the_original_set_active_star_is_back(self) -> None:
         import inspect
 
         import draft_archive_ui
         import fantasy_league_invite_ui
 
         library = inspect.getsource(draft_archive_ui)
-        self.assertNotIn("⭐ Set Active", library)
+        # Owner decision 2026-11-07: the original colourful labels are restored.
+        self.assertIn('"⭐ Set Active League" if is_league else "⭐ Set Active Draft"', library)
+        self.assertIn('"✅ Active League" if is_league else "✅ Active Draft"', library)
+        self.assertEqual(action_icons.SET_ACTIVE, "⭐")  # the same star wherever Set Active appears
         self.assertIn("_icons.danger_container(st, f\"{widget_key_prefix}_del_{draft_id}\")", library)
         invites = inspect.getsource(fantasy_league_invite_ui)
         self.assertIn('key=f"bx-danger-invite_revoke_{iid}"', invites)

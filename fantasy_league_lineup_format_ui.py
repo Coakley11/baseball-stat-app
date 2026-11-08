@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from typing import Any
 
 from fantasy_league_lineup_format import (
@@ -121,7 +123,7 @@ def render_lineup_format_setup(
     inject_lineup_board_styles(st)
     emit_html_block(st, _preview_circle_html(lineup_slots))
 
-    if st.button("Save League Lineup Format", type="primary", key="lineup_format_save_btn"):
+    if st.button("Save League Lineup Format", type="primary", key="lineup_format_save_btn", icon=_icons.SAVE):
         try:
             from fantasy_roster_validation import (
                 no_expansion_draft_allowed,
@@ -166,7 +168,7 @@ def render_edit_lineup_format_action(st: Any, session: dict[str, Any]) -> None:
         return
     if not is_lineup_format_commissioner(session, context):
         return
-    if st.button("Edit Lineup Format", key="lineup_format_edit_btn"):
+    if st.button("Edit Lineup Format", key="lineup_format_edit_btn", icon=_icons.EDIT):
         session["lineup_format_editing"] = True
         st.rerun()
     if session.get("lineup_format_editing"):

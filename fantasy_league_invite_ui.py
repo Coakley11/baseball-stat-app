@@ -593,7 +593,7 @@ def render_commissioner_invite_panel(st: Any, session: dict[str, Any]) -> bool:
     lookup_error = session.get(INVITE_LOOKUP_ERROR_KEY)
     if not (isinstance(lookup_error, dict) and lookup_error.get("league_id") == league_id):
         lookup_error = None
-    panel = st.expander("Invite managers to this shared league", expanded=isinstance(preview, dict) or bool(lookup_error))
+    panel = st.expander("Invite managers to this shared league", expanded=isinstance(preview, dict) or bool(lookup_error), icon=_icons.INVITE_MANAGER)
     with panel:
         st.caption(
             f"Invite another account to join **{league_name}**. "

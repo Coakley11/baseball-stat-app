@@ -2925,9 +2925,8 @@ def _render_shared_league_success_navigation(
         st.success(f"✅ {league_label or 'This league'} is your Active League.")
     else:
         st.button(
-            "Set Active League",
+            "⭐ Set Active League",
             key=f"{key_prefix}_set_active_league_{draft_id[:8]}",
-            icon=_icons.SET_ACTIVE,
             type="primary",
             use_container_width=True,
             on_click=_on_click_set_active_league,
@@ -3886,14 +3885,13 @@ def render_live_draft_completion_panel(
         review_open = st.button(
             "Review Draft Results",
             key=f"{key_prefix}_review_btn",
-            icon=":material/fact_check:",
+            icon=_icons.REVIEW,
             use_container_width=True,
         )
     with save_col:
         st.button(
-            "Save to Draft Library",
+            "📁 Save to Draft Library",
             key=f"{key_prefix}_save_btn",
-            icon=_icons.SAVE,
             type="primary",
             use_container_width=True,
             help="Save a historical copy of the completed draft for viewing and analysis.",
@@ -3953,6 +3951,7 @@ def render_live_draft_completion_panel(
             type="primary",
             on_click=on_end_live_draft_session,
             help="Close this completed draft session and return to the Live Draft home screen.",
+            icon=_icons.START,
         )
 
     _merge_shared_league_diag(
@@ -3965,7 +3964,7 @@ def render_live_draft_completion_panel(
         session[f"{key_prefix}_review_open"] = True
 
     if session.pop(f"{key_prefix}_review_open", False) or review_open:
-        with st.expander("Review Draft Results", expanded=True):
+        with st.expander("Review Draft Results", expanded=True, icon=_icons.REVIEW):
             if callable(board_df_fn):
                 board_df = board_df_fn(room)
                 if board_df.empty:
@@ -4033,6 +4032,7 @@ def render_live_draft_completion_panel(
                         mime="text/csv",
                         key=f"{key_prefix}_csv_dl",
                         use_container_width=True,
+                        icon=_icons.EXPORT,
                     )
             with ex2:
                 if callable(excel_export_fn):
@@ -4044,6 +4044,7 @@ def render_live_draft_completion_panel(
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key=f"{key_prefix}_xlsx_dl",
                             use_container_width=True,
+                            icon=_icons.EXPORT,
                         )
                     except Exception as exc:
                         st.caption(f"Excel export unavailable ({exc}).")
@@ -4177,7 +4178,7 @@ def _render_live_draft_shared_league_confirmation(
                         f"team_id={entry.get('team_id') or '—'} | "
                         f"resolved={entry.get('resolved_display_team')!r}"
                     )
-    with st.expander("Create Shared League — confirmation", expanded=True):
+    with st.expander("Create Shared League — confirmation", expanded=True, icon=_icons.SHARED_LEAGUE):
         if validation_errors:
             for err in validation_errors:
                 st.error(str(err))
@@ -4269,6 +4270,7 @@ def _render_live_draft_shared_league_confirmation(
                     ).strip(),
                     "key_prefix": key_prefix,
                 },
+                icon=_icons.REFRESH,
             )
         with check_col:
             st.button(
@@ -4283,6 +4285,7 @@ def _render_live_draft_shared_league_confirmation(
                         identity.get("draft_fingerprint") or preview.get("draft_fingerprint") or ""
                     ).strip(),
                 },
+                icon=_icons.SEARCH,
             )
         _render_shared_league_confirm_diagnostics(st, session)
 
@@ -4322,7 +4325,7 @@ def render_save_simulator_draft_team(
     if not team_name or team_name == "—":
         return
     expand_save = bool(session.pop("_draft_save_trace_expand", False))
-    with st.expander("Save this mock draft", expanded=expand_save):
+    with st.expander("Save this mock draft", expanded=expand_save, icon=_icons.SAVE):
         flash = _pop_draft_save_ui_flash(session)
         if flash and flash.get("message"):
             if flash.get("level") == "error":
@@ -4342,7 +4345,7 @@ def render_save_simulator_draft_team(
             "Save as Mock Draft",
             key=f"{key_prefix}_save_mock_btn",
             type="primary",
-            icon=":material/save:",
+            icon=_icons.SAVE,
             on_click=_on_simulator_save_click,
             kwargs={"team_name": team_name, "key_prefix": key_prefix, "save_only": True},
         )
@@ -4351,6 +4354,7 @@ def render_save_simulator_draft_team(
             key=f"{key_prefix}_save_league_btn",
             on_click=_on_simulator_save_click,
             kwargs={"team_name": team_name, "key_prefix": key_prefix, "save_only": False},
+            icon=_icons.SET_ACTIVE,
         )
         try:
             from draft_library_save_trace import render_save_trace_inline
@@ -4488,7 +4492,7 @@ def _render_active_draft_section(
     if not context:
         st.warning(
             "Active draft archive and league context are out of sync. "
-            "Use **Set Active League** on the correct saved draft below."
+            "Use **⭐ Set Active League** on the correct saved draft below."
         )
         return
     title = str(active.get("draft_name") or "Saved Draft")
@@ -4575,7 +4579,7 @@ def _render_active_draft_section(
             if schedule_fantasy_analysis_navigation(session, FANTASY_WAIVER_PAGE):
                 st.rerun()
     with clear_col:
-        if st.button("Clear Active", key="library_clear_active", use_container_width=True):
+        if st.button("Clear Active", key="library_clear_active", use_container_width=True, icon=_icons.CLEAR):
             clear_active_draft_archive(session)
             clear_active_league_context(session)
             _clear_fantasy_caches_on_archive_change(session)
@@ -4634,6 +4638,7 @@ def _render_archive_rename_delete_confirm(
                 type="primary",
                 on_click=_on_click_confirm_delete_draft,
                 args=(draft_id, widget_key_prefix),
+                icon=_icons.DELETE,
             )
         with cancel_col:
             st.button(
@@ -4656,15 +4661,14 @@ def _render_archive_manage_actions(
 ) -> None:
     context = context or get_league_context_for_archive(session, entry)
     is_league = _archive_card_is_real_league(entry, context)
-    set_active_label = "Set Active League" if is_league else "Set Active Draft"  # icon: _icons.SET_ACTIVE (the star means Add to Queue)
+    set_active_label = "⭐ Set Active League" if is_league else "⭐ Set Active Draft"
     rename_label = "Rename League" if is_league else "Rename Draft"
     delete_label = "Delete League" if is_league else "Delete Draft"
     league_title = str(entry.get("draft_name") or "League").strip()
     if is_active:
         st.button(
-            "Active League" if is_league else "Active Draft",
+            "✅ Active League" if is_league else "✅ Active Draft",
             key=f"{widget_key_prefix}_active_{draft_id}",
-            icon=_icons.SET_ACTIVE,
             disabled=True,
             use_container_width=True,
         )
@@ -4694,7 +4698,6 @@ def _render_archive_manage_actions(
             if st.button(
                 set_active_label,
                 key=f"{widget_key_prefix}_set_active_{draft_id}",
-                icon=_icons.SET_ACTIVE,
                 type="primary",
                 use_container_width=True,
             ):
@@ -4837,7 +4840,7 @@ def _render_library_answer(
                     ("open_lineup", _nav_label(FANTASY_LINEUP_PAGE, "Lineup & Trades", page_label_fn))]
     recent_id = answer["recent_id"]
     if recent_id and not answer["recent_is_active"]:
-        buttons.append(("set_active", f"Set Active: {answer['recent_name']}"))
+        buttons.append(("set_active", f"⭐ Set Active: {answer['recent_name']}"))
     if recent_id:
         buttons.append(("rename", f"Rename {answer['recent_name']}"))
     if not buttons:
@@ -4851,7 +4854,7 @@ def _render_library_answer(
     with wrap:
         cols = st.columns(len(buttons))
     for (action, label), col in zip(buttons, cols):
-        icon = {"set_active": _icons.SET_ACTIVE, "rename": _icons.EDIT}.get(action)
+        icon = {"rename": _icons.EDIT}.get(action)  # Set Active keeps its original ⭐ in the label
         if not col.button(label, key=f"u4_library_{action}_btn", use_container_width=True, icon=icon,
                           type="primary" if action == "set_active" else "secondary"):
             continue
@@ -5385,7 +5388,7 @@ def _render_saved_draft_library_page_body(
             except ImportError:
                 pass
         if is_focus:
-            st.caption(f"Focused league `{draft_id}` — use **Set Active League** to manage this league.")
+            st.caption(f"Focused league `{draft_id}` — use **⭐ Set Active League** to manage this league.")
         elif is_active:
             st.caption(
                 "Active league — use **Manage this draft** in the **Active Draft** section above."

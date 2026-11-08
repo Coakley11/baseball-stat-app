@@ -99,9 +99,9 @@ FEATURES: dict[str, Feature] = {f.page: f for f in _FEATURES}
 AMI = Feature("__ami__", "💬", "Ask AMI", "ami", "Ask a baseball question in plain English.")
 
 
-# Navigation icons (owner decision 2026-11-06): Material Symbols, the same library as the action
-# buttons (action_icons). Used where Streamlit renders Markdown (sidebar page list, buttons,
-# captions); dropdown options and raw HTML get the plain name (plain_name), never a code.
+# Legacy only (owner decision 2026-11-07: navigation shows the original colourful emoji above, not
+# Material Symbols). A short-lived redesign put these codes on the page labels; streamlit_app keeps
+# reading those labels back to their page so a session saved with one still opens. Never shown.
 MATERIAL: dict[str, str] = {
     "Home": ":material/home:",
     "Historical Explorer": ":material/manage_search:",

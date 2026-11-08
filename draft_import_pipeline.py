@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -919,7 +921,7 @@ def render_shared_league_creation_panel(
     if not default_league_name:
         default_league_name = f"Imported {len(teams)}-Team League"
 
-    with st.expander("Save imported league to library", expanded=True):
+    with st.expander("Save imported league to library", expanded=True, icon=_icons.SAVE_TO_LIBRARY):
         st.caption(
             "**Apply to board** (above) loads a temporary working draft. "
             "**Save to Saved Drafts** stores this import in your library without making it active. "
@@ -940,6 +942,7 @@ def render_shared_league_creation_panel(
             "Save to Saved Drafts",
             key=f"{session_key}_save_imported_league",
             type="primary",
+            icon=_icons.SAVE_TO_LIBRARY,
         ):
             if not import_review_ready_for_league(review, pool_df):
                 st.error("Resolve every imported player before saving to the library.")
@@ -1316,6 +1319,7 @@ def render_draft_room_import_block(
             on_click=_on_click_clear_draft_import,
             kwargs={"widget_key": widget_key},
             help="Clear uploaded file, validation review, staged bytes, and correction selections.",
+            icon=_icons.CLEAR,
         )
 
     def _on_upload_change() -> None:

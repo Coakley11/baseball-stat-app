@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 import html
 import time
 from typing import Any
@@ -2643,6 +2645,7 @@ def render_live_draft_rec_cards(
                             disabled=True,
                             use_container_width=True,
                             help=f"{name} is already in your draft queue.",
+                            icon=_icons.ADD_TO_QUEUE,
                         )
                         try:
                             from live_draft_rec_queue_click_trace import note_rec_queue_widget_button_rendered

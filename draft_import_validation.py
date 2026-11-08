@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from typing import Any, Callable
 
 import pandas as pd
@@ -233,7 +235,7 @@ def render_draft_import_validation_ui(
 
     ready = import_review_ready_for_league(review, pool_df) if strict else import_review_ready(review)
     applied = False
-    if st.button(apply_label, disabled=not ready, key=f"{session_key}_apply"):
+    if st.button(apply_label, disabled=not ready, key=f"{session_key}_apply", icon=_icons.ACCEPT):
         validated = build_validated_import_dataframe(review)
         index = build_draft_player_name_index(pool_df)
         pool_set = set(index.values())
