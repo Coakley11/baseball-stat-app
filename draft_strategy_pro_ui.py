@@ -9,6 +9,8 @@ renders this when draft_strategy_ui._access allows it.
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from typing import Any
 
 import draft_strategy_store as store
@@ -96,7 +98,7 @@ def _render_create(st: Any, session: dict[str, Any], pool: Any) -> None:
         start = st.radio("Start from", ["empty", "global"], horizontal=True, key="draft_strategy_new_from",
                          format_func=lambda v: "An empty queue" if v == "empty"
                          else f"A copy of my Global Queue ({_plural(len(gq))})")
-        if st.button("Create strategy", key="draft_strategy_create_btn", type="primary", icon="➕",
+        if st.button("Create strategy", key="draft_strategy_create_btn", type="primary", icon=_icons.START,
                      use_container_width=True):
             rec = _try(st, work.create, session, name, approach=str(session.get("draft_strategy_approach") or "balanced"),
                        from_global=start == "global", pool=pool)
@@ -158,16 +160,16 @@ def _render_header(st: Any, session: dict[str, Any], rec: dict[str, Any]) -> Non
     save_col, discard_col = st.columns(2)
     if rec.get("dirty"):
         st.warning("Unsaved changes in this strategy. Save to keep them; other strategies and your Global "
-                   "Queue are not affected.", icon="✏️")
+                   "Queue are not affected.", icon=_icons.EDIT)
     else:
         st.caption("✅ All changes saved.")
-    if save_col.button("Save strategy", key=f"dsp_{sid}_save_btn", type="primary", icon="💾",
+    if save_col.button("Save strategy", key=f"dsp_{sid}_save_btn", type="primary", icon=_icons.SAVE,
                        disabled=not rec.get("dirty"), use_container_width=True):
         saved = _try(st, work.save, session, sid)
         if saved:
             _flash(st, "success", f"Saved **{saved['name']}**.")
         st.rerun()
-    if discard_col.button("Discard changes", key=f"dsp_{sid}_discard_btn", icon="↩️",
+    if discard_col.button("Discard changes", key=f"dsp_{sid}_discard_btn", icon=_icons.UNDO,
                           disabled=not rec.get("dirty"), use_container_width=True):
         work.discard(session, sid)
         _flash(st, "info", "Unsaved changes discarded.")
@@ -200,20 +202,20 @@ def _render_queue_tab(st: Any, session: dict[str, Any], rec: dict[str, Any], poo
             label += f"  \n📝 {note['text'][:120]}"
         name_col, up_col, down_col, top_col, pin_col, rm_col = st.columns([6, 1, 1, 1, 1, 1])
         name_col.markdown(label)
-        if up_col.button("", key=f"dsp_{sid}_up_{i}", icon="⬆️", help="Move up", disabled=i == 0,
+        if up_col.button("", key=f"dsp_{sid}_up_{i}", icon=_icons.MOVE_UP, help="Move up", disabled=i == 0,
                          use_container_width=True):
             _edit(st, session, sid, v2.move, e["name"], i - 1)
-        if down_col.button("", key=f"dsp_{sid}_down_{i}", icon="⬇️", help="Move down",
+        if down_col.button("", key=f"dsp_{sid}_down_{i}", icon=_icons.MOVE_DOWN, help="Move down",
                            disabled=i == len(queue) - 1, use_container_width=True):
             _edit(st, session, sid, v2.move, e["name"], i + 1)
-        if top_col.button("", key=f"dsp_{sid}_top_{i}", icon="⏫", help="Move to top", disabled=i == 0,
+        if top_col.button("", key=f"dsp_{sid}_top_{i}", icon=_icons.MOVE_TOP, help="Move to top", disabled=i == 0,
                           use_container_width=True):
             _edit(st, session, sid, v2.move, e["name"], 0)
-        if pin_col.button("", key=f"dsp_{sid}_pin_{i}", icon="📌",
+        if pin_col.button("", key=f"dsp_{sid}_pin_{i}", icon=_icons.PIN,
                           help="Unpin" if key in pins else "Pin: Adaptive keeps him at this place",
                           type="primary" if key in pins else "secondary", use_container_width=True):
             _edit(st, session, sid, v2.unpin if key in pins else v2.pin, e["name"])
-        if rm_col.button("", key=f"dsp_{sid}_rm_{i}", icon="✖️",
+        if rm_col.button("", key=f"dsp_{sid}_rm_{i}", icon=_icons.REMOVE_FROM_LIST,
                          help="Remove from this strategy (its note is kept; nothing else changes)",
                          use_container_width=True):
             _edit(st, session, sid, v2.remove, e["name"])
@@ -224,7 +226,7 @@ def _render_queue_tab(st: Any, session: dict[str, Any], rec: dict[str, Any], poo
         pick = st.selectbox("Player", ["—"] + options, key=f"dsp_{sid}_add_pick")
     else:
         pick = st.text_input("Player name", key=f"dsp_{sid}_add_name")
-    if st.button("Add to this strategy", key=f"dsp_{sid}_add_btn", icon="⭐", disabled=not pick or pick == "—",
+    if st.button("Add to this strategy", key=f"dsp_{sid}_add_btn", icon=_icons.ADD_TO_QUEUE, disabled=not pick or pick == "—",
                  use_container_width=True):
         from draft_strategy_ids import with_ids
 
@@ -243,7 +245,7 @@ def _render_notes_tab(st: Any, session: dict[str, Any], rec: dict[str, Any]) -> 
         text = st.text_area("Note", value=existing.get("text", ""), max_chars=v2.NOTE_MAX,
                             key=f"dsp_{sid}_note_text_{v2.player_key(who)}",
                             help="Saved with this strategy only. Leave empty and save to remove the note.")
-        if st.button("Save note", key=f"dsp_{sid}_note_save", icon="📝", use_container_width=True):
+        if st.button("Save note", key=f"dsp_{sid}_note_save", icon=_icons.SAVE, use_container_width=True):
             _edit(st, session, sid, v2.set_note, who, text)
     else:
         st.caption("Add players to this strategy to keep notes on them.")
@@ -259,7 +261,7 @@ def _render_notes_tab(st: Any, session: dict[str, Any], rec: dict[str, Any]) -> 
         st.caption("No findings yet. Record what you learn on the research pages here.")
     finding = st.text_area("New finding", key=f"dsp_{sid}_finding", max_chars=v2.RESEARCH_TEXT_MAX)
     about = st.selectbox("About", ["(the whole strategy)"] + names, key=f"dsp_{sid}_finding_who")
-    if st.button("Add finding", key=f"dsp_{sid}_finding_btn", icon="🔬", use_container_width=True):
+    if st.button("Add finding", key=f"dsp_{sid}_finding_btn", icon=_icons.RESEARCH_FINDING, use_container_width=True):
         player = "" if about == "(the whole strategy)" else about
         if _try(st, v2.append_research, session, sid, finding, kind="finding", player=player,
                 ok="Finding added to this strategy's research log."):
@@ -278,7 +280,7 @@ def _render_preferences_tab(st: Any, session: dict[str, Any], rec: dict[str, Any
                           key=f"dsp_{sid}_cats", help="What this strategy values most (shown with the plan).")
     ranking_note = st.text_input("Ranking note", value=str(prefs.get("ranking_note") or ""), max_chars=200,
                                  key=f"dsp_{sid}_rank_note", placeholder="e.g. prioritize home runs over average")
-    if st.button("Apply preferences", key=f"dsp_{sid}_prefs_btn", icon="🎯", use_container_width=True):
+    if st.button("Apply preferences", key=f"dsp_{sid}_prefs_btn", icon=_icons.PREFERENCES, use_container_width=True):
         def apply(strategy: dict[str, Any]) -> dict[str, Any]:
             out = v2.set_approach(strategy, approach)
             return v2.set_preferences(out, {"category_priorities": list(cats) or None,
@@ -313,12 +315,12 @@ def _render_transfer_tab(st: Any, session: dict[str, Any], rec: dict[str, Any], 
             st.caption("Your Global Queue is empty.")
         elif p["needs_confirmation"]:
             go = confirm_destructive_action(
-                st, key=f"dsp_{sid}_copy_global", label="Copy Global Queue into This Strategy", icon="📋",
+                st, key=f"dsp_{sid}_copy_global", label="Copy Global Queue into This Strategy", icon=_icons.DRAFT_QUEUE,
                 use_container_width=True, target=f"{sid}:{mode}",
                 warning=(f"This replaces players in {s['name']}: {_counts_line(p)}. Continue?"),
                 confirm_label="Copy into strategy")
         else:
-            go = st.button("Copy Global Queue into This Strategy", key=f"dsp_{sid}_copy_global_btn", icon="📋",
+            go = st.button("Copy Global Queue into This Strategy", key=f"dsp_{sid}_copy_global_btn", icon=_icons.DRAFT_QUEUE,
                            use_container_width=True)
         if go:
             if _try(st, work.copy_global_into, session, sid, mode=mode, confirmed=True, pool=pool):
@@ -337,13 +339,13 @@ def _render_transfer_tab(st: Any, session: dict[str, Any], rec: dict[str, Any], 
             st.caption("This strategy has no players yet.")
         elif r["needs_confirmation"]:
             go = confirm_destructive_action(
-                st, key=f"dsp_{sid}_replace_global", label="Replace Global Queue with This Strategy", icon="🔁",
+                st, key=f"dsp_{sid}_replace_global", label="Replace Global Queue with This Strategy", icon=_icons.REPLACE_QUEUE,
                 use_container_width=True, target=sid, confirm_label="Replace Global Queue",
                 warning=(f"Replace your {_plural(r['before'])} Global Queue with the {_plural(len(s['queue']))} "
                          f"in {s['name']}? {_counts_line(r)}."))
         else:
             go = st.button("Replace Global Queue with This Strategy", key=f"dsp_{sid}_replace_global_btn",
-                           icon="🔁", use_container_width=True)
+                           icon=_icons.REPLACE_QUEUE, use_container_width=True)
         if go:
             if _try(st, work.replace_global_with, session, sid, confirmed=True):
                 _save_global(st)
@@ -358,9 +360,9 @@ def _render_manage_tab(st: Any, session: dict[str, Any], rec: dict[str, Any]) ->
     sid = s["id"]
     new_name = st.text_input("Name", value=s["name"], key=f"dsp_{sid}_rename", max_chars=store.NAME_MAX)
     ren_col, dup_col = st.columns(2)
-    if ren_col.button("Rename", key=f"dsp_{sid}_rename_btn", icon="✏️", use_container_width=True):
+    if ren_col.button("Rename", key=f"dsp_{sid}_rename_btn", icon=_icons.EDIT, use_container_width=True):
         _edit(st, session, sid, v2.rename, new_name)
-    if dup_col.button("Duplicate", key=f"dsp_{sid}_dup_btn", icon="📄", disabled=bool(rec.get("dirty")),
+    if dup_col.button("Duplicate", key=f"dsp_{sid}_dup_btn", icon=_icons.DUPLICATE, disabled=bool(rec.get("dirty")),
                       help="Save or discard changes first" if rec.get("dirty") else "A separate copy",
                       use_container_width=True):
         _try(st, store.duplicate_strategy, session, sid, ok=f"Duplicated **{s['name']}**.")
@@ -374,7 +376,7 @@ def _render_manage_tab(st: Any, session: dict[str, Any], rec: dict[str, Any]) ->
         if rec.get("dirty"):
             st.caption("Save or discard your changes before restoring the original version.")
         elif confirm_destructive_action(
-                st, key=f"dsp_{sid}_restore_original", label="Restore Original Version", icon="🕰️",
+                st, key=f"dsp_{sid}_restore_original", label="Restore Original Version", icon=_icons.UNDO,
                 use_container_width=True, target=sid, confirm_label="Restore original",
                 warning=(f"Bring back {s['name']} as it was before it was first edited here "
                          f"({str(backup.get('backed_up_at') or '')[:10]})? The current version is kept under "
@@ -386,8 +388,14 @@ def _render_manage_tab(st: Any, session: dict[str, Any], rec: dict[str, Any]) ->
                 work.forget(session, sid)
                 session[work.OPEN_KEY] = sid
             st.rerun()
-    if confirm_destructive_action(
-            st, key=f"dsp_{sid}_delete", label="Delete strategy", icon="🗑️", use_container_width=True, target=sid,
+    from strategy_deletion_guard import PAUSED_MESSAGE, deletion_allowed
+
+    if not deletion_allowed():
+        st.button("Delete strategy", key=f"dsp_{sid}_delete_btn", icon=_icons.DELETE, use_container_width=True,
+                  disabled=True, help=PAUSED_MESSAGE)
+        st.caption(PAUSED_MESSAGE)
+    elif confirm_destructive_action(
+            st, key=f"dsp_{sid}_delete", label="Delete strategy", icon=_icons.DELETE, use_container_width=True, target=sid,
             confirm_label="Delete",
             warning=(f"Delete {s['name']}? You can restore it from Recently deleted for 30 days. Your Global "
                      "Queue and other strategies are not changed."
@@ -409,7 +417,7 @@ def _render_trash(st: Any, session: dict[str, Any]) -> None:
     rows = _try(st, v2.list_trash, session) or []
     if not rows:
         return
-    with st.expander(f"🗑️ Recently deleted ({len(rows)})"):
+    with st.expander(f"Recently deleted ({len(rows)})", icon=_icons.DELETE):
         st.caption(f"Deleted strategies can be restored for {v2.RECOVERY_DAYS} days, then they are removed.")
         for row in rows:
             tid = row["trash_id"]
@@ -419,15 +427,20 @@ def _render_trash(st: Any, session: dict[str, Any]) -> None:
                         f"{str(row.get('deleted_at') or '')[:10]} · {_plural(row['days_left'], 'day')} left{why}")
             res_col, del_col = st.columns(2)
             with res_col:
-                if st.button("Restore", key=f"dsp_trash_{tid}_restore", icon="↩️", use_container_width=True):
+                if st.button("Restore", key=f"dsp_trash_{tid}_restore", icon=_icons.RESTORE, use_container_width=True):
                     restored = _try(st, v2.restore_from_trash, session, tid)
                     if restored:
                         _flash(st, "success", f"Restored **{restored['name']}**.")
                         session[_NEXT_PICK_KEY] = restored["id"]
                     st.rerun()
             with del_col:
-                if confirm_destructive_action(
-                        st, key=f"dsp_trash_{tid}_purge", label="Delete permanently", icon="🗑️",
+                from strategy_deletion_guard import PAUSED_MESSAGE, deletion_allowed
+
+                if not deletion_allowed():
+                    st.button("Delete permanently", key=f"dsp_trash_{tid}_purge_btn", icon=_icons.DELETE,
+                              use_container_width=True, disabled=True, help=PAUSED_MESSAGE)
+                elif confirm_destructive_action(
+                        st, key=f"dsp_trash_{tid}_purge", label="Delete permanently", icon=_icons.DELETE,
                         use_container_width=True, target=tid, confirm_label="Delete forever",
                         warning=(f"Permanently delete {row.get('name') or 'this strategy'}, its research log and its "
                                  "original-version backup? This cannot be undone.")):

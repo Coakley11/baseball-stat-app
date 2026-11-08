@@ -90,6 +90,11 @@ REMOVE_FROM_LIST = "➖"  # new: takes an item off a working list; not a delete
 MOVE_UP = "⬆️"  # new
 MOVE_DOWN = "⬇️"  # new
 MOVE_TOP = "⏫"  # new
+PIN = "📌"  # new: pin a player in a Pro strategy (keeps his place)
+RESEARCH_FINDING = "🔬"  # new: record a research finding in a Pro strategy
+PREFERENCES = "🎯"  # new: a strategy's ranking preferences
+REPLACE_QUEUE = "🔁"  # new: replace the Global Queue with a strategy (an explicit swap)
+RESTORE = RECOVER  # restore a strategy from Recently deleted
 
 # --- account and navigation -----------------------------------------------------------------------
 HOME = "🏠"  # original: Home's page icon
