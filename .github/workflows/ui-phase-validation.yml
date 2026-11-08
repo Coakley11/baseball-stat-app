@@ -48,6 +48,7 @@ jobs:
         with:
           ref: ${{ matrix.target == 'baseline' && env.BASELINE_SHA || github.sha }}
           path: app
+          fetch-depth: 0  # the S0 floor test reads ea84d8a's reader from history
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
