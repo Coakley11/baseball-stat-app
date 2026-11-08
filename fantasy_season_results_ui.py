@@ -3,6 +3,8 @@ completed-week history."""
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from typing import Any
 
 import pandas as pd
@@ -93,7 +95,7 @@ def render_period_finalize_panel(st: Any, session: dict[str, Any], context: dict
     if flash:
         st.success(flash)
     preview_key = f"_season_preview_{number}"
-    if st.button(f"Load {label} stats", key=f"season_load_stats_{number}"):
+    if st.button(f"Load {label} stats", key=f"season_load_stats_{number}", icon=_icons.REFRESH):
         stats, err = load_period_stats(session, period, refresh=True)
         if err:
             st.error(err)
@@ -112,7 +114,7 @@ def render_period_finalize_panel(st: Any, session: dict[str, Any], context: dict
             key=f"season_zero_missing_{number}",
         )
     confirm = st.checkbox(f"I understand {label} becomes final and will never change", key=f"season_confirm_{number}")
-    if st.button(f"Finalize {label}", key=f"season_finalize_{number}", type="primary", disabled=not (confirm and zero_ok)):
+    if st.button(f"Finalize {label}", key=f"season_finalize_{number}", type="primary", disabled=not (confirm and zero_ok), icon=_icons.ACCEPT):
         try:
             from fantasy_team_control import current_user_id
 

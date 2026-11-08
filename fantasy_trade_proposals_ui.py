@@ -523,6 +523,7 @@ def _render_proposal_card(
                     "Counter Offer",
                     key=f"{key_prefix}_counter_{pid}",
                     disabled=bool(counter_shape_error),
+                    icon=_icons.TRADE,
                 ):
                     countered, err = counter_trade_proposal(
                         session,
@@ -562,7 +563,7 @@ def _render_proposal_card(
                 navigate_to_trade_proposal(session, proposal_id=pid, view_as_team=my_team_name)
                 st.rerun()
         with btn_cancel:
-            if st.button("Cancel Offer", key=f"{key_prefix}_cancel_{pid}"):
+            if st.button("Cancel Offer", key=f"{key_prefix}_cancel_{pid}", icon=_icons.CANCEL):
                 canceled, err = cancel_trade_proposal(session, pid, canceled_by_team=my_team_name)
                 if err:
                     st.error(err)
@@ -581,7 +582,7 @@ def _render_proposal_card(
                 st.rerun()
 
     if display_status != TRADE_PROPOSAL_STATUS_PENDING and on_clear_offer:
-        if st.button("Clear from Offers", key=f"{key_prefix}_clear_{pid}"):
+        if st.button("Clear from Offers", key=f"{key_prefix}_clear_{pid}", icon=_icons.CLEAR):
             on_clear_offer(proposal)
             st.rerun()
 
@@ -663,7 +664,7 @@ def render_trade_proposals_section(
         st.warning(TEAM_ASSIGNMENT_PROMPT)
         if team_names:
             pick = st.selectbox("Which team is yours?", team_names, key=f"{key_prefix}_assign_team")
-            if st.button("Save my team", key=f"{key_prefix}_assign_team_btn"):
+            if st.button("Save my team", key=f"{key_prefix}_assign_team_btn", icon=_icons.SAVE):
                 saved, err = assign_my_team(session, pick)
                 if err:
                     st.error(err)
@@ -734,6 +735,7 @@ def render_trade_proposals_section(
                     "Propose this trade",
                     type="primary",
                     disabled=bool(shape_error),
+                    icon=_icons.TRADE,
                 )
 
             if submitted:

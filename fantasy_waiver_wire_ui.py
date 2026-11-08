@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from collections import Counter
 from typing import Any
 
@@ -143,6 +145,7 @@ def _render_player_card(
                 key=f"{key_prefix}_{safe_key}",
                 use_container_width=True,
                 on_click=on_click,
+                icon=_icons.CLEAR,
             )
 
 
@@ -180,6 +183,7 @@ def _render_add_player_card(
                 use_container_width=True,
                 on_click=_on_plan_add_click,
                 args=(name,),
+                icon=_icons.PLAN_ADD,
             )
 
 
@@ -230,7 +234,7 @@ def _render_u1_waiver_answer(
             safe_key = "".join(ch if ch.isalnum() else "_" for ch in name)[:40]
             # Full-width primary action, then two short secondary actions side by side (fits 360 px).
             st.button("Consider add", key=f"u1_waiver_consider_{i}_{safe_key}", type="primary",
-                      use_container_width=True, on_click=_on_plan_add_click, args=(name,))
+                      use_container_width=True, on_click=_on_plan_add_click, args=(name,), icon=_icons.PLAN_ADD)
             if player_action_cb:
                 try:
                     from mobile_foundation import mobile_wrap_row
@@ -245,12 +249,14 @@ def _render_u1_waiver_answer(
                         key=f"u1_waiver_compare_{i}_{safe_key}",
                         use_container_width=True,
                         on_click=player_action_cb("Send to Comparison Tool", name),
+                        icon=_icons.COMPARE,
                     )
                     cols[1].button(
                         "See trend",
                         key=f"u1_waiver_trend_{i}_{safe_key}",
                         use_container_width=True,
                         on_click=player_action_cb("Send to Trend Page", name),
+                        icon=_icons.TREND,
                     )
     raw_notice = None
     try:
@@ -297,6 +303,7 @@ def _render_drop_player_card(
                 use_container_width=True,
                 on_click=_on_plan_drop_click,
                 args=(name,),
+                icon=_icons.PLAN_DROP,
             )
 
 
@@ -987,6 +994,7 @@ def render_waiver_wire_page(
         key="waiver_confirm_tx_btn",
         type="primary",
         on_click=_on_confirm_waiver_move_click,
+        icon=_icons.ACCEPT,
     )
 
     try:
@@ -1146,6 +1154,7 @@ def render_waiver_wire_page(
         key="waiver_save_pair_btn",
         type="primary",
         on_click=_on_add_pending_pair_click,
+        icon=_icons.PLAN_ADD,
     )
 
     st.markdown("##### Pending Add/Drop Moves")
@@ -1164,10 +1173,12 @@ def render_waiver_wire_page(
                 key=f"waiver_rm_pair_{i}_btn",
                 on_click=_on_remove_pending_pair_click,
                 args=(i,),
+                icon=_icons.REMOVE_FROM_LIST,
             )
         st.button(
             "Confirm Pending Waiver Moves",
             key="waiver_confirm_pending_btn",
             type="primary",
             on_click=_on_confirm_pending_waiver_moves_click,
+            icon=_icons.ACCEPT,
         )

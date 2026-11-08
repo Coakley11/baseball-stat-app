@@ -523,7 +523,7 @@ def _render_idea_card(
             st.markdown("  \n".join(lines))
         st.caption(stats_updated_caption(session))
         c1, c2, c3 = st.columns(3)
-        if c1.button("Use This Idea", key=f"tc_use_{idx}"):
+        if c1.button("Use This Idea", key=f"tc_use_{idx}", icon=_icons.IDEAS):
             _queue_idea_builder_update(
                 session,
                 scope_key,
@@ -534,7 +534,7 @@ def _render_idea_card(
                 action="use",
             )
             st.rerun()
-        if c2.button("Analyze", key=f"tc_analyze_{idx}"):
+        if c2.button("Analyze", key=f"tc_analyze_{idx}", icon=_icons.ANALYZE):
             _queue_idea_builder_update(
                 session,
                 scope_key,
@@ -860,21 +860,23 @@ def _render_build_analyze(
     # Phones: ~2-up action tiles instead of five full-width buttons (desktop unchanged).
     with phone_wrap_row(st, "trade-actions"):
         c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 1, 1])
-    find_ideas_btn = c1.button("Find Trade Ideas", key="tc_find_ideas", type="primary", icon=_icons.TRADE)
+    find_ideas_btn = c1.button("Find Trade Ideas", key="tc_find_ideas", type="primary", icon=_icons.IDEAS)
     analyze_btn = c2.button(
         "Analyze Exact Trade",
         key="tc_analyze_trade",
         disabled=not (give_players and receive_players),
+        icon=_icons.ANALYZE,
     )
     propose_btn = c3.button(
         "Propose Trade",
         key="tc_propose_trade",
         disabled=not (give_players and receive_players and other_team and other_team != ANY_TRADE_PARTNER),
+        icon=_icons.TRADE,
     )
-    if c4.button("Clear", key="tc_clear_trade"):
+    if c4.button("Clear", key="tc_clear_trade", icon=_icons.CLEAR):
         queue_pending_builder_update(session, scope_key, {"action": "clear", "clear": True})
         st.rerun()
-    if c5.button("Reset Trade Builder", key="tc_reset_builder"):
+    if c5.button("Reset Trade Builder", key="tc_reset_builder", icon=_icons.RESET):
         shared = reset_trade_builder(session, scope_key, logical_state=shared)
         st.rerun()
 
@@ -939,7 +941,7 @@ def _render_build_analyze(
                 scope_key,
                 roster_stats=roster_stats,
             )
-        if len(stored_rows) > 5 and st.button("Show more ideas", key="tc_show_more_ideas"):
+        if len(stored_rows) > 5 and st.button("Show more ideas", key="tc_show_more_ideas", icon=_icons.IDEAS):
             for idx, row in enumerate(stored_rows[5:10], start=5):
                 _render_idea_card(
                     st,
@@ -983,7 +985,7 @@ def _render_build_analyze(
                 f"You receive **{html_lib.escape(', '.join(confirm.get('get_players') or receive_players))}**"
             )
             cc1, cc2 = st.columns(2)
-            if cc1.button("Confirm and send proposal", key="tc_confirm_propose", type="primary"):
+            if cc1.button("Confirm and send proposal", key="tc_confirm_propose", type="primary", icon=_icons.ACCEPT):
                 try:
                     from fantasy_trade_proposals_ui import submit_trade_proposal_from_analyzer
 
@@ -1002,7 +1004,7 @@ def _render_build_analyze(
                     st.success("Proposal sent. Check Offers & Activity.")
                 except ImportError:
                     st.info("Trade proposal submission is not available in this build.")
-            if cc2.button("Cancel proposal", key="tc_cancel_propose"):
+            if cc2.button("Cancel proposal", key="tc_cancel_propose", icon=_icons.CANCEL):
                 session.pop(proposal_confirm_key(scope_key), None)
                 st.rerun()
 
@@ -1246,7 +1248,7 @@ def render_commissioner_trade_panel(st: Any, session: dict[str, Any]) -> None:
             f"I am acting as commissioner for {' and '.join(proxy_teams)}",
             key="tc_comm_confirm",
         )
-        if st.button("Execute commissioner trade", key="tc_comm_execute", type="primary", disabled=not (a_gives and b_gives)):
+        if st.button("Execute commissioner trade", key="tc_comm_execute", type="primary", disabled=not (a_gives and b_gives), icon=_icons.TRADE):
             done, err = execute_commissioner_trade(
                 session, team_a=team_a, team_b=team_b, team_a_gives=a_gives, team_b_gives=b_gives, confirmed=bool(confirmed)
             )

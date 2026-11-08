@@ -301,6 +301,7 @@ def _render_open_slots_and_validation(
                             key=f"{prefix}_waiver_{row['waiver_label']}_{idx}_{int(selected_week)}",
                             on_click=on_open_waiver_wire,
                             args=(row["waiver_label"],),
+                            icon=_icons.WAIVERS,
                         )
 
     return validation
@@ -667,6 +668,7 @@ def render_weekly_lineup_section(
                 type="primary" if answer["primary"] == "suggest" else "secondary",
                 help="Fills the board with the Lineup Assistant's recommended starters. Review it, then press Save Lineup.",
                 on_click=lambda: session.__setitem__(suggest_flag, True),
+                icon=_icons.LINEUP,
             )
         elif action == "waivers":
             col.button("Check Waivers", key=f"u3lu_waivers_{prefix}_{int(selected_week)}_btn", use_container_width=True, icon=_icons.WAIVERS,
@@ -849,11 +851,12 @@ def render_weekly_lineup_section(
                 "my_team": active_team,
                 "roster_df": team_roster,
             },
+            icon=_icons.SAVE,
         )
         if save_disabled:
             st.caption("Complete your lineup before saving.")
     with _reset_col:
-        if st.button("Reset", key=reset_key):
+        if st.button("Reset", key=reset_key, icon=_icons.RESET):
             session[canon_key] = _normalize_assignments(saved_assignments, slot_keys)
             session[board_nonce_key] = board_nonce + 1
             st.rerun()

@@ -6,6 +6,8 @@ Synced to sibling suite apps via ``scripts/sync_suite_cloud_modules.py``.
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from typing import Any
 
 from suite_account import account_summary
@@ -295,7 +297,7 @@ def _render_minimal_account_workspace_body(
         from suite_auth import is_auth_enabled, is_authenticated, logout
 
         if is_auth_enabled() and is_authenticated(session_state):
-            if st.button("Log out", key="suite_account_workspace_logout_btn", use_container_width=True):
+            if st.button("Log out", key="suite_account_workspace_logout_btn", use_container_width=True, icon=_icons.LOG_OUT):
                 logout(session_state, st=st)
                 st.rerun()
             return
@@ -447,7 +449,7 @@ def _render_account_settings_body(st: Any, ctx: dict[str, Any], issues: list[dic
 
             render_auth_panel(st, expanded=False)
         except ImportError:
-            st.button("Reset password", disabled=True, key="_acct_settings_reset_pw_stub")
+            st.button("Reset password", disabled=True, key="_acct_settings_reset_pw_stub", icon=_icons.PASSWORD)
     else:
         st.info(
             "**Real Accounts (Sprint C)** adds sign-in, passwords, and per-user permissions. "

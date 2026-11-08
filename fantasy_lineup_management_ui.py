@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -517,6 +519,7 @@ def render_lineup_management_page(
                     "View Waiver Options For Open Positions",
                     key="lineup_open_waiver_for_open_slots_btn",
                     use_container_width=False,
+                    icon=_icons.WAIVERS,
                 ):
                     deps.navigate_to_page("Waiver Wire / Add-Drop Center")
         elif diag.get("weakest_pos"):

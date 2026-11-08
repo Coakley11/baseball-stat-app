@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 import html as html_lib
 from typing import Any
 
@@ -124,6 +126,7 @@ def render_locked_weekly_dashboard(
                             "Establish baseline from now",
                             key=f"weekly_start_tracking_btn_{int(week)}",
                             type="primary",
+                            icon=_icons.STATS,
                         ):
                             result = start_weekly_tracking_from_now(
                                 session,
@@ -367,7 +370,7 @@ def render_scoring_refresh_controls(
 
     record = get_weekly_scoring_record(context, week=week, team=team)
     refresh_key = f"{prefix}_refresh_weekly_stats_{int(week)}"
-    if st.button("Refresh weekly stats", key=refresh_key):
+    if st.button("Refresh weekly stats", key=refresh_key, icon=_icons.REFRESH):
         result = refresh_weekly_scoring(context, week=week, team=team, roster_df=roster_df, profile=profile, session=session)
         if result.get("ok"):
             session[f"{prefix}_scoring_flash"] = "Weekly stats refreshed."
@@ -423,7 +426,7 @@ def render_finalize_week_section(
         return
 
     if not session.get(confirm_open_key):
-        if st.button(f"Finalize {week_label(week)}", key=f"{prefix}_finalize_open_{int(week)}", type="primary"):
+        if st.button(f"Finalize {week_label(week)}", key=f"{prefix}_finalize_open_{int(week)}", type="primary", icon=_icons.ACCEPT):
             session[confirm_open_key] = True
             st.rerun()
         return
@@ -437,7 +440,7 @@ def render_finalize_week_section(
     if cancel_col.button("Cancel", key=f"{prefix}_finalize_cancel_{int(week)}"):
         session.pop(confirm_open_key, None)
         st.rerun()
-    if confirm_col.button(f"Finalize {week_label(week)}", key=f"{prefix}_finalize_btn_{int(week)}", type="primary"):
+    if confirm_col.button(f"Finalize {week_label(week)}", key=f"{prefix}_finalize_btn_{int(week)}", type="primary", icon=_icons.ACCEPT):
         result = finalize_week_for_league(session, context, week=week, roster_by_team=roster_by_team)
         if result.get("ok"):
             session.pop(confirm_open_key, None)
