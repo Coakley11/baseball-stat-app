@@ -176,7 +176,9 @@ class ProtectionStillWorksTests(unittest.TestCase):
         ds.add_player_to_draft_queue(st.session_state, "Aaron Judge")
         _settle(st.session_state)
         ds.remove_player_from_user_draft_queue(st.session_state, "Aaron Judge")
-        written = _cloud_write(_saved(st), stored)
+        outgoing = _saved(st)
+        outgoing["draft_archive_teams"] = []  # an unhydrated library (independent of other tests' local files)
+        written = _cloud_write(outgoing, stored)
         self.assertEqual(written["draft_queue"], [])
         self.assertEqual(written["draft_archive_teams"], [{"draft_id": "d1"}])  # saved drafts kept
 
