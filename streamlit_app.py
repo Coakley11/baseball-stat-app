@@ -14354,8 +14354,13 @@ try:
 
     if is_auth_enabled():
         process_pending_auth_login(st)
-except Exception:
-    pass
+except Exception as _signin_exc:
+    try:
+        import suite_auth_signin_trace as _signin_trace
+
+        _signin_trace.record(st.session_state, "pending_login_exception", False, exception=type(_signin_exc).__name__)
+    except Exception:
+        pass
 try:
     from baseball_persistent_state import prepare_baseball_workspace
 

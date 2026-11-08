@@ -997,8 +997,15 @@ def load_active_resume_items(limit: int = 8, *, app: str | None = None) -> list[
 
 
 def _is_duplicate_key_error(exc: BaseException) -> bool:
+    """A unique-constraint conflict (PostgreSQL 23505), so an update of the existing row is right.
+
+    Not every HTTP 409 is that: a foreign-key violation (23503) is also a 409, and treating it as a
+    duplicate PATCHed zero rows while reporting the write as committed (seen with token saves keyed
+    by an id missing from suite_users)."""
     msg = str(exc).lower()
-    return "409" in str(exc) or "duplicate key" in msg or "unique constraint" in msg
+    if "23503" in msg or "foreign key" in msg:
+        return False
+    return "23505" in msg or "duplicate key" in msg or "unique constraint" in msg
 
 
 def upsert_saved_item(
