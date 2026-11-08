@@ -1255,9 +1255,21 @@ def _render_queue_drafted_here(container: Any, session: dict[str, Any], drafted_
     only by the user. Returns True when the caller should rerun."""
     if not drafted_here:
         return False
-    names = ", ".join(drafted_here[:12]) + (f" and {len(drafted_here) - 12} more" if len(drafted_here) > 12 else "")
+    try:
+        from draft_queue_contract import draft_status_label, queue_draft_status
+
+        marks = queue_draft_status(session, list(drafted_here))
+    except ImportError:
+        marks, draft_status_label = {}, None
+
+    def _who(name: str) -> str:
+        info = marks.get(name.strip().lower())
+        return f"{name} ({draft_status_label(info, short=True)})" if info and draft_status_label else name
+
+    names = ", ".join(_who(n) for n in drafted_here[:12]) + (
+        f" and {len(drafted_here) - 12} more" if len(drafted_here) > 12 else "")
     container.caption(
-        f"**Drafted in this draft:** {names}. They stay in your queue for your other drafts."
+        f"**Taken in this draft:** {names}. They stay in your queue for your other drafts."
     )
     if container.button(
         "Remove players drafted in this draft",

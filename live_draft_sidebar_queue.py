@@ -97,18 +97,19 @@ def paint_live_draft_sidebar_queue_mirror(st: Any, session: dict[str, Any]) -> l
     # Compact scrape-friendly line (harness + human glance).
     st.sidebar.caption("Draft Queue: " + ", ".join(names[:8]))
     try:
-        from draft_queue_contract import drafted_in_active_draft
+        from draft_queue_contract import draft_status_label, queue_draft_status
 
-        taken = drafted_in_active_draft(session)
+        status = queue_draft_status(session, names)
     except ImportError:
-        taken = set()
+        status, draft_status_label = {}, None
     for i, name in enumerate(names[:12]):
         c1, c2 = st.sidebar.columns([4, 1])
         with c1:
             short = f"{name[:36]}{'…' if len(name) > 36 else ''}"
-            if name.strip().lower() in taken:
-                # Still in the personal queue for other drafts; taken in this one.
-                st.caption(f"{i + 1}. ~~{short}~~ · ✓ drafted")
+            info = status.get(name.strip().lower())
+            if info and draft_status_label:
+                # Still in the personal queue for other drafts; taken in this one, by whom.
+                st.caption(f"{i + 1}. ~~{short}~~ · ✓ {draft_status_label(info, short=True)}")
             else:
                 st.caption(f"{i + 1}. {short}")
         with c2:

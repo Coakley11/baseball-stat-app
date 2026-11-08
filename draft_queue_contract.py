@@ -83,8 +83,101 @@ def _ledger(session: dict[str, Any], source: str) -> dict[str, Any]:
     return entry
 
 
+_FINISHED_ROOM_STATUSES = {"complete", "completed", "deleted", "ended", "abandoned"}
+
+
+def active_draft_applies(session: dict[str, Any]) -> bool:
+    """True only while a draft is actually in progress for this viewer: a Live/Shared draft that
+    has not finished, or a Simulator board with picks that is not complete. A finished or stale
+    draft must not mark queued players as drafted (D4J review 2026-11-08: a completed Simulator
+    board marked Salvador Perez and Cal Raleigh "drafted" in a queue with no active draft)."""
+    try:
+        from draft_actions import draft_action_context
+        from draft_room_state import ACTIVE_DRAFT_SOURCE_LIVE, resolve_active_draft_source
+    except ImportError:
+        return False
+    try:
+        ctx = draft_action_context(session)
+    except Exception:
+        return False
+    if ctx.get("draft_complete") or ctx.get("board_full"):
+        return False
+    if resolve_active_draft_source(session) == ACTIVE_DRAFT_SOURCE_LIVE:
+        room = session.get("live_draft_room")
+        return isinstance(room, dict) and str(room.get("status") or "").strip().lower() not in _FINISHED_ROOM_STATUSES
+    _source, picks = _active_draft_picks(session)
+    return bool(picks)
+
+
+def _active_draft_pick_teams(session: dict[str, Any]) -> dict[str, str]:
+    """lower-case name -> fantasy team that took him in the active draft."""
+    out: dict[str, str] = {}
+    try:
+        from draft_room_state import ACTIVE_DRAFT_SOURCE_LIVE, DRAFT_ROOM_TABLE_KEY, coerce_board_table, resolve_active_draft_source
+    except ImportError:
+        return out
+    if resolve_active_draft_source(session) == ACTIVE_DRAFT_SOURCE_LIVE:
+        room = session.get("live_draft_room") if isinstance(session.get("live_draft_room"), dict) else {}
+        for e in room.get("draft_board") or []:
+            if isinstance(e, dict):
+                name = str(e.get("fullName") or e.get("Player") or "").strip().lower()
+                if name:
+                    out[name] = str(e.get("Team") or e.get("Fantasy Team") or "").strip()
+        return out
+    df = coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY))
+    if not df.empty and "Player" in df.columns:
+        for _, row in df.iterrows():
+            name = str(row.get("Player") or "").strip().lower()
+            if name and name not in ("nan", "none"):
+                out[name] = str(row.get("Team") or "").strip()
+    return out
+
+
+def queue_draft_status(session: dict[str, Any], queue: list[str] | None = None) -> dict[str, dict[str, Any]]:
+    """For each queued player taken in the ACTIVE draft: who took him and where.
+
+    ``{lower name: {"team", "pick", "mine", "kind": "live"|"simulator"}}``. Empty when no draft
+    is in progress, so a saved queue never shows draft selections from a stale or unrelated draft.
+    """
+    if not active_draft_applies(session):
+        return {}
+    source, picks = _active_draft_picks(session)
+    kind = "live" if source.startswith("live:") else "simulator"
+    teams = _active_draft_pick_teams(session)
+    try:
+        from draft_actions import draft_action_context
+
+        mine_team = str(draft_action_context(session).get("your_team") or "").strip().lower()
+    except Exception:
+        mine_team = ""
+    from draft_state import DRAFT_QUEUE_KEY, _normalize_player_list
+
+    queued = {p.strip().lower() for p in _normalize_player_list(queue if queue is not None else session.get(DRAFT_QUEUE_KEY))}
+    out: dict[str, dict[str, Any]] = {}
+    for pick, name in picks:
+        key = name.strip().lower()
+        if key and key in queued and key not in out:
+            team = teams.get(key, "")
+            out[key] = {"team": team, "pick": pick, "kind": kind,
+                        "mine": bool(mine_team and team.strip().lower() == mine_team)}
+    return out
+
+
+def draft_status_label(info: dict[str, Any], *, short: bool = False) -> str:
+    """'you drafted (pick 4)' / 'taken by Team B (pick 2)', and where, for a queued player."""
+    pick = info.get("pick")
+    at = f"pick {pick}" if pick else ""
+    who = "you drafted" if info.get("mine") else (f"taken by {info['team']}" if info.get("team") else "taken")
+    where = "this Live Draft" if info.get("kind") == "live" else "your Simulator draft"
+    if short:
+        return f"{who}" + (f" · {at}" if at else "")
+    return f"{who} in {where}" + (f" ({at})" if at else "")
+
+
 def drafted_in_active_draft(session: dict[str, Any]) -> set[str]:
-    """Lower-case names of players picked in the active draft (empty when there is none)."""
+    """Lower-case names of players picked in the active draft (empty when no draft is in progress)."""
+    if not active_draft_applies(session):
+        return set()
     _source, picks = _active_draft_picks(session)
     return {name.strip().lower() for _pick, name in picks if name.strip()}
 

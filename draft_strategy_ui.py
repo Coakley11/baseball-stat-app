@@ -148,7 +148,14 @@ def _render_queue(st: Any, session: dict[str, Any], *, drafted: set[str] | None 
 
     queue = store._queue(session)
     meta = session.get("_queue_player_meta") if isinstance(session.get("_queue_player_meta"), dict) else {}
-    drafted = drafted or set()
+    # Marks come from the active draft only (draft_queue_contract), never from a finished
+    # Simulator board or the planning context's league rosters.
+    try:
+        from draft_queue_contract import draft_status_label, queue_draft_status
+
+        draft_marks = queue_draft_status(session, queue)
+    except ImportError:
+        draft_marks = {}
     with st.container(border=True):
         st.markdown(f"**Working queue** · {len(queue)} player{'s' if len(queue) != 1 else ''}")
         loaded = loaded_strategy_state(session, queue)
@@ -161,8 +168,9 @@ def _render_queue(st: Any, session: dict[str, Any], *, drafted: set[str] | None 
         for i, name in enumerate(queue):
             pos = str((meta.get(name.lower()) or {}).get("position") or "").strip()
             label = f"**{i + 1}. {name}**" + (f" · {pos}" if pos and pos != "—" else "")
-            if name.lower() in drafted:
-                label += " · ✓ drafted"
+            info = draft_marks.get(name.lower())
+            if info:
+                label += f" · ✓ {draft_status_label(info)}"
             alts = (backups or {}).get(name)
             if alts:
                 label += f"  \nIf taken: {', '.join(alts)}"
