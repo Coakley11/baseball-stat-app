@@ -196,6 +196,68 @@ def snapshot_auth_session(session_state: dict[str, Any]) -> dict[str, Any]:
     return snap
 
 
+def _widget_bound_keys(session_state: Any) -> set[str]:
+    """Keys Streamlit has bound to widgets this session (best effort; empty for a plain dict)."""
+    keys: set[str] = set()
+    try:
+        from streamlit.runtime.state.session_state_proxy import SessionStateProxy, get_session_state
+
+        if isinstance(session_state, SessionStateProxy):
+            inner = getattr(get_session_state(), "_state", None)
+            mapper = getattr(inner, "_key_id_mapper", None)  # Streamlit 1.59: KeyIdMapper
+            mapping = getattr(mapper, "_key_id_mapping", None)
+            if mapping is None:
+                mapping = getattr(inner, "_key_id_mapping", None)  # older layout
+            keys.update(str(k) for k in (mapping or {}))
+    except Exception:
+        pass
+    return keys
+
+
+def snapshot_session_state(session_state: Any) -> dict[str, Any]:
+    """Shallow copy for rollback_session_state, remembering which keys belong to widgets.
+
+    The widget keys must be recorded now: removing a key during the attempt also drops
+    Streamlit's key-to-widget mapping, so it could not be recognised as a widget afterwards.
+    """
+    snap = dict(session_state)
+    return {"values": snap, "widget_keys": _widget_bound_keys(session_state)}
+
+
+def rollback_session_state(session_state: Any, before: dict[str, Any]) -> None:
+    """Undo a failed sign-in attempt without writing widget values back.
+
+    The old rollback (``clear()`` then ``update(before)``) re-assigned every widget value through
+    ``st.session_state``. Streamlit then refuses to draw a button, form or form-submit button whose
+    key holds an assigned value, so the Account & Workspace control failed with
+    StreamlitValueAssignmentNotAllowedError right after a sign-in whose refresh session could not
+    be saved (seen on phones on D4J). Now only keys the attempt added, replaced or removed are
+    touched, and keys bound to widgets (or form submitters) are never written back.
+    """
+    if set(before) == {"values", "widget_keys"} and isinstance(before.get("values"), dict):
+        widget_keys = set(before["widget_keys"]) | _widget_bound_keys(session_state)
+        before = before["values"]
+    else:  # a plain dict(session_state) copy
+        widget_keys = _widget_bound_keys(session_state)
+    for key in [k for k in list(session_state.keys()) if k not in before]:
+        try:
+            del session_state[key]
+        except Exception:
+            pass
+    for key, val in before.items():
+        try:
+            if key in session_state and session_state[key] is val:
+                continue  # untouched by the attempt: leave it (and any widget value) alone
+        except Exception:
+            pass
+        if str(key) in widget_keys or str(key).startswith("FormSubmitter:"):
+            continue  # the widget re-creates its own value when it is drawn
+        try:
+            session_state[key] = val
+        except Exception:
+            pass
+
+
 def restore_auth_session_snapshot(session_state: dict[str, Any], snapshot: dict[str, Any]) -> None:
     """Re-apply auth keys saved before workspace blob apply."""
     if not snapshot:
@@ -1058,9 +1120,6 @@ def _persist_auth_session(
         suite_user_id = _sync_auth_account_identity(session_state, st=st)
     except Exception:
         pass
-    if was_signed_out_guest:
-        # Before anything can return: the account is applied, so the guest's work goes now.
-        _clear_previous_session_work(session_state)
     browser_persistence: dict[str, Any] | None = None
     if st is not None:
         try:
@@ -1085,8 +1144,12 @@ def _persist_auth_session(
         or (old_ext and new_ext and old_ext != new_ext)
         or (old_cloud and new_cloud and old_cloud != new_cloud)
     )
-    if scope_changed and not was_signed_out_guest:
-        _clear_previous_session_work(session_state)  # the previous account's work stays with it
+    if was_signed_out_guest or scope_changed:
+        # Only once the sign-in is durable (a failed refresh-session save returns above and
+        # login_with_email rolls the attempt back, changing no workspace data). A guest's work is
+        # temporary and the previous account's work stays with that account; this drops only the
+        # session copies and forces a sync, so the signed-in account's own saved data reloads.
+        _clear_previous_session_work(session_state)
     if old_uid != new_uid:
         try:
             from draft_room_participant_state import on_auth_user_switch
@@ -2662,7 +2725,7 @@ def login_with_email(
             st = st_mod
         except Exception:
             pass
-    pre_login_state = dict(session_state)
+    pre_login_state = snapshot_session_state(session_state)
     prior_suite_sid_present = False
     prior_suite_sid: Any = None
     if st is not None:
@@ -2693,6 +2756,19 @@ def login_with_email(
             session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
             session_state[AUTH_LAST_LOGIN_OK_KEY] = False
             return False, msg
+        if not auth_session_complete(session_state):
+            # A password sign-in from signed out starts a new token handoff lifecycle. The
+            # previous lifecycle's freeze is cleared on explicit Log out only, so after an
+            # implicit sign-out (an expired token on a long-open phone tab) it was still set and
+            # the refresh-session save was skipped (handoff_frozen_skip_intermediate): every
+            # retry failed until the page was reloaded. pre_login_state still holds the old keys,
+            # so a failed attempt rolls back to them.
+            try:
+                from suite_auth_bridge_handoff import reset_handoff_after_explicit_logout
+
+                reset_handoff_after_explicit_logout(session_state)
+            except ImportError:
+                pass
         persistence = _persist_auth_session(
             session_state,
             user=user,
@@ -2710,8 +2786,7 @@ def login_with_email(
                 "",
                 str(safe_persistence.get("failure_reason") or "persistence_failed"),
             )[:120]
-            session_state.clear()
-            session_state.update(pre_login_state)
+            rollback_session_state(session_state, pre_login_state)
             # Do not retain the auth client or suite-user cache mutated by the failed
             # attempt. A retry must resolve identity from the restored session only.
             session_state.pop(AUTH_CLIENT_KEY, None)

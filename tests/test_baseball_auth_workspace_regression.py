@@ -142,8 +142,14 @@ def test_billing_widget_failure_does_not_hide_workspace_controls() -> None:
 
 
 def test_login_success_requires_durable_bridge_and_preserves_saved_workspace() -> None:
+    # The same account signing in again keeps its session library. (A signed-out guest's library
+    # is temporary and is dropped at sign-in: see the guest test below, 2026-11-08 isolation fix.)
     saved = [{"draft_id": "draft-1", "name": "Keep Me"}]
-    session: dict = {"draft_archive_teams": deepcopy(saved), "active_page": "Saved Draft Library"}
+    session: dict = {
+        "draft_archive_teams": deepcopy(saved),
+        "active_page": "Saved Draft Library",
+        AUTH_USER_ID_KEY: "auth-user-1",
+    }
     before = deepcopy(session["draft_archive_teams"])
     st = mock.MagicMock(query_params={})
     st.session_state = session
@@ -174,6 +180,35 @@ def test_login_success_requires_durable_bridge_and_preserves_saved_workspace() -
     assert auth_session_complete(session)
     assert session["draft_archive_teams"] == before
     sanitize.assert_called_once()
+
+
+def test_guest_sign_in_drops_only_the_guests_session_library() -> None:
+    guest_library = [{"draft_id": "guest-draft", "name": "Guest work"}]
+    session: dict = {"draft_archive_teams": deepcopy(guest_library), "active_page": "Saved Draft Library"}
+    st = mock.MagicMock(query_params={})
+    st.session_state = session
+
+    def persist_ok(ss: dict, *, st=None) -> str:
+        ss[BROWSER_PERSIST_RESULT_KEY] = _persistence(ok=True)
+        return "suite-user-1"
+
+    with mock.patch("suite_auth.is_auth_enabled", return_value=True), mock.patch(
+        "suite_auth._auth_api"
+    ) as auth_api, mock.patch("suite_auth._user_from_auth_response", return_value=_user()), mock.patch(
+        "suite_auth._tokens_from_auth_response", return_value=dict(TOKENS)
+    ), mock.patch("suite_auth._sync_auth_account_identity", side_effect=persist_ok), mock.patch(
+        "suite_workspace_registry.ensure_owned_workspace_for_session"
+    ), mock.patch("suite_auth.enforce_workspace_ownership"), mock.patch(
+        "suite_user_persistence.preserve_page_through_auth"
+    ), mock.patch("draft_archive_visibility.sanitize_workflow_library_for_account"), mock.patch(
+        "draft_room_participant_state.on_auth_user_switch"
+    ), mock.patch("suite_storage_supabase.delete_saved_item", create=True) as delete_row:
+        auth_api.return_value.sign_in_with_password.return_value = object()
+        ok, _message = login_with_email(session, email="coach@example.com", password="secret", st=st)
+    assert ok and auth_session_complete(session)
+    assert "draft_archive_teams" not in session  # the guest's temporary library is not carried over
+    assert session.get("_suite_workspace_force_sync") is True  # the account's own library reloads
+    delete_row.assert_not_called()  # session copies only: nothing saved is deleted
 
 
 def test_persistence_failure_rolls_back_login_without_workspace_cleanup() -> None:
@@ -272,9 +307,12 @@ def test_stripe_checkout_requires_complete_authentication() -> None:
         billing_service_url="https://billing.test",
         test_mode=True,
     )
+    health = mock.Mock(ok=True)
     with mock.patch("suite_auth.is_auth_enabled", return_value=True), mock.patch(
         "baseball_billing_client.load_client_billing_config", return_value=config
-    ), mock.patch("baseball_billing_client.requests.post") as post:
+    ), mock.patch("baseball_billing_client.requests.get", return_value=health), mock.patch(
+        "baseball_billing_client.requests.post"
+    ) as post:
         assert authenticated_subject(incomplete) == ("", False, "")
         assert billing_ui_state(incomplete)["action"] == "signin"
         with pytest.raises(RuntimeError, match="Sign in"):

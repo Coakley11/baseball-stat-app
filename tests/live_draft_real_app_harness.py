@@ -218,7 +218,9 @@ def count(at: Any, needle: str) -> int:
 def expander_texts(at: Any, label: str) -> list[str]:
     """Protobuf text of every element inside the expander(s) labelled ``label``."""
     out: list[str] = []
-    for exp in at.expander:
+    # AppTest parses an expander that has an icon (the colourful action icons) as a Status
+    # element, so look in both lists.
+    for exp in list(at.expander) + list(at.status):
         if exp.label == label:
             for node in _walk(exp):
                 if type(node).__name__ not in ("Block", "SpecialBlock", "ElementTree", "Expander"):
