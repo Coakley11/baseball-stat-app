@@ -1,7 +1,8 @@
-"""Draft Strategy Assistant page (B3): queue, save, load, update, delete through the real widgets.
+"""Draft Strategy Assistant page through the real widgets: the Global Queue (free) and, since S2,
+Pro Draft Strategies edited as working copies (draft_strategy_pro_ui / draft_strategy_work).
 
-The store (draft_strategy_store) is tested on its own; this drives the page with AppTest and a
-temporary strategy file, so no workspace or account data is touched.
+The stores are tested on their own; this drives the page with AppTest and a temporary strategy
+file, so no workspace or account data is touched.
 """
 
 from __future__ import annotations
@@ -31,6 +32,9 @@ def _buttons(at: AppTest) -> list[str]:
 
 def _click(at: AppTest, label: str, nth: int = 0) -> None:
     [b for b in at.button if b.label == label][nth].click()
+    at.run()
+    # A handler that calls st.rerun() mid-run leaves that run's elements in AppTest's tree until the
+    # next plain run (a browser drops them); without this a later click can hit the stale copy.
     at.run()
 
 
@@ -62,70 +66,124 @@ class DraftStrategyPageTests(unittest.TestCase):
         at.run()
         return at
 
-    def test_save_then_load_into_an_empty_queue(self) -> None:
+    def _stored(self) -> dict:
+        return json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
+
+    def _trash(self) -> dict:
+        path = self.path.with_name("draft_strategy_trash.json")
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+    def _create(self, at: AppTest, name: str, *, from_global: bool = True) -> str:
+        at.text_input(key="draft_strategy_new_name").input(name)
+        at.radio(key="draft_strategy_new_from").set_value("global" if from_global else "empty")
+        _click(at, "Create strategy")
+        return next(sid for sid, s in self._stored().items() if s["name"] == name)
+
+    def _queue_of(self, sid: str) -> list[str]:
+        return [e["name"] for e in self._stored()[sid]["queue"]]
+
+    def _unsaved(self, at: AppTest) -> bool:
+        return any("Unsaved changes" in str(w.value) for w in at.warning)
+
+    def test_create_from_the_global_queue_then_edit_only_the_strategy(self) -> None:
         at = self._app(["Aaron Judge", "Juan Soto", "Bobby Witt"])
         self.assertIn("PRO", " ".join(str(c.value) for c in at.caption))
-        at.text_input(key="draft_strategy_new_name").input("Points plan")
+        sid = self._create(at, "Points plan")
+        self.assertEqual(self._queue_of(sid), ["Aaron Judge", "Juan Soto", "Bobby Witt"])
+        at.button(key=f"dsp_{sid}_down_0").click().run()
+        self.assertTrue(self._unsaved(at))
+        self.assertEqual(self._queue_of(sid), ["Aaron Judge", "Juan Soto", "Bobby Witt"])  # not saved yet
         _click(at, "Save strategy")
-        saved = json.loads(self.path.read_text(encoding="utf-8"))
-        self.assertEqual([s["name"] for s in saved.values()], ["Points plan"])
-        self.assertEqual([p["name"] for p in next(iter(saved.values()))["players"]],
-                         ["Aaron Judge", "Juan Soto", "Bobby Witt"])
-        # A fresh session with an empty queue loads it without a prompt.
-        other = self._app([])
-        _click(other, "Load into queue")
-        self.assertEqual(_queue(other), ["Aaron Judge", "Juan Soto", "Bobby Witt"])
+        self.assertEqual(self._queue_of(sid), ["Juan Soto", "Aaron Judge", "Bobby Witt"])
+        self.assertFalse(self._unsaved(at))
+        self.assertEqual(_queue(at), ["Aaron Judge", "Juan Soto", "Bobby Witt"])  # the Global Queue never moved
 
-    def test_loading_over_a_queue_asks_first_and_replaces_it(self) -> None:
-        at = self._app(["Aaron Judge"])
-        at.text_input(key="draft_strategy_new_name").input("One")
-        _click(at, "Save strategy")
-        at.session_state["draft_queue"] = ["Shohei Ohtani", "Mookie Betts"]
+    def test_switching_strategies_keeps_unsaved_changes(self) -> None:
+        at = self._app(["Aaron Judge", "Juan Soto"])
+        a = self._create(at, "Alpha")
+        b = self._create(at, "Bravo")
+        at.selectbox(key="_draft_strategy_open_pick").set_value(a).run()
+        at.button(key=f"dsp_{a}_rm_0").click().run()
+        at.selectbox(key="_draft_strategy_open_pick").set_value(b).run()
+        self.assertFalse(self._unsaved(at))  # Bravo is clean
+        self.assertTrue(any("Unsaved changes also in: Alpha" in str(c.value) for c in at.caption))
+        at.selectbox(key="_draft_strategy_open_pick").set_value(a).run()
+        self.assertTrue(self._unsaved(at))
+        self.assertEqual(self._queue_of(a), ["Aaron Judge", "Juan Soto"])  # only in the working copy
+        self.assertEqual(self._queue_of(b), ["Aaron Judge", "Juan Soto"])
+        _click(at, "Discard changes")
+        self.assertFalse(self._unsaved(at))
+        self.assertEqual(_queue(at), ["Aaron Judge", "Juan Soto"])
+
+    def test_replace_global_queue_with_this_strategy_asks_first_and_shows_counts(self) -> None:
+        at = self._app(["Aaron Judge", "Juan Soto"])
+        sid = self._create(at, "Power")
+        at.session_state["draft_queue"] = ["Shohei Ohtani"]
         at.run()
-        _click(at, "Load into queue")
-        self.assertIn("Replace queue", _buttons(at))
-        self.assertEqual(_queue(at), ["Shohei Ohtani", "Mookie Betts"])  # nothing changed yet
-        _click(at, "Replace queue")
-        self.assertEqual(_queue(at), ["Aaron Judge"])
+        text = " ".join(str(m.value) for m in at.markdown)
+        self.assertIn("From **Power** (2 players) → **Global Queue** (1 player now)", text)
+        self.assertIn("2 players added · 1 player removed · 0 kept", text)
+        at.button(key=f"dsp_{sid}_replace_global__ask_btn").click().run()
+        self.assertEqual(_queue(at), ["Shohei Ohtani"])  # nothing changed yet
+        _click(at, "Replace Global Queue")
+        self.assertEqual(_queue(at), ["Aaron Judge", "Juan Soto"])
+        self.assertEqual(self._queue_of(sid), ["Aaron Judge", "Juan Soto"])  # the strategy is unchanged
 
-    def test_update_and_delete_need_confirmation(self) -> None:
-        at = self._app(["Aaron Judge"])
-        at.text_input(key="draft_strategy_new_name").input("Plan")
+    def test_copy_global_queue_into_an_empty_strategy_then_save(self) -> None:
+        at = self._app(["Aaron Judge", "Juan Soto"])
+        sid = self._create(at, "Blank", from_global=False)
+        self.assertEqual(self._queue_of(sid), [])
+        _click(at, "Copy Global Queue into This Strategy")  # nothing to replace: no prompt
+        self.assertEqual(self._queue_of(sid), [])           # a working copy until saved
         _click(at, "Save strategy")
+        self.assertEqual(self._queue_of(sid), ["Aaron Judge", "Juan Soto"])
+        self.assertEqual(_queue(at), ["Aaron Judge", "Juan Soto"])
+
+    def test_copy_over_existing_players_needs_confirmation(self) -> None:
+        at = self._app(["Aaron Judge"])
+        sid = self._create(at, "Plan")
         at.session_state["draft_queue"] = ["Juan Soto", "Bobby Witt"]
         at.run()
-        _click(at, "Update from queue")
-        _click(at, "Update strategy")
-        saved = next(iter(json.loads(self.path.read_text(encoding="utf-8")).values()))
-        self.assertEqual([p["name"] for p in saved["players"]], ["Juan Soto", "Bobby Witt"])
-        delete_btn = next(b for b in at.button if b.label == "Delete strategy")
-        self.assertTrue(delete_btn.disabled)  # Slice 0: deletion is paused (strategy_deletion_guard)
-        with mock.patch("strategy_deletion_guard.DELETION_PAUSED", False):  # the confirm-then-delete flow, for when Slice 2 lifts the pause
-            at.run()
-            _click(at, "Delete strategy")
-            self.assertTrue(self.path.read_text(encoding="utf-8").count("Plan"))  # still there until confirmed
-            _click(at, "Delete")
-        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8")), {})
-
-    def test_duplicate_and_rename(self) -> None:
-        at = self._app(["Aaron Judge"])
-        at.text_input(key="draft_strategy_new_name").input("Plan")
+        at.button(key=f"dsp_{sid}_copy_global__ask_btn").click().run()
+        self.assertEqual(self._queue_of(sid), ["Aaron Judge"])
+        _click(at, "Copy into strategy")
         _click(at, "Save strategy")
+        self.assertEqual(self._queue_of(sid), ["Juan Soto", "Bobby Witt"])
+        self.assertEqual(_queue(at), ["Juan Soto", "Bobby Witt"])
+
+    def test_delete_is_recoverable_and_permanent_delete_is_confirmed(self) -> None:
+        at = self._app(["Aaron Judge"])
+        sid = self._create(at, "Plan")
+        at.button(key=f"dsp_{sid}_delete__ask_btn").click().run()
+        self.assertIn(sid, self._stored())  # still there until confirmed
+        _click(at, "Delete")
+        self.assertNotIn(sid, self._stored())
+        self.assertEqual(len(self._trash()), 1)
+        _click(at, "Restore")
+        self.assertIn(sid, self._stored())
+        self.assertEqual(self._trash(), {})
+        at.button(key=f"dsp_{sid}_delete__ask_btn").click().run()
+        _click(at, "Delete")
+        (tid,) = self._trash()
+        at.button(key=f"dsp_trash_{tid}_purge__ask_btn").click().run()
+        self.assertEqual(len(self._trash()), 1)  # still recoverable until confirmed
+        _click(at, "Delete forever")
+        self.assertEqual(self._trash(), {})
+        self.assertEqual(self._stored(), {})
+
+    def test_duplicate(self) -> None:
+        at = self._app(["Aaron Judge"])
+        self._create(at, "Plan")
         _click(at, "Duplicate")
-        names = sorted(s["name"] for s in json.loads(self.path.read_text(encoding="utf-8")).values())
-        self.assertEqual(names, ["Plan", "Plan (copy)"])
+        self.assertEqual(sorted(s["name"] for s in self._stored().values()), ["Plan", "Plan (copy)"])
 
     def test_without_access_the_library_is_explained_not_shown(self) -> None:
         with mock.patch("baseball_monetization.entitlement_for_capability", return_value=False):
             at = self._app(["Aaron Judge"])
-            self.assertNotIn("Save strategy", _buttons(at))
+            self.assertNotIn("Create strategy", _buttons(at))
             self.assertIn("View Pricing & Upgrade", _buttons(at))
             self.assertTrue(any("Pro feature" in str(i.value) for i in at.info))
-            self.assertEqual(_queue(at), ["Aaron Judge"])  # the working queue still shows
-
-
-if __name__ == "__main__":
-    unittest.main()
+            self.assertEqual(_queue(at), ["Aaron Judge"])  # the Global Queue still shows
 
 
 PLAN_SCRIPT = '''
@@ -147,7 +205,7 @@ st.write("QUEUE=" + "|".join(st.session_state.get("draft_queue") or []))
 
 
 class StrategyQueueAndPlanTests(DraftStrategyPageTests):
-    """Working-queue controls, the loaded-strategy indicator and adding recommended targets."""
+    """Global Queue controls, the loaded-strategy indicator and adding players from the pool."""
 
     def _plan_app(self, queue: list[str]) -> AppTest:
         at = AppTest.from_string(PLAN_SCRIPT, default_timeout=60)
@@ -178,24 +236,60 @@ class StrategyQueueAndPlanTests(DraftStrategyPageTests):
         self._icon_click(at, "dsq_add_Bobby Witt_btn")
         self.assertEqual(_queue(at), ["Aaron Judge", "Bobby Witt"])
 
-    def test_loaded_strategy_indicator_and_independent_snapshots(self) -> None:
-        at = self._plan_app(["Aaron Judge", "Juan Soto"])
-        at.text_input(key="draft_strategy_new_name").input("Power")
+    def test_add_a_pool_player_and_pin_in_a_strategy_only(self) -> None:
+        at = self._plan_app(["Aaron Judge"])
+        sid = self._create(at, "Power")
+        at.selectbox(key=f"dsp_{sid}_add_pick").set_value("Kyle Tucker").run()
+        _click(at, "Add to this strategy")
+        at.button(key=f"dsp_{sid}_pin_1").click().run()
         _click(at, "Save strategy")
+        stored = self._stored()[sid]
+        self.assertEqual([e["name"] for e in stored["queue"]], ["Aaron Judge", "Kyle Tucker"])
+        self.assertEqual(stored["queue"][1]["position"], "OF")
+        self.assertEqual(stored["pins"], ["kyle tucker"])
+        self.assertEqual(stored["queue"][0]["mlbam_id"], "592450")  # resolved offline (seed map)
+        self.assertEqual(_queue(at), ["Aaron Judge"])
+
+    def test_note_preferences_and_research_are_saved_with_the_strategy(self) -> None:
+        at = self._plan_app(["Aaron Judge", "Juan Soto"])
+        sid = self._create(at, "Power")
+        at.selectbox(key=f"dsp_{sid}_note_who").set_value("Juan Soto").run()
+        at.text_area(key=f"dsp_{sid}_note_text_juan soto").input("Elite plate discipline").run()
+        _click(at, "Save note")
+        at.selectbox(key=f"dsp_{sid}_approach").set_value("roster_aware").run()
+        at.multiselect(key=f"dsp_{sid}_cats").set_value(["HR", "RBI"]).run()
+        _click(at, "Apply preferences")
+        _click(at, "Save strategy")
+        stored = self._stored()[sid]
+        self.assertEqual(stored["notes"]["juan soto"]["text"], "Elite plate discipline")
+        self.assertEqual(stored["notes"]["juan soto"]["mlbam_id"], "665742")
+        self.assertEqual(stored["approach"], "roster_aware")
+        self.assertEqual(stored["preferences"]["category_priorities"], ["HR", "RBI"])
+        at.text_area(key=f"dsp_{sid}_finding").input("Judge vs Soto: Judge has more HR over 5 seasons.").run()
+        _click(at, "Add finding")
+        log = json.loads(self.path.with_name("draft_strategy_research.json").read_text(encoding="utf-8"))
+        self.assertEqual(log[sid]["entries"][0]["kind"], "finding")
+
+    def test_loaded_strategy_indicator_and_independent_strategies(self) -> None:
+        at = self._plan_app(["Aaron Judge", "Juan Soto"])
+        power = self._create(at, "Power")
         at.session_state["draft_queue"] = ["Bobby Witt"]
         at.run()
-        at.text_input(key="draft_strategy_new_name").input("Speed")
-        _click(at, "Save strategy")
-        saved = {s["name"]: [p["name"] for p in s["players"]] for s in json.loads(self.path.read_text(encoding="utf-8")).values()}
-        self.assertEqual(saved, {"Power": ["Aaron Judge", "Juan Soto"], "Speed": ["Bobby Witt"]})
-        power_id = [sid for sid, s in json.loads(self.path.read_text(encoding="utf-8")).items() if s["name"] == "Power"][0]
-        self._icon_click(at, f"strategy_{power_id}_load_btn__ask_btn")
-        _click(at, "Replace queue")
+        self._create(at, "Speed")
+        names = {s["name"]: [e["name"] for e in s["queue"]] for s in self._stored().values()}
+        self.assertEqual(names, {"Power": ["Aaron Judge", "Juan Soto"], "Speed": ["Bobby Witt"]})
+        at.selectbox(key="_draft_strategy_open_pick").set_value(power).run()
+        at.button(key=f"dsp_{power}_replace_global__ask_btn").click().run()
+        _click(at, "Replace Global Queue")
         self.assertEqual(_queue(at), ["Aaron Judge", "Juan Soto"])
         captions = " ".join(str(c.value) for c in at.caption)
         self.assertIn("Loaded from **Power** · unchanged", captions)
-        self._icon_click(at, "dsq_rm_0_btn")                                 # edit the working queue
+        self._icon_click(at, "dsq_rm_0_btn")                                 # edit the Global Queue
         captions = " ".join(str(c.value) for c in at.caption)
         self.assertIn("edited since loading (the saved strategy is unchanged)", captions)
-        saved = {s["name"]: [p["name"] for p in s["players"]] for s in json.loads(self.path.read_text(encoding="utf-8")).values()}
-        self.assertEqual(saved, {"Power": ["Aaron Judge", "Juan Soto"], "Speed": ["Bobby Witt"]})  # snapshots intact
+        names = {s["name"]: [e["name"] for e in s["queue"]] for s in self._stored().values()}
+        self.assertEqual(names, {"Power": ["Aaron Judge", "Juan Soto"], "Speed": ["Bobby Witt"]})
+
+
+if __name__ == "__main__":
+    unittest.main()

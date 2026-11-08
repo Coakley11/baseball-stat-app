@@ -1,4 +1,4 @@
-"""Draft Strategy Assistant page: the working queue and the saved strategy library (Pro).
+"""Draft Strategy Assistant page: the Global Queue (free) and Pro Draft Strategies (draft_strategy_pro_ui).
 
 Everything here goes through draft_strategy_store, which checks sign-in and the
 ``draft_strategy_library`` capability itself, so this page never decides access on its own. The
@@ -159,14 +159,16 @@ def _render_queue(st: Any, session: dict[str, Any], *, drafted: set[str] | None 
     except ImportError:
         draft_marks = {}
     with st.container(border=True):
-        st.markdown(f"**Working queue** · {len(queue)} player{'s' if len(queue) != 1 else ''}")
+        st.markdown(f"**Global Queue** · {len(queue)} player{'s' if len(queue) != 1 else ''}")
+        st.caption("Your general-purpose queue (free). Pro strategies below each keep their own queue; "
+                   "they only meet this one when you copy or replace on purpose.")
         loaded = loaded_strategy_state(session, queue)
         if loaded:
             st.caption(f"Loaded from **{loaded['name']}**" + (
                 " · edited since loading (the saved strategy is unchanged)" if loaded["modified"] else " · unchanged"))
         if not queue:
             st.caption("Your queue is empty. Add players with **⭐ Add to Queue** from the recommendations below, "
-                       "the research pages or Draft Assistant, or load a saved strategy.")
+                       "the research pages or Draft Assistant, or replace it with a saved strategy.")
         for i, name in enumerate(queue):
             pos = str((meta.get(name.lower()) or {}).get("position") or "").strip()
             label = f"**{i + 1}. {name}**" + (f" · {pos}" if pos and pos != "—" else "")
@@ -188,7 +190,7 @@ def _render_queue(st: Any, session: dict[str, Any], *, drafted: set[str] | None 
                               disabled=i == 0, use_container_width=True):
                 _queue_action(st, session, move_queue_item_to_top, i)
             if rm_col.button("", key=f"dsq_rm_{i}_btn", icon=_icons.REMOVE_FROM_LIST,
-                             help="Remove from the working queue (saved strategies are not changed)",
+                             help="Remove from the Global Queue (saved strategies are not changed)",
                              use_container_width=True):
                 _queue_action(st, session, remove_player_from_user_draft_queue, name)
         st.caption("A player drafted in a draft is marked there and stays in this queue for your other "
@@ -206,120 +208,6 @@ def _queue_notes(session: dict[str, Any]) -> dict[str, str]:
         return {}
 
 
-def _render_save(st: Any, session: dict[str, Any], queue: list[str]) -> None:
-    with st.container(border=True):
-        st.markdown("**Save this queue as a strategy**")
-        name = st.text_input("Strategy name", key="draft_strategy_new_name", max_chars=store.NAME_MAX,
-                             placeholder="e.g. 12-team points, early pitching")
-        if st.button("Save strategy", key="draft_strategy_save_btn", type="primary", icon=_icons.SAVE,
-                     disabled=not queue, use_container_width=True):
-            saved = _run(st, store.save_strategy, session, name,
-                         approach=str(session.get(APPROACH_KEY) or "balanced"), notes=_queue_notes(session))
-            if saved:
-                _flash(st, "success", f"Saved **{saved['name']}** ({len(saved['players'])} players).")
-            st.rerun()
-
-
-def _load(st: Any, session: dict[str, Any], sid: str) -> None:
-    # The store records the loaded strategy (LOADED_KEY) itself: id, name, approach, notes and the
-    # queue as loaded. Overwriting it here used to drop the notes and approach.
-    out = _run(st, store.load_strategy, session, sid, confirm_replace=True)
-    if out:
-        _persist(st)
-        msg = f"Loaded {out['loaded']} players into your queue."
-        for warning in out.get("warnings") or []:
-            msg += f"\n\n{warning}"
-        _flash(st, "success", msg)
-
-
-def _render_strategy(st: Any, session: dict[str, Any], strategy: dict[str, Any], queue: list[str]) -> None:
-    from ui_confirm import ICON_DELETE, confirm_destructive_action
-
-    sid = str(strategy["id"])
-    players = sorted(strategy.get("players") or [], key=lambda p: int(p.get("rank") or 0))
-    with st.container(border=True):
-        st.markdown(f"**{strategy['name']}**")
-        st.caption(f"{APPROACH_LABELS.get(strategy.get('approach'), 'Balanced')} · {len(players)} players · "
-                   f"updated {str(strategy.get('updated_at') or '')[:10]}")
-        if players:
-            st.markdown(" · ".join(p["name"] for p in players[:6]) + (" …" if len(players) > 6 else ""))
-        load_col, update_col = st.columns(2)
-        with load_col:
-            if not queue:
-                if st.button("Load into queue", key=f"strategy_{sid}_load_btn", icon=_icons.OPEN,
-                             use_container_width=True):
-                    _load(st, session, sid)
-                    st.rerun()
-            elif confirm_destructive_action(
-                st,
-                key=f"strategy_{sid}_load_btn",
-                label="Load into queue",
-                icon=_icons.OPEN,
-                use_container_width=True,
-                warning=(f"Loading this strategy will replace your current {len(queue)}-player queue with the "
-                         f"{len(players)} players in {strategy['name']}. Continue?"),
-                confirm_label="Replace queue",
-                target=sid,
-            ):
-                _load(st, session, sid)
-                st.rerun()
-        with update_col:
-            if confirm_destructive_action(
-                st,
-                key=f"strategy_{sid}_update_btn",
-                label="Update from queue",
-                icon=_icons.REFRESH,
-                use_container_width=True,
-                warning=f"Replace the {len(players)} players saved in {strategy['name']} with your current "
-                        f"{len(queue)}-player queue?",
-                confirm_label="Update strategy",
-                target=sid,
-            ):
-                updated = _run(st, store.update_strategy, session, sid, confirm_overwrite=True,
-                               notes=_queue_notes(session), ok=f"Updated **{strategy['name']}** from your queue.")
-                if updated:
-                    session[LOADED_KEY] = store.loaded_record(updated, store._queue(session))
-                st.rerun()
-        with st.expander("Rename, duplicate or delete", icon=_icons.EDIT):
-            new_name = st.text_input("New name", value=strategy["name"], key=f"strategy_{sid}_rename_input",
-                                     max_chars=store.NAME_MAX)
-            ren_col, dup_col = st.columns(2)
-            with ren_col:
-                if st.button("Rename", key=f"strategy_{sid}_rename_btn", icon=_icons.EDIT,
-                             use_container_width=True):
-                    renamed = _run(st, store.rename_strategy, session, sid, new_name, ok="Renamed.")
-                    loaded = session.get(LOADED_KEY)
-                    if renamed and isinstance(loaded, dict) and loaded.get("id") == sid:
-                        session[LOADED_KEY] = {**loaded, "name": renamed["name"]}
-                    st.rerun()
-            with dup_col:
-                if st.button("Duplicate", key=f"strategy_{sid}_dup_btn", icon=_icons.DUPLICATE,
-                             use_container_width=True):
-                    _run(st, store.duplicate_strategy, session, sid, ok=f"Duplicated **{strategy['name']}**.")
-                    st.rerun()
-            from strategy_deletion_guard import PAUSED_MESSAGE, deletion_allowed
-
-            if not deletion_allowed():
-                st.button("Delete strategy", key=f"strategy_{sid}_delete_btn", icon=ICON_DELETE,
-                          use_container_width=True, disabled=True, help=PAUSED_MESSAGE)
-                st.caption(PAUSED_MESSAGE)
-            elif confirm_destructive_action(
-                st,
-                key=f"strategy_{sid}_delete_btn",
-                label="Delete strategy",
-                icon=ICON_DELETE,
-                use_container_width=True,
-                warning=f"Permanently delete {strategy['name']}? Your current queue is not changed.",
-                confirm_label="Delete",
-                target=sid,
-            ):
-                _run(st, store.delete_strategy, session, sid, confirmed=True, ok=f"Deleted **{strategy['name']}**.")
-                loaded = session.get(LOADED_KEY)
-                if isinstance(loaded, dict) and loaded.get("id") == sid:
-                    session.pop(LOADED_KEY, None)
-                st.rerun()
-
-
 def _add_to_queue(st: Any, session: dict[str, Any], name: str, position: str = "", team: str = "") -> None:
     from draft_state import add_player_to_draft_queue
 
@@ -332,9 +220,9 @@ def _add_to_queue(st: Any, session: dict[str, Any], name: str, position: str = "
         except Exception:
             pass
         _persist(st)
-        _flash(st, "success", f"⭐ Added **{name}** to your working queue.")
+        _flash(st, "success", f"⭐ Added **{name}** to your Global Queue.")
     else:
-        _flash(st, "info", f"**{name}** is already in your working queue.")
+        _flash(st, "info", f"**{name}** is already in your Global Queue.")
     st.rerun()
 
 
@@ -430,14 +318,12 @@ def render_draft_strategy_page(st: Any, session: dict[str, Any], *, pool_fn=None
                 schedule_page(session, PRICING_PAGE)
                 st.rerun()
         return
-    _render_save(st, session, queue)
-    st.markdown("#### Saved strategies")
-    strategies = _run(st, store.list_strategies, session)
-    if strategies is None:
-        _show_flash(st)
-        return
-    if not strategies:
-        st.caption("No saved strategies yet. Build a queue, name it above and save it.")
-        return
-    for strategy in strategies:
-        _render_strategy(st, session, strategy, queue)
+    from draft_strategy_pro_ui import render_pro_strategies
+
+    pool = None
+    if pool_fn is not None:
+        try:
+            pool = pool_fn()
+        except Exception:
+            pool = None
+    render_pro_strategies(st, session, pool=pool)

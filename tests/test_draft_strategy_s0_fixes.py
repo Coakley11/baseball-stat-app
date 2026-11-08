@@ -116,9 +116,13 @@ class LoadedRecordTests(_Base):
         self.assertTrue(dsu.loaded_strategy_state(self.s, QUEUE[:2])["modified"])
 
     def test_page_load_keeps_the_store_record(self) -> None:
+        # S2: the page's "Replace Global Queue with This Strategy" (draft_strategy_work) replaced _load.
+        import draft_strategy_work as work
+
         strategy = self._saved()
         self.s[DRAFT_QUEUE_KEY] = ["Someone Else"]
-        dsu._load(_FakeSt(), self.s, strategy["id"])
+        work.open_strategy(self.s, strategy["id"])
+        work.replace_global_with(self.s, strategy["id"], confirmed=True)
         loaded = self.s[dss.LOADED_KEY]
         self.assertEqual(self.s[DRAFT_QUEUE_KEY], QUEUE)
         self.assertEqual(loaded["notes"], {"Aaron Judge": "elite power"})  # used to be dropped
@@ -141,13 +145,18 @@ class LoadedRecordTests(_Base):
 
 class NotesRoundTripTests(_Base):
     def test_page_save_keeps_queue_notes_through_load(self) -> None:
+        # S2: "Create strategy" from a copy of the Global Queue (draft_strategy_work) replaced _render_save.
+        import draft_strategy_work as work
+
         dqm.set_note(self.s, "Juan Soto", "walks a ton")
-        dsu._render_save(_FakeSt(name="Patience", click="Save strategy"), self.s, QUEUE)
+        rec = work.create(self.s, "Patience", from_global=True)
+        work.save(self.s, rec["strategy"]["id"])
         (saved,) = self.backend.rows.values()
         self.assertEqual({p["name"]: p["note"] for p in saved["players"]},
                          {"Aaron Judge": "", "Juan Soto": "walks a ton", "Bobby Witt": ""})
         fresh = {DRAFT_QUEUE_KEY: []}
-        dsu._load(_FakeSt(), fresh, saved["id"])
+        work.open_strategy(fresh, saved["id"])
+        work.replace_global_with(fresh, saved["id"], confirmed=True)
         self.assertEqual(dqm.notes_for(fresh), {"juan soto": "walks a ton"})
 
     def test_update_from_queue_keeps_old_notes_and_adds_new_ones(self) -> None:
