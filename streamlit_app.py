@@ -14055,13 +14055,22 @@ def _render_baseball_sidebar_chrome(st_obj) -> None:
         )
         return
     except Exception as _acct_exc:
+        # A value left on one of this control's button keys (Streamlit forbids assigning buttons)
+        # broke sign-in on a phone (D4J review 2026-11-08). Drop that key and redraw once.
+        try:
+            from account_control_recovery import recover_from_value_assignment
+
+            if recover_from_value_assignment(st_obj.session_state, _acct_exc):
+                st_obj.rerun()
+        except ImportError:
+            pass
         try:
             st_obj.session_state["_baseball_account_workspace_error"] = (
                 f"{type(_acct_exc).__name__}: {_acct_exc}"
             )[:240]
             st_obj.sidebar.error(
-                "Account control failed — see developer diagnostics. "
-                f"({type(_acct_exc).__name__})"
+                "Sign-in controls could not load. Refresh the page; if it happens again, "
+                f"sign out and back in. ({type(_acct_exc).__name__})"
             )
         except Exception:
             pass
