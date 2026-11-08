@@ -371,7 +371,9 @@ class U2U3HelpTests(unittest.TestCase):
             d = REGISTRY.call("find_feature", {"task": h.key}).data
             texts += [*d["steps"], d["note"], d["navigation"]]
         texts += [REGISTRY.call("explain_metric", {"term": k}).data["definition"] for k in TERMS]
-        texts.append(str(REGISTRY.call("explain_draft_tools", {}).data))
+        # page_key is an identifier (never shown); the prose is everything else.
+        texts.append(str([{k: v for k, v in t.items() if k != "page_key"}
+                          for t in REGISTRY.call("explain_draft_tools", {}).data["tools"]]))
         for text in texts:
             self.assertNotIn("[[", text)
             for old in stale:

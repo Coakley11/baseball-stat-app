@@ -31026,6 +31026,7 @@ elif active_page == "Draft Strategy Assistant":
         "Turn your research into a draft plan: build a queue, save it as a strategy, load it into any draft.",
         feature="Draft Strategy Assistant",
     )
+    draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
     render_page_guide(active_page)
     apply_pending_page_transfer(active_page)
     def _strategy_pool():

@@ -1,4 +1,4 @@
-"""The five draft tools, what each one is for, and how to move between them (U3A).
+"""The draft tools, what each one is for, and how to move between them (U3A; Draft Strategy added 2026-11-08).
 
 One place for the purpose copy, so the page headers, the "Draft tools" switcher and the Home
 draft card all describe each tool the same way. Page keys are unchanged; nothing here touches
@@ -24,6 +24,9 @@ DRAFT_TOOLS: tuple[tuple[str, str, str, str], ...] = (
      "Test a strategy: the computer runs a four-team snake mock draft, then grades every roster."),
     ("Saved Draft Library", "📁", "Saved Draft Library",
      "Your saved drafts and leagues: open, rename, share, or make one your active league."),
+    ("Draft Strategy Assistant", "♟️", "Draft Strategy · PRO",
+     "Plan before you draft: build your free Global Queue, and with Pro keep separate strategy queues with notes "
+     "and research, then load one into any draft."),
 )
 
 # Home's draft card: the four ways in (a landing without a separate page).

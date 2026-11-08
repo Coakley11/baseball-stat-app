@@ -42,23 +42,34 @@ class DraftToolTests(unittest.TestCase):
     def test_every_tool_has_a_distinct_purpose(self):
         pages = [p for p, *_ in draft_tools.DRAFT_TOOLS]
         self.assertEqual(pages, ["Live Draft Room", "Draft Room Simulator", "Draft Assistant Simulator",
-                                 "Draft Lab / Simulation", "Saved Draft Library"])
+                                 "Draft Lab / Simulation", "Saved Draft Library", "Draft Strategy Assistant"])
         purposes = [draft_tools.purpose(p) for p in pages]
         self.assertTrue(all(purposes))
         self.assertEqual(len(set(purposes)), len(purposes))
 
-    def test_switcher_links_the_other_four_and_only_navigates(self):
+    def test_switcher_links_the_other_five_and_only_navigates(self):
         st = FakeSt()
         calls = []
         draft_tools.render_draft_tool_nav(st, "Draft Room Simulator", lambda page: (lambda: calls.append(page)))
-        self.assertEqual(len(st.buttons), 4)
+        self.assertEqual(len(st.buttons), 5)
         labels = [label for label, _kw in st.buttons]
         self.assertNotIn("🧾 Draft Room Simulator", labels)
         for _label, kw in st.buttons:
             self.assertTrue(kw["key"].startswith("u3dt_"), "button keys must not use a persisted page prefix")
             self.assertEqual(kw["type"], "tertiary")
             kw["on_click"]()
-        self.assertEqual(calls, ["Live Draft Room", "Draft Assistant Simulator", "Draft Lab / Simulation", "Saved Draft Library"])
+        self.assertEqual(calls, ["Live Draft Room", "Draft Assistant Simulator", "Draft Lab / Simulation", "Saved Draft Library",
+                                 "Draft Strategy Assistant"])
+        self.assertIn("♟️ Draft Strategy · PRO", labels)  # its existing colourful icon, once
+
+    def test_draft_strategy_is_in_every_group_once_and_shows_the_others(self):
+        for current in [p for p, *_ in draft_tools.DRAFT_TOOLS]:
+            st = FakeSt()
+            draft_tools.render_draft_tool_nav(st, current, lambda page: (lambda: None))
+            labels = [label for label, _kw in st.buttons]
+            self.assertEqual(len(labels), len(set(labels)), current)  # no duplicates
+            self.assertEqual(labels.count("♟️ Draft Strategy · PRO"), 0 if current == "Draft Strategy Assistant" else 1)
+            self.assertEqual(len(labels), 5, current)
 
     def test_each_draft_page_uses_shared_purpose_and_switcher(self):
         for page in ('"Draft Assistant Simulator"', '"Draft Room Simulator"', "DRAFT_LAB_PAGE", '"Saved Draft Library"'):
@@ -66,6 +77,11 @@ class DraftToolTests(unittest.TestCase):
             body = APP[start:start + 2500]
             with self.subTest(page=page):
                 self.assertIn("draft_tools.purpose(active_page)", body)
+        for page in ('"Draft Assistant Simulator"', '"Draft Room Simulator"', "DRAFT_LAB_PAGE", '"Saved Draft Library"',
+                     '"Draft Strategy Assistant"'):
+            start = APP.index(f"elif active_page == {page}:")
+            body = APP[start:start + 2500]
+            with self.subTest(page=page):  # Draft Strategy leads with its own headline (page_help.headline)
                 self.assertIn("draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)", body)
 
     def test_live_draft_switcher_only_in_intro(self):
