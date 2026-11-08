@@ -112,7 +112,7 @@ def main() -> int:
         report["pause_buttons"] = pause_btns
 
         # Fresh locator on exact authoritative control
-        loc = host.get_by_role("button", name=re.compile(r"Pause Draft", re.I))
+        loc = host.get_by_role("button", name="⏸ Pause Draft")
         if loc.count() == 0:
             loc = host.get_by_role("button", name=re.compile(r"Pause Draft", re.I))
         report["pause_locator_count"] = loc.count()

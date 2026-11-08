@@ -307,8 +307,7 @@ class PausePreemptionObservabilityTests(unittest.TestCase):
 
         src = inspect.getsource(render_live_draft_control_center)
         self.assertIn('key="live_draft_pause"', src)
-        self.assertIn('"Pause Draft",', src)  # words kept; Material icon instead of the emoji (2026-11-06)
-        self.assertIn('icon=":material/pause:"', src)
+        self.assertIn("⏸ Pause Draft", src)
         self.assertIn("live_draft_pause_timer", src)
         self.assertIn('request_live_draft_rerun(st, session, "pause_draft", room=room)', src)
 

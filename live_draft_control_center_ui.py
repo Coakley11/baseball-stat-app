@@ -120,8 +120,7 @@ def render_live_draft_control_center(
         top1, top2 = st.columns(2)
     with top1:
         _pause_return = st.button(
-            "Pause Draft",
-            icon=":material/pause:",
+            "⏸ Pause Draft",
             disabled=status != "in_progress" or not is_commissioner,
             key="live_draft_pause",
             help=(
@@ -207,8 +206,7 @@ def render_live_draft_control_center(
             pass
     with top2:
         _resume_return = st.button(
-            "Resume Draft",
-            icon=":material/play_arrow:",
+            "▶ Resume Draft",
             disabled=status != "paused" or not is_commissioner,
             key="live_draft_resume",
             type="primary",
@@ -268,8 +266,7 @@ def render_live_draft_control_center(
         bot1, bot2 = st.columns(2)
     with bot1:
         if st.button(
-            "Auto Pick Now",
-            icon=":material/bolt:",
+            "⚡ Auto Pick Now",
             disabled=(status not in ("in_progress", "paused")) or (not may_auto),
             key="live_draft_auto_now",
             help=(
@@ -341,8 +338,7 @@ def render_live_draft_control_center(
                 persist_room(room, "reset_timer")
         elif session.get("active_shared_draft_room_code"):
             if st.button(
-                "Leave Room",
-                icon=":material/logout:",
+                "🚪 Leave Room",
                 key="live_draft_leave_this_room_btn",
                 help="Leave only your seat. The draft continues for everyone else.",
                 use_container_width=True,

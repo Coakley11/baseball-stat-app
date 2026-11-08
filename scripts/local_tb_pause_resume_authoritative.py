@@ -154,7 +154,7 @@ def main() -> int:
 
         # If already paused, Resume first so we can prove a full pause cycle.
         if room_status()[0].lower() == "paused":
-            report["pre_resume_click"] = click_exact(host, "Resume Draft")
+            report["pre_resume_click"] = click_exact(host, "▶ Resume Draft")
             report["pre_resume_disk"] = wait_disk("in_progress", timeout_s=25)
             host.wait_for_timeout(3000)
             report["host_enter_after_pre_resume"] = enter_room(host, timeout_s=60)
@@ -189,7 +189,7 @@ def main() -> int:
         }
 
         # Fresh locator Pause
-        report["pause_click"] = click_exact(host, "Pause Draft")
+        report["pause_click"] = click_exact(host, "⏸ Pause Draft")
         report["pause_disk"] = wait_disk("paused", timeout_s=25)
         # UI converge
         host_ui_paused = False
@@ -234,7 +234,7 @@ def main() -> int:
 
         # Resume only if durably paused
         if after_pause[0].lower() == "paused":
-            report["resume_click"] = click_exact(host, "Resume Draft")
+            report["resume_click"] = click_exact(host, "▶ Resume Draft")
             report["resume_disk"] = wait_disk("in_progress", timeout_s=25)
             for i in range(15):
                 ht = body(host)
