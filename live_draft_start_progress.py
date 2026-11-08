@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 import time
 from typing import Any
 
@@ -200,13 +202,13 @@ def render_draft_start_progress(st: Any, session: dict[str, Any], *, developer_m
         room = session.get("live_draft_room")
         if isinstance(room, dict) and open_preserved_created_draft is not None:
             st.warning("A draft object may already exist — **Open Draft** will not create a duplicate.")
-            if st.button("Open Draft", key="live_draft_open_after_create_abort", type="primary"):
+            if st.button("Open Draft", key="live_draft_open_after_create_abort", type="primary", icon=_icons.LIVE_DRAFT):
                 opened = open_preserved_created_draft(session)
                 if opened.get("ok"):
                     st.rerun()
                 else:
                     st.error(str(opened.get("reason") or "Could not open preserved draft."))
-        elif st.button("Retry create", key="live_draft_retry_after_create_abort"):
+        elif st.button("Retry create", key="live_draft_retry_after_create_abort", icon=_icons.REFRESH):
             session.pop("_live_draft_creation_hard_abort", None)
             session.pop(START_ERROR_KEY, None)
             st.rerun()
@@ -223,6 +225,7 @@ def render_draft_start_progress(st: Any, session: dict[str, Any], *, developer_m
             "Open Draft",
             key="live_draft_open_preserved_after_transition_fail",
             type="primary",
+            icon=_icons.LIVE_DRAFT,
         ):
             opened = open_preserved_created_draft(session)
             if opened.get("ok"):

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 import uuid
 from datetime import timedelta
 from typing import Any
@@ -481,7 +483,7 @@ def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
         _chat_body(st, session, form_key="live_draft_chat_form_fallback")
 
     if is_chat_commissioner(session):
-        with st.expander("Commissioner chat controls", expanded=False):
+        with st.expander("Commissioner chat controls", expanded=False, icon=_icons.SETTINGS):
             disabled = bool(chat_preview.get("chat_disabled"))
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -492,7 +494,7 @@ def render_live_draft_chat_panel(st: Any, session: dict[str, Any]) -> None:
                     if st.button("Disable chat", key="ld_chat_disable"):
                         set_chat_disabled(session, True)
             with c2:
-                if st.button("Clear system messages", key="ld_chat_clear_system"):
+                if st.button("Clear system messages", key="ld_chat_clear_system", icon=_icons.CLEAR):
                     clear_system_chat_messages(session)
             with c3:
                 mid = st.text_input(
@@ -613,7 +615,7 @@ def _chat_body(st: Any, session: dict[str, Any], *, form_key: str = "live_draft_
             height=68,
             key=f"{form_key}_input",
         )
-        sent = st.form_submit_button("Send")
+        sent = st.form_submit_button("Send", icon=_icons.CHAT)
         if sent:
             # Form submit already triggers a Streamlit rerun — do not call st.rerun().
             _post_message(st, session, message)

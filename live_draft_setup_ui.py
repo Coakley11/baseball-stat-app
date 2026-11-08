@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import action_icons as _icons
+
 from typing import Any, Callable
 
 from live_draft_setup_mode import (
@@ -250,6 +252,7 @@ def render_shared_multiplayer_setup(
             disabled=create_disabled,
             help=auth_help or "Builds the draft room and generates a 6-character join code (draft has not started yet).",
             on_click=on_prepare_shared_draft_room,
+            icon=_icons.START,
         )
 
         st.markdown("---")
@@ -323,6 +326,7 @@ def render_guest_join_with_team_claim(st: Any, session: dict[str, Any]) -> None:
                     "requested_team": already_team,
                     "selectbox_return_value": already_team,
                 },
+                icon=_icons.RESUME,
             )
         else:
             join_label = "Join Room"
@@ -338,6 +342,7 @@ def render_guest_join_with_team_claim(st: Any, session: dict[str, Any]) -> None:
                     "requested_team": str(picked_team or "").strip(),
                     "selectbox_return_value": str(picked_team or "").strip(),
                 },
+                icon=_icons.JOIN_ROOM,
             )
     try:
         from draft_room_join_trace import (
@@ -706,11 +711,11 @@ def render_draft_information_panel(
 
         action_col1, action_col2, action_col3 = st.columns(3)
         with action_col1:
-            if code and st.button("Copy Join Code", key="live_draft_lobby_copy_code_btn", use_container_width=True):
+            if code and st.button("Copy Join Code", key="live_draft_lobby_copy_code_btn", use_container_width=True, icon=_icons.COPY):
                 session["_live_draft_join_code_copied"] = code
                 st.success(f"Join code **{code}** — select the code above to copy.")
         with action_col2:
-            if st.button("Refresh Lobby", key="live_draft_lobby_refresh_btn", use_container_width=True):
+            if st.button("Refresh Lobby", key="live_draft_lobby_refresh_btn", use_container_width=True, icon=_icons.REFRESH):
                 try:
                     from draft_room_context import sync_shared_draft_room
                     from draft_room_shared_state import invalidate_shared_room_document_cache
@@ -810,6 +815,7 @@ def render_shared_draft_ready_card(
                 help=start_help or None,
                 on_click=on_start,
                 use_container_width=True,
+                icon=_icons.START,
             )
         else:
             st.warning("Waiting for commissioner to start the draft.")
@@ -1148,6 +1154,7 @@ def render_solo_draft_ready_card(
             disabled=start_disabled,
             on_click=_on_solo_start_draft,
             use_container_width=True,
+            icon=_icons.START,
         )
         session["_solo_start_draft_widget"] = dict(
             session.get("_solo_start_draft_widget")
@@ -1194,7 +1201,7 @@ def render_edit_setup_expander(
     if setup_is_read_only(room):
         st.caption("Draft setup is read-only after the first pick.")
         return
-    with st.expander("Edit Draft Setup (host only)", expanded=False):
+    with st.expander("Edit Draft Setup (host only)", expanded=False, icon=_icons.SETTINGS):
         render_setup_fn(st, session, **setup_kwargs)
 
 

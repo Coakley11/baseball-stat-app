@@ -3885,7 +3885,7 @@ def render_live_draft_completion_panel(
         review_open = st.button(
             "Review Draft Results",
             key=f"{key_prefix}_review_btn",
-            icon=":material/fact_check:",
+            icon=_icons.REVIEW,
             use_container_width=True,
         )
     with save_col:
@@ -3951,6 +3951,7 @@ def render_live_draft_completion_panel(
             type="primary",
             on_click=on_end_live_draft_session,
             help="Close this completed draft session and return to the Live Draft home screen.",
+            icon=_icons.START,
         )
 
     _merge_shared_league_diag(
@@ -3963,7 +3964,7 @@ def render_live_draft_completion_panel(
         session[f"{key_prefix}_review_open"] = True
 
     if session.pop(f"{key_prefix}_review_open", False) or review_open:
-        with st.expander("Review Draft Results", expanded=True):
+        with st.expander("Review Draft Results", expanded=True, icon=_icons.REVIEW):
             if callable(board_df_fn):
                 board_df = board_df_fn(room)
                 if board_df.empty:
@@ -4031,6 +4032,7 @@ def render_live_draft_completion_panel(
                         mime="text/csv",
                         key=f"{key_prefix}_csv_dl",
                         use_container_width=True,
+                        icon=_icons.EXPORT,
                     )
             with ex2:
                 if callable(excel_export_fn):
@@ -4042,6 +4044,7 @@ def render_live_draft_completion_panel(
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key=f"{key_prefix}_xlsx_dl",
                             use_container_width=True,
+                            icon=_icons.EXPORT,
                         )
                     except Exception as exc:
                         st.caption(f"Excel export unavailable ({exc}).")
@@ -4175,7 +4178,7 @@ def _render_live_draft_shared_league_confirmation(
                         f"team_id={entry.get('team_id') or '—'} | "
                         f"resolved={entry.get('resolved_display_team')!r}"
                     )
-    with st.expander("Create Shared League — confirmation", expanded=True):
+    with st.expander("Create Shared League — confirmation", expanded=True, icon=_icons.SHARED_LEAGUE):
         if validation_errors:
             for err in validation_errors:
                 st.error(str(err))
@@ -4267,6 +4270,7 @@ def _render_live_draft_shared_league_confirmation(
                     ).strip(),
                     "key_prefix": key_prefix,
                 },
+                icon=_icons.REFRESH,
             )
         with check_col:
             st.button(
@@ -4281,6 +4285,7 @@ def _render_live_draft_shared_league_confirmation(
                         identity.get("draft_fingerprint") or preview.get("draft_fingerprint") or ""
                     ).strip(),
                 },
+                icon=_icons.SEARCH,
             )
         _render_shared_league_confirm_diagnostics(st, session)
 
@@ -4320,7 +4325,7 @@ def render_save_simulator_draft_team(
     if not team_name or team_name == "—":
         return
     expand_save = bool(session.pop("_draft_save_trace_expand", False))
-    with st.expander("Save this mock draft", expanded=expand_save):
+    with st.expander("Save this mock draft", expanded=expand_save, icon=_icons.SAVE):
         flash = _pop_draft_save_ui_flash(session)
         if flash and flash.get("message"):
             if flash.get("level") == "error":
@@ -4340,7 +4345,7 @@ def render_save_simulator_draft_team(
             "Save as Mock Draft",
             key=f"{key_prefix}_save_mock_btn",
             type="primary",
-            icon=":material/save:",
+            icon=_icons.SAVE,
             on_click=_on_simulator_save_click,
             kwargs={"team_name": team_name, "key_prefix": key_prefix, "save_only": True},
         )
@@ -4349,6 +4354,7 @@ def render_save_simulator_draft_team(
             key=f"{key_prefix}_save_league_btn",
             on_click=_on_simulator_save_click,
             kwargs={"team_name": team_name, "key_prefix": key_prefix, "save_only": False},
+            icon=_icons.SET_ACTIVE,
         )
         try:
             from draft_library_save_trace import render_save_trace_inline
@@ -4573,7 +4579,7 @@ def _render_active_draft_section(
             if schedule_fantasy_analysis_navigation(session, FANTASY_WAIVER_PAGE):
                 st.rerun()
     with clear_col:
-        if st.button("Clear Active", key="library_clear_active", use_container_width=True):
+        if st.button("Clear Active", key="library_clear_active", use_container_width=True, icon=_icons.CLEAR):
             clear_active_draft_archive(session)
             clear_active_league_context(session)
             _clear_fantasy_caches_on_archive_change(session)
@@ -4632,6 +4638,7 @@ def _render_archive_rename_delete_confirm(
                 type="primary",
                 on_click=_on_click_confirm_delete_draft,
                 args=(draft_id, widget_key_prefix),
+                icon=_icons.DELETE,
             )
         with cancel_col:
             st.button(
