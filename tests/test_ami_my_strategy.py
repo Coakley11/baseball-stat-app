@@ -198,6 +198,13 @@ class AnswerTests(_Base):
         a = self.ask("What about Pete Alonso?").answer
         self.assertIn("You ranked **Pete Alonso** #4 of 5", a)
 
+    def test_an_emptied_global_queue_does_not_name_its_old_source(self) -> None:
+        work.replace_global_with(self.s, "P", confirmed=True)
+        self.s["draft_queue"] = []
+        a = self.ask("What's in my Global Queue?").answer
+        self.assertIn("is empty", a)
+        self.assertNotIn("loaded from", a.lower())
+
     def test_global_queue_questions_are_answered_from_the_global_queue(self) -> None:
         a = self.ask("Is Juan Soto in my Global Queue?").answer
         self.assertIn("**Juan Soto** is #2 of 2 in your **Global Queue**", a)

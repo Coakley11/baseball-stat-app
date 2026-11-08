@@ -338,7 +338,8 @@ class StrategyComposer:
     def _global(self, d: dict[str, Any]) -> str:
         entries = d.get("entries") or []
         who = "your **Global Queue**"
-        src = f" It was loaded from **{d['loaded_from']}**." if d.get("loaded_from") else ""
+        # Where it came from only while it still holds players (an emptied queue no longer reflects it).
+        src = f" It was loaded from **{d['loaded_from']}**." if d.get("loaded_from") and entries else ""
         focus = self.plan.focus
         if focus in (sr.F_RANK, sr.F_MEMBER, sr.F_NOTE) and (self.plan.subject or entries):
             entry = find_entry(self.plan.subject, entries, self.question)
