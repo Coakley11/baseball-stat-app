@@ -136,8 +136,10 @@ def _render_chooser(st: Any, session: dict[str, Any], saved: list[dict[str, Any]
         session[work.OPEN_KEY] = open_id
     if session.get(_PICK_KEY) not in ids:
         session[_PICK_KEY] = open_id
+    # Names only in the option labels: Streamlit can keep showing a selected option's previous label
+    # when only its text changes, so an "unsaved" mark in the label could linger after Save.
     st.selectbox("Open strategy", ids, key=_PICK_KEY, on_change=_choose, args=(session,),
-                 format_func=lambda i: names.get(i, i) + ("  •  unsaved changes" if i in dirty else ""),
+                 format_func=lambda i: names.get(i, i),
                  help="Switching keeps unsaved changes in the strategy you leave; they stay marked until you "
                       "save or discard them.")
     session[work.OPEN_KEY] = session.get(_PICK_KEY) or open_id
