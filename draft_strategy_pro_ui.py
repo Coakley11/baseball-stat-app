@@ -463,8 +463,11 @@ def render_pro_strategies(st: Any, session: dict[str, Any], *, pool: Any = None)
         if rec:
             with st.container(border=True):
                 _render_header(st, session, rec)
+                # A key keeps the open tab across reruns (Streamlit 1.59): without it, saving a note or
+                # a message appearing above the tabs sent the user back to the Queue tab.
                 queue_tab, notes_tab, prefs_tab, transfer_tab, manage_tab = st.tabs(
-                    ["Queue", "Notes & research", "Preferences", "Global Queue", "Manage"])
+                    ["Queue", "Notes & research", "Preferences", "Global Queue", "Manage"],
+                    key=f"dsp_{sid}_tabs", on_change="rerun")
                 with queue_tab:
                     _render_queue_tab(st, session, rec, pool)
                 with notes_tab:
