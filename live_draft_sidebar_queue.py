@@ -102,12 +102,32 @@ def paint_live_draft_sidebar_queue_mirror(st: Any, session: dict[str, Any]) -> l
         status = queue_draft_status(session, names)
     except ImportError:
         status, draft_status_label = {}, None
+    try:
+        from player_photos import queue_photo_info, render_queue_headshot_inline_html, reset_queue_photo_budget
+
+        reset_queue_photo_budget(session)
+    except ImportError:
+        queue_photo_info = None
     for i, name in enumerate(names[:12]):
         c1, c2 = st.sidebar.columns([4, 1])
         with c1:
             short = f"{name[:36]}{'…' if len(name) > 36 else ''}"
             info = status.get(name.strip().lower())
-            if info and draft_status_label:
+            photo = ""
+            if queue_photo_info is not None:
+                try:
+                    photo = render_queue_headshot_inline_html(queue_photo_info(session, name))
+                except Exception:
+                    photo = ""
+            if photo:
+                import html as _html
+
+                text = f"{i + 1}. {_html.escape(short)}"
+                if info and draft_status_label:
+                    text = f"<s>{text}</s> · ✓ {_html.escape(draft_status_label(info, short=True))}"
+                st.markdown(f'<div style="font-size:0.82rem;line-height:1.35;color:#475569;">{photo}{text}</div>',
+                            unsafe_allow_html=True)
+            elif info and draft_status_label:
                 # Still in the personal queue for other drafts; taken in this one, by whom.
                 st.caption(f"{i + 1}. ~~{short}~~ · ✓ {draft_status_label(info, short=True)}")
             else:

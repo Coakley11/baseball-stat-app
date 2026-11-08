@@ -976,6 +976,64 @@ def render_top_n_leaderboard_bar_chart(
     _safe_markdown(st, f'<div class="bb-lb-chart"><div style="font-weight:700;margin-bottom:8px;">{title}</div>{"".join(rows_html)}</div>')
 
 
+QUEUE_PHOTO_CACHE_KEY = "_queue_headshot_ids"   # {lower name: {"id": int (0 = not found), "t": epoch}}
+QUEUE_PHOTO_BUDGET_KEY = "_queue_headshot_api_budget"
+QUEUE_PHOTO_API_PER_RUN = 4
+QUEUE_PHOTO_MISS_RETRY_SEC = 3600.0
+
+
+def queue_photo_info(session: Any, full_name: str, row: Any = None, *, allow_api: bool = True) -> dict[str, Any]:
+    """Headshot info for a Draft Queue row: offline first (pool row id, seed map, cache file), then at
+    most QUEUE_PHOTO_API_PER_RUN MLB lookups per page run. Results, including "not found", are kept
+    in the session (misses retried after an hour) and in the app's id cache, so a queue never
+    repeats requests. Call reset_queue_photo_budget(session) once per run before the rows."""
+    import time as _time
+
+    name = str(full_name or "").strip()
+    cache = session.get(QUEUE_PHOTO_CACHE_KEY) if hasattr(session, "get") else None
+    if not isinstance(cache, dict):
+        cache = {}
+        try:
+            session[QUEUE_PHOTO_CACHE_KEY] = cache
+        except Exception:
+            pass
+    key = name.lower()
+    entry = cache.get(key) if isinstance(cache.get(key), dict) else None
+    now = _time.time()
+    if entry and (entry.get("id") or now - float(entry.get("t") or 0) < QUEUE_PHOTO_MISS_RETRY_SEC):
+        return get_player_photo_info(row=row, full_name=name, mlbam_id=entry.get("id") or None, use_api=False)
+    info = get_player_photo_info(row=row, full_name=name, use_api=False)
+    if not info.get("has_photo") and allow_api and name:
+        budget = int(session.get(QUEUE_PHOTO_BUDGET_KEY, QUEUE_PHOTO_API_PER_RUN) or 0) if hasattr(session, "get") else 0
+        if budget > 0:
+            try:
+                session[QUEUE_PHOTO_BUDGET_KEY] = budget - 1
+            except Exception:
+                pass
+            info = get_player_photo_info(row=row, full_name=name, use_api=True)
+        else:
+            return info  # no budget left this run: try again next run, nothing cached
+    cache[key] = {"id": int(info.get("mlbam_id") or 0), "t": now}
+    return info
+
+
+def reset_queue_photo_budget(session: Any) -> None:
+    try:
+        session[QUEUE_PHOTO_BUDGET_KEY] = QUEUE_PHOTO_API_PER_RUN
+    except Exception:
+        pass
+
+
+def render_queue_headshot_inline_html(photo_info: dict[str, Any], *, size: int = 22) -> str:
+    """A small round headshot for one-line rows (the sidebar queue); a ⚾ only without a photo."""
+    url = str(photo_info.get("headshot_url") or "").strip()
+    label = str(photo_info.get("full_name") or "Player").strip().replace('"', "")
+    if url:
+        return (f'<img src="{url}" alt="{label}" width="{size}" height="{size}" '
+                f'style="border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:6px;"/>')
+    return f'<span aria-hidden="true" style="display:inline-block;width:{size}px;margin-right:6px;">⚾</span>'
+
+
 def render_queue_headshot_html(photo_info: dict[str, Any], *, size: int = 36) -> str:
     url = str(photo_info.get("headshot_url") or "").strip()
     label = str(photo_info.get("full_name") or "Player").strip()

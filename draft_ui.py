@@ -1623,9 +1623,15 @@ def render_draft_queue_panel(
         header[5].caption("**Draft**")
 
     try:
-        from player_photos import get_player_photo_info, inject_player_photo_styles, render_queue_headshot_html
+        from player_photos import (
+            inject_player_photo_styles,
+            queue_photo_info,
+            render_queue_headshot_html,
+            reset_queue_photo_budget,
+        )
 
         inject_player_photo_styles(container)
+        reset_queue_photo_budget(session)
         _queue_photos = True
     except ImportError:
         _queue_photos = False
@@ -1639,11 +1645,9 @@ def render_draft_queue_panel(
         photo_info: dict[str, Any] = {}
         if _queue_photos:
             try:
-                photo_info = get_player_photo_info(
-                    row=pool_row,
-                    full_name=pname,
-                    use_api=False,
-                )
+                # Offline first, then a few cached MLB lookups (the pool rarely carries MLBAM ids,
+                # and the id cache starts empty after a Cloud restart, which left only ⚾).
+                photo_info = queue_photo_info(session, pname, pool_row)
             except Exception:
                 photo_info = {}
         if _use_compact_rows:
