@@ -29,6 +29,47 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+# Intentional emptying of the queue (owner, 2026-11-08). The July anti-wipe protection
+# (workspace_cloud_guard._preserve_workspace, live_draft_queue_survival) treats an empty queue as
+# "no data" and keeps the stored players, so a user who removed the last player got it back after a
+# refresh. A user action that empties a populated queue now records QUEUE_CLEARED_AT in the
+# canonical draft_state, and every real queue change records QUEUE_CHANGED_AT. The marker travels
+# with the saved state, so the cloud guard and the restore can tell an intentional empty (marker)
+# from an accidental one (hydration, reconnect, stale session, failed load: no marker).
+QUEUE_CLEARED_AT = "queue_cleared_at"
+QUEUE_CHANGED_AT = "queue_changed_at"
+QUEUE_STAMP_KEYS = (QUEUE_CLEARED_AT, QUEUE_CHANGED_AT)
+INTENTIONAL_EMPTY_REASON_PREFIXES = (
+    "remove",
+    "clear_queue",
+    "clear_draft",
+    "drafted",
+    "queue_autopick",
+    "auto_remove_drafted",
+    "sidebar_mirror_remove",
+)
+
+
+def _precise_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def parse_queue_stamp(value: Any) -> datetime | None:
+    try:
+        dt = datetime.fromisoformat(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def intentionally_cleared(draft_meta: Any) -> str:
+    """The clear marker when ``draft_meta`` (a canonical draft_state) is an intentional empty queue."""
+    if not isinstance(draft_meta, dict) or _normalize_player_list(draft_meta.get("queue")):
+        return ""
+    stamp = str(draft_meta.get(QUEUE_CLEARED_AT) or "").strip()
+    return stamp if parse_queue_stamp(stamp) else ""
+
+
 def _normalize_player_list(raw: Any) -> list[str]:
     return wf_sb.normalize_dedupe_queue(raw)
 
@@ -117,6 +158,7 @@ def _sync_page_filter_draft_block(session: dict[str, Any], *, data: dict[str, An
             "watchlist_focus": list(meta.get("watchlist_focus") or []),
             "watchlist_favorites": list(meta.get("watchlist_favorites") or []),
             "last_write_reason": meta.get("last_write_reason"),
+            **{k: meta[k] for k in QUEUE_STAMP_KEYS if meta.get(k)},
         }
 
 
@@ -178,6 +220,23 @@ def write_canonical_draft_state(
         "watchlist_favorites": list(favorites),
         "last_write_reason": reason_s or None,
     }
+    before_q = old_ds_q if "queue" in ds_before else _normalize_player_list(old_q)
+    cleared_at = ds_before.get(QUEUE_CLEARED_AT)
+    changed_at = ds_before.get(QUEUE_CHANGED_AT)
+    if list(q) != list(before_q):
+        if local_edit:
+            changed_at = _precise_now_iso()
+            intentional = (not blocked and not q and bool(before_q)
+                           and reason_s.startswith(INTENTIONAL_EMPTY_REASON_PREFIXES))
+            cleared_at = changed_at if intentional else None
+        elif q:
+            cleared_at = None  # a restore / hydrate that fills the queue ends the clear
+    if q:
+        cleared_at = None
+    if changed_at:
+        meta[QUEUE_CHANGED_AT] = changed_at
+    if cleared_at:
+        meta[QUEUE_CLEARED_AT] = cleared_at
     session["draft_state"] = meta
     if sync_widget_keys:
         session[DRAFT_QUEUE_KEY] = list(q)
@@ -285,6 +344,8 @@ def _draft_workflow_from_blob(state: dict[str, Any]) -> dict[str, list[str]]:
         }
         if out["queue"] or out["watchlist_focus"] or out["watchlist_favorites"]:
             return out
+        if intentionally_cleared(ds):
+            return out  # the user emptied it: do not fall back to an older copy
     pf = state.get("page_filter_state")
     if isinstance(pf, dict):
         block = pf.get(DRAFT_WORKFLOW_BLOCK)
@@ -1016,16 +1077,22 @@ def apply_cloud_draft_state_if_allowed(session: dict[str, Any], state: dict[str,
     if is_draft_locally_dirty(session):
         return False
     data = _draft_workflow_from_blob(state)
-    if not data["queue"] and not data["watchlist_focus"] and not data["watchlist_favorites"]:
+    blob_ds = state.get("draft_state") if isinstance(state.get("draft_state"), dict) else {}
+    cleared = intentionally_cleared(blob_ds)
+    if not data["queue"] and not data["watchlist_focus"] and not data["watchlist_favorites"] and not cleared:
         return False
     write_canonical_draft_state(
         session,
         queue=data["queue"],
         watchlist_focus=data["watchlist_focus"],
         watchlist_favorites=data["watchlist_favorites"],
-        reason="cloud_restore",
+        reason="restore_cleared_queue" if cleared and not data["queue"] else "cloud_restore",
         local_edit=False,
     )
+    if cleared and not data["queue"] and isinstance(session.get("draft_state"), dict):
+        for key in QUEUE_STAMP_KEYS:
+            if blob_ds.get(key):
+                session["draft_state"][key] = blob_ds[key]
     clear_draft_local_edit(session)
     session["_draft_restored_workflow"] = copy.deepcopy(data)
     session["_draft_restore_source"] = session.get("_suite_persist_last_restore_source", "cloud")

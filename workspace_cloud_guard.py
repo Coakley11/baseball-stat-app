@@ -238,10 +238,39 @@ def _copy_board(source: dict[str, Any], dest: dict[str, Any]) -> None:
     filters[BOARD_PAGE] = copy.deepcopy(src_filters.get(BOARD_PAGE))
 
 
+QUEUE_LIST_KEYS = frozenset({"draft_queue"})
+
+
+def intentional_queue_clear(outgoing: dict[str, Any], cloud: dict[str, Any]) -> bool:
+    """True when the outgoing empty queue is the user's own clear and not older than the stored queue.
+
+    The marker is draft_state.queue_cleared_at (draft_state.py). No marker means the empty queue may
+    be a hydration / reconnect / stale-session artifact, so the stored players are kept (July
+    protection). A stored queue changed after the clear (another device added a player) also wins.
+    """
+    try:
+        from draft_state import QUEUE_CHANGED_AT, intentionally_cleared, parse_queue_stamp
+    except ImportError:
+        return False
+    out_ds = outgoing.get("draft_state") if isinstance(outgoing.get("draft_state"), dict) else {}
+    marker = intentionally_cleared(out_ds)
+    if not marker or _nonempty(outgoing.get("draft_queue")):
+        return False
+    cloud_ds = cloud.get("draft_state") if isinstance(cloud.get("draft_state"), dict) else {}
+    cloud_changed = parse_queue_stamp(cloud_ds.get(QUEUE_CHANGED_AT))
+    cleared = parse_queue_stamp(marker)
+    if cloud_changed is not None and cleared is not None and cloud_changed > cleared:
+        return False
+    return True
+
+
 def _preserve_workspace(outgoing: dict[str, Any], cloud: dict[str, Any], reason: str) -> None:
     if _reason_base(reason) in WORKFLOW_CLEAR_REASONS:
         return
+    queue_cleared = intentional_queue_clear(outgoing, cloud)
     for key in PROTECTED_WORKSPACE_KEYS:
+        if queue_cleared and key in QUEUE_LIST_KEYS:
+            continue  # the user emptied the queue on purpose: write the empty queue
         cloud_val = cloud.get(key)
         if not _nonempty(cloud_val):
             continue

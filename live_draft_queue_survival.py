@@ -23,6 +23,7 @@ _ALLOWED_EMPTY_REASONS = frozenset(
     {
         "clear_queue",
         "remove_from_queue",
+        "restore_cleared_queue",  # restoring a queue the user emptied (draft_state queue_cleared_at)
         "sidebar_mirror_remove",
         "drafted_room_wide",
         "auto_remove_drafted",
