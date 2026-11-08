@@ -60,6 +60,13 @@ class _Workspace:
 
 
 class DeletionGuardTests(unittest.TestCase):
+    """Slice 2 ships with the pause lifted; these run with the switch turned back on."""
+
+    def setUp(self) -> None:
+        p = mock.patch("strategy_deletion_guard.DELETION_PAUSED", True)
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_the_pause_is_on_with_the_owners_message(self) -> None:
         self.assertTrue(guard.DELETION_PAUSED)
         self.assertEqual(guard.PAUSED_MESSAGE,
@@ -113,29 +120,30 @@ class DeletionGuardTests(unittest.TestCase):
                              ["Gunnar Henderson", "Bobby Witt Jr.", "Juan Soto"])
             self.assertIn(saved["id"], ws.raw())
 
-    def test_the_page_shows_a_disabled_delete_button_and_the_message(self) -> None:
-        from streamlit.testing.v1 import AppTest
+    def test_slice_two_delete_paths_refuse_before_writing_anything(self) -> None:
+        import draft_strategy_v2 as v2
 
-        def page() -> None:
-            from unittest import mock
+        with _Workspace() as ws:
+            before = {n: ws.raw(n) for n in FIXTURE}
+            with self.assertRaises(dss.StrategyError) as err:
+                v2.soft_delete({}, BIG_ID, confirmed=True)
+            self.assertEqual(str(err.exception), guard.PAUSED_MESSAGE)
+            trash_id = next(iter(FIXTURE["draft_strategy_trash.json"]))
+            with self.assertRaises(dss.StrategyError):
+                v2.permanent_delete({}, trash_id, confirmed=True)
+            self.assertEqual({n: ws.raw(n) for n in FIXTURE}, before)  # no half-moved strategy
 
-            import streamlit as st
 
-            import draft_strategy_ui as dsu
+class SliceTwoLiftsThePauseTests(unittest.TestCase):
+    def test_recoverable_deletion_is_live_in_slice_two(self) -> None:
+        import draft_strategy_v2 as v2
 
-            strategy = {"schema_version": 1, "id": "s1", "name": "Power bats", "approach": "balanced",
-                        "players": [{"name": "Aaron Judge", "rank": 1, "note": ""}], "explanations": [],
-                        "context": {}, "created_at": "2026-11-01", "updated_at": "2026-11-01"}
-            with mock.patch("draft_strategy_ui._persist"), mock.patch("draft_strategy_ui._flash"):
-                dsu._render_strategy(st, st.session_state, strategy, ["Aaron Judge"])
-
-        at = AppTest.from_function(page, default_timeout=30)
-        at.run()
-        self.assertFalse(at.exception, [e.value for e in at.exception])
-        delete = [b for b in at.button if b.key == "strategy_s1_delete_btn"]
-        self.assertEqual(len(delete), 1)
-        self.assertTrue(delete[0].disabled)
-        self.assertTrue(any(guard.PAUSED_MESSAGE in c.value for c in at.caption))
+        self.assertFalse(guard.DELETION_PAUSED)
+        with _Workspace() as ws:
+            v2.soft_delete({}, LEGACY_ID, confirmed=True)
+            self.assertNotIn(LEGACY_ID, ws.raw())
+            names = [r.get("name") for r in v2.list_trash({})]
+            self.assertIn("Legacy v1", names)  # recoverable from Recently deleted
 
 
 class SliceTwoFormatTests(unittest.TestCase):
@@ -179,9 +187,12 @@ class SliceTwoFormatTests(unittest.TestCase):
                 dss.rename_strategy(session, BIG_ID, "Big bats")
                 dss.update_strategy(session, BIG_ID, confirm_overwrite=True)
             after = ws.raw()[BIG_ID]
-            for field in set(before) - {"players", "context", "updated_at", "name"}:
-                self.assertEqual(after[field], before[field], field)  # ids, notes, pins, revision, edits
+            kept = set(before) - {"players", "queue", "context", "updated_at", "name", "revision", "edits"}
+            for field in kept:
+                self.assertEqual(after[field], before[field], field)  # notes, pins, settings ...
             self.assertEqual([p["name"] for p in after["players"]], ["Juan Soto", "Aaron Judge"])
+            if "queue" in after:  # Slice 2's store keeps its own queue in step with players
+                self.assertEqual([e["name"] for e in after["queue"]], ["Juan Soto", "Aaron Judge"])
             self.assertNotEqual(after["updated_at"], before["updated_at"])  # Slice 2 sees the change
             self.assertEqual(ws.raw("draft_strategy_trash.json"), FIXTURE["draft_strategy_trash.json"])
             self.assertEqual(ws.raw("draft_strategy_research.json"), FIXTURE["draft_strategy_research.json"])

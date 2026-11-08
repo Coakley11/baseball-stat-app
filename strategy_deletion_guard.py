@@ -4,12 +4,16 @@ Until Slice 2 introduces recoverable deletion (a 30-day "Recently deleted" list 
 confirmed permanent delete), no saved strategy may be removed: the page shows a disabled Delete
 button with ``PAUSED_MESSAGE``, and every layer below it refuses as well (the strategy store, both
 storage backends and the Supabase saved-item call), so nothing can remove one by another route.
-Viewing, editing and saving strategies are unaffected. Slice 2 lifts the pause.
+Viewing, editing and saving strategies are unaffected.
+
+Slice 2 lifts the pause: Delete now moves a strategy to Recently deleted for 30 days
+(draft_strategy_v2.soft_delete), and Delete permanently is confirmed separately. The switch stays:
+setting DELETION_PAUSED back to True refuses every deletion path again.
 """
 
 from __future__ import annotations
 
-DELETION_PAUSED = True
+DELETION_PAUSED = False  # Slice 2: recoverable deletion is live
 PAUSED_MESSAGE = "Deleting strategies is temporarily paused while recoverable deletion is being introduced."
 STRATEGY_ITEM_TYPES = frozenset({"draft_strategy"})
 

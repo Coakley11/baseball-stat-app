@@ -43,7 +43,7 @@ private in `draft_room_shared_state`. All of these are dropped on sign-out or an
 
 ## Release floor
 
-- **S0 (ea84d8a) is the minimum rollback.** Its reader lists any `schema_version >= 1` row, keeps
+- **S0 (release candidate 17167e3, which contains ea84d8a as 546d508 plus the deletion pause) is the minimum rollback.** Its reader lists any `schema_version >= 1` row, keeps
   the v1 `players` mirror, and loads it into the queue. Tested against S2 data
   (`tests/test_draft_strategy_s2.py::S0FloorTests`): a 251-player v2 row with MLBAM ids lists and
   loads in full with its notes; a deleted strategy is not shown (trash is another item type or file).

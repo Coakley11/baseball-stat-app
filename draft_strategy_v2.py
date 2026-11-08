@@ -618,6 +618,10 @@ def _check_base(stored: dict[str, Any], base_revision: int | None, base_updated_
 def soft_delete(session: dict[str, Any], strategy_id: str, *, confirmed: bool,
                 base_revision: int | None = None, base_updated_at: str | None = None) -> dict[str, Any]:
     """Move a strategy to Recently deleted (recoverable for RECOVERY_DAYS). Returns the trash row."""
+    from strategy_deletion_guard import PAUSED_MESSAGE, deletion_allowed
+
+    if not deletion_allowed():  # checked before anything is written (no half-moved strategy)
+        raise StrategyError(PAUSED_MESSAGE)
     if not confirmed:
         raise StrategyError("Confirm before deleting this strategy.")
     store._require_access(session)
@@ -704,6 +708,10 @@ def restore_from_trash(session: dict[str, Any], trash_id: str) -> dict[str, Any]
 def permanent_delete(session: dict[str, Any], trash_id: str, *, confirmed: bool) -> None:
     """Delete a Recently deleted strategy for good (separately confirmed). Its research and v1
     backup go too, unless the strategy itself, or another deleted copy of it, still exists."""
+    from strategy_deletion_guard import PAUSED_MESSAGE, deletion_allowed
+
+    if not deletion_allowed():  # checked before anything is written (no half-moved strategy)
+        raise StrategyError(PAUSED_MESSAGE)
     if not confirmed:
         raise StrategyError("Confirm before deleting this strategy permanently.")
     store._require_access(session)

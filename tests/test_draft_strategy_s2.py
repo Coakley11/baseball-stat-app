@@ -356,10 +356,10 @@ class DraftPlanTests(_Base):
 
 
 class S0FloorTests(unittest.TestCase):
-    """The S0 reader (ea84d8a, the minimum rollback) with what S2 writes."""
+    """The S0 reader (17167e3, the Slice 0 release candidate and minimum rollback) with what S2 writes."""
 
     def _s0_store(self):
-        src = subprocess.run(["git", "show", "ea84d8a:draft_strategy_store.py"], cwd=ROOT, capture_output=True,
+        src = subprocess.run(["git", "show", "17167e3:draft_strategy_store.py"], cwd=ROOT, capture_output=True,
                              text=True, encoding="utf-8", check=True).stdout
         spec = importlib.util.spec_from_loader("s0_store", loader=None)
         mod = importlib.util.module_from_spec(spec)
