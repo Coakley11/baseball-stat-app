@@ -376,6 +376,16 @@ def inject_draft_animation_styles() -> str:
     """
 
 
+# Colour of the draggable Draft Queue cards as the user sees them. The cards render inside the
+# streamlit-sortables iframe with its default (blue) theme; the page-level styles below do not
+# reach that iframe. Change this word together with the cards if their colour ever changes.
+DRAFT_QUEUE_CARD_COLOR_NAME = "blue"
+
+
+def draft_queue_drag_caption() -> str:
+    return f"Drag the {DRAFT_QUEUE_CARD_COLOR_NAME} cards to set queue priority (first = highest)."
+
+
 def inject_draft_queue_sortable_styles() -> str:
     """Red sliding drag-queue styles for streamlit-sortables (Live Draft UX).
 

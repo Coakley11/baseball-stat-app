@@ -940,6 +940,13 @@ def reset_context_for_new_live_draft(
     clear_resumable_slot: bool = True,
 ) -> dict[str, Any]:
     """On successful new Solo/Shared create — wipe prior temporary board and bind Pick 1."""
+    try:
+        from simulator_board_history import preserve_current_board
+
+        # The Simulator board is about to be wiped for the new Live Draft: keep it restorable.
+        preserve_current_board(session, reason="replaced_by_live_draft")
+    except Exception:
+        pass
     clear_last_draft_board_snapshot(session)
     if clear_resumable_slot:
         try:

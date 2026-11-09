@@ -38,6 +38,9 @@ PROTECTED_WORKSPACE_KEYS: tuple[str, ...] = (
     "last_draft_board_snapshot",
     "fantasy_research_mode_selection",
     "_deleted_draft_archive_ids",
+    # Boards displaced by a Live Draft (Restore Previous Mock Draft): an unhydrated save must
+    # not drop them.
+    "simulator_previous_boards",
 )
 
 BOARD_MUTATION_REASONS = frozenset(
@@ -49,6 +52,9 @@ BOARD_MUTATION_REASONS = frozenset(
         "simulator_add_player",
         "simulator_paste",
         "draft_edit",
+        # Deliberate whole-board changes: the cloud's larger board must not be copied back.
+        "restore_previous_board",
+        "fork_live_draft_as_mock",
     }
 )
 

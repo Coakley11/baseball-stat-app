@@ -824,7 +824,22 @@ def apply_validated_import_to_board(
     )
 
     board = coerce_board_table(validated_df)
+    try:
+        from simulator_board_edit import pad_partial_last_round
+
+        # 10 picks imported into a 12-pick league: open picks 11 and 12 so drafting can continue.
+        # The imported picks themselves are unchanged.
+        board = coerce_board_table(pad_partial_last_round(board))
+    except ImportError:
+        pass
     pick_count = table_pick_count(board)
+    try:
+        from simulator_board_history import preserve_current_board
+
+        # The import replaces the working board: keep the current one restorable.
+        preserve_current_board(session, reason="replaced_by_import")
+    except ImportError:
+        pass
 
     # Purge stale editor/sync artifacts so _resolve_richest_draft_board cannot resurrect old picks.
     session.pop(DRAFT_ROOM_EDITOR_SEED_KEY, None)

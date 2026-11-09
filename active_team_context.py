@@ -41,7 +41,13 @@ SOURCE_NONE = "none"
 
 
 def _norm_key(name: Any) -> str:
-    return str(name or "").strip().lower()
+    """Accent-, suffix- and punctuation-insensitive key, so "Ronald Acuna Jr." matches "Ronald Acuña"."""
+    try:
+        from player_name_normalization import normalize_player_name_for_merge
+
+        return normalize_player_name_for_merge(name)
+    except Exception:
+        return str(name or "").strip().lower()
 
 
 def _first_name_col(df: pd.DataFrame) -> str | None:
@@ -262,6 +268,25 @@ def _hitter_category_needs(
         return []
 
 
+def _live_source_drafted_names(session: dict[str, Any]) -> list[str] | None:
+    """Picks on the Live Draft the fantasy source resolved to (loaded room or override copy)."""
+    try:
+        from fantasy_context_source import resolve_live_override_room
+
+        room = resolve_live_override_room(session)
+    except Exception:
+        room = None
+    if not isinstance(room, dict):
+        return None
+    names: list[str] = []
+    for row in room.get("draft_board") or []:
+        if isinstance(row, dict):
+            nm = str(row.get("fullName") or row.get("Player") or "").strip()
+            if nm:
+                names.append(nm)
+    return list(dict.fromkeys(names))
+
+
 # ── Public entry point ───────────────────────────────────────────────────────
 
 
@@ -309,18 +334,42 @@ def resolve_active_team_context(
                 pool_df=pool_df,
                 exclusions_only=exclusions_only,
             )
+            live_names = _live_source_drafted_names(session) if source.kind == SOURCE_LIVE_DRAFT else None
             if sim is not None:
                 sim_source = SOURCE_LIVE_DRAFT if source.kind == SOURCE_LIVE_DRAFT else SOURCE_SIMULATOR
+                drafted_names = sim.drafted_names
+                drafted_keys = sim.drafted_keys
+                if live_names is not None:
+                    # Same source as Draft Assistant: the selected Live Draft's own picks only,
+                    # never a Simulator working board that has since moved on.
+                    drafted_names = live_names
+                    drafted_keys = frozenset(_norm_key(n) for n in live_names if _norm_key(n))
                 return ActiveTeamContext(
                     source=sim_source,
                     active_team=sim.active_team,
                     fantasy_format=sim.fantasy_format,
-                    drafted_names=sim.drafted_names,
-                    drafted_keys=sim.drafted_keys,
+                    drafted_names=drafted_names,
+                    drafted_keys=drafted_keys,
                     my_roster_df=sim.my_roster_df,
                     position_needs=sim.position_needs,
                     category_needs=sim.category_needs,
                     draft_complete=sim.draft_complete,
+                )
+            if live_names:
+                # Completed Live Draft under the override: no runtime draft context, but its
+                # picks are still the authoritative unavailable set.
+                try:
+                    from fantasy_context_source import _context_team_name
+
+                    team = str(_context_team_name(session) or "").strip()
+                except Exception:
+                    team = ""
+                return ActiveTeamContext(
+                    source=SOURCE_LIVE_DRAFT,
+                    active_team=team,
+                    drafted_names=live_names,
+                    drafted_keys=frozenset(_norm_key(n) for n in live_names if _norm_key(n)),
+                    draft_complete=True,
                 )
         elif source.kind != SOURCE_ACTIVE_DRAFT:
             fmt = "5x5 Roto"

@@ -2056,6 +2056,12 @@ def save_simulator_league_context(
         fantasy_format=str(cfg.get("fantasy_format") or cfg.get("scoring_type") or ""),
         draft_id=resolved_draft_id,
     )
+    if resolved_draft_id:
+        _existing = get_draft_archive(session, resolved_draft_id)
+        if isinstance(_existing, dict) and str(_existing.get("draft_type") or "") == "live_draft_room":
+            # A Simulator save never rewrites a Live Draft record, even when the board still holds
+            # identical picks (an unedited Live Draft handoff). Save it as its own mock.
+            resolved_draft_id, league_context_id = None, None
     entry = save_simulator_team_archive(
         session,
         board_df,

@@ -245,6 +245,28 @@ def _board_holds_another_draft(table: Any, room: dict[str, Any]) -> bool:
     return False
 
 
+def _completed_live_draft_already_handed_off(session: dict[str, Any], room: dict[str, Any]) -> bool:
+    """A completed Live Draft hands its picks to the working board once (its first mirror after
+    completion); after that a different board on the Simulator is the user's and stays."""
+    try:
+        from simulator_board_history import LIVE_HANDOFF_KEY, _belongs
+
+        rec = session.get(LIVE_HANDOFF_KEY)
+        room_id = str(room.get("draft_room_id") or room.get("room_id") or "").strip()
+        if _belongs(session, rec) and room_id and rec.get("draft_room_id") == room_id:
+            return True
+    except ImportError:
+        return True
+    try:
+        meta = room.get("meta") if isinstance(room.get("meta"), dict) else {}
+        sync_meta = meta.get("sync") if isinstance(meta.get("sync"), dict) else {}
+        rev = str(sync_meta.get("revision") or room.get("revision") or "").strip()
+        # Mirrored at this final revision before handoff records existed.
+        return bool(rev) and rev == str(session.get("_canonical_live_sync_revision") or "").strip()
+    except Exception:
+        return False
+
+
 def ensure_live_draft_synced_to_canonical_board(
     session: dict[str, Any],
     *,
@@ -304,7 +326,11 @@ def ensure_live_draft_synced_to_canonical_board(
     # replaced a new Draft Room Simulator mock draft (4 teams x 5 rounds, 1 pick) with the old
     # room's full board, so the Simulator showed "Board is full" and no pick control. An empty
     # board, or one holding only this room's own picks, still fills from the room.
-    if live_status == "complete" and _board_holds_another_draft(session.get(DRAFT_ROOM_TABLE_KEY), room):
+    if (
+        live_status == "complete"
+        and _board_holds_another_draft(session.get(DRAFT_ROOM_TABLE_KEY), room)
+        and _completed_live_draft_already_handed_off(session, room)
+    ):
         diag["skipped"] = True
         diag["skip_reason"] = "live_draft_complete_board_holds_another_draft"
         after = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
@@ -1427,7 +1453,12 @@ def assign_player_to_board_row(
         result["message"] = "Invalid pick row."
         return result
 
-    existing = set(get_all_drafted_player_names(session))
+    if is_live_draft_runtime_active(session):
+        existing = set(get_all_drafted_player_names(session))
+    else:
+        # Outside a running Live Draft the working board is its own draft (a mock, an import,
+        # or a hypothetical continuation of a finished Live Draft): only its picks are taken.
+        existing = {str(p).strip() for p in table["Player"].tolist() if _player_cell_filled(p)}
     current_at_row = str(table.at[row_index, "Player"] or "").strip()
     if name in existing and current_at_row != name:
         result["error"] = "duplicate"
@@ -2151,9 +2182,22 @@ def render_active_draft_banner(st: Any, session: dict[str, Any], *, page_label_f
 
 
 def sync_live_draft_room_to_canonical_board(session: dict[str, Any], room: Any) -> pd.DataFrame:
-    """Live Draft Room → canonical draft_room_table (auto after each pick)."""
+    """Live Draft Room → canonical draft_room_table (auto after each pick).
+
+    The first mirror of a Live Draft keeps the different board it replaces (Restore Previous Mock
+    Draft). A completed Live Draft that was already handed off never re-takes a board the user has
+    since moved on (simulator_board_history).
+    """
     if not isinstance(room, dict):
         return pd.DataFrame()
+    try:
+        from simulator_board_history import before_live_board_mirror
+
+        if not before_live_board_mirror(session, room):
+            session["_canonical_live_sync_skipped"] = "completed_live_draft_already_handed_off"
+            return coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY))
+    except ImportError:
+        pass
     cfg = dict(room.get("config") or {})
     teams = list(room.get("teams") or [])
     picks_per_team = int(cfg.get("picks_per_team") or cfg.get("rounds") or session.get("room_rounds") or 15)
@@ -2252,6 +2296,12 @@ def sync_live_draft_room_to_canonical_board(session: dict[str, Any], room: Any) 
             pick_count=table_pick_count(out),
         )
     session["_canonical_draft_last_live_sync"] = _utc_now_iso()
+    try:
+        from simulator_board_history import after_live_board_mirror
+
+        after_live_board_mirror(session, room)
+    except ImportError:
+        pass
     return out
 
 
