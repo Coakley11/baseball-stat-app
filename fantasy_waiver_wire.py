@@ -650,6 +650,34 @@ def _projected_league_values_after_trade(
     return values
 
 
+# How much team totals normally differ in each hitting category: the standard deviation as a share of the
+# average, measured across MLB team-seasons 2015–2025 (2020 excluded) from the app's own Batting.csv.
+# Fantasy rosters are smaller, so their spread is wider, but by the same factor for every category: the ratios
+# keep categories comparable, so "6 HR" and ".048 AVG" behind can be put on one scale. Used for the ORDER of
+# strengths and weaknesses (status comes from league rank). Owner review 2026-11-08: a 2-team league's own
+# spread makes every category exactly -1 standard deviation, so it can't order anything.
+CATEGORY_TEAM_SPREAD: dict[str, float] = {
+    "HR": 0.170, "R": 0.0965, "RBI": 0.098, "SB": 0.311, "AVG": 0.0403, "OBP": 0.0364, "OPS": 0.0455,
+}
+
+
+def category_spread(category: str, values: list[float]) -> float:
+    """Typical team-to-team spread for ``category`` at this league's level: the MLB-measured relative spread
+    times the league average. Categories without a measured spread (pitching: no pitching data is bundled)
+    use the league's own spread with 3+ teams, else 10% of the league average."""
+    from statistics import mean, pstdev
+
+    if not values:
+        return 0.0
+    avg = abs(mean(values))
+    rel = CATEGORY_TEAM_SPREAD.get(category)
+    if rel and avg:
+        return rel * avg
+    if len(values) >= 3:
+        return pstdev(values)
+    return 0.10 * avg
+
+
 def analyze_current_team_needs(
     my_roster: pd.DataFrame,
     league_rosters_df: pd.DataFrame,
@@ -716,6 +744,18 @@ def analyze_current_team_needs(
         ]
     result["team_totals_by_category"] = league_values_by_cat
 
+    # One assessment for every section (Team Summary, the standings table, Waiver Wire), owner review
+    # 2026-11-08. Status comes from the league rank: top third = Strength, bottom third = Weakness.
+    # Order comes from a direction-aware z-score (standard deviations from the league average), because
+    # categories have different units: a raw gap of 6 HR and .045 AVG aren't comparable. The old rule (a
+    # ratio to the league best, then an alphabetical tie-break) could list a "Middle" category as a top
+    # weakness.
+    from statistics import mean, pstdev
+
+    n = int(result["n_teams"] or 0)
+    third = max(1, round(n / 3)) if n >= 2 else 0
+    z_by_cat: dict[str, float] = {}
+    status_by_cat: dict[str, str] = {}
     for cat in available:
         if cat not in my_totals:
             continue
@@ -726,21 +766,24 @@ def analyze_current_team_needs(
         lower_is_better = cat in LOWER_IS_BETTER_CATEGORIES
         if lower_is_better:
             rank = sum(1 for v in values if v < my_val) + 1
-            league_best = min(values)
-            weakness = my_val > league_best * 1.08 if league_best else False
-            strength = my_val <= league_best * 1.02 if league_best else False
         else:
             rank = sum(1 for v in values if v > my_val) + 1
-            league_best = max(values)
-            weakness = my_val < league_best * 0.85 if league_best else False
-            strength = my_val >= league_best * 0.95 if league_best else False
         rank = _clamp_league_rank(rank, result["n_teams"])
         result["category_ranks"][cat] = rank
-        if strength:
-            result["strengths"].append(cat)
-        if weakness:
-            result["weaknesses"].append(cat)
-            result["targets"].append(cat)
+        sd = category_spread(cat, values)
+        z = ((my_val - mean(values)) / sd) if sd else 0.0
+        z_by_cat[cat] = round(-z if lower_is_better else z, 3)
+        if third and rank <= third:
+            status_by_cat[cat] = "Strength"
+        elif third and rank > n - third:
+            status_by_cat[cat] = "Weakness"
+        else:
+            status_by_cat[cat] = "Middle"
+    result["category_z"] = z_by_cat
+    result["category_status"] = status_by_cat
+    result["strengths"] = sorted((c for c, s in status_by_cat.items() if s == "Strength"), key=lambda c: -z_by_cat[c])
+    result["weaknesses"] = sorted((c for c, s in status_by_cat.items() if s == "Weakness"), key=lambda c: z_by_cat[c])
+    result["targets"] = list(result["weaknesses"])
     return result
 
 
@@ -766,7 +809,7 @@ def build_category_standings_table(
             {
                 "Category": cat,
                 "Rank": rank_label,
-                "Status": (
+                "Status": (needs.get("category_status") or {}).get(cat) or (
                     "Strength" if cat in (needs.get("strengths") or [])
                     else "Weakness" if cat in (needs.get("weaknesses") or [])
                     else "Middle"
@@ -817,7 +860,7 @@ def build_category_action_table(
                 "League Rank": rank_label,
                 "League Best": best_display if best_display is not None else "—",
                 "Gap To Improve": gap_display if gap_display is not None else "—",
-                "Status": (
+                "Status": (needs.get("category_status") or {}).get(cat) or (
                     "Strength" if cat in (needs.get("strengths") or [])
                     else "Weakness" if cat in (needs.get("weaknesses") or [])
                     else "Middle"

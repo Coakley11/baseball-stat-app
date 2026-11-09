@@ -31,6 +31,23 @@ def auth_required() -> bool:
         return False
 
 
+def session_account_ids(session: dict[str, Any] | None, uid: str = "") -> list[str]:
+    """This session's own ids for ownership checks: the current id, then the verified sign-in's other id.
+    The hosted app has two ids for one account (Supabase Auth id and the suite account id); league ownership
+    records hold the suite id. Never an email, display name or browser-supplied value."""
+    ids = [uid] if uid else []
+    try:
+        from fantasy_shared_league_authz import verified_account_ids
+
+        if isinstance(session, Mapping):
+            for value in verified_account_ids(session):  # type: ignore[arg-type]
+                if value and value not in ids:
+                    ids.append(value)
+    except Exception:
+        pass
+    return ids
+
+
 def current_user_id(session: dict[str, Any] | None) -> str:
     """Signed-in account id; on a no-auth local install, the local account id."""
     uid = ""
@@ -132,7 +149,8 @@ def resolve_team_control(session: dict[str, Any] | None, context: dict[str, Any]
         invitee = str(record.get("reserved_for_email") or record.get("display_name") or "an invited manager")
         return TeamControl(team, MODE_NONE, uid, is_comm, reason=f"{team} is reserved for {invitee} until they accept.")
     if ownership_is_firm_claim(record):
-        if uid and account_user_ids_match(str(record.get("user_id") or ""), uid):
+        stored = str(record.get("user_id") or "")
+        if uid and any(account_user_ids_match(stored, i) for i in session_account_ids(session, uid)):
             return TeamControl(team, MODE_OWNER, uid, is_comm)
         return TeamControl(
             team, MODE_NONE, uid, is_comm,

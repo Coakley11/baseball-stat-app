@@ -55,8 +55,12 @@ def account_user_ids_match(stored_id: str, current_id: str = "") -> bool:
         try:
             import streamlit as st
 
+            from collections.abc import Mapping
+
             ss = getattr(st, "session_state", None)
-            if isinstance(ss, dict):
+            # Any mapping: the running app's session is a SessionStateProxy, not a dict, and skipping it
+            # made the owner's own team read "managed by <them>" (owner review 2026-11-08).
+            if isinstance(ss, Mapping):
                 for key in (
                     "_suite_auth_user_id",
                     "_suite_cloud_user_id",
