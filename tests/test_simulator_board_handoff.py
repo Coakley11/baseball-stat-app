@@ -269,5 +269,44 @@ class MockPickBesideFinishedLiveDraft(unittest.TestCase):
         self.assertNotIn(LIVE_HANDOFF_KEY, session)
 
 
+class RuntimeClearsKeepThisAccountsHistory(unittest.TestCase):
+    """Browser QA 2026-11-09: creating a Shared room, or a board-ownership re-check after Reset,
+    erased the kept boards and the handoff record, so an unsaved mock was lost and a finished
+    Live Draft took the board again."""
+
+    def test_creating_a_shared_room_keeps_the_mock_restorable(self) -> None:
+        from live_draft_navigation import clear_private_baseball_simulator_runtime
+
+        session = _session_with_mock()
+        clear_private_baseball_simulator_runtime(session, reason="shared_room_create")
+        kept = list_previous_boards(session)
+        self.assertEqual([k["pick_count"] for k in kept], [8])
+
+    def test_an_ownership_recheck_keeps_history_and_handoff(self) -> None:
+        from live_draft_navigation import clear_private_baseball_simulator_runtime
+        from simulator_board_history import before_live_board_mirror
+
+        session = _session_with_mock()
+        room = _room("complete")
+        session["live_draft_room"] = room
+        ensure_live_draft_synced_to_canonical_board(session, reason="test")  # handoff; mock kept
+        clear_private_baseball_simulator_runtime(session, reason="legacy_unowned_board_rejected")
+        self.assertIn(LIVE_HANDOFF_KEY, session)
+        self.assertEqual(len(list_previous_boards(session)), 1)
+        # The cleared (reset) board is not the handed-off one, so the finished Live Draft stays out.
+        apply_programmatic_board_update(session, _snake(["Ann", "Ben"], 20, []), reason="reset_simulator")
+        self.assertFalse(before_live_board_mirror(session, room))
+
+    def test_signing_out_still_drops_the_records(self) -> None:
+        from live_draft_navigation import clear_private_baseball_simulator_runtime
+
+        session = _session_with_mock()
+        session["live_draft_room"] = _room("complete")
+        ensure_live_draft_synced_to_canonical_board(session, reason="test")
+        clear_private_baseball_simulator_runtime(session, reason="auth_sign_out")
+        self.assertNotIn(PREVIOUS_BOARDS_KEY, session)
+        self.assertNotIn(LIVE_HANDOFF_KEY, session)
+
+
 if __name__ == "__main__":
     unittest.main()

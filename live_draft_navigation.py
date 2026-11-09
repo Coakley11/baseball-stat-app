@@ -930,6 +930,16 @@ def discard_stale_simulator_resume_identity(session: dict[str, Any], *, reason: 
     )
 
 
+SAME_ACCOUNT_BOARD_HANDOFF_REASONS = frozenset({"shared_room_join", "shared_room_create"})
+_ACCOUNT_CHANGE_REASONS = frozenset({"account_or_workspace_changed", "auth_sign_out", "auth_account_scope_changed"})
+_ACCOUNT_CHANGE_PREFIXES = ("mismatch_auth", "mismatch_external", "mismatch_workspace", "missing_frozen", "missing_current")
+
+
+def _is_account_change_reason(reason: str) -> bool:
+    r = str(reason or "")
+    return r in _ACCOUNT_CHANGE_REASONS or r.startswith(_ACCOUNT_CHANGE_PREFIXES)
+
+
 def clear_private_baseball_simulator_runtime(
     session: dict[str, Any],
     *,
@@ -940,15 +950,18 @@ def clear_private_baseball_simulator_runtime(
     try:
         from simulator_board_history import HISTORY_SESSION_KEYS, preserve_current_board
 
-        if reason == "shared_room_join":
-            # Same account joining a Shared Draft Room: keep its board restorable.
+        if reason in SAME_ACCOUNT_BOARD_HANDOFF_REASONS:
+            # Same account creating or joining a Shared Draft Room: keep its board restorable.
             preserve_current_board(session, reason="replaced_by_live_draft")
-        else:
+        elif _is_account_change_reason(reason):
             # Account or workspace changed: these records belong to the previous account.
             for key in HISTORY_SESSION_KEYS:
                 if key in session:
                     session.pop(key, None)
                     cleared.append(key)
+        # Any other reason (a board whose ownership could not be verified, e.g. after a reset)
+        # drops only that board: never keep it (it may not be this account's) and never erase
+        # this account's kept boards or Live Draft handoff record (entries are account-stamped).
     except Exception:
         pass
     for key in PRIVATE_SIMULATOR_RUNTIME_KEYS:

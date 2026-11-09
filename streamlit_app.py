@@ -20746,12 +20746,22 @@ elif active_page == "Draft Assistant Simulator":
             pass
 
         _live_draft_room = st.session_state.get("live_draft_room")
+        # A finished Live Draft (completed, under Live Draft Override) has no picks left, so its
+        # room's remaining-slot demand is zero everywhere: scoring it as a live room would drop
+        # every player. Score it like the Simulator board: drafted players excluded, league
+        # positions kept.
+        try:
+            from fantasy_context_source import is_live_draft_in_progress as _da_live_running
+
+            _da_live_drafting = _da_context_mode == "live_board" and _da_live_running(st.session_state)
+        except ImportError:
+            _da_live_drafting = _da_context_mode == "live_board"
         _score_room = (
             {"config": _slot_cfg, **(_live_draft_room if isinstance(_live_draft_room, dict) else {})}
-            if _slot_cfg.get("slots") and _da_context_mode == "live_board"
-            else (_live_draft_room if isinstance(_live_draft_room, dict) and _da_context_mode == "live_board" else None)
+            if _slot_cfg.get("slots") and _da_live_drafting
+            else (_live_draft_room if isinstance(_live_draft_room, dict) and _da_live_drafting else None)
         )
-        _da_rec_mode = "draft_fit" if _da_context_mode == "live_board" else "decision"
+        _da_rec_mode = "draft_fit" if _da_live_drafting else "decision"
         _da_scored = None
         try:
             from live_draft_ui_cache import DA_SCORING_CACHE_KEY, draft_assistant_scoring_cache_key
@@ -21246,7 +21256,11 @@ elif active_page == "Draft Assistant Simulator":
                 pass
             st.info(make_draft_recommendation_insight(selected_draft_row))
         compact_player_action_center(
-            recs_display["Player"].dropna().astype(str).tolist(),
+            (
+                recs_display["Player"].dropna().astype(str).tolist()
+                if isinstance(recs_display, pd.DataFrame) and "Player" in recs_display.columns
+                else []
+            ),
             key="draft_assistant_recs_actions_final",
             default_team=assistant_my_team_name,
             label="Actions for recommended picks",
