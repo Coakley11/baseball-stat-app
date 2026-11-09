@@ -357,7 +357,7 @@ def build_condensed_team_summary(
         summary = f"Leads with **{', '.join(strengths[:3])}**."
     elif biggest_weak:
         summary = (f"Biggest improvement opportunities: **{', '.join(weaknesses[:3])}** "
-                   "(furthest below the league average).")
+                   "(weakest compared with MLB regulars).")
     else:
         summary = "Balanced roster profile across categories."
     return {
