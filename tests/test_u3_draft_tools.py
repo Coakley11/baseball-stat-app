@@ -82,7 +82,10 @@ class DraftToolTests(unittest.TestCase):
             start = APP.index(f"elif active_page == {page}:")
             body = APP[start:start + 2500]
             with self.subTest(page=page):  # Draft Strategy leads with its own headline (page_help.headline)
-                self.assertIn("draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)", body)
+                call = body.index("draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)")
+                # The module is imported inside each page branch, before it is used (a missing import crashed
+                # Draft Strategy with NameError in browser QA, 2026-11-08).
+                self.assertIn("import draft_tools", body[:call])
 
     def test_live_draft_switcher_only_in_intro(self):
         start = APP.index('elif active_page == "Live Draft Room":')
