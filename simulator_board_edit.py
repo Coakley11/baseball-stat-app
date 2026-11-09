@@ -158,6 +158,9 @@ def board_provenance(session: dict[str, Any]) -> dict[str, Any]:
     shared = set(original) & set(current)
     if not shared and not rec.get("forked"):
         return out  # a different draft altogether
+    exact = set(original) == set(current) and all(original[p].lower() == current[p].lower() for p in original)
+    if rec.get("restored") and not exact:
+        return out  # a restored mock: its own draft, not a hypothetical version of this Live Draft
     changed = sorted(p for p in shared if original[p].lower() != current[p].lower())
     added = sorted(p for p in current if p not in original)
     removed = sorted(p for p in original if p not in current)

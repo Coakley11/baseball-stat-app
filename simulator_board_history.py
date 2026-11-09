@@ -350,6 +350,8 @@ def restore_previous_board(session: dict[str, Any], entry_id: str) -> dict[str, 
     handoff = _live_handoff(session)
     if handoff:
         handoff["board_signature"] = "restored:" + handoff.get("board_signature", "")
+        # A restored board is its own mock, not a variant of this Live Draft (unless it is exactly it).
+        handoff["restored"] = True
         session[LIVE_HANDOFF_KEY] = handoff
     result.update({"ok": True, "pick_count": picks, "teams": entry.get("teams") or []})
     result["message"] = f"Restored the previous board ({picks} picks). It is now your Simulator working board."
