@@ -524,6 +524,29 @@ class TradeProposalPhase2Tests(_TradeTestCase):
         assert canceled is not None
         self.assertEqual(canceled["status"], TRADE_PROPOSAL_STATUS_CANCELED)
 
+    def test_only_the_proposing_account_can_cancel(self) -> None:
+        session: dict = {}
+        _seed_league(session)
+        proposal, _ = _create_proposal(
+            session,
+            proposer_team="Donny",
+            recipient_team="Team 2",
+            proposer_gives=["Player A"],
+            proposer_receives=["Player B"],
+        )
+        assert proposal is not None
+        pid = str(proposal["proposal_id"])
+        # Signed out: naming the team is not enough.
+        canceled, err = cancel_trade_proposal(session, pid, canceled_by_team="Donny")
+        self.assertIsNone(canceled)
+        self.assertIn("managed by", err)
+        # The other manager cannot cancel Donny's offer either.
+        with _as_user("user:seal11"):
+            canceled, err = cancel_trade_proposal(session, pid, canceled_by_team="Donny")
+        self.assertIsNone(canceled)
+        self.assertTrue(err)
+        self.assertEqual(get_incoming_trade_proposals(session, "Team 2")[0]["status"], "pending")
+
     def test_canceled_trade_cannot_be_accepted(self) -> None:
         session: dict = {}
         _seed_league(session)
