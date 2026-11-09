@@ -931,6 +931,47 @@ def render_weekly_lineup_section(
             st.rerun()
     if ledger_weeks:
         _render_period_finalize(st, session, context, int(selected_week), is_commissioner=is_commissioner, panel=panel)
+        render_published_lineups(st, context, int(selected_week), own_team=active_team)
+
+
+def published_lineups_for_week(context: dict[str, Any] | None, week: int, *, own_team: str) -> list[dict[str, Any]]:
+    """Other teams' saved (published) lineups for a week — read-only. Unsaved lineup drafts are
+    stored only in their manager's own session and never appear here."""
+    try:
+        from fantasy_season_ledger import get_period_lineup
+    except ImportError:
+        return []
+    if not isinstance(context, dict):
+        return []
+    out: list[dict[str, Any]] = []
+    for team in sorted(str(t) for t in (context.get("league_rosters") or {}) if str(t).strip()):
+        if team == str(own_team or "").strip():
+            continue
+        snap = get_period_lineup(context, int(week), team)
+        if isinstance(snap, dict) and snap.get("starters") is not None:
+            out.append({"team": team, "snapshot": snap})
+    return out
+
+
+def render_published_lineups(st: Any, context: dict[str, Any], week: int, *, own_team: str) -> None:
+    rows = published_lineups_for_week(context, week, own_team=own_team)
+    with st.expander("Other teams' published lineups (view only)", expanded=False, icon=_icons.PREVIEW):
+        if not rows:
+            st.caption("No other team has published a lineup for this week yet.")
+            return
+        st.caption("Saved lineups only. You can view them; only each team's manager can change them.")
+        for row in rows:
+            snap = row["snapshot"]
+            starters = [
+                f"{s.get('slot') or s.get('slot_key')}: {s.get('player_name')}"
+                for s in (snap.get("starters") or [])
+                if isinstance(s, dict)
+            ]
+            empty = [str(x) for x in (snap.get("empty_slots") or [])]
+            st.markdown(f"**{row['team']}**")
+            st.caption(" · ".join(starters) if starters else "No starters set.")
+            if empty:
+                st.caption("Empty: " + ", ".join(empty))
 
 
 def _render_period_finalize(st: Any, session: dict[str, Any], context: dict[str, Any], week: int, *,

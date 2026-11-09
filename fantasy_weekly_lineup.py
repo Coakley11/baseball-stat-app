@@ -263,10 +263,16 @@ def _assert_lineup_team_write(session: dict[str, Any], context: dict[str, Any], 
     try:
         from fantasy_team_control import MODE_NONE, resolve_team_control
 
+        from fantasy_league_team_ownership import get_team_ownership
+
         control = resolve_team_control(session, context, my_team)
         if control.is_proxy:
             return None  # commissioner acting for an unclaimed team
-        if control.mode == MODE_NONE and (context.get("team_ownership") or {}):
+        # Ownership may live at the top level or in metadata; a real league blocks a team this
+        # account does not control even before anyone has claimed a team.
+        if control.mode == MODE_NONE and (
+            get_team_ownership(context) or str(context.get("context_type") or "") == "real_league"
+        ):
             return control.reason or "You cannot manage this team."
     except ImportError:
         pass
@@ -278,7 +284,12 @@ def _assert_lineup_team_write(session: dict[str, Any], context: dict[str, Any], 
         from fantasy_lineup_scope import assert_lineup_write_identity, resolve_lineup_scope
 
         league_id = str(resolve_canonical_league_id(context) or "").strip()
-        ownership = context.get("team_ownership") or {}
+        try:
+            from fantasy_league_team_ownership import get_team_ownership as _ownership
+
+            ownership = _ownership(context)
+        except ImportError:
+            ownership = context.get("team_ownership") or {}
         if not league_id and not ownership:
             return None
         scope = resolve_lineup_scope(session, context, week=1, page_lineup_team=my_team)

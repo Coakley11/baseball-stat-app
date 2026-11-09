@@ -587,8 +587,11 @@ def _render_proposal_card(
             st.rerun()
 
 
-def _render_trade_history(st: Any, context: dict[str, Any], *, key_prefix: str) -> None:
-    history = get_trade_history(context)
+def _render_trade_history(
+    st: Any, context: dict[str, Any], *, key_prefix: str, session: dict[str, Any] | None = None
+) -> None:
+    # With the session, other teams' private (pending/declined) offers are not shown.
+    history = get_trade_history(context, session)
     st.markdown("##### Trade History")
     sections = (
         ("Pending Trades", history.get("pending") or []),
@@ -660,10 +663,18 @@ def render_trade_proposals_section(
         )
     team_names = sorted((context.get("league_rosters") or {}).keys())
 
-    if needs_team_assignment(context):
+    try:
+        from fantasy_league_team_ownership import team_claim_prompt_for_session
+
+        _verified_team, _claimable = team_claim_prompt_for_session(context, session)
+    except ImportError:
+        _verified_team, _claimable = "", (team_names if needs_team_assignment(context) else [])
+    # Ask only when this account has no verified team in a real league and an unclaimed,
+    # unreserved team exists. Never for a solo mock, never when the team is already known.
+    if not _verified_team and _claimable and needs_team_assignment(context):
         st.warning(TEAM_ASSIGNMENT_PROMPT)
-        if team_names:
-            pick = st.selectbox("Which team is yours?", team_names, key=f"{key_prefix}_assign_team")
+        if _claimable:
+            pick = st.selectbox("Claim your team", _claimable, key=f"{key_prefix}_assign_team")
             if st.button("Save my team", key=f"{key_prefix}_assign_team_btn", icon=_icons.SAVE):
                 saved, err = assign_my_team(session, pick)
                 if err:
@@ -679,7 +690,7 @@ def render_trade_proposals_section(
         st.info(gate_msg or TRADES_DISABLED_MESSAGE)
         _render_trade_submit_diagnostics(st, session)
         _render_trade_response_diagnostics(st, session)
-        _render_trade_history(st, context, key_prefix=key_prefix)
+        _render_trade_history(st, context, key_prefix=key_prefix, session=session)
         return
 
     _render_trade_submit_diagnostics(st, session)
@@ -889,7 +900,7 @@ def render_trade_proposals_section(
                 on_clear_offer=on_clear_offer,
             )
 
-    _render_trade_history(st, context, key_prefix=key_prefix)
+    _render_trade_history(st, context, key_prefix=key_prefix, session=session)
 
 
 # Public alias for Lineup Assistant / diagnostics tracing.
