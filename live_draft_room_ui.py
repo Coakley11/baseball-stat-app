@@ -1453,13 +1453,22 @@ def build_rec_card_detail_body(
     elif pd.notna(avg) and float(avg) >= 0.265 and ("AVG" in needs or "BA" in needs):
         reasons.append(f"Helps a weak batting-average roster ({float(avg):.3f})")
 
-    if gaps and pos in gaps:
-        if pos == "C":
+    # Open starter slots this player can fill: any listed position (strict eligibility), not just the primary.
+    _elig = {pos.upper()}
+    for _col in ("Positions", "Eligible Positions", "Position"):
+        _raw = row.get(_col) if hasattr(row, "get") else None
+        if _raw is not None and not (isinstance(_raw, float) and pd.isna(_raw)):
+            _elig.update(t.strip().upper() for t in str(_raw).replace("/", ",").split(",") if t.strip())
+    if _elig & {"LF", "CF", "RF"}:
+        _elig.add("OF")
+    open_fills = [g for g in dict.fromkeys(gaps or []) if str(g).upper() in _elig]
+    if open_fills:
+        if open_fills[0] == "C":
             reasons.append(
                 "Fills your final catcher slot at a position with limited remaining depth"
             )
         else:
-            reasons.append(f"Fills your remaining {pos} starter slot")
+            reasons.append(f"Fills your remaining {open_fills[0]} starter slot")
     if "Fills C Need" in badge_labels or ("C" == pos and gaps and "C" in gaps):
         if "catcher" not in " ".join(reasons).lower():
             reasons.append("Addresses catcher scarcity")
@@ -1469,7 +1478,7 @@ def build_rec_card_detail_body(
     if pd.notna(mkt) and pd.notna(mdl) and float(mdl) < float(mkt) - 5:
         edge = float(mkt) - float(mdl)
         reasons.append(
-            f"Model ranks him {int(round(edge))} spots above market "
+            f"Model ranks {str(row.get('fullName') or 'this player').strip()} {int(round(edge))} spots above market "
             f"(#{int(round(float(mdl)))} vs #{int(round(float(mkt)))})"
         )
 
@@ -1494,6 +1503,19 @@ def build_rec_card_detail_body(
         if g100 >= 80:
             reasons.append(f"High overall Player Grade ({g100:.0f})")
 
+    # Most actionable first, so the 4-bullet cap never drops it: a required roster slot, then a weak category it
+    # helps, then value vs the market, then the projection lines and the rest (stable within each group).
+    def _priority(text: str) -> int:
+        low = text.lower()
+        if "starter slot" in low or "catcher" in low:
+            return 0
+        if "weak" in low or "improves" in low:
+            return 1
+        if "above market" in low:
+            return 2
+        return 3
+
+    reasons = sorted(reasons, key=_priority)
     # Prefer 2–4 player-specific reasons; never lead with Fit Score alone.
     reasons = reasons[:4]
     if not reasons:
