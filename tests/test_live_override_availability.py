@@ -176,6 +176,31 @@ class LiveDraftOverrideIsAuthoritative(unittest.TestCase):
         self.assertEqual(resolve_fantasy_context_source(session).kind, SOURCE_ACTIVE_DRAFT)
 
 
+class SupersededLiveDraftStillServesAnExplicitOverride(unittest.TestCase):
+    """A newer mock keeps the working board, yet choosing the Live Draft override uses its real picks."""
+
+    def test_override_uses_live_picks_after_a_mock_superseded_the_handoff(self) -> None:
+        from simulator_board_history import before_live_board_mirror, note_mock_pick_beside_finished_live
+
+        session = _live_session(status="complete", override=False)
+        session["draft_room_table"] = _sim_table(["Mookie Betts", "Gunnar Henderson"])
+        note_mock_pick_beside_finished_live(session)
+        # Navigation / refresh / reconnect: the finished Live Draft never retakes the board.
+        self.assertFalse(before_live_board_mirror(session, session["live_draft_room"]))
+
+        session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = True
+        self.assertEqual(resolve_fantasy_context_source(session).kind, SOURCE_LIVE_DRAFT)
+        res = resolve_draft_assistant_board(
+            session,
+            live_room=resolve_live_override_room(session),
+            context_mode=draft_assistant_context_mode(session),
+        )
+        ids, names = board_player_keys(res["board"])
+        left = exclude_drafted_players(_pool(), names=names, ids=ids)["fullName"].tolist()
+        # The Live Draft's four picks are gone; the mock's picks are not what the override reads.
+        self.assertEqual(left, ["Mookie Betts", "Gunnar Henderson"])
+
+
 class SimulatorOverrideIsAuthoritative(unittest.TestCase):
     def _session(self, players: list[str]) -> dict:
         session = _saved_league(["Mookie Betts"] * 1 + [f"Saved Player {i}" for i in range(10)])
