@@ -146,6 +146,26 @@ class AutoOwnershipTests(_Base):
         self.assertEqual(get_team_ownership(ctx)["Bob"]["user_id"], "suite-9")
         self.assertNotIn("Dave", {k for k, v in get_team_ownership(ctx).items() if ownership_is_firm_claim(v)})
 
+    def test_an_older_or_imported_draft_is_never_auto_claimed(self) -> None:
+        session = _signed_in()
+        ctx = self._context(HostedSession())
+        legacy = {k: v for k, v in ctx.items() if k != "context_type"}  # older saved shape: no type at all
+        self.assertIsNone(assign_solo_team_to_verified_account(session, legacy))
+        imported = dict(ctx, context_type="real_league", metadata={**(ctx.get("metadata") or {}), "source": "imported_draft"})
+        self.assertIsNone(assign_solo_team_to_verified_account(session, imported))
+        # The claim is made only when the owner saves a Simulator draft, never on load, restore or render.
+        import re
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[1]
+        calls = [f.name for f in root.glob("*.py")
+                 if re.search(r"(?<!def )assign_solo_team_to_verified_account\(", f.read_text(encoding="utf-8"))]
+        self.assertEqual(calls, ["fantasy_league_context.py"])
+        src = (root / "fantasy_league_context.py").read_text(encoding="utf-8")
+        body = src[src.index("def save_simulator_league_context("):]
+        body = body[:body.index(chr(10) + "def ", 1)]
+        self.assertIn("assign_solo_team_to_verified_account(", body)
+        self.assertEqual(src.count("assign_solo_team_to_verified_account("), 2)  # the definition + that one call
+
 
 if __name__ == "__main__":
     unittest.main()

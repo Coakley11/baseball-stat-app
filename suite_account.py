@@ -58,9 +58,23 @@ def _storage() -> Any:
     and saved-item read here raise, so account preferences and AMI saved items never synced.
     """
     try:
-        import suite_storage as storage
+        from suite_storage_config import cloud_storage_enabled
+
+        cloud_on = bool(cloud_storage_enabled())
     except ImportError:
-        import suite_storage_supabase as storage
+        cloud_on = False
+    if not cloud_on:
+        # Local-only: Command Center's store when it is on the path. With cloud on, always the cloud module
+        # (a sibling Command Center router put on sys.path mid-session must not take over; see
+        # suite_cloud_state._import_storage).
+        try:
+            import suite_storage as storage
+
+            return storage
+        except ImportError:
+            pass
+    import suite_storage_supabase as storage
+
     return storage
 
 

@@ -334,15 +334,31 @@ def _parse_ts(ts: str | None) -> float:
 
 
 def _import_storage() -> tuple[Any, str]:
-    """Resolve storage backend; standalone deploys use ``suite_storage_supabase``."""
+    """Resolve the storage backend.
+
+    With cloud storage on, always ``suite_storage_supabase``, which is what Command Center's ``suite_storage``
+    calls in cloud mode anyway. On a machine with a sibling Command Center checkout, recording an activity puts
+    that repo on ``sys.path``; a bare ``import suite_storage`` then resolved to its router, whose
+    ``save_current_state`` takes neither ``skip_metrics_merge_read`` nor ``expected_updated_at``. Every
+    full-session write after that raised (silently), so saved lineups and edits never reached the account and
+    the next sign-in restored an older copy (lineup QA 2026-11-08). The local store is used only without cloud.
+    """
     try:
-        import suite_storage as storage
+        from suite_storage_config import cloud_storage_enabled
 
-        return storage, "suite_storage"
+        cloud_on = bool(cloud_storage_enabled())
     except ImportError:
-        import suite_storage_supabase as storage
+        cloud_on = False
+    if not cloud_on:
+        try:
+            import suite_storage as storage
 
-        return storage, "suite_storage_supabase"
+            return storage, "suite_storage"
+        except ImportError:
+            pass
+    import suite_storage_supabase as storage
+
+    return storage, "suite_storage_supabase"
 
 
 def probe_cloud_restore_diagnostics(st: Any, app_id: str) -> dict[str, Any]:

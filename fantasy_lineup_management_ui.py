@@ -463,8 +463,12 @@ def render_lineup_management_page(
                 with _diag_phase:
                     from fantasy_waiver_wire import analyze_current_team_needs, build_waiver_pool, merge_current_season_stats
 
+                    _pool_for_needs = merge_current_season_stats(
+                        session.get("_fantasy_current_hitter_stats", pd.DataFrame()),
+                        session.get("_fantasy_current_pitcher_stats", pd.DataFrame()),
+                    )
                     if not _my_team_df.empty:
-                        _needs = analyze_current_team_needs(_my_team_df, roster_stats)
+                        _needs = analyze_current_team_needs(_my_team_df, roster_stats, player_pool=_pool_for_needs)
                         _cat_ranks = dict(_needs.get("category_ranks") or {})
                         _cat_values = dict(_needs.get("category_values") or {})
                         _n_teams = int(_needs.get("n_teams") or 0)
@@ -486,9 +490,8 @@ def render_lineup_management_page(
                         _strength_cats = list(_needs.get("strengths") or [])[:2]
                         _weakness_cats = list(_needs.get("weaknesses") or [])[:2]
                     else:
-                        _z = dict(_needs.get("category_z") or {})
-                        _strength_cats = league_strength_categories(_cat_ranks, n_teams=_n_teams, category_z=_z) if _cat_ranks else []
-                        _weakness_cats = league_weakness_categories(_cat_ranks, n_teams=_n_teams, category_z=_z) if _cat_ranks else []
+                        _strength_cats = league_strength_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
+                        _weakness_cats = league_weakness_categories(_cat_ranks, n_teams=_n_teams) if _cat_ranks else []
                     _outlook, _confidence, _stars = team_outlook_summary(
                         strong_cats=_strength_cats,
                         weak_cats=_weakness_cats,
@@ -591,12 +594,18 @@ def render_lineup_management_page(
                 _cat_action = build_category_action_table(_needs)
                 if not _cat_action.empty:
                     st.markdown("#### Category standings vs league")
+                    _basis = str(_needs.get("strength_basis") or "league")
+                    _n_hit = max([int(v.get("n_hitters") or 0) for v in (_needs.get("category_strength") or {}).values()] or [0])
                     st.caption(
-                        "Your whole roster (starters and bench), current-season stats, against every team in the "
-                        "league. Status: top third of the league = Strength, bottom third = Weakness (in a 2-team "
-                        "league, behind = Weakness). Top weaknesses are ordered by how far below the league average "
-                        "a category is, measured in that category's typical team-to-team spread (from MLB team "
-                        "data), since raw gaps like 6 HR and .048 AVG aren't comparable."
+                        "**Standing** is league-relative: your rank among the league's teams (top third = Leading, "
+                        "bottom third = Trailing). "
+                        + ("**Status** is category strength: your hitters' per-player production compared with MLB "
+                           "regulars this season (percentile; below the 35th = Weakness, 65th or higher = Strength). "
+                           "Trailing a strong league doesn't make a category weak."
+                           + (f" Based on {_n_hit} hitter{'s' if _n_hit != 1 else ''}, so treat it as an estimate."
+                              if 0 < _n_hit < 5 else "")
+                           if _basis == "mlb_regulars" else
+                           "Season stats aren't loaded, so **Status** shows league standing only (an estimate).")
                     )
                     st.dataframe(
                         style_category_action_table(_cat_action),
@@ -694,7 +703,7 @@ def render_lineup_management_page(
                 _ctx = get_active_league_context(session)
                 _waiver_pool = build_waiver_pool(_pool, _ctx) if not _pool.empty else pd.DataFrame()
                 _my_roster = scored[scored["Team"].astype(str) == str(lineup_team)] if "Team" in scored.columns else scored
-                _needs = analyze_current_team_needs(_my_roster, roster_stats) if not _my_roster.empty else {}
+                _needs = analyze_current_team_needs(_my_roster, roster_stats, player_pool=_pool) if not _my_roster.empty else {}
                 enriched = enrich_recommendations_with_waiver_targets(
                     rec_df.to_dict(orient="records"),
                     _waiver_pool,

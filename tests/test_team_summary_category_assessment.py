@@ -1,12 +1,17 @@
-"""Team Summary category diagnosis (owner review, 2026-11-08).
+"""Team Summary category diagnosis (owner reviews, 2026-11-08).
 
-The owner saw "Top Weaknesses: AVG, HR" while the standings table called HR "Middle" (39 vs a league best
-of 45) and RBI, R, SB and AVG "Weakness". Causes:
-* the table used a ratio to the league best (below 0.85 meant Weakness);
-* Top Weaknesses used league rank, and ties were broken alphabetically, so AVG and HR always won a tie.
+History:
+* v1 had a ratio rule in the table and an alphabetical tie-break in the summary, which showed "AVG, HR" while
+  the table called HR "Middle".
+* v2 benchmarked against MLB team-to-team spread. The owner rejected it: MLB team spread doesn't represent
+  fantasy leagues, and "2nd of 2" alone isn't a weakness.
 
-Now one assessment drives every section. Status comes from the league rank (top third = Strength, bottom
-third = Weakness); order comes from a direction-aware z-score, because categories have different units.
+v3 uses two separate, explainable measures:
+1. League standing (relative): rank among the league's teams, gap to the leader, and Leading / Middle / Trailing.
+2. Category strength: this team's per-hitter production compared with MLB regulars this season, as a percentile.
+   Per hitter, so roster size, team count and incomplete rosters don't distort it; the percentile puts
+   categories with different units on one scale. Weaknesses are categories below the 35th percentile.
+   Without a stats pool, the page falls back to league standing and labels it an estimate.
 """
 
 from __future__ import annotations
@@ -14,130 +19,146 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from fantasy_actionable_recommendations import league_weakness_categories
 from fantasy_waiver_wire import analyze_current_team_needs, build_category_action_table, build_category_standings_table
 
-CATS = ("HR", "RBI", "R", "SB", "AVG")
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def _league(rows, cats=("HR", "RBI", "R", "SB", "BA")):
-    return pd.DataFrame([dict(Team=t, **dict(zip(cats, vals))) for t, *vals in rows])
-
-
-# The owner's example: last in every hitting category; HR 39 vs the league best of 45.
-OWNER = [("Mine", 39, 150, 160, 10, .225), ("Best", 45, 200, 210, 30, .270),
-         ("C", 42, 185, 195, 24, .258), ("D", 41, 180, 190, 20, .252)]
-
-
-def _needs(rows, cats=CATS):
-    df = _league(rows)
-    return analyze_current_team_needs(df[df.Team == "Mine"], df, categories=cats)
-
-
-# The owner's ACTUAL screen (2026-11-08): a 2-team league, "2nd of 2" in every category.
-OWNER_REAL = [("Dave", 39, 90, 108, 8, .231, .778), ("Bob", 45, 122, 157, 54, .279, .845)]
 REAL_CATS = ("HR", "RBI", "R", "SB", "AVG", "OPS")
 
 
+def _roster(team, players):
+    return pd.DataFrame([dict(Team=team, Player=n, AB=ab, H=h, HR=hr, RBI=rbi, R=r, SB=sb, BA=round(h / ab, 3), OPS=ops)
+                         for n, ab, h, hr, rbi, r, sb, ops in players])
+
+
+def _regulars(n=200, seed=7):
+    """A season-to-date pool of MLB regulars with realistic per-player spreads (synthetic, deterministic)."""
+    rng = np.random.default_rng(seed)
+    ab = rng.integers(250, 600, n)
+    ba = np.clip(rng.normal(0.250, 0.025, n), 0.180, 0.330)
+    return pd.DataFrame({"Player": [f"R{i}" for i in range(n)], "AB": ab, "H": (ab * ba).round(),
+                         "BA": ba.round(3), "HR": rng.gamma(3.0, 6.0, n).round(), "RBI": rng.normal(65, 20, n).round(),
+                         "R": rng.normal(65, 18, n).round(), "SB": rng.gamma(1.2, 7.0, n).round(),
+                         "OPS": np.clip(rng.normal(0.730, 0.070, n), 0.550, 1.050).round(3)})
+
+
+# The owner's ACTUAL screen: a 2-team league, 2 hitters per team, "2nd of 2" in every category.
+# Dave totals: HR 39, RBI 90, R 108, SB 8, AVG .231, OPS .778; Bob: HR 45, RBI 122, R 157, SB 54, AVG .279, OPS .845.
+DAVE = _roster("Dave", [("Aaron Judge", 300, 70, 24, 50, 60, 4, 0.840), ("Francisco Lindor", 300, 69, 15, 40, 48, 4, 0.716)])
+BOB = _roster("Bob", [("B1", 300, 84, 25, 64, 80, 30, 0.880), ("B2", 300, 83, 20, 58, 77, 24, 0.810)])
+LEAGUE = pd.concat([DAVE, BOB], ignore_index=True)
+
+
 class OwnerRealScreenTests(unittest.TestCase):
-    def _real(self):
-        df = _league(OWNER_REAL, cats=("HR", "RBI", "R", "SB", "BA", "OPS"))
-        return analyze_current_team_needs(df[df.Team == "Dave"], df, categories=REAL_CATS)
+    def test_the_inputs_match_the_owners_screen(self) -> None:
+        needs = analyze_current_team_needs(DAVE, LEAGUE, categories=REAL_CATS)
+        vals = needs["category_values"]
+        self.assertEqual((vals["HR"], vals["RBI"], vals["R"], vals["SB"]), (39, 90, 108, 8))
+        self.assertAlmostEqual(vals["AVG"], 139 / 600, places=3)  # .231 from summed H/AB
+        self.assertEqual(set(needs["category_ranks"].values()), {2})
 
-    def test_the_real_two_team_screen(self) -> None:
-        needs = self._real()
-        # Gap from the league average in typical team spreads: SB -2.39, AVG -2.33, R -1.92, RBI -1.54, OPS -0.91, HR -0.42
-        self.assertEqual(needs["weaknesses"], ["SB", "AVG", "R", "RBI", "OPS", "HR"])
-        self.assertEqual(needs["weaknesses"][:2], ["SB", "AVG"])
+    def test_without_season_stats_the_page_shows_league_standing_only(self) -> None:
+        needs = analyze_current_team_needs(DAVE, LEAGUE, categories=REAL_CATS)
+        self.assertEqual(needs["strength_basis"], "league")
+        self.assertEqual(set(needs["category_standing"].values()), {"Trailing"})
+        # Ordered by how far behind the leader, as a share of the leader's value: SB 85%, R 31%, RBI 26%, ...
+        self.assertEqual(needs["weaknesses"][:3], ["SB", "R", "RBI"])
+        self.assertAlmostEqual(needs["category_behind_pct"]["SB"], 46 / 54, places=3)
+
+    def test_second_of_two_is_not_automatically_a_weakness(self) -> None:
+        needs = analyze_current_team_needs(DAVE, LEAGUE, categories=REAL_CATS, player_pool=_regulars())
+        self.assertEqual(needs["strength_basis"], "mlb_regulars")
+        self.assertEqual(needs["category_standing"]["HR"], "Trailing")       # behind Bob
+        self.assertNotEqual(needs["category_status"]["HR"], "Weakness")      # 19.5 HR per hitter is solid
+        self.assertNotIn("HR", needs["weaknesses"])
+        # Every status follows its percentile (below 35th = Weakness, 65th+ = Strength), whatever the standing.
+        for cat, info in needs["category_strength"].items():
+            want = "Weakness" if info["pct"] < 0.35 else "Strength" if info["pct"] >= 0.65 else "Middle"
+            self.assertEqual(needs["category_status"][cat], want, cat)
+        self.assertLess(needs["category_strength"]["SB"]["pct"], needs["category_strength"]["HR"]["pct"])
+
+    def test_the_table_shows_both_measures(self) -> None:
+        needs = analyze_current_team_needs(DAVE, LEAGUE, categories=REAL_CATS, player_pool=_regulars())
         table = build_category_action_table(needs, categories=REAL_CATS)
-        self.assertEqual(set(table["Status"]), {"Weakness"})  # 2nd of 2 everywhere: no "Middle" HR
+        row = table.set_index("Category").loc["HR"]
+        self.assertEqual(row["Standing"], "Trailing")
+        self.assertIn("per hitter", row["Vs MLB regulars"])
+        pct = int(round(needs["category_strength"]["HR"]["pct"] * 100))
+        suffix = "th" if 10 <= pct % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(pct % 10, "th")
+        self.assertIn(f"{pct}{suffix} pct", row["Vs MLB regulars"])  # "73rd pct", never "73th pct"
+        import re
 
-    def test_a_two_team_league_still_orders_categories(self) -> None:
-        # The league's own spread makes every category exactly -1 SD with 2 teams; the measured spread doesn't.
-        z = self._real()["category_z"]
-        self.assertGreater(len(set(z.values())), 1)
-
-
-class SpreadProvenanceTests(unittest.TestCase):
-    def test_spreads_are_measured_from_the_bundled_mlb_data(self) -> None:
-        from fantasy_waiver_wire import CATEGORY_TEAM_SPREAD
-
-        b = pd.read_csv(ROOT / "Batting.csv", usecols=lambda c: c in {"yearID", "teamID", "AB", "H", "HR", "R", "RBI", "SB"})
-        t = b.groupby(["yearID", "teamID"]).sum(numeric_only=True).reset_index()
-        t = t[(t.yearID >= 2015) & (t.yearID != 2020) & (t.AB > 4000)].copy()
-        t["AVG"] = t.H / t.AB
-        for cat in ("HR", "R", "RBI", "SB", "AVG"):
-            cv = t.groupby("yearID")[cat].agg(lambda s: s.std(ddof=0) / s.mean()).mean()
-            self.assertAlmostEqual(CATEGORY_TEAM_SPREAD[cat], cv, delta=0.002, msg=cat)
-
-
-class OwnerExampleTests(unittest.TestCase):
-    def test_top_weaknesses_follow_the_measured_spread_not_the_alphabet(self) -> None:
-        needs = _needs(OWNER)
-        self.assertEqual(needs["weaknesses"][:2], ["AVG", "SB"])
-        self.assertEqual(needs["weaknesses"][-1], "HR")  # HR is the least-bad category here
-        self.assertEqual(league_weakness_categories(needs["category_ranks"], n_teams=4), ["AVG", "HR"])  # the old rule
-
-    def test_the_table_and_the_summary_agree(self) -> None:
-        needs = _needs(OWNER)
-        table = build_category_action_table(needs, categories=CATS)
-        status = dict(zip(table["Category"], table["Status"]))
-        self.assertEqual(status["HR"], "Weakness")  # last of 4 teams: not "Middle"
-        for cat in needs["weaknesses"][:2]:
-            self.assertEqual(status[cat], "Weakness")
-        standings = build_category_standings_table(needs, categories=CATS)
-        self.assertEqual(dict(zip(standings["Category"], standings["Status"])), status)
+        for value in table["Vs MLB regulars"]:
+            m = re.search(r"(\d+)(st|nd|rd|th) pct$", str(value))
+            if m:
+                n = int(m.group(1))
+                want = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+                self.assertEqual(m.group(2), want, value)
+        # The summary's weaknesses are exactly the table's Weakness rows, weakest first.
+        statuses = dict(zip(table["Category"], table["Status"]))
+        self.assertEqual(sorted(needs["weaknesses"]), sorted(c for c, s in statuses.items() if s == "Weakness"))
+        pcts = [needs["category_strength"][c]["pct"] for c in needs["weaknesses"]]
+        self.assertEqual(pcts, sorted(pcts))
 
 
-class RuleTests(unittest.TestCase):
-    def test_a_rate_stat_near_the_bottom_is_a_weakness(self) -> None:
-        # AVG .238, 11th of 12, was "Middle" under the old 0.85-of-best ratio rule.
-        rows = [("Mine", 30, 160, 170, 15, .238)] + [(f"T{i}", 30 + i, 170 + i, 180 + i, 16 + i, .240 + i / 100)
-                                                      for i in range(11)]
-        rows[1] = ("T0", 29, 150, 160, 10, .230)  # one team below us
-        needs = _needs(rows)
-        self.assertEqual(needs["category_ranks"]["AVG"], 11)
-        self.assertEqual(needs["category_status"]["AVG"], "Weakness")
+class MethodTests(unittest.TestCase):
+    def test_per_hitter_values_and_percentiles_are_computed_from_the_inputs(self) -> None:
+        pool = _regulars()
+        needs = analyze_current_team_needs(DAVE, LEAGUE, categories=("HR", "SB"), player_pool=pool)
+        hr = needs["category_strength"]["HR"]
+        self.assertEqual((hr["per_player"], hr["n_hitters"]), (19.5, 2))
+        regs = pool[pool["AB"] >= max(50, pool["AB"].median())]
+        expected = float((regs["HR"] < 19.5).mean()) + 0.5 * float((regs["HR"] == 19.5).mean())
+        self.assertAlmostEqual(hr["pct"], expected, places=3)
+
+    def test_roster_size_does_not_distort_strength(self) -> None:
+        pool = _regulars()
+        two = analyze_current_team_needs(DAVE, LEAGUE, categories=("HR",), player_pool=pool)["category_strength"]["HR"]
+        four = pd.concat([DAVE, DAVE.assign(Player=DAVE["Player"] + " (2)")], ignore_index=True)
+        big = analyze_current_team_needs(four, pd.concat([four, BOB]), categories=("HR",), player_pool=pool)["category_strength"]["HR"]
+        self.assertEqual(two["pct"], big["pct"])  # same per-hitter production, same strength
 
     def test_lower_is_better_categories(self) -> None:
-        df = pd.DataFrame([dict(Team="Mine", ERA=2.90, WHIP=1.05), dict(Team="B", ERA=3.80, WHIP=1.25),
-                           dict(Team="C", ERA=4.20, WHIP=1.30)])
-        needs = analyze_current_team_needs(df[df.Team == "Mine"], df, categories=("ERA", "WHIP"))
-        self.assertEqual(needs["category_ranks"], {"ERA": 1, "WHIP": 1})
-        self.assertEqual(needs["category_status"], {"ERA": "Strength", "WHIP": "Strength"})
-        self.assertGreater(needs["category_z"]["ERA"], 0)
-
-    def test_middle_of_the_league_is_middle(self) -> None:
-        rows = [("Mine", 40, 175, 185, 20, .250), ("A", 45, 200, 210, 30, .270), ("B", 35, 150, 160, 10, .230),
-                ("C", 44, 190, 200, 28, .265), ("D", 36, 155, 165, 12, .232), ("E", 38, 165, 175, 16, .240)]
-        needs = _needs(rows)
-        self.assertEqual(set(needs["category_status"].values()), {"Middle"})
-        self.assertEqual(needs["weaknesses"], [])
+        team = pd.DataFrame([dict(Team="Mine", ERA=2.90, AB=0), dict(Team="Mine", ERA=3.00, AB=0)])
+        pool = pd.DataFrame({"ERA": np.linspace(2.5, 5.5, 50)})
+        df = pd.concat([team, pd.DataFrame([dict(Team="B", ERA=4.0, AB=0)])])
+        needs = analyze_current_team_needs(team.drop(columns="AB"), df.drop(columns="AB"), categories=("ERA",), player_pool=pool)
+        self.assertGreater(needs["category_strength"]["ERA"]["pct"], 0.8)
+        self.assertEqual(needs["category_status"]["ERA"], "Strength")
 
     def test_never_both_a_strength_and_a_weakness(self) -> None:
-        needs = _needs(OWNER + [("E", 50, 220, 230, 35, .280)])
+        needs = analyze_current_team_needs(DAVE, LEAGUE, categories=REAL_CATS, player_pool=_regulars())
         self.assertFalse(set(needs["strengths"]) & set(needs["weaknesses"]))
 
-    def test_rank_ties_break_by_z_score_when_given(self) -> None:
-        ranks = {"AVG": 4, "HR": 4, "RBI": 4}
-        z = {"AVG": -1.0, "HR": -0.5, "RBI": -1.6}
-        self.assertEqual(league_weakness_categories(ranks, n_teams=4, category_z=z), ["RBI", "AVG"])
-
     def test_waiver_targets_use_the_same_order(self) -> None:
-        needs = _needs(OWNER)
+        needs = analyze_current_team_needs(DAVE, LEAGUE, categories=REAL_CATS, player_pool=_regulars())
         self.assertEqual(needs["targets"], needs["weaknesses"])
+
+    def test_standings_table_agrees_with_the_action_table(self) -> None:
+        needs = analyze_current_team_needs(DAVE, LEAGUE, categories=REAL_CATS, player_pool=_regulars())
+        a = build_category_action_table(needs, categories=REAL_CATS)
+        b = build_category_standings_table(needs, categories=REAL_CATS)
+        self.assertEqual(dict(zip(a["Category"], a["Status"])), dict(zip(b["Category"], b["Status"])))
+
+    def test_rank_ties_never_fall_back_to_alphabetical_order_in_the_page(self) -> None:
+        self.assertEqual(league_weakness_categories({"AVG": 2, "HR": 2}, n_teams=2), ["AVG", "HR"])  # old helper
+        ui = (ROOT / "fantasy_lineup_management_ui.py").read_text(encoding="utf-8")
+        self.assertIn('_weakness_cats = list(_needs.get("weaknesses") or [])[:2]', ui)  # the page reads the assessment
+        self.assertIn("player_pool=_pool_for_needs", ui)
 
 
 class PageTests(unittest.TestCase):
-    def test_the_page_reads_one_assessment_and_labels_it(self) -> None:
+    def test_the_page_explains_both_measures_and_flags_small_samples(self) -> None:
         ui = (ROOT / "fantasy_lineup_management_ui.py").read_text(encoding="utf-8")
-        self.assertIn('_weakness_cats = list(_needs.get("weaknesses") or [])[:2]', ui)
-        self.assertIn("Your whole roster (starters and bench), current-season stats", ui)
+        self.assertIn("**Standing** is league-relative", ui)
+        self.assertIn("per-player production compared with MLB", ui)
+        self.assertIn("so treat it as an estimate", ui)
+        self.assertIn("league standing only (an estimate)", ui)
         cache = (ROOT / "fantasy_perf_cache.py").read_text(encoding="utf-8")
-        self.assertIn('"category_rule_v2"', cache)  # summaries cached under the old rule aren't reused
+        self.assertIn('"category_rule_v2"', cache)
 
 
 if __name__ == "__main__":
