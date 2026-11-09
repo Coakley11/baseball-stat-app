@@ -2571,7 +2571,9 @@ Save the template, then send a **new** reset email.
 
 
 def _render_recovery_landing_wait(st: Any) -> None:
-    st.title("Daniel AI Suite")
+    from suite_parent_brand import render_suite_login_brand
+
+    render_suite_login_brand(st)
     st.info("Processing password reset link…")
     err = str(st.session_state.get(AUTH_RECOVERY_LAST_ERROR_KEY) or "").strip()
     if err:
@@ -3060,7 +3062,9 @@ def render_auth_gate(st: Any) -> bool:
     if is_authenticated(st.session_state):
         enforce_workspace_ownership(st.session_state)
         return True
-    st.title("Daniel AI Suite")
+    from suite_parent_brand import render_suite_login_brand
+
+    render_suite_login_brand(st)
     st.caption("Sign in to continue.")
     render_auth_panel(st, expanded=True)
     st.stop()
