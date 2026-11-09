@@ -56,17 +56,17 @@ def _sign_in(st: _St, *, persist_ok: bool, reason: str = "ok", seen: dict | None
             seen["url_sid"] = st.query_params.get(SESSION_QUERY_PARAM)
             seen["session_sid"] = ss.get(SESSION_STATE_SID_KEY)
         ss[BROWSER_PERSIST_RESULT_KEY] = _persistence(persist_ok, reason)
-        if persist_ok:
-            ss["_fake_complete"] = True  # what a real successful save leaves: a complete session
         return "suite-user-1"
 
+    # auth_session_complete is NOT patched: modules that import it by name during the sign-in would keep the
+    # fake for the rest of the test run (it broke an unrelated auth test in CI). The real sign-in sets the
+    # session keys it checks.
     with mock.patch("suite_auth.is_auth_enabled", return_value=True), \
             mock.patch("suite_auth._auth_api") as auth_api, \
             mock.patch("suite_auth._user_from_auth_response", return_value=_user()), \
             mock.patch("suite_auth._tokens_from_auth_response", return_value=dict(TOKENS)), \
             mock.patch("suite_auth._sync_auth_account_identity", side_effect=persist), \
             mock.patch("suite_auth.enforce_workspace_ownership"), \
-            mock.patch("suite_auth.auth_session_complete", side_effect=lambda s: bool(s.get("_fake_complete"))), \
             mock.patch("draft_archive_visibility.sanitize_workflow_library_for_account"), \
             mock.patch("workflow_persist_guard.clear_draft_library_on_account_scope_change"):
         auth_api.return_value.sign_in_with_password.return_value = object()
