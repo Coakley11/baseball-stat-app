@@ -245,6 +245,30 @@ def _board_holds_another_draft(table: Any, room: dict[str, Any]) -> bool:
     return False
 
 
+def _live_room_id(room: dict[str, Any]) -> str:
+    return str(room.get("draft_room_id") or room.get("room_id") or "").strip()
+
+
+def _live_room_revision(room: dict[str, Any]) -> str:
+    meta = room.get("meta") if isinstance(room.get("meta"), dict) else {}
+    sync_meta = meta.get("sync") if isinstance(meta.get("sync"), dict) else {}
+    return str(sync_meta.get("revision") or room.get("revision") or "").strip()
+
+
+def _live_sync_revision_matches(session: dict[str, Any], room: dict[str, Any]) -> bool:
+    """This room was already mirrored at its current revision. Revisions are per room, so a
+    different room that reached the same revision number is not a match."""
+    try:
+        rev = _live_room_revision(room)
+        if not rev or rev != str(session.get("_canonical_live_sync_revision") or "").strip():
+            return False
+        synced_room = str(session.get("_canonical_live_sync_room_id") or "").strip()
+        # Unknown room = no match: re-checking costs one guarded mirror, skipping can strand a board.
+        return bool(synced_room) and synced_room == _live_room_id(room)
+    except Exception:
+        return False
+
+
 def _completed_live_draft_already_handed_off(session: dict[str, Any], room: dict[str, Any]) -> bool:
     """A completed Live Draft hands its picks to the working board once (its first mirror after
     completion); after that a different board on the Simulator is the user's and stays."""
@@ -253,18 +277,12 @@ def _completed_live_draft_already_handed_off(session: dict[str, Any], room: dict
 
         rec = session.get(LIVE_HANDOFF_KEY)
         room_id = str(room.get("draft_room_id") or room.get("room_id") or "").strip()
-        if _belongs(session, rec) and room_id and rec.get("draft_room_id") == room_id:
-            return True
+        if _belongs(session, rec):
+            # A handoff record decides: this room was handed off, or a different (older) one was.
+            return bool(room_id) and rec.get("draft_room_id") == room_id
     except ImportError:
         return True
-    try:
-        meta = room.get("meta") if isinstance(room.get("meta"), dict) else {}
-        sync_meta = meta.get("sync") if isinstance(meta.get("sync"), dict) else {}
-        rev = str(sync_meta.get("revision") or room.get("revision") or "").strip()
-        # Mirrored at this final revision before handoff records existed.
-        return bool(rev) and rev == str(session.get("_canonical_live_sync_revision") or "").strip()
-    except Exception:
-        return False
+    return _live_sync_revision_matches(session, room)
 
 
 def ensure_live_draft_synced_to_canonical_board(
@@ -361,9 +379,9 @@ def ensure_live_draft_synced_to_canonical_board(
         meta = room.get("meta") if isinstance(room.get("meta"), dict) else {}
         sync_meta = meta.get("sync") if isinstance(meta.get("sync"), dict) else {}
         rev = str(sync_meta.get("revision") or room.get("revision") or "").strip()
-        last_rev = str(session.get("_canonical_live_sync_revision") or "").strip()
         before_picks = table_pick_count(session.get(DRAFT_ROOM_TABLE_KEY))
-        if rev and rev == last_rev and before_picks >= live_picks:
+        # Same room at the same revision only: a newer room can reach the same revision number.
+        if rev and _live_sync_revision_matches(session, room) and before_picks >= live_picks:
             diag["skipped"] = True
             diag["skip_reason"] = "revision_unchanged"
             diag["canonical_pick_count_after"] = before_picks
@@ -386,6 +404,7 @@ def ensure_live_draft_synced_to_canonical_board(
             rev = str(sync_meta.get("revision") or room.get("revision") or "").strip()
             if rev:
                 session["_canonical_live_sync_revision"] = rev
+                session["_canonical_live_sync_room_id"] = _live_room_id(room)
         except Exception:
             pass
         if diag["canonical_pick_count_after"] >= live_picks:
