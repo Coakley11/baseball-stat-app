@@ -893,7 +893,8 @@ def build_category_action_table(
         if st_info:
             pct = int(round(float(st_info["pct"]) * 100))
             per = format_category_display_value(cat, st_info["per_player"])
-            vs_regulars = f"{per} per hitter · {pct}th pct" if cat not in RATE_CATEGORIES else f"{per} · {pct}th pct"
+            rank = f"{pct}{_ordinal_suffix(pct)} pct"
+            vs_regulars = f"{per} per hitter · {rank}" if cat not in RATE_CATEGORIES else f"{per} · {rank}"
         else:
             vs_regulars = "—"
         rows.append(

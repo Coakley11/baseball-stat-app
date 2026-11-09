@@ -86,7 +86,17 @@ class OwnerRealScreenTests(unittest.TestCase):
         row = table.set_index("Category").loc["HR"]
         self.assertEqual(row["Standing"], "Trailing")
         self.assertIn("per hitter", row["Vs MLB regulars"])
-        self.assertIn("th pct", row["Vs MLB regulars"])
+        pct = int(round(needs["category_strength"]["HR"]["pct"] * 100))
+        suffix = "th" if 10 <= pct % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(pct % 10, "th")
+        self.assertIn(f"{pct}{suffix} pct", row["Vs MLB regulars"])  # "73rd pct", never "73th pct"
+        import re
+
+        for value in table["Vs MLB regulars"]:
+            m = re.search(r"(\d+)(st|nd|rd|th) pct$", str(value))
+            if m:
+                n = int(m.group(1))
+                want = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+                self.assertEqual(m.group(2), want, value)
         # The summary's weaknesses are exactly the table's Weakness rows, weakest first.
         statuses = dict(zip(table["Category"], table["Status"]))
         self.assertEqual(sorted(needs["weaknesses"]), sorted(c for c, s in statuses.items() if s == "Weakness"))
