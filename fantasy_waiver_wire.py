@@ -650,6 +650,34 @@ def _projected_league_values_after_trade(
     return values
 
 
+# How much team totals normally differ in each hitting category: the standard deviation as a share of the
+# average, measured across MLB team-seasons 2015–2025 (2020 excluded) from the app's own Batting.csv.
+# Fantasy rosters are smaller, so their spread is wider, but by the same factor for every category: the ratios
+# keep categories comparable, so "6 HR" and ".048 AVG" behind can be put on one scale. Used for the ORDER of
+# strengths and weaknesses (status comes from league rank). Owner review 2026-11-08: a 2-team league's own
+# spread makes every category exactly -1 standard deviation, so it can't order anything.
+CATEGORY_TEAM_SPREAD: dict[str, float] = {
+    "HR": 0.170, "R": 0.0965, "RBI": 0.098, "SB": 0.311, "AVG": 0.0403, "OBP": 0.0364, "OPS": 0.0455,
+}
+
+
+def category_spread(category: str, values: list[float]) -> float:
+    """Typical team-to-team spread for ``category`` at this league's level: the MLB-measured relative spread
+    times the league average. Categories without a measured spread (pitching: no pitching data is bundled)
+    use the league's own spread with 3+ teams, else 10% of the league average."""
+    from statistics import mean, pstdev
+
+    if not values:
+        return 0.0
+    avg = abs(mean(values))
+    rel = CATEGORY_TEAM_SPREAD.get(category)
+    if rel and avg:
+        return rel * avg
+    if len(values) >= 3:
+        return pstdev(values)
+    return 0.10 * avg
+
+
 def analyze_current_team_needs(
     my_roster: pd.DataFrame,
     league_rosters_df: pd.DataFrame,
@@ -742,7 +770,7 @@ def analyze_current_team_needs(
             rank = sum(1 for v in values if v > my_val) + 1
         rank = _clamp_league_rank(rank, result["n_teams"])
         result["category_ranks"][cat] = rank
-        sd = pstdev(values) if len(values) > 1 else 0.0
+        sd = category_spread(cat, values)
         z = ((my_val - mean(values)) / sd) if sd else 0.0
         z_by_cat[cat] = round(-z if lower_is_better else z, 3)
         if third and rank <= third:

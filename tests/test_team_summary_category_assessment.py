@@ -37,11 +37,48 @@ def _needs(rows, cats=CATS):
     return analyze_current_team_needs(df[df.Team == "Mine"], df, categories=cats)
 
 
+# The owner's ACTUAL screen (2026-11-08): a 2-team league, "2nd of 2" in every category.
+OWNER_REAL = [("Dave", 39, 90, 108, 8, .231, .778), ("Bob", 45, 122, 157, 54, .279, .845)]
+REAL_CATS = ("HR", "RBI", "R", "SB", "AVG", "OPS")
+
+
+class OwnerRealScreenTests(unittest.TestCase):
+    def _real(self):
+        df = _league(OWNER_REAL, cats=("HR", "RBI", "R", "SB", "BA", "OPS"))
+        return analyze_current_team_needs(df[df.Team == "Dave"], df, categories=REAL_CATS)
+
+    def test_the_real_two_team_screen(self) -> None:
+        needs = self._real()
+        # Gap from the league average in typical team spreads: SB -2.39, AVG -2.33, R -1.92, RBI -1.54, OPS -0.91, HR -0.42
+        self.assertEqual(needs["weaknesses"], ["SB", "AVG", "R", "RBI", "OPS", "HR"])
+        self.assertEqual(needs["weaknesses"][:2], ["SB", "AVG"])
+        table = build_category_action_table(needs, categories=REAL_CATS)
+        self.assertEqual(set(table["Status"]), {"Weakness"})  # 2nd of 2 everywhere: no "Middle" HR
+
+    def test_a_two_team_league_still_orders_categories(self) -> None:
+        # The league's own spread makes every category exactly -1 SD with 2 teams; the measured spread doesn't.
+        z = self._real()["category_z"]
+        self.assertGreater(len(set(z.values())), 1)
+
+
+class SpreadProvenanceTests(unittest.TestCase):
+    def test_spreads_are_measured_from_the_bundled_mlb_data(self) -> None:
+        from fantasy_waiver_wire import CATEGORY_TEAM_SPREAD
+
+        b = pd.read_csv(ROOT / "Batting.csv", usecols=lambda c: c in {"yearID", "teamID", "AB", "H", "HR", "R", "RBI", "SB"})
+        t = b.groupby(["yearID", "teamID"]).sum(numeric_only=True).reset_index()
+        t = t[(t.yearID >= 2015) & (t.yearID != 2020) & (t.AB > 4000)].copy()
+        t["AVG"] = t.H / t.AB
+        for cat in ("HR", "R", "RBI", "SB", "AVG"):
+            cv = t.groupby("yearID")[cat].agg(lambda s: s.std(ddof=0) / s.mean()).mean()
+            self.assertAlmostEqual(CATEGORY_TEAM_SPREAD[cat], cv, delta=0.002, msg=cat)
+
+
 class OwnerExampleTests(unittest.TestCase):
-    def test_top_weaknesses_follow_the_z_score_not_the_alphabet(self) -> None:
+    def test_top_weaknesses_follow_the_measured_spread_not_the_alphabet(self) -> None:
         needs = _needs(OWNER)
-        self.assertEqual(needs["weaknesses"][:2], ["AVG", "RBI"])
-        self.assertNotIn("HR", needs["weaknesses"][:2])  # HR is the least-bad category here
+        self.assertEqual(needs["weaknesses"][:2], ["AVG", "SB"])
+        self.assertEqual(needs["weaknesses"][-1], "HR")  # HR is the least-bad category here
         self.assertEqual(league_weakness_categories(needs["category_ranks"], n_teams=4), ["AVG", "HR"])  # the old rule
 
     def test_the_table_and_the_summary_agree(self) -> None:

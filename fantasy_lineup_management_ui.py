@@ -593,9 +593,10 @@ def render_lineup_management_page(
                     st.markdown("#### Category standings vs league")
                     st.caption(
                         "Your whole roster (starters and bench), current-season stats, against every team in the "
-                        "league. Status: top third of the league = Strength, bottom third = Weakness. Top "
-                        "weaknesses are ordered by how far below the league average a category is (in standard "
-                        "deviations), since raw gaps like 6 HR and .045 AVG aren't comparable."
+                        "league. Status: top third of the league = Strength, bottom third = Weakness (in a 2-team "
+                        "league, behind = Weakness). Top weaknesses are ordered by how far below the league average "
+                        "a category is, measured in that category's typical team-to-team spread (from MLB team "
+                        "data), since raw gaps like 6 HR and .048 AVG aren't comparable."
                     )
                     st.dataframe(
                         style_category_action_table(_cat_action),
