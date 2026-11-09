@@ -377,5 +377,23 @@ class ASecondLiveDraftReachesEveryManager(unittest.TestCase):
         self.assertEqual(diag.get("skip_reason"), "revision_unchanged")
 
 
+class RestoredBoardIsNotLabelledAgainstANewerLiveDraft(unittest.TestCase):
+    """Browser QA 2026-11-09: a restored mock was described as "Hypothetical ... based on your Live
+    Draft — 0 original picks kept, 4 changed" relative to a newer, unrelated Live Draft."""
+
+    def test_restored_mock_is_its_own_draft(self) -> None:
+        session = _session_with_mock()
+        session["live_draft_room"] = _room("complete")
+        ensure_live_draft_synced_to_canonical_board(session, reason="test")
+        entry = list_previous_boards(session)[0]
+        restore_previous_board(session, entry["entry_id"])
+        self.assertEqual(board_provenance(session)["kind"], "other")
+        self.assertEqual(pick_origin_labels(session), {})
+        # Restoring the Live Draft's own board back is labelled as the Live Draft again.
+        back = [e for e in list_previous_boards(session) if e["pick_count"] == 4][0]
+        restore_previous_board(session, back["entry_id"])
+        self.assertEqual(board_provenance(session)["kind"], "live_draft")
+
+
 if __name__ == "__main__":
     unittest.main()
