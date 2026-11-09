@@ -348,5 +348,34 @@ class BoardToolsRunAsCallbacks(unittest.TestCase):
         self.assertEqual(len(coerce_board_table(session[DRAFT_ROOM_TABLE_KEY])), 6)
 
 
+class ASecondLiveDraftReachesEveryManager(unittest.TestCase):
+    """Browser QA 2026-11-09: manager B kept the first draft's board after a second draft in a new
+    room completed, because both rooms ended at the same revision number."""
+
+    def test_new_room_at_the_same_revision_still_hands_off(self) -> None:
+        session = _session_with_mock("qa-user-b")
+        first = _room("complete", room_id="room-one"); first["revision"] = 7
+        session["live_draft_room"] = first
+        ensure_live_draft_synced_to_canonical_board(session, reason="test")
+        self.assertEqual(session[LIVE_HANDOFF_KEY]["draft_room_id"], "room-one")
+        second = _room("complete", room_id="room-two"); second["revision"] = 7
+        for row, name in zip(second["draft_board"], ["Mike Trout", "Yordan Alvarez", "Julio Rodriguez", "Corbin Carroll"]):
+            row["fullName"] = name
+        session["live_draft_room"] = second
+        ensure_live_draft_synced_to_canonical_board(session, reason="test")
+        self.assertEqual(session[LIVE_HANDOFF_KEY]["draft_room_id"], "room-two")
+        self.assertEqual(_players(session), ["Mike Trout", "Yordan Alvarez", "Julio Rodriguez", "Corbin Carroll"])
+        # The first draft's board is kept for restore.
+        self.assertIn(4, [k["pick_count"] for k in list_previous_boards(session)])
+
+    def test_same_room_same_revision_is_still_skipped(self) -> None:
+        session = _session_with_mock()
+        room = _room("in_progress", picks=3); room["revision"] = 3
+        session["live_draft_room"] = room
+        ensure_live_draft_synced_to_canonical_board(session, reason="test")
+        diag = ensure_live_draft_synced_to_canonical_board(session, reason="test")
+        self.assertEqual(diag.get("skip_reason"), "revision_unchanged")
+
+
 if __name__ == "__main__":
     unittest.main()
