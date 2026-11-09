@@ -2701,6 +2701,8 @@ def process_pending_auth_login(st: Any) -> bool:
     password = str(pending.get("password") or "")
     session["_baseball_account_expander_open"] = True
     ok, _msg = login_with_email(session, email=email, password=password, st=st)
+    if not ok:
+        session["_suite_auth_error_toast_pending"] = True
     return ok
 
 
@@ -2713,6 +2715,11 @@ def login_with_email(
 ) -> tuple[bool, str]:
     email_clean = str(email or "").strip()
     password_clean = str(password or "")
+    import suite_auth_signin_trace as trace
+
+    trace.start(session_state)
+    trace.record(session_state, "submitted", bool(email_clean and password_clean),
+                 email_present=bool(email_clean), password_present=bool(password_clean))
     if not email_clean or not password_clean:
         msg = "Enter both email and password."
         session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
@@ -2745,6 +2752,7 @@ def login_with_email(
     try:
         resp = auth.sign_in_with_password({"email": email_clean, "password": password_clean})
         user = _user_from_auth_response(resp)
+        trace.record(session_state, "password_checked", user is not None)
         if user is None:
             msg = "Invalid email or password."
             session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
@@ -2756,7 +2764,26 @@ def login_with_email(
             session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
             session_state[AUTH_LAST_LOGIN_OK_KEY] = False
             return False, msg
-        if not auth_session_complete(session_state):
+        was_signed_in = auth_session_complete(session_state)
+        if not was_signed_in and st is not None:
+            # A password sign-in from signed out always saves its refresh session under a NEW opaque
+            # id. Reusing the ``suite_sid`` already in the URL (a long-open phone tab, a copied link)
+            # failed the same way on every retry once that id named an unreadable record: reads
+            # require exactly one valid row per id, and the rollback put the same id back. A copied
+            # URL also must never decide which saved session a new sign-in writes to. A failed attempt
+            # still restores the previous id (prior_suite_sid below).
+            try:
+                from suite_auth_browser import SESSION_QUERY_PARAM, SESSION_STATE_SID_KEY
+
+                sid_source = ("url" if prior_suite_sid_present else
+                              "session" if session_state.get(SESSION_STATE_SID_KEY) else "none")
+                session_state.pop(SESSION_STATE_SID_KEY, None)
+                if SESSION_QUERY_PARAM in st.query_params:
+                    del st.query_params[SESSION_QUERY_PARAM]
+                trace.record(session_state, "fresh_session_id", True, sid_source=sid_source, fresh_sid=True)
+            except Exception as exc:  # noqa: BLE001
+                trace.record(session_state, "fresh_session_id", False, exception=type(exc).__name__)
+        if not was_signed_in:
             # A password sign-in from signed out starts a new token handoff lifecycle. The
             # previous lifecycle's freeze is cleared on explicit Log out only, so after an
             # implicit sign-out (an expired token on a long-open phone tab) it was still set and
@@ -2776,6 +2803,10 @@ def login_with_email(
             email_fallback=email_clean,
             st=st,
         )
+        _p = dict(persistence or {})
+        trace.record(session_state, "refresh_session_saved", bool(_p.get("persistence_succeeded")),
+                     reason=_p.get("failure_reason"), write_committed=_p.get("write_committed"),
+                     write_mode=_p.get("write_mode"), handoff_phase=_p.get("handoff_phase"))
         if st is not None and not bool((persistence or {}).get("persistence_succeeded")):
             # A verified password is not enough for a refresh-safe Streamlit login.
             # Roll back only the in-memory login attempt before any workspace cleanup,
@@ -2786,7 +2817,9 @@ def login_with_email(
                 "",
                 str(safe_persistence.get("failure_reason") or "persistence_failed"),
             )[:120]
+            kept_trace = trace.entries(session_state)  # the rollback must not erase where it failed
             rollback_session_state(session_state, pre_login_state)
+            session_state[trace.TRACE_KEY] = kept_trace
             # Do not retain the auth client or suite-user cache mutated by the failed
             # attempt. A retry must resolve identity from the restored session only.
             session_state.pop(AUTH_CLIENT_KEY, None)
@@ -2806,6 +2839,7 @@ def login_with_email(
                     del st.query_params[SESSION_QUERY_PARAM]
             except Exception:
                 pass
+            trace.record(session_state, "rolled_back", True, reason=reason)
             msg = (
                 "Sign-in was verified, but its secure refresh session could not be saved. "
                 f"No workspace data was changed. Try again or contact support ({reason})."
@@ -2815,17 +2849,20 @@ def login_with_email(
             return False, msg
         enforce_workspace_ownership(session_state)
         if not auth_session_complete(session_state):
+            trace.record(session_state, "session_complete", False)
             msg = "Login incomplete — missing user id or session tokens. Try again."
             session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
             session_state[AUTH_LAST_LOGIN_OK_KEY] = False
             _clear_auth_session(session_state, st=st, invalidate_bridge=False)
             return False, msg
+        trace.record(session_state, "signed_in", True)
         session_state[AUTH_NOTICE_KEY] = "Signed in."
         session_state[AUTH_LAST_LOGIN_OK_KEY] = True
         session_state.pop(AUTH_LAST_LOGIN_ERROR_KEY, None)
         session_state["_baseball_account_expander_open"] = True
         return True, "Signed in."
     except Exception as exc:
+        trace.record(session_state, "exception", False, exception=type(exc).__name__)
         msg = str(exc)
         session_state[AUTH_LAST_LOGIN_ERROR_KEY] = msg
         session_state[AUTH_LAST_LOGIN_OK_KEY] = False
@@ -2884,9 +2921,28 @@ def render_auth_panel(
     notice = session.pop(AUTH_NOTICE_KEY, None)
     if notice:
         st.info(str(notice))
+        try:  # on a phone the sidebar is an overlay, so the result must also show on the page
+            st.toast(str(notice), icon=_icons.ACCEPT)
+        except Exception:
+            pass
     last_login_error = str(session.get(AUTH_LAST_LOGIN_ERROR_KEY) or "").strip()
     if last_login_error and not auth_session_complete(session):
         st.error(last_login_error)
+        if session.pop("_suite_auth_error_toast_pending", False):
+            try:
+                st.toast("Sign-in didn't complete: open Account & Workspace for details.", icon=_icons.WARNING)
+            except Exception:
+                pass
+        try:
+            import suite_auth_signin_trace as trace
+
+            steps = trace.lines(session)
+            if steps:
+                with st.expander("Sign-in details (no passwords or tokens)", expanded=False):
+                    st.caption("If sign-in keeps failing, these steps show where it stops.")
+                    st.code("\n".join(steps), language=None)
+        except Exception:
+            pass
     if auth_session_complete(session):
         if show_signed_in_status:
             st.success(f"Signed in as **{current_auth_email(session) or 'account'}**")
@@ -2899,8 +2955,11 @@ def render_auth_panel(
         tab_login, tab_signup, tab_reset = st.tabs(["Log in", "Create account", "Reset password"])
         with tab_login:
             with st.form("suite_auth_login_form", clear_on_submit=False):
-                email = st.text_input("Email", key="suite_auth_login_email")
-                password = st.text_input("Password", type="password", key="suite_auth_login_password")
+                # Password managers (Android Chrome included) fill these reliably only with the right hints;
+                # Streamlit's default for a password box is "new-password", which offers to generate one.
+                email = st.text_input("Email", key="suite_auth_login_email", autocomplete="username")
+                password = st.text_input("Password", type="password", key="suite_auth_login_password",
+                                         autocomplete="current-password")
                 submitted = st.form_submit_button("Log in", use_container_width=True, icon=_icons.LOG_IN)
             if submitted:
                 session[AUTH_PENDING_LOGIN_KEY] = {
