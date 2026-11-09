@@ -98,6 +98,30 @@ def _flash(st: Any, session: dict[str, Any]) -> None:
         (st.success if kind == "success" else st.warning)(text)
 
 
+def _on_add_round() -> None:
+    """Button callback: runs before widgets exist, so the Rounds setting may change."""
+    import streamlit as st
+
+    from simulator_board_edit import add_board_rounds
+
+    res = add_board_rounds(st.session_state, 1)
+    st.session_state["_sim_board_tools_flash"] = ("success" if res.get("ok") else "warning", res.get("message", ""))
+    if res.get("ok"):
+        st.session_state["_sim_board_tools_pending_persist"] = "extend_board_round"
+
+
+def _on_restore_previous(entry_id: str) -> None:
+    """Button callback (restoring also restores the board's league settings widgets)."""
+    import streamlit as st
+
+    from simulator_board_history import restore_previous_board
+
+    res = restore_previous_board(st.session_state, entry_id)
+    st.session_state["_sim_restore_flash"] = ("success" if res.get("ok") else "warning", res.get("message", ""))
+    if res.get("ok"):
+        st.session_state["_sim_board_tools_pending_persist"] = "restore_previous_board"
+
+
 def render_full_board_extend(st: Any, session: dict[str, Any], persist_fn: PersistFn) -> None:
     """Shown when no open picks remain: add a round to keep drafting."""
     from draft_room_state import is_live_draft_runtime_active
@@ -106,14 +130,7 @@ def render_full_board_extend(st: Any, session: dict[str, Any], persist_fn: Persi
         st.info("Board is full.")
         return
     st.info("Board is full. Add a round to keep drafting (a hypothetical continuation), or reset for a new mock.")
-    if st.button("Add a round", key="sim_add_round_full_btn", icon="➕"):
-        from simulator_board_edit import add_board_rounds
-
-        res = add_board_rounds(session, 1)
-        session["_sim_board_tools_flash"] = ("success" if res.get("ok") else "warning", res.get("message", ""))
-        if res.get("ok"):
-            persist_fn("extend_board_round")
-        st.rerun()
+    st.button("Add a round", key="sim_add_round_full_btn", icon="➕", on_click=_on_add_round)
 
 
 def render_edit_tools(
@@ -177,15 +194,8 @@ def render_edit_tools(
                 if res.get("ok"):
                     persist_fn("replace_board_pick")
                 st.rerun()
-        if st.button("Add a round", key="sim_add_round_btn", icon="➕",
-                     help="Adds one open round for the same teams, continuing the pick order."):
-            from simulator_board_edit import add_board_rounds
-
-            res = add_board_rounds(session, 1)
-            session["_sim_board_tools_flash"] = ("success" if res.get("ok") else "warning", res.get("message", ""))
-            if res.get("ok"):
-                persist_fn("extend_board_round")
-            st.rerun()
+        st.button("Add a round", key="sim_add_round_btn", icon="➕", on_click=_on_add_round,
+                  help="Adds one open round for the same teams, continuing the pick order.")
 
 
 def render_restore_previous(st: Any, session: dict[str, Any], persist_fn: PersistFn) -> None:
@@ -195,7 +205,6 @@ def render_restore_previous(st: Any, session: dict[str, Any], persist_fn: Persis
             describe_entry,
             list_previous_boards,
             restore_blocked_reason,
-            restore_previous_board,
         )
     except ImportError:
         return
@@ -228,9 +237,5 @@ def render_restore_previous(st: Any, session: dict[str, Any], persist_fn: Persis
             st.info("Available once your Live Draft finishes: while it runs, its picks are the working board.")
             return
         confirm = st.checkbox("Replace my current working board with this one", key="sim_restore_confirm")
-        if st.button("Restore this board", key="sim_restore_btn", type="primary", disabled=not confirm, icon="↩️"):
-            res = restore_previous_board(session, str(entry.get("entry_id") or ""))
-            session["_sim_restore_flash"] = ("success" if res.get("ok") else "warning", res.get("message", ""))
-            if res.get("ok"):
-                persist_fn("restore_previous_board")
-            st.rerun()
+        st.button("Restore this board", key="sim_restore_btn", type="primary", disabled=not confirm, icon="↩️",
+                  on_click=_on_restore_previous, args=(str(entry.get("entry_id") or ""),))

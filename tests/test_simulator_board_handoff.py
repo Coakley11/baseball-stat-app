@@ -321,5 +321,32 @@ class RuntimeClearsKeepThisAccountsHistory(unittest.TestCase):
         self.assertNotIn(LIVE_HANDOFF_KEY, session)
 
 
+class BoardToolsRunAsCallbacks(unittest.TestCase):
+    """Browser QA 2026-11-09: Add a round raised StreamlitAPIException (room_rounds changed after its
+    widget was created). Changing league settings must happen in a button callback."""
+
+    def test_add_round_and_restore_are_callbacks(self) -> None:
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parents[1].joinpath("simulator_board_ui.py").read_text(encoding="utf-8")
+        self.assertEqual(src.count("on_click=_on_add_round"), 2)
+        self.assertIn("on_click=_on_restore_previous", src)
+        self.assertNotIn("res = add_board_rounds(session", src)
+
+    def test_add_round_callback_updates_rounds_and_queues_a_save(self) -> None:
+        from unittest import mock
+
+        import simulator_board_ui as ui
+
+        session = _session_with_mock()
+        session["live_draft_room"] = _room("complete")
+        ensure_live_draft_synced_to_canonical_board(session, reason="test")
+        fake_st = mock.MagicMock(); fake_st.session_state = session
+        with mock.patch.dict("sys.modules", {"streamlit": fake_st}):
+            ui._on_add_round()
+        self.assertEqual(session.get("_sim_board_tools_pending_persist"), "extend_board_round")
+        self.assertEqual(len(coerce_board_table(session[DRAFT_ROOM_TABLE_KEY])), 6)
+
+
 if __name__ == "__main__":
     unittest.main()
