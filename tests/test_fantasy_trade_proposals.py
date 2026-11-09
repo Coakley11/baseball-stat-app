@@ -159,6 +159,12 @@ def _counter_proposal(session: dict, proposal_id: str, **kwargs):
         return counter_trade_proposal(session, proposal_id, **kwargs)
 
 
+def _cancel_proposal(session: dict, proposal_id: str, **kwargs):
+    # The proposing team's own account cancels (a signed-out session cannot act for a claimed team).
+    with _as_user("user:donny"):
+        return cancel_trade_proposal(session, proposal_id, **kwargs)
+
+
 def _decline_proposal(session: dict, proposal_id: str):
     with _as_user("user:seal11"):
         return decline_trade_proposal(session, proposal_id)
@@ -513,7 +519,7 @@ class TradeProposalPhase2Tests(_TradeTestCase):
             proposer_receives=["Player B"],
         )
         assert proposal is not None
-        canceled, err = cancel_trade_proposal(session, str(proposal["proposal_id"]), canceled_by_team="Donny")
+        canceled, err = _cancel_proposal(session, str(proposal["proposal_id"]), canceled_by_team="Donny")
         self.assertEqual(err, "")
         assert canceled is not None
         self.assertEqual(canceled["status"], TRADE_PROPOSAL_STATUS_CANCELED)
@@ -530,7 +536,7 @@ class TradeProposalPhase2Tests(_TradeTestCase):
         )
         assert proposal is not None
         pid = str(proposal["proposal_id"])
-        cancel_trade_proposal(session, pid, canceled_by_team="Donny")
+        _cancel_proposal(session, pid, canceled_by_team="Donny")
         accepted, err = _accept_proposal(session, pid)
         self.assertIsNone(accepted)
         self.assertIn("no longer pending", err.lower())
@@ -782,7 +788,7 @@ class TradeProposalPhase3Tests(_TradeTestCase):
         )
         assert declined is not None and canceled is not None
         _decline_proposal(session, str(declined["proposal_id"]))
-        cancel_trade_proposal(session, str(canceled["proposal_id"]), canceled_by_team="Donny")
+        _cancel_proposal(session, str(canceled["proposal_id"]), canceled_by_team="Donny")
         context = get_active_league_context(session)
         assert context is not None
         summaries = [str(a.get("summary") or "") for a in get_league_activity(context)]

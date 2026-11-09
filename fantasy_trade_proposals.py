@@ -815,12 +815,6 @@ def create_trade_proposal(
 
     proposer = str(proposer_team or "").strip()
     recipient = str(recipient_team or "").strip()
-    control_err = _team_control_error(session, context, proposer, "propose a trade")
-    if control_err:
-        record_trade_submit_trace(
-            session, propose_trade_called=True, proposer_team=proposer, recipient_team=recipient, create_error=control_err
-        )
-        return None, control_err
     my_owned = resolve_trade_team_for_session(context, session)
     if my_owned and proposer != my_owned:
         err = f"Your account owns {my_owned}; trades must be proposed from that team."
@@ -832,6 +826,12 @@ def create_trade_proposal(
             create_error=err,
         )
         return None, err
+    control_err = _team_control_error(session, context, proposer, "propose a trade")
+    if control_err:
+        record_trade_submit_trace(
+            session, propose_trade_called=True, proposer_team=proposer, recipient_team=recipient, create_error=control_err
+        )
+        return None, control_err
 
     gives = [str(x).strip() for x in proposer_gives if str(x).strip()]
     receives = [str(x).strip() for x in proposer_receives if str(x).strip()]
