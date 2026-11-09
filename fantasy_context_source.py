@@ -355,9 +355,11 @@ def _resolve_override_source(session: dict[str, Any]) -> FantasyContextSource | 
         loaded = room if _room_has_picks(room) else (runtime if _room_has_picks(runtime) else None)
         if loaded is not None:
             remember_live_override_snapshot(session, loaded)
-        return FantasyContextSource(
-            SOURCE_LIVE_DRAFT, "Live Draft Room (temporary override)", origin="override"
-        )
+        if loaded is not None or live_override_snapshot(session) is not None:
+            return FantasyContextSource(
+                SOURCE_LIVE_DRAFT, "Live Draft Room (temporary override)", origin="override"
+            )
+        # Checked but no Live Draft was ever loaded under it: nothing to be authoritative about.
     if simulator_board_sync_enabled(session):
         # A checked override stays the effective source even if the board is briefly empty.
         # Do not fall through to a saved Active Draft or League.

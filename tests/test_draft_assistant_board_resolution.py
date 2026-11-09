@@ -78,7 +78,10 @@ class DraftAssistantBoardResolutionTests(unittest.TestCase):
         self.assertEqual(diag["min_pick"], 1)
         self.assertEqual(diag["max_pick"], 20)
         self.assertEqual(diag["missing_pick_numbers"], [])
-        self.assertIn(diag["board_source_used"], ("effective_league_context", "active_archive"))
+        # Under the Live source only the context handed in for the Live Draft is read.
+        self.assertIn(
+            diag["board_source_used"], ("effective_league_context", "effective_live_context", "active_archive")
+        )
 
     def test_donny_and_team_b_pick_counts(self) -> None:
         ctx = _robins_context(my_team="Donny")

@@ -1476,6 +1476,10 @@ def assign_player_to_board_row(
     pick_label = table.at[row_index, "Pick"] if "Pick" in table.columns else row_index + 1
     result["message"] = f"Set {name} on pick {pick_label}."
     record_board_assignment_diagnostics(session, pick_count=pick_count)
+    if not is_live_draft_runtime_active(session):
+        from simulator_board_history import note_mock_pick_beside_finished_live
+
+        note_mock_pick_beside_finished_live(session)
     return result
 
 
@@ -1551,6 +1555,10 @@ def add_player_to_next_open_pick(session: dict[str, Any], player_name: Any) -> d
         pick_count=result["after_pick_count"],
     )
     session["_draft_room_simulator_last_add"] = result
+    if not is_live_draft_runtime_active(session):
+        from simulator_board_history import note_mock_pick_beside_finished_live
+
+        note_mock_pick_beside_finished_live(session)
     return result
 
 

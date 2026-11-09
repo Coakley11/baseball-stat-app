@@ -161,8 +161,9 @@ class LiveDraftOverrideIsAuthoritative(unittest.TestCase):
         session.pop("live_draft_room")
         session["_suite_auth_user_id"] = "qa-user-b"
         self.assertIsNone(resolve_live_override_room(session))
-        # Still the Live source (explicit override), never the old saved league.
-        self.assertEqual(resolve_fantasy_context_source(session).kind, SOURCE_LIVE_DRAFT)
+        # Account B never reads account A's remembered Live Draft; with no Live Draft of its own
+        # loaded, B gets its own Saved Active Draft.
+        self.assertEqual(resolve_fantasy_context_source(session).kind, SOURCE_ACTIVE_DRAFT)
 
     def test_turning_override_off_forgets_snapshot(self) -> None:
         from fantasy_context_ui import _LIVE_CONTEXT_TOGGLE_WIDGET_KEY, apply_live_override_toggle_from_widget

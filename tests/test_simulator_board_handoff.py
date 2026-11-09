@@ -252,5 +252,22 @@ class LiveRecordIsNeverRewritten(unittest.TestCase):
         self.assertEqual(by_id[live["draft_id"]]["draft_name"], "QA Live")
 
 
+class MockPickBesideFinishedLiveDraft(unittest.TestCase):
+    def test_a_mock_pick_marks_the_finished_live_draft_as_superseded(self) -> None:
+        from simulator_board_history import LIVE_HANDOFF_KEY, before_live_board_mirror, note_mock_pick_beside_finished_live
+
+        session = {"live_draft_room": {"draft_room_id": "room-x", "status": "complete", "draft_board": [{"Pick": 1}]}}
+        note_mock_pick_beside_finished_live(session)
+        self.assertTrue(session[LIVE_HANDOFF_KEY]["superseded"])
+        self.assertFalse(before_live_board_mirror(session, session["live_draft_room"]))
+
+    def test_an_in_progress_room_is_left_alone(self) -> None:
+        from simulator_board_history import LIVE_HANDOFF_KEY, note_mock_pick_beside_finished_live
+
+        session = {"live_draft_room": {"draft_room_id": "room-x", "status": "in_progress"}}
+        note_mock_pick_beside_finished_live(session)
+        self.assertNotIn(LIVE_HANDOFF_KEY, session)
+
+
 if __name__ == "__main__":
     unittest.main()
