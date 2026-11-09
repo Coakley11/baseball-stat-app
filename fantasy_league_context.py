@@ -2086,6 +2086,9 @@ def save_simulator_league_context(
         source_draft_id=draft_id,
     )
     context = upsert_league_context(session, context)
+    owned = assign_solo_team_to_verified_account(session, context)
+    if owned is not None:
+        context = upsert_league_context(session, owned)
     if save_only:
         session.pop(PENDING_LEAGUE_CONTEXT_ACTIVATION_KEY, None)
         session.pop(PENDING_ARCHIVE_ACTIVATION_KEY, None)
@@ -2094,6 +2097,57 @@ def save_simulator_league_context(
     else:
         activate_league_context(session, league_context_id)
     return entry, context
+
+
+def is_personal_solo_context(context: dict[str, Any] | None) -> bool:
+    """Server-side signals only: not a real (shared) league, not from a shared room, and no Shared League
+    document exists for its league id (a lookup error counts as NOT solo)."""
+    if not isinstance(context, dict):
+        return False
+    if str(context.get("context_type") or "").strip() in ("", "real_league"):
+        return False
+    meta = context.get("metadata") if isinstance(context.get("metadata"), dict) else {}
+    if meta.get("source_room_code") or context.get("source_room_code"):
+        return False
+    league_id = str(context.get("league_id") or "").strip()
+    if league_id:
+        try:
+            from fantasy_shared_league_authz import LOAD_MISSING, checked_load
+
+            status = checked_load(league_id)
+            status = status[0] if isinstance(status, tuple) else status
+            if status != LOAD_MISSING:
+                return False
+        except ImportError:
+            pass
+        except Exception:
+            return False
+    return True
+
+
+def assign_solo_team_to_verified_account(session: dict[str, Any], context: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The context with its controlled team owned by this verified account, or None when nothing should change:
+    signed out, not a personal solo draft, no team, or ANY team already has a firm claim (existing verified
+    ownership is never replaced, and another manager's team is never taken)."""
+    if not isinstance(context, dict):
+        return None
+    team = str(context.get("my_team_name") or "").strip()
+    if not team:
+        return None
+    try:
+        from fantasy_league_team_ownership import assign_team_owner_to_context, get_team_ownership, ownership_is_firm_claim
+        from fantasy_shared_league_authz import verified_account_ids
+    except ImportError:
+        return None
+    ids = verified_account_ids(session)
+    if not ids:
+        return None
+    if any(ownership_is_firm_claim(r) for r in get_team_ownership(context).values()):
+        return None
+    if not is_personal_solo_context(context):
+        return None
+    # The suite account id (what league records use), when present; else the sign-in id.
+    return assign_team_owner_to_context(context, team, user_id=ids[-1])
 
 
 def save_draft_archive_with_league_context(
