@@ -1,0 +1,7 @@
+{
+  // QA-only container for the isolated two-account acceptance run (private Codespace).
+  // GitHub's standard Codespaces image: SSH server and Python built in, so the run can be driven
+  // with `gh codespace ssh`. No app is started automatically and no port is forwarded.
+  "name": "Baseball Explorer QA (private)",
+  "image": "mcr.microsoft.com/devcontainers/universal:2"
+}
