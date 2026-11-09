@@ -236,13 +236,15 @@ def _inject_trade_center_styles(st: Any) -> None:
     )
 
 
-def _render_trade_center_hero(st: Any, *, league_name: str, my_team: str, pending_offers: int) -> None:
+def _render_trade_center_hero(
+    st: Any, *, league_name: str, my_team: str, pending_offers: int, team_label: str = "Your team"
+) -> None:
     """U4: a compact heading (the page title already says Lineup & Trades), not a banner."""
     import ui_hierarchy as ui
 
     ui.inject_css(st)
     ui.section_label(st, "Trade Center · build a trade, see who it favors, send an offer")
-    items = [(f"League: {league_name or '—'}", ""), (f"Your team: {my_team or '—'}", "")]
+    items = [(f"League: {league_name or '—'}", ""), (f"{team_label}: {my_team or '—'}", "")]
     if pending_offers:
         items.append((f"{pending_offers} pending offer{'s' if pending_offers != 1 else ''}", "warn"))
     ui.chips(st, items)
@@ -1158,7 +1160,33 @@ def render_trade_center_tab(
         pass
 
     pending = _count_pending_offers(session, ws["my_team"])
-    _render_trade_center_hero(st, league_name=league_name, my_team=ws["my_team"], pending_offers=pending)
+    # "Your team" only for a team this account verifiably controls; a displayed name is not ownership.
+    team_label = "Your team"
+    try:
+        from fantasy_team_control import MODE_COMMISSIONER_PROXY, MODE_OWNER, resolve_team_control
+        from fantasy_league_context import get_active_league_context as _ctx_for_label
+
+        if ws["my_team"]:
+            _label_ctx = _ctx_for_label(session) or {}
+            try:
+                from fantasy_league_identity import resolve_canonical_league_id as _league_id
+
+                if _league_id(_label_ctx):
+                    from fantasy_shared_league_store import sync_context_with_shared_store
+
+                    _label_ctx = sync_context_with_shared_store(session, _label_ctx) or _label_ctx
+            except Exception:
+                pass
+            _mode = resolve_team_control(session, _label_ctx, ws["my_team"]).mode
+            if _mode == MODE_COMMISSIONER_PROXY:
+                team_label = "Commissioner acting for"
+            elif _mode != MODE_OWNER:
+                team_label = "Team (not claimed by you)"
+    except Exception:
+        pass
+    _render_trade_center_hero(
+        st, league_name=league_name, my_team=ws["my_team"], pending_offers=pending, team_label=team_label
+    )
 
     requested_tab = resolve_trade_center_internal_tab(session)
     valid_tabs = list(TRADE_CENTER_INTERNAL_TABS)
@@ -1396,7 +1424,7 @@ def _render_history_section(st: Any, session: dict[str, Any], *, ws: dict[str, A
         from fantasy_trade_proposals import get_trade_history
 
         context = get_active_league_context(session) or {}
-        history = get_trade_history(context)
+        history = get_trade_history(context, session)  # private offers: participants only
         proposals = (
             (history.get("accepted") or [])
             + (history.get("declined") or [])
