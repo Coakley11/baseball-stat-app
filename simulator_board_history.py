@@ -250,6 +250,36 @@ def after_live_board_mirror(session: dict[str, Any], room: dict[str, Any]) -> No
     session.pop(RESTORE_GUARD_KEY, None)
 
 
+def note_mock_pick_beside_finished_live(session: dict[str, Any]) -> None:
+    """A mock pick was made while a finished Live Draft that was never handed off is loaded.
+
+    The user is drafting on the working board now, so that finished Live Draft must not take the
+    board over on a later rerun (it stays in the Saved Draft Library, unchanged).
+    """
+    room = session.get("live_draft_room")
+    if not isinstance(room, dict):
+        return
+    if str(room.get("status") or "").strip().lower() not in ("complete", "completed"):
+        return
+    room_id = _room_id(room)
+    if not room_id:
+        return
+    handoff = _live_handoff(session)
+    if handoff and handoff.get("draft_room_id") == room_id:
+        return
+    user_id, workspace = _identity(session)
+    session[LIVE_HANDOFF_KEY] = {
+        "user_id": user_id,
+        "workspace_id": workspace,
+        "draft_room_id": room_id,
+        "status": str(room.get("status") or ""),
+        "board_signature": "superseded_by_mock_pick",
+        "superseded": True,
+        "original_picks": {},
+        "at": _utc_now_iso(),
+    }
+
+
 # ── Restore ──────────────────────────────────────────────────────────────────
 
 
