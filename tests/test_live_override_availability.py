@@ -201,6 +201,52 @@ class SupersededLiveDraftStillServesAnExplicitOverride(unittest.TestCase):
         self.assertEqual(left, ["Mookie Betts", "Gunnar Henderson"])
 
 
+class CompletedLiveDraftKeepsAPlayerPool(unittest.TestCase):
+    """Browser QA 2026-11-09: a completed Live Draft under the override emptied Draft Assistant.
+
+    A finished room has no remaining slot demand, so scoring with the live room dropped every
+    player and the page failed on an empty table. A finished draft is scored without the room.
+    """
+
+    def _pool(self) -> pd.DataFrame:
+        return pd.DataFrame({
+            "fullName": ["Pete Alonso", "Salvador Perez", "Freddie Freeman"],
+            "Primary Position": ["1B", "C", "1B"],
+            "Eligible Positions": ["1B", "C", "1B"],
+        })
+
+    def _room(self) -> dict:
+        board = [
+            {"Pick": 1, "Fantasy Team": "Dave", "fullName": "Matt Olson", "Primary Position": "1B", "Eligible Positions": "1B"},
+            {"Pick": 2, "Fantasy Team": "Barry", "fullName": "Cal Raleigh", "Primary Position": "C", "Eligible Positions": "C"},
+            {"Pick": 3, "Fantasy Team": "Barry", "fullName": "Josh Naylor", "Primary Position": "1B", "Eligible Positions": "1B"},
+            {"Pick": 4, "Fantasy Team": "Dave", "fullName": "William Contreras", "Primary Position": "C", "Eligible Positions": "C"},
+        ]
+        rosters = {team: [r for r in board if r["Fantasy Team"] == team] for team in ("Dave", "Barry")}
+        return {"status": "complete", "teams": ["Dave", "Barry"], "draft_board": board, "rosters": rosters,
+                "config": {"num_teams": 2, "slots": {"C": 1, "1B": 1}}}
+
+    def test_room_demand_gate_empties_a_finished_draft_but_league_positions_do_not(self) -> None:
+        from live_draft_roster_slots import filter_candidates_to_legal_roster_positions
+
+        room = self._room()
+        gated = filter_candidates_to_legal_roster_positions(
+            self._pool(), config=room["config"], room=room, respect_league_remaining_demand=True
+        )
+        self.assertTrue(gated.empty)  # why the finished draft must not be scored as a live room
+        kept = filter_candidates_to_legal_roster_positions(
+            self._pool(), config={"slots": {"C": 1, "1B": 1}}, room=None, respect_league_remaining_demand=True
+        )
+        self.assertEqual(len(kept), 3)
+
+    def test_draft_assistant_scores_a_finished_live_draft_without_the_room(self) -> None:
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parents[1].joinpath("streamlit_app.py").read_text(encoding="utf-8")
+        self.assertIn('_da_rec_mode = "draft_fit" if _da_live_drafting else "decision"', src)
+        self.assertIn('"Player" in recs_display.columns', src)
+
+
 class SimulatorOverrideIsAuthoritative(unittest.TestCase):
     def _session(self, players: list[str]) -> dict:
         session = _saved_league(["Mookie Betts"] * 1 + [f"Saved Player {i}" for i in range(10)])
