@@ -1,12 +1,12 @@
 # UI phase validation on GitHub-hosted runners: synthetic seeded data only, no secrets, no deploy.
 # Runs only on pushes to the two ci/ validation branches (no Streamlit Cloud app tracks them).
-# Each suite runs on the candidate (this push) and on the released baseline (5059b07, origin/dev) so a
+# Each suite runs on the candidate (this push) and on the released baseline (338cafd, origin/dev) so a
 # failure is reported as new or pre-existing. Screenshots come from the seeded offline preview.
 name: UI phase validation
 
 on:
   push:
-    branches: ["ci/ui-phase-remote-validation", "ci/adaptive-queue-validation", "ci/post-release-validation", "ci/pro-strategy-s2-validation", "ci/strategy-s0-validation", "ci/pro-strategy-s2-integrated", "ci/ami-a1-validation", "ci/post-release-review-2", "ci/review-2-candidate"]
+    branches: ["ci/ui-phase-remote-validation", "ci/adaptive-queue-validation", "ci/post-release-validation", "ci/pro-strategy-s2-validation", "ci/strategy-s0-validation", "ci/pro-strategy-s2-integrated", "ci/ami-a1-validation", "ci/post-release-review-2", "ci/review-2-candidate", "ci/draft-source-privacy"]
 
 permissions:
   contents: read
@@ -20,7 +20,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BASELINE_SHA: 255db979256613705dd6d653e7f2c9d2f7ae3920
+  BASELINE_SHA: 338cafd7a889792415fd9d4c56fe348b250c7b52
   PYTHONUNBUFFERED: "1"
   PYTHONIOENCODING: utf-8
   # Belt and braces: the app's local stores only (the harness sets these too).
@@ -35,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [queue, strategy_layout, s2, review2, ami]
+        suite: [queue, strategy_layout, s2, review2, ami, draftsource_a, draftsource_b, privacy]
         target: [candidate, baseline]
     steps:
       - name: Suite lists (this branch)
@@ -93,7 +93,7 @@ jobs:
       - name: Compare with the baseline
         run: |
           rc=0
-          for s in queue strategy_layout s2 review2 ami; do
+          for s in queue strategy_layout s2 review2 ami draftsource_a draftsource_b privacy; do
             python ci/compare_failures.py "$s" "results/junit-$s-candidate" "results/junit-$s-baseline" \
               | tee -a "$GITHUB_STEP_SUMMARY" || rc=1
           done
