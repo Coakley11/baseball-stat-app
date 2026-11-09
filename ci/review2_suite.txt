@@ -57,3 +57,10 @@ tests/test_live_draft_roster_enforcement.py
 tests/test_live_draft_roster_slots.py
 tests/test_position_eligibility.py
 tests/test_roster_position_waiver_rules.py
+tests/test_cloud_storage_backend_resolution.py
+tests/test_baseball_persistence.py
+tests/test_workspace_cloud_guard.py
+tests/test_stage_b_save_recovery.py
+tests/test_suite_account_storage.py
+tests/test_warm_navigation_gates.py
+tests/test_intentional_empty_queue.py
