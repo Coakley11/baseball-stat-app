@@ -932,7 +932,13 @@ def discard_stale_simulator_resume_identity(session: dict[str, Any], *, reason: 
 
 SAME_ACCOUNT_BOARD_HANDOFF_REASONS = frozenset({"shared_room_join", "shared_room_create"})
 _ACCOUNT_CHANGE_REASONS = frozenset({"account_or_workspace_changed", "auth_sign_out", "auth_account_scope_changed"})
-_ACCOUNT_CHANGE_PREFIXES = ("mismatch_auth", "mismatch_external", "mismatch_workspace", "missing_frozen", "missing_current")
+# Identity fields only: a missing/mismatched *board fingerprint* (e.g. an empty board after Reset)
+# is not an account change and must not erase this account's kept boards or handoff record.
+_ACCOUNT_CHANGE_PREFIXES = tuple(
+    f"{kind}_{field}"
+    for kind in ("mismatch", "missing_frozen", "missing_current")
+    for field in ("auth", "external", "workspace")
+)
 
 
 def _is_account_change_reason(reason: str) -> bool:

@@ -297,6 +297,19 @@ class RuntimeClearsKeepThisAccountsHistory(unittest.TestCase):
         apply_programmatic_board_update(session, _snake(["Ann", "Ben"], 20, []), reason="reset_simulator")
         self.assertFalse(before_live_board_mirror(session, room))
 
+    def test_an_empty_board_after_reset_is_not_an_account_change(self) -> None:
+        from live_draft_navigation import _is_account_change_reason, clear_private_baseball_simulator_runtime
+
+        for reason in ("missing_current_board_fingerprint", "missing_frozen_board_fingerprint", "mismatch_board_fingerprint"):
+            self.assertFalse(_is_account_change_reason(reason), reason)
+        for reason in ("mismatch_auth_user_id", "missing_current_workspace_id", "mismatch_external_id"):
+            self.assertTrue(_is_account_change_reason(reason), reason)
+        session = _session_with_mock()
+        session["live_draft_room"] = _room("complete")
+        ensure_live_draft_synced_to_canonical_board(session, reason="test")
+        clear_private_baseball_simulator_runtime(session, reason="missing_current_board_fingerprint")
+        self.assertIn(LIVE_HANDOFF_KEY, session)
+
     def test_signing_out_still_drops_the_records(self) -> None:
         from live_draft_navigation import clear_private_baseball_simulator_runtime
 
