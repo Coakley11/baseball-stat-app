@@ -650,32 +650,54 @@ def _projected_league_values_after_trade(
     return values
 
 
-# How much team totals normally differ in each hitting category: the standard deviation as a share of the
-# average, measured across MLB team-seasons 2015–2025 (2020 excluded) from the app's own Batting.csv.
-# Fantasy rosters are smaller, so their spread is wider, but by the same factor for every category: the ratios
-# keep categories comparable, so "6 HR" and ".048 AVG" behind can be put on one scale. Used for the ORDER of
-# strengths and weaknesses (status comes from league rank). Owner review 2026-11-08: a 2-team league's own
-# spread makes every category exactly -1 standard deviation, so it can't order anything.
-CATEGORY_TEAM_SPREAD: dict[str, float] = {
-    "HR": 0.170, "R": 0.0965, "RBI": 0.098, "SB": 0.311, "AVG": 0.0403, "OBP": 0.0364, "OPS": 0.0455,
-}
+STRENGTH_WEAK_PCT = 0.35    # below the 35th percentile of MLB regulars: a genuine weakness
+STRENGTH_STRONG_PCT = 0.65  # at or above the 65th percentile: a genuine strength
+REGULAR_MIN_AB = 50
 
 
-def category_spread(category: str, values: list[float]) -> float:
-    """Typical team-to-team spread for ``category`` at this league's level: the MLB-measured relative spread
-    times the league average. Categories without a measured spread (pitching: no pitching data is bundled)
-    use the league's own spread with 3+ teams, else 10% of the league average."""
-    from statistics import mean, pstdev
+def _regulars(pool: pd.DataFrame | None) -> pd.DataFrame:
+    """MLB regulars this season: hitters with at least the median at-bats among those who have played (and 50+)."""
+    if pool is None or getattr(pool, "empty", True):
+        return pd.DataFrame()
+    if "AB" not in pool.columns:
+        return pool
+    ab = pd.to_numeric(pool["AB"], errors="coerce")
+    played = ab[ab > 0]
+    if played.empty:
+        return pd.DataFrame()
+    floor = max(REGULAR_MIN_AB, float(played.median()))
+    return pool[ab >= floor]
 
-    if not values:
-        return 0.0
-    avg = abs(mean(values))
-    rel = CATEGORY_TEAM_SPREAD.get(category)
-    if rel and avg:
-        return rel * avg
-    if len(values) >= 3:
-        return pstdev(values)
-    return 0.10 * avg
+
+def _hitters_on(roster: pd.DataFrame) -> pd.DataFrame:
+    if roster is None or roster.empty:
+        return pd.DataFrame()
+    if "AB" in roster.columns:
+        ab = pd.to_numeric(roster["AB"], errors="coerce")
+        return roster[ab > 0]
+    return roster
+
+
+def category_strength_vs_regulars(my_roster: pd.DataFrame, pool: pd.DataFrame | None, category: str) -> dict[str, Any] | None:
+    """``{pct, per_player, benchmark_median, n_hitters, n_regulars}``: where this team's per-hitter production
+    in ``category`` falls among MLB regulars (0..1; direction-aware). None when it can't be computed."""
+    regs = _regulars(pool)
+    hitters = _hitters_on(my_roster)
+    if regs.empty or hitters.empty:
+        return None
+    reg_col = _resolve_current_stat_col(regs, category)
+    if not reg_col:
+        return None
+    bench = pd.to_numeric(regs[reg_col], errors="coerce").dropna()
+    team_val = _category_value_for_team(hitters, category)
+    if bench.empty or team_val is None:
+        return None
+    n = len(hitters)
+    per_player = float(team_val) if category in RATE_CATEGORIES or category in LOWER_IS_BETTER_CATEGORIES else float(team_val) / n
+    below = float((bench < per_player).mean()) + 0.5 * float((bench == per_player).mean())
+    pct = 1.0 - below if category in LOWER_IS_BETTER_CATEGORIES else below
+    return {"pct": round(pct, 3), "per_player": per_player, "benchmark_median": float(bench.median()),
+            "n_hitters": n, "n_regulars": int(len(bench))}
 
 
 def analyze_current_team_needs(
@@ -683,9 +705,14 @@ def analyze_current_team_needs(
     league_rosters_df: pd.DataFrame,
     *,
     categories: tuple[str, ...] | None = None,
+    player_pool: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """
     In-season category strengths/weaknesses from current-season stat columns.
+
+    Two separate measures (owner review 2026-11-08): league standing (rank among the league's teams) and
+    category strength (this team's per-hitter production vs MLB regulars this season, from ``player_pool``).
+    Strengths/weaknesses come from category strength; without a pool they fall back to league standing.
 
     Shared source of truth for Waiver Wire, Lineup Assistant, and future Start/Sit,
     trade, and lineup-optimization recommendations. Draft-time category logic lives
@@ -744,18 +771,11 @@ def analyze_current_team_needs(
         ]
     result["team_totals_by_category"] = league_values_by_cat
 
-    # One assessment for every section (Team Summary, the standings table, Waiver Wire), owner review
-    # 2026-11-08. Status comes from the league rank: top third = Strength, bottom third = Weakness.
-    # Order comes from a direction-aware z-score (standard deviations from the league average), because
-    # categories have different units: a raw gap of 6 HR and .045 AVG aren't comparable. The old rule (a
-    # ratio to the league best, then an alphabetical tie-break) could list a "Middle" category as a top
-    # weakness.
-    from statistics import mean, pstdev
-
     n = int(result["n_teams"] or 0)
     third = max(1, round(n / 3)) if n >= 2 else 0
-    z_by_cat: dict[str, float] = {}
-    status_by_cat: dict[str, str] = {}
+    standing: dict[str, str] = {}
+    behind_pct: dict[str, float] = {}
+    strength: dict[str, dict[str, Any]] = {}
     for cat in available:
         if cat not in my_totals:
             continue
@@ -764,25 +784,41 @@ def analyze_current_team_needs(
             continue
         my_val = my_totals.get(cat, 0.0)
         lower_is_better = cat in LOWER_IS_BETTER_CATEGORIES
-        if lower_is_better:
-            rank = sum(1 for v in values if v < my_val) + 1
-        else:
-            rank = sum(1 for v in values if v > my_val) + 1
+        rank = (sum(1 for v in values if v < my_val) if lower_is_better else sum(1 for v in values if v > my_val)) + 1
         rank = _clamp_league_rank(rank, result["n_teams"])
         result["category_ranks"][cat] = rank
-        sd = category_spread(cat, values)
-        z = ((my_val - mean(values)) / sd) if sd else 0.0
-        z_by_cat[cat] = round(-z if lower_is_better else z, 3)
+        best = min(values) if lower_is_better else max(values)
+        behind_pct[cat] = round(abs(my_val - best) / abs(best), 4) if best else 0.0
         if third and rank <= third:
-            status_by_cat[cat] = "Strength"
+            standing[cat] = "Leading"
         elif third and rank > n - third:
-            status_by_cat[cat] = "Weakness"
+            standing[cat] = "Trailing"
         else:
-            status_by_cat[cat] = "Middle"
-    result["category_z"] = z_by_cat
-    result["category_status"] = status_by_cat
-    result["strengths"] = sorted((c for c, s in status_by_cat.items() if s == "Strength"), key=lambda c: -z_by_cat[c])
-    result["weaknesses"] = sorted((c for c, s in status_by_cat.items() if s == "Weakness"), key=lambda c: z_by_cat[c])
+            standing[cat] = "Middle"
+        got = category_strength_vs_regulars(my_roster, player_pool, cat)
+        if got is not None:
+            strength[cat] = got
+    result["category_standing"] = standing
+    result["category_behind_pct"] = behind_pct
+    result["category_strength"] = strength
+    status: dict[str, str] = {}
+    if strength:
+        result["strength_basis"] = "mlb_regulars"
+        for cat in standing:
+            pct = (strength.get(cat) or {}).get("pct")
+            status[cat] = ("—" if pct is None else "Weakness" if pct < STRENGTH_WEAK_PCT
+                           else "Strength" if pct >= STRENGTH_STRONG_PCT else "Middle")
+        order = lambda c: (strength.get(c) or {}).get("pct", 0.5)  # noqa: E731
+        result["strengths"] = sorted((c for c, v in status.items() if v == "Strength"), key=lambda c: -order(c))
+        result["weaknesses"] = sorted((c for c, v in status.items() if v == "Weakness"), key=order)
+    else:
+        # No stats pool: league standing only (labelled as such on the page), ordered by how far behind the
+        # leader a category is, as a share of the leader's value.
+        result["strength_basis"] = "league"
+        status = {c: {"Leading": "Strength", "Trailing": "Weakness"}.get(v, "Middle") for c, v in standing.items()}
+        result["strengths"] = sorted((c for c, v in status.items() if v == "Strength"), key=lambda c: behind_pct.get(c, 0))
+        result["weaknesses"] = sorted((c for c, v in status.items() if v == "Weakness"), key=lambda c: -behind_pct.get(c, 0))
+    result["category_status"] = status
     result["targets"] = list(result["weaknesses"])
     return result
 
@@ -853,13 +889,22 @@ def build_category_action_table(
         val_display = format_category_display_value(cat, my_val) if my_val is not None else "—"
         best_display = format_category_display_value(cat, league_best) if league_best is not None else "—"
         gap_display = format_category_display_value(cat, gap) if gap is not None else "—"
+        st_info = (needs.get("category_strength") or {}).get(cat) or {}
+        if st_info:
+            pct = int(round(float(st_info["pct"]) * 100))
+            per = format_category_display_value(cat, st_info["per_player"])
+            vs_regulars = f"{per} per hitter · {pct}th pct" if cat not in RATE_CATEGORIES else f"{per} · {pct}th pct"
+        else:
+            vs_regulars = "—"
         rows.append(
             {
                 "Category": cat,
                 "Your Team": val_display,
                 "League Rank": rank_label,
+                "Standing": (needs.get("category_standing") or {}).get(cat, "—"),
                 "League Best": best_display if best_display is not None else "—",
                 "Gap To Improve": gap_display if gap_display is not None else "—",
+                "Vs MLB regulars": vs_regulars,
                 "Status": (needs.get("category_status") or {}).get(cat) or (
                     "Strength" if cat in (needs.get("strengths") or [])
                     else "Weakness" if cat in (needs.get("weaknesses") or [])
@@ -2705,7 +2750,7 @@ def compute_waiver_recommendations(
 ) -> dict[str, Any]:
     """Team needs, the unrostered pool, ranked adds and drops: what the Waiver Wire page shows.
     Adds are personalized (needs + open positions), falling back to the current-stats ranking."""
-    needs = analyze_current_team_needs(my_roster, league_df, categories=categories)
+    needs = analyze_current_team_needs(my_roster, league_df, categories=categories, player_pool=stats_pool)
     waiver_pool = build_waiver_pool(stats_pool, context)
     adds = recommend_adds_personalized(waiver_pool, needs, context=context, my_roster=my_roster, limit=limit)
     if adds is None or adds.empty:
