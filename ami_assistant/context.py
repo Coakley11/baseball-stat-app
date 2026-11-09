@@ -62,6 +62,10 @@ PAGE_KEYS: dict[str, dict[str, tuple[str, ...]]] = {
         "metric": ("trend_sort_col",),
         "positions": ("trend_position_filter",),
     },
+    # The Pro strategy open in the editor (A1): read on this page only.
+    "Draft Strategy Assistant": {
+        "strategy": ("_draft_strategy_open_id", "_draft_strategy_work"),
+    },
     "Valuation": {
         "players": ("valuation_selected_player",),
         "window": ("value_lag",),
@@ -76,6 +80,7 @@ DRAFT_PAGES = ("Draft Assistant Simulator", "Live Draft Room", "Draft Room Simul
 LEAGUE_PAGES = ("Home", "Fantasy Standings Tracker", "Fantasy Lineup Assistant", "Waiver Wire / Add-Drop Center",
                 "Saved Draft Library")
 DRAFT_SNAPSHOT_KEY = "_ami_draft_snapshot"
+STRATEGY_PAGE = "Draft Strategy Assistant"
 
 
 @dataclass(frozen=True)
@@ -94,6 +99,9 @@ class AmiPageContext:
     draft: dict[str, Any] = field(default_factory=dict)
     # League pages only: {league_name, my_team, access_mode, week_label, week_status}. Small by design.
     league: dict[str, Any] = field(default_factory=dict)
+    # The Pro strategy open in the editor (A1): {selected, unsaved, never_saved}. Read from this session's
+    # editor state only (no storage call); the strategy tools decide what is actually saved and live.
+    strategy: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         out = asdict(self)
@@ -126,6 +134,10 @@ class AmiPageContext:
         if self.draft:
             pick = self.draft.get("current_pick")
             bits.append(f"draft pick {pick}" if pick else "draft in progress")
+        if self.strategy and self.page == STRATEGY_PAGE:
+            tag = " (not saved yet)" if self.strategy.get("never_saved") else (
+                " (unsaved changes)" if self.strategy.get("unsaved") else "")
+            bits.append(f"strategy {self.strategy.get('selected')}{tag}")
         return " · ".join(bits)
 
 
@@ -208,6 +220,23 @@ def _league_summary(session: Mapping[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in out.items() if v}
 
 
+def _strategy_summary(session: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    """The open Pro strategy's name, from this session's editor state (read only with ``.get``).
+    Sign-out clears the editor state (draft_queue_contract.clear_queue_for_account_change), and the
+    strategy tools re-check access, so a signed-out session has nothing to show here."""
+    open_key, work_key = keys
+    open_id = session.get(open_key)
+    recs = session.get(work_key)
+    rec = recs.get(open_id) if isinstance(recs, dict) and open_id else None
+    strategy = rec.get("strategy") if isinstance(rec, dict) else None
+    if not isinstance(strategy, dict):
+        return {}
+    name = clean_text(strategy.get("name"), 60)
+    if not name:
+        return {}
+    return {"selected": name, "unsaved": bool(rec.get("dirty")), "never_saved": bool(rec.get("new"))}
+
+
 def build_ami_context(session: Mapping[str, Any] | None, active_page: str) -> AmiPageContext:
     session = session if session is not None else {}
     page = clean_text(active_page, 60)
@@ -238,4 +267,6 @@ def build_ami_context(session: Mapping[str, Any] | None, active_page: str) -> Am
         fields["league"] = _league_summary(session)
     if page in DRAFT_PAGES:
         fields["draft"] = _draft_summary(session)
+    if "strategy" in keys:
+        fields["strategy"] = _strategy_summary(session, keys["strategy"])
     return AmiPageContext(**fields)

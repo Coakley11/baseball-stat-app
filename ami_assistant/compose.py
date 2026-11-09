@@ -123,7 +123,7 @@ class Composer:
             return ComposedAnswer(plan.clarification)
         failed = [res for calls in results.values() for res in calls if not res.ok]
         handler = getattr(self, f"_{plan.intent}", None)
-        if failed and plan.intent not in (r.FANTASY, r.ACTION, r.DRAFT_STRATEGY, fr.F_WAIVER):
+        if failed and plan.intent not in (r.FANTASY, r.ACTION, r.DRAFT_STRATEGY, fr.F_WAIVER, r.MY_STRATEGY):
             return ComposedAnswer(_failure(failed[0]))
         if handler is None:
             return ComposedAnswer("Could you rephrase that?")
@@ -150,9 +150,22 @@ class Composer:
             league = first.get("league_name")
             bits.append(f"Your league{f' ({league})' if league else ''}, read-only")
             return bits
+        if plan.intent == r.MY_STRATEGY:
+            first = next((res for calls in results.values() for res in calls), None)
+            if first is None or not first.ok:
+                return []
+            if first.tool == "get_global_list":
+                return ["Your Global Queue (this session), read-only"]
+            return ["Your saved Draft Strategies, read-only"]
         if plan.grounding == "product_help":
             return ["Baseball Explorer's page guides and controls"]
         return []
+
+    # ---- my saved strategies (A1) ------------------------------------------------------
+    def _my_strategy(self, plan, results) -> str:
+        from ami_assistant.strategy_compose import compose_my_strategy
+
+        return compose_my_strategy(plan, results, self.question)
 
     # ---- help --------------------------------------------------------------------
     def _capabilities(self, plan, results) -> str:

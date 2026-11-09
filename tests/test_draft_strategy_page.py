@@ -290,6 +290,36 @@ class StrategyQueueAndPlanTests(DraftStrategyPageTests):
         names = {s["name"]: [e["name"] for e in s["queue"]] for s in self._stored().values()}
         self.assertEqual(names, {"Power": ["Aaron Judge", "Juan Soto"], "Speed": ["Bobby Witt"]})
 
+    def _loaded_from_power(self) -> tuple[AppTest, str]:
+        at = self._plan_app(["Aaron Judge", "Juan Soto"])
+        power = self._create(at, "Power")
+        at.selectbox(key="_draft_strategy_open_pick").set_value(power).run()
+        at.button(key=f"dsp_{power}_replace_global__ask_btn").click().run()
+        _click(at, "Replace Global Queue")
+        self.assertIn("Loaded from **Power**", " ".join(str(c.value) for c in at.caption))
+        return at, power
+
+    def test_deleting_the_loaded_strategy_removes_the_loaded_from_label(self) -> None:  # KI-1
+        at, power = self._loaded_from_power()
+        at.button(key=f"dsp_{power}_delete__ask_btn").click().run()
+        _click(at, "Delete")
+        self.assertNotIn(power, self._stored())
+        self.assertIn(power, {row["strategy_id"] for row in self._trash().values()})  # recoverable
+        self.assertNotIn("Loaded from", " ".join(str(c.value) for c in at.caption))
+        self.assertNotIn("_draft_strategy_loaded", at.session_state)
+        # ...and the workspace save is scheduled, so a reload doesn't bring the record back (the QA case).
+        self.assertTrue(at.session_state["_draft_strategy_save_pending"])
+        self.assertEqual(_queue(at), ["Aaron Judge", "Juan Soto"])  # the Global Queue is unchanged
+
+    def test_a_deletion_on_another_device_removes_the_label_on_the_next_run(self) -> None:  # KI-1
+        at, power = self._loaded_from_power()
+        rows = self._stored()
+        rows.pop(power)
+        self.path.write_text(json.dumps(rows), encoding="utf-8")  # gone; this session still has the record
+        at.run()
+        self.assertNotIn("Loaded from", " ".join(str(c.value) for c in at.caption))
+        self.assertEqual(_queue(at), ["Aaron Judge", "Juan Soto"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,6 +16,7 @@ from ami_assistant.data import BaseballDataset, dataset_from_yearly, load_standa
 from ami_assistant.fantasy_router import FANTASY_INTENTS
 from ami_assistant.provider import AnswerProvider, ComposeRequest, DeterministicProvider
 from ami_assistant.router import STAT_INTENTS, Router
+from ami_assistant.strategy_router import MY_STRATEGY
 from ami_assistant.tools import REGISTRY
 
 log = logging.getLogger(__name__)
@@ -108,6 +109,10 @@ def ask(
                     position=plan.position,
                     page=ctx.page,
                 )
+            elif plan.intent == MY_STRATEGY:
+                hint = next((c.args.get("name", "") for c in plan.calls if "name" in c.args), "")
+                conv.remember(intent=plan.intent, page=ctx.page, subject_player=plan.subject,
+                              strategy=hint, strategy_focus=plan.focus)
             elif plan.intent in FANTASY_INTENTS:
                 # Same league/team every turn (resolved fresh); remember the slot, player and week.
                 conv.remember(intent=plan.intent, position=plan.position, page=ctx.page,

@@ -74,7 +74,9 @@ def create(session: dict[str, Any], name: str, *, approach: str = "balanced", fr
            pool: Any = None) -> dict[str, Any]:
     """A new, unsaved strategy (blank or a copy of the Global Queue); opened in the editor."""
     store._require_access(session)
-    names = {str(s.get("name") or "").lower() for s in store.list_strategies(session)}
+    live = store.list_strategies(session)
+    store.reconcile_loaded_strategy(session, strategies=live)  # a deleted strategy's notes never come along
+    names = {str(s.get("name") or "").lower() for s in live}
     names |= {str(r["strategy"]["name"]).lower() for r in _work(session).values() if r.get("new")}
     clean = " ".join(str(name or "").split())[:store.NAME_MAX]
     if clean.lower() in names:

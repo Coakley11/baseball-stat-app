@@ -407,9 +407,7 @@ def _render_manage_tab(st: Any, session: dict[str, Any], rec: dict[str, Any]) ->
         elif _try(st, v2.soft_delete, session, sid, confirmed=True, base_revision=rec["base_revision"],
                   base_updated_at=rec["base_updated_at"], ok=f"Deleted **{s['name']}** (recoverable for 30 days)."):
             work.forget(session, sid)
-            loaded = session.get(store.LOADED_KEY)
-            if isinstance(loaded, dict) and loaded.get("id") == sid:
-                session.pop(store.LOADED_KEY, None)
+            store.forget_loaded(session, sid)  # saved at the end of the run (mark_personal_change)
         st.rerun()
 
 
@@ -446,7 +444,14 @@ def _render_trash(st: Any, session: dict[str, Any]) -> None:
                         use_container_width=True, target=tid, confirm_label="Delete forever",
                         warning=(f"Permanently delete {row.get('name') or 'this strategy'}, its research log and its "
                                  "original-version backup? This cannot be undone.")):
-                    _try(st, v2.permanent_delete, session, tid, confirmed=True, ok="Deleted permanently.")
+                    def purge(trash_id: str) -> bool:
+                        v2.permanent_delete(session, trash_id, confirmed=True)
+                        return True
+
+                    if _try(st, purge, tid, ok="Deleted permanently."):
+                        # A row kept before Restore Original shares its id with the live strategy, so
+                        # check what is still live instead of dropping by id.
+                        store.reconcile_loaded_strategy(session)
                     st.rerun()
 
 

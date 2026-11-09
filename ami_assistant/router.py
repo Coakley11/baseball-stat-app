@@ -26,6 +26,7 @@ from ami_assistant.fantasy_router import F_WAIVER, FANTASY_INTENTS, fantasy_plan
 from ami_assistant.glossary import match_term
 from ami_assistant.page_help import PAGE_HELP, find_draft_tools, find_howto, find_page
 from ami_assistant.plans import Plan, ToolCall
+from ami_assistant.strategy_router import MY_STRATEGY, strategy_action_plan, strategy_plan
 from ami_assistant.players import (
     AMBIGUOUS,
     BASE_STOPWORDS,
@@ -349,7 +350,7 @@ class Router:
 
         action = detect_action(q)
         if action:
-            return self._action_plan(q, action)
+            return strategy_action_plan(q, action) or self._action_plan(q, action)
 
         # "Open Fantasy Standings" / "Take me to Waiver Wire": AMI explains where it is (it doesn't navigate).
         nav = _NAVIGATE.match(low.strip())
@@ -361,6 +362,12 @@ class Router:
         named = find_page(q) if _PAGE_TASKS.search(low) else None
         if named is not None:
             return Plan(HELP_PAGE, PRODUCT_HELP, [ToolCall("explain_app_page", {"page": named.key})], page=named.key)
+
+        # The user's own saved strategies / Global Queue (A1). Needs a personal cue ("my … strategy",
+        # "did I rank", "my notes", "Global Queue"), so general advice stays with draft_strategy.
+        splan = strategy_plan(q, ctx, conv, parse_position(q))
+        if splan is not None:
+            return splan
 
         help_plan = self._ui_help_plan(q, low, ctx, conv)
         if help_plan is not None:
