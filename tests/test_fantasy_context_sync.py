@@ -135,7 +135,7 @@ class FantasyContextSyncTests(unittest.TestCase):
         self.assertIn("Saved Draft Library Active Draft", badge)
         self.assertEqual(
             research_sync_badge_text(session),
-            "Research mode: **General MLB** (off) · Fantasy Context Source: **Saved Draft Library Active Draft** · **2026 Main League** · Team: **Daniel**",
+            "Available Players Only: **Off** (all players shown) · Fantasy Context Source: **Saved Draft Library Active Draft** · **2026 Main League** · Team: **Daniel**",
         )
 
 

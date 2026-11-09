@@ -21,12 +21,14 @@ from fantasy_context_source import (
 # Persisted session key (legacy name retained for cloud/disk compatibility).
 FANTASY_RESEARCH_SYNC_KEY = "use_active_league_context_waiver_filter"
 
-FANTASY_RESEARCH_SYNC_LABEL = "Research Mode — treat drafted players as unavailable"
+# Shown as "Available Players Only" (formerly "Research Mode"); same setting, same behaviour.
+FANTASY_RESEARCH_SYNC_LABEL = "Available Players Only — hide drafted and rostered players on Insights pages"
 FANTASY_RESEARCH_SYNC_HELP = (
-    "When enabled, draft research pages (Sleepers, Trends, Valuation, Comparison) hide players "
-    "already drafted from the Effective Draft Source. Historical pages are never filtered. "
-    "Fantasy tools (Draft Assistant, Lineup, Standings, Waiver, Needs) always follow Effective "
-    "Draft Source and do not require Research Mode."
+    "ON: Trend Value, Valuation, Sleepers & Busts and Compare Players list only players who are "
+    "still available in your current draft source (Live Draft, Simulator board, or Active Draft / "
+    "League). OFF: those pages show every player, including drafted ones, for general analysis. "
+    "Historical Explorer, Career Totals and Leaderboards always show everyone. Draft Assistant "
+    "always hides players already drafted, whichever way this is set."
 )
 
 USE_LIVE_DRAFT_CONTEXT_LABEL = "Live Draft Room override"
@@ -50,9 +52,9 @@ FANTASY_CONTEXT_INTRO = (
 FANTASY_CONTEXT_OVERRIDE_FOOTER = "Turn the override off to go back to your Active Draft."
 
 RESEARCH_SYNC_INTRO = (
-    "Research Mode only affects draft research pages (Sleepers, Trends, Valuation, Comparison). "
-    "Historical pages always show the full database. Fantasy tools follow Effective Draft Source "
-    "without requiring Research Mode."
+    "Available Players Only (formerly Research Mode) affects the Insights pages: Sleepers, "
+    "Trends, Valuation, Comparison. Historical pages always show the full database. Draft "
+    "Assistant always hides drafted players, whichever way this is set."
 )
 
 RESEARCH_SYNC_PAGES: tuple[str, ...] = (
@@ -249,6 +251,14 @@ def apply_live_override_toggle_from_widget(session: dict[str, Any]) -> dict[str,
     session[USE_LIVE_DRAFT_AS_FANTASY_CONTEXT_KEY] = enabled
     if enabled:
         session[USE_SIMULATOR_BOARD_AS_FANTASY_CONTEXT_KEY] = False
+    # A new selection (on or off) forgets the previously remembered Live Draft copy;
+    # turning it on re-reads the Live Draft that is loaded now.
+    try:
+        from fantasy_context_source import LIVE_OVERRIDE_SNAPSHOT_KEY
+
+        session.pop(LIVE_OVERRIDE_SNAPSHOT_KEY, None)
+    except ImportError:
+        pass
     _remember_verified_override(
         session,
         enabled=enabled,
@@ -474,7 +484,7 @@ def render_fantasy_context_sync_control(
     except ImportError:
         pass
     render_fantasy_context_source_controls(st, session, key_prefix=key)
-    st.markdown("##### Research Mode Sync")
+    st.markdown("##### Available Players Only (Insights)")
     st.caption(RESEARCH_SYNC_INTRO)
     _render_persisted_context_checkbox(
         st,
@@ -496,7 +506,7 @@ def research_sync_badge_text(session: dict[str, Any]) -> str:
     """Research pages — show whether Research Mode is on and its active source."""
     source_badge = fantasy_context_source_badge_text(session)
     if not research_league_sync_enabled(session):
-        return f"Research mode: **General MLB** (off) · {source_badge}"
+        return f"Available Players Only: **Off** (all players shown) · {source_badge}"
     try:
         from active_team_context import (
             SOURCE_LEAGUE,
@@ -510,15 +520,15 @@ def research_sync_badge_text(session: dict[str, Any]) -> str:
         ctx = None
     if ctx is not None and getattr(ctx, "source", None) == SOURCE_LEAGUE:
         return (
-            f"Research mode: **On** · {source_badge} — {ctx.active_team} "
+            f"Available Players Only: **On** · {source_badge} — {ctx.active_team} "
             "(drafted players hidden & re-ranked)"
         )
     if ctx is not None and getattr(ctx, "source", None) in (SOURCE_SIMULATOR, SOURCE_LIVE_DRAFT):
         return (
-            f"Research mode: **On** · {source_badge} — {ctx.active_team} "
+            f"Available Players Only: **On** · {source_badge} — {ctx.active_team} "
             "(drafted players hidden & re-ranked)"
         )
-    return f"Research mode: **On** · {source_badge} (no drafted pool to filter)"
+    return f"Available Players Only: **On** · {source_badge} (no drafted pool to filter)"
 
 
 def render_active_league_context_badge(st: Any, session: dict[str, Any]) -> None:

@@ -1469,7 +1469,7 @@ def render_draft_queue_panel(
         container.caption("Empty — add players with **⭐ Add to Queue** on recommendation cards.")
         return False
 
-    # Red sliding queue (streamlit_sortables) — Live Draft + simulator.
+    # Sliding drag queue (streamlit_sortables) — Live Draft + simulator.
     # Guards below reject wipe/stale/resurrect payloads; ✕ uses skip-once.
     _enable_drag = len(queue) >= 2
     if _enable_drag:
@@ -1485,7 +1485,12 @@ def render_draft_queue_panel(
                 )
             except ImportError:
                 pass
-            container.caption("Drag the red cards to set queue priority (first = highest).")
+            try:
+                from live_draft_ux import draft_queue_drag_caption
+
+                container.caption(draft_queue_drag_caption())
+            except ImportError:
+                container.caption("Drag the blue cards to set queue priority (first = highest).")
             _sortable_in = list(queue)
             try:
                 from draft_state import _queue_scope_ids

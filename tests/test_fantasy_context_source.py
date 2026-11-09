@@ -479,13 +479,16 @@ class FantasyContextRoutingTests(unittest.TestCase):
         self.assertFalse(fantasy_drafted_pool_filter_applies(session, "Trend Value"))
         self.assertEqual(draft_assistant_context_mode(session), "live_board")
 
-    def test_completed_live_draft_stops_das_special_case_without_research_sync(self) -> None:
+    def test_completed_live_draft_under_override_still_feeds_das_without_research_sync(self) -> None:
+        # Owner rule (2026-11-09): with Live Draft Override ON, a completed Live Draft stays the
+        # authoritative source, so its picks stay unavailable in Draft Assistant.
         session = self._live_room_session(status="complete")
         session[FANTASY_RESEARCH_SYNC_KEY] = False
         self.assertFalse(is_live_draft_in_progress(session))
-        self.assertFalse(live_draft_feeds_draft_assistant(session))
-        self.assertFalse(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
-        self.assertEqual(draft_assistant_context_mode(session), "none")
+        self.assertTrue(live_draft_feeds_draft_assistant(session))
+        self.assertTrue(fantasy_drafted_pool_filter_applies(session, DRAFT_ASSISTANT_PAGE))
+        self.assertFalse(fantasy_drafted_pool_filter_applies(session, "Trend Value"))
+        self.assertEqual(draft_assistant_context_mode(session), "live_board")
 
     def test_live_override_feeds_broader_research_only_with_research_sync(self) -> None:
         session = self._live_room_session(status="in_progress")

@@ -937,6 +937,20 @@ def clear_private_baseball_simulator_runtime(
 ) -> dict[str, Any]:
     """Clear private Draft Simulator browser state without touching shared Live Draft rooms."""
     cleared: list[str] = []
+    try:
+        from simulator_board_history import HISTORY_SESSION_KEYS, preserve_current_board
+
+        if reason == "shared_room_join":
+            # Same account joining a Shared Draft Room: keep its board restorable.
+            preserve_current_board(session, reason="replaced_by_live_draft")
+        else:
+            # Account or workspace changed: these records belong to the previous account.
+            for key in HISTORY_SESSION_KEYS:
+                if key in session:
+                    session.pop(key, None)
+                    cleared.append(key)
+    except Exception:
+        pass
     for key in PRIVATE_SIMULATOR_RUNTIME_KEYS:
         if key in session:
             session.pop(key, None)

@@ -11716,7 +11716,8 @@ def render_contextual_player_actions(
             label_map=label_map,
             team_name=team_name,
             user_draft_team=team_name,
-            show_queue=active_available,
+            # A drafted/rostered player can still go on the Global Queue for a future draft.
+            show_queue=active_current,
             show_comparison=True,
             show_trend=True,
             show_watchlist=active_current,
@@ -11734,10 +11735,11 @@ def render_contextual_player_actions(
 
                 st.caption(
                     f"Already drafted — {fantasy_context_using_caption(st.session_state)}. "
-                    "Research Mode does not make a drafted player selectable again."
+                    "He can't be drafted again here; you can still queue him for a future draft "
+                    "or research him as a trade target."
                 )
             except Exception:
-                st.caption("Draft queue is hidden because this player is already drafted.")
+                st.caption("Already drafted in the current draft — you can still queue him for a future draft.")
         elif active_current and not show_trade_acquire:
             st.caption(
                 trade_block
@@ -15814,6 +15816,13 @@ def _on_undo_last_simulator_pick_click() -> None:
         picks_before=picks_before,
     )
     try:
+        try:
+            from simulator_board_edit import fork_if_live_board
+
+            # Undo on a completed Live Draft's picks starts a separate hypothetical mock.
+            fork_if_live_board(ss, reason="undo_last_pick")
+        except ImportError:
+            pass
         result = undo_last_simulator_pick(ss)
         picks_after = effective_board_pick_count(ss)
         record_draft_room_button_trace(
@@ -15849,6 +15858,22 @@ def _on_undo_last_simulator_pick_click() -> None:
         trace = dict(ss.get("_draft_room_action_trace") or {})
         trace["handler_error"] = f"{type(exc).__name__}: {exc}"
         trace["phase"] = "handler_failed"
+        ss["_draft_room_action_trace"] = trace
+
+
+def _persist_simulator_board_tools_change(reason: str) -> None:
+    """Save a Simulator board change made by the hypothetical-draft / restore tools."""
+    from draft_room_state import persist_draft_board_to_storage
+
+    ss = st.session_state
+    try:
+        persist_draft_board_to_storage(st, ss, ss.get("draft_room_table"), reason=reason)
+        from baseball_persistent_state import force_save_baseball_state
+
+        force_save_baseball_state(st, reason=reason)
+    except Exception as exc:
+        trace = dict(ss.get("_draft_room_action_trace") or {})
+        trace["board_tools_save_error"] = f"{type(exc).__name__}: {exc}"
         ss["_draft_room_action_trace"] = trace
 
 
@@ -19073,6 +19098,12 @@ elif active_page == "Fantasy Sleepers & Busts":
 
         # Research Mode owns draft filtering on Sleepers — when OFF, show full MLB pool.
         if not fantasy_drafted_pool_filter_applies(st.session_state, "Fantasy Sleepers & Busts"):
+            if sleeper_sync_enabled:
+                with tab_draft:
+                    st.caption(
+                        "Showing all players, including drafted ones: **Available Players Only** "
+                        "is off (Saved Draft Library → Fantasy Source)."
+                    )
             sleeper_sync_enabled = False
     except ImportError:
         try:
@@ -19105,9 +19136,16 @@ elif active_page == "Fantasy Sleepers & Busts":
     fantasy_top_n = int(st.session_state.get("fantasy_market_top_n", 15))
 
     if sleeper_sync_enabled:
-        draft_room_for_sleepers = _canonical_draft_board_df()
+        # The effective draft source (Live Draft / Simulator override / Saved Active Draft): the
+        # same board Draft Assistant uses, never a Simulator board that is not the source.
+        try:
+            from draft_assistant_board import effective_source_board
+
+            draft_room_for_sleepers = effective_source_board(st.session_state)
+        except ImportError:
+            draft_room_for_sleepers = _canonical_draft_board_df()
         if draft_room_for_sleepers.empty or "Player" not in draft_room_for_sleepers.columns or "Team" not in draft_room_for_sleepers.columns:
-            st.warning("No Draft Room picks found yet. Enter picks in Draft Room Simulator first.")
+            st.warning("No drafted players found in the current draft source yet.")
         else:
             draft_room_for_sleepers = draft_room_for_sleepers[
                 draft_room_for_sleepers["Player"].astype(str).str.strip() != ""
@@ -19124,8 +19162,7 @@ elif active_page == "Fantasy Sleepers & Busts":
                     sleeper_team_name = st.session_state.get("room_your_team", sleeper_team_options[0])
                 if sleeper_team_name not in sleeper_team_options:
                     st.warning(
-                        f"Active team **{sleeper_team_name}** is not on the Draft Room board. "
-                        "Update team names in Draft Room Simulator."
+                        f"Active team **{sleeper_team_name}** is not on the current draft board."
                     )
                     sleeper_team_name = sleeper_team_options[0]
                 sleeper_synced_roster = draft_room_for_sleepers[
@@ -19135,7 +19172,7 @@ elif active_page == "Fantasy Sleepers & Busts":
 
                 st.caption(
                     f"Synced {len(sleeper_synced_roster)} players on your roster and "
-                    f"{len(sleeper_synced_drafted)} total drafted players from Draft Room."
+                    f"{len(sleeper_synced_drafted)} total drafted players from the current draft source."
                 )
 
     max_year_fantasy = int(yearly_df["yearID"].max())
@@ -19841,9 +19878,10 @@ elif active_page == "Draft Assistant Simulator":
     )
     pp.instructional_caption(
         st,
-        "During an in-progress Live Draft, drafted players are excluded with full team-needs scoring. "
-        "The Draft Room Simulator board always excludes drafted players here (exclusions only). "
-        "For Saved Active Draft boards, turn on Research Mode Sync.",
+        "Draft Assistant always excludes players already drafted in the effective draft source: "
+        "the Live Draft (in progress, or completed with **Live Draft Override** on), the Draft Room "
+        "Simulator working board (**Simulator Override** on), or otherwise your Saved Active Draft. "
+        "**Available Players Only** does not change this page.",
     )
 
     market_df = load_fantasypros_market_data()
@@ -20003,6 +20041,15 @@ elif active_page == "Draft Assistant Simulator":
                 live_draft_handoff_pick_count = lambda room: 0  # type: ignore[assignment,misc]
 
             live_room = st.session_state.get(LIVE_DRAFT_ROOM_KEY)
+            if _da_context_mode == "live_board":
+                # The selected Live Draft: the loaded room, or the override's remembered copy
+                # after a completed room was ended or cleared.
+                try:
+                    from fantasy_context_source import resolve_live_override_room
+
+                    live_room = resolve_live_override_room(st.session_state) or live_room
+                except ImportError:
+                    pass
             _da_effective_context = get_active_league_context(st.session_state)
             _da_active_archive = get_active_draft_archive(st.session_state)
             if callable(resolve_draft_assistant_board):
@@ -20053,6 +20100,19 @@ elif active_page == "Draft Assistant Simulator":
                     )
                     if not assistant_team_names:
                         assistant_team_names = [st.session_state.get("room_your_team", "My Team")]
+                    _live_status = str((live_room or {}).get("status") or "").strip().lower()
+                    _live_done = _live_status in ("complete", "completed") or bool(
+                        (live_room or {}).get("snapshot")
+                    )
+                    st.caption(
+                        f"Excluding all {len(draft_room_table_for_assistant)} players drafted in the "
+                        + ("completed " if _live_done else "")
+                        + "Live Draft (**Live Draft Override**). They stay unavailable here until you "
+                        "turn the override off."
+                        if _live_done
+                        else f"Excluding all {len(draft_room_table_for_assistant)} players drafted so far "
+                        "in the Live Draft."
+                    )
             elif _da_context_mode in ("active_draft", "research_context"):
                 try:
                     from active_team_context import resolve_active_team_context
@@ -20107,14 +20167,15 @@ elif active_page == "Draft Assistant Simulator":
                 if board_has_players:
                     st.info(
                         "Draft Assistant is not syncing drafted players from this board. "
-                        "Set an **Active Saved Draft**, enable **Simulator Override**, "
-                        "or join an **in-progress Live Draft**."
+                        "Set an **Active Saved Draft**, enable **Simulator Override** or "
+                        "**Live Draft Override**, or join an **in-progress Live Draft**."
                     )
                 else:
                     st.info(
                         "Draft Assistant is showing the full player pool. "
-                        "Set an **Active Saved Draft**, enable **Simulator Override**, "
-                        "or start an **in-progress Live Draft** to exclude drafted players."
+                        "Set an **Active Saved Draft**, enable **Simulator Override** or "
+                        "**Live Draft Override**, or start an **in-progress Live Draft** to exclude "
+                        "drafted players."
                     )
 
             default_team_name = get_active_fantasy_team(st.session_state) or (
@@ -20167,6 +20228,18 @@ elif active_page == "Draft Assistant Simulator":
                 else set()
             )
             board_has_players_for_summary = board_has_players
+            # Stable IDs from the effective board: a drafted player stays unavailable even when
+            # the pool spells his name differently.
+            _da_drafted_ids: set[str] = set()
+            if _da_context_mode in ("live_board", "simulator_board", "active_draft", "research_context"):
+                try:
+                    from draft_assistant_board import board_player_keys
+
+                    _da_drafted_ids, _da_board_names = board_player_keys(draft_room_table_for_assistant)
+                    if _da_context_mode in ("live_board", "simulator_board"):
+                        drafted_or_owned_players = set(drafted_or_owned_players) | _da_board_names
+                except ImportError:
+                    _da_drafted_ids = set()
 
             if developer_mode_enabled():
                 try:
@@ -20642,7 +20715,14 @@ elif active_page == "Draft Assistant Simulator":
 
         # Remove every player who is already off the board:
         # players on other rosters + players on my roster.
-        available = draft_df[~draft_df["fullName"].isin(drafted_or_owned_players)].copy()
+        try:
+            from draft_assistant_board import exclude_drafted_players
+
+            available = exclude_drafted_players(
+                draft_df, names=drafted_or_owned_players, ids=_da_drafted_ids, name_col="fullName"
+            )
+        except ImportError:
+            available = draft_df[~draft_df["fullName"].isin(drafted_or_owned_players)].copy()
         try:
             from live_draft_roster_slots import exclude_pitchers_when_no_pitcher_slots
 
@@ -21590,6 +21670,15 @@ elif active_page == "Draft Room Simulator":
             render_canonical_draft_banner(st, st.session_state)
         except Exception:
             pass
+        try:
+            from simulator_board_ui import render_provenance_banner
+
+            _pending_tools_save = st.session_state.pop("_sim_board_tools_pending_persist", None)
+            if _pending_tools_save:
+                _persist_simulator_board_tools_change(str(_pending_tools_save))
+            render_provenance_banner(st, st.session_state)
+        except ImportError:
+            pass
 
         with mobile_wrap_row(st, "draft-room-action-buttons"):
             reset_col, delete_live_col, undo_col, _sp = st.columns([1, 1, 1, 1])
@@ -21721,8 +21810,14 @@ elif active_page == "Draft Room Simulator":
                 search_draft_pool_names = None  # type: ignore[assignment]
 
             display_cols = [c for c in ("Round", "Pick", "Team", "Player") if c in edited_draft.columns]
+            try:
+                from simulator_board_ui import board_display_frame
+
+                _board_view = board_display_frame(st.session_state, edited_draft)
+            except ImportError:
+                _board_view = edited_draft[display_cols] if display_cols else edited_draft
             st.dataframe(
-                edited_draft[display_cols] if display_cols else edited_draft,
+                _board_view,
                 use_container_width=True,
                 hide_index=True,
             )
@@ -21730,7 +21825,12 @@ elif active_page == "Draft Room Simulator":
             open_picks = open_pick_row_options(edited_draft)
             st.markdown("**Assign player to pick**")
             if not open_picks:
-                st.info("Board is full — reset the simulator to start a new mock draft.")
+                try:
+                    from simulator_board_ui import render_full_board_extend
+
+                    render_full_board_extend(st, st.session_state, _persist_simulator_board_tools_change)
+                except ImportError:
+                    st.info("Board is full — reset the simulator to start a new mock draft.")
             else:
                 pick_labels = [label for _, label in open_picks]
                 search_q = st.text_input(
@@ -21771,6 +21871,12 @@ elif active_page == "Draft Room Simulator":
                     )
 
                 if submitted:
+                    try:
+                        from simulator_board_edit import fork_if_live_board
+
+                        fork_if_live_board(st.session_state, reason="assign_open_pick")
+                    except ImportError:
+                        pass
                     res = submit_board_pick_assignment(
                         st.session_state,
                         pick_label=str(st.session_state.get("dr_board_form_pick") or ""),
@@ -21786,6 +21892,23 @@ elif active_page == "Draft Room Simulator":
                         st.rerun()
                     else:
                         st.error(res.get("message") or res.get("error") or "Assignment failed.")
+
+            try:
+                from simulator_board_ui import render_edit_tools, render_restore_previous
+
+                render_edit_tools(
+                    st,
+                    st.session_state,
+                    _session_draft_board_df(),
+                    pool_names=list(_assign_pool_names),
+                    search_fn=(lambda q, names: search_draft_pool_names(q, names, limit=30))
+                    if search_draft_pool_names
+                    else None,
+                    persist_fn=_persist_simulator_board_tools_change,
+                )
+                render_restore_previous(st, st.session_state, _persist_simulator_board_tools_change)
+            except ImportError:
+                pass
 
             edited_draft = _session_draft_board_df()
             pick_count = table_pick_count(edited_draft)

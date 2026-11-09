@@ -93,6 +93,90 @@ def _simulator_board_pick_count(session: dict[str, Any]) -> int:
     return int(table["Player"].astype(str).str.strip().ne("").sum())
 
 
+# Compact copy of the Live Draft the override last read: keeps a completed Live Draft
+# authoritative after its room is ended or cleared, until the user turns the override off.
+LIVE_OVERRIDE_SNAPSHOT_KEY = "live_draft_override_snapshot"
+_SNAPSHOT_ROW_FIELDS = (
+    "Pick", "Round", "Team", "Fantasy Team", "Player", "fullName", "playerID", "player_id",
+    "Position", "Primary Position", "Eligible Positions", "MLB Team",
+)
+_SNAPSHOT_CONFIG_DROP = ("pool", "pool_records", "pool_columns", "player_pool")
+
+
+def _snapshot_identity(session: dict[str, Any]) -> tuple[str, str]:
+    user_id = str(session.get("_suite_auth_user_id") or session.get("_suite_account_user_id") or "").strip()
+    workspace = str(session.get("_suite_active_workspace_id") or "").strip()
+    return user_id, workspace
+
+
+def _live_board_rows(room: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(room, dict):
+        return []
+    board = room.get("draft_board") or []
+    return [row for row in board if isinstance(row, dict)] if isinstance(board, list) else []
+
+
+def _room_has_picks(room: dict[str, Any] | None) -> bool:
+    return any(str(r.get("fullName") or r.get("Player") or "").strip() for r in _live_board_rows(room))
+
+
+def remember_live_override_snapshot(session: dict[str, Any], room: dict[str, Any] | None) -> None:
+    """Keep a compact, account-stamped copy of the Live Draft the override is reading."""
+    if not isinstance(room, dict) or not _room_has_picks(room):
+        return
+    rows = _live_board_rows(room)
+    draft_room_id = str(room.get("draft_room_id") or room.get("room_id") or "").strip()
+    fp = f"{draft_room_id}|{len(rows)}|{room.get('status')}|{rows[-1].get('playerID') or rows[-1].get('fullName')}"
+    user_id, workspace = _snapshot_identity(session)
+    previous = session.get(LIVE_OVERRIDE_SNAPSHOT_KEY)
+    if (
+        isinstance(previous, dict)
+        and previous.get("fingerprint") == fp
+        and previous.get("user_id") == user_id
+        and previous.get("workspace_id") == workspace
+    ):
+        return
+    cfg = {k: v for k, v in dict(room.get("config") or {}).items() if k not in _SNAPSHOT_CONFIG_DROP}
+    session[LIVE_OVERRIDE_SNAPSHOT_KEY] = {
+        "user_id": user_id,
+        "workspace_id": workspace,
+        "fingerprint": fp,
+        "draft_room_id": draft_room_id,
+        "room_code": str(session.get("active_shared_draft_room_code") or "").strip().upper(),
+        "status": str(room.get("status") or "").strip(),
+        "teams": [str(t) for t in (room.get("teams") or []) if str(t or "").strip()],
+        "config": cfg,
+        "draft_board": [{k: r[k] for k in _SNAPSHOT_ROW_FIELDS if k in r} for r in rows],
+        "snapshot": True,
+    }
+
+
+def live_override_snapshot(session: dict[str, Any]) -> dict[str, Any] | None:
+    """The remembered Live Draft for this account only (never another account's copy)."""
+    snap = session.get(LIVE_OVERRIDE_SNAPSHOT_KEY)
+    if not isinstance(snap, dict) or not snap.get("draft_board"):
+        return None
+    user_id, workspace = _snapshot_identity(session)
+    if str(snap.get("user_id") or "") != user_id:
+        return None
+    if snap.get("workspace_id") and workspace and snap.get("workspace_id") != workspace:
+        return None
+    return snap
+
+
+def resolve_live_override_room(session: dict[str, Any]) -> dict[str, Any] | None:
+    """The Live Draft board the override reads: the loaded room, else the remembered copy."""
+    room = _resolve_live_room(session)
+    if _room_has_picks(room):
+        return room
+    runtime = session.get("live_draft_room")
+    if isinstance(runtime, dict) and _room_has_picks(runtime):
+        return runtime
+    if live_draft_sync_enabled(session):
+        return live_override_snapshot(session)
+    return None
+
+
 def live_draft_context_available(session: dict[str, Any]) -> bool:
     """True when a resumable live draft with board state exists."""
     try:
@@ -262,8 +346,15 @@ def _resolve_override_source(session: dict[str, Any]) -> FantasyContextSource | 
 
     Completed Live Drafts stay effective only while the Live override is ON.
     Simulator boards never become effective without this override.
+    An ON Live override stays the effective source even when its room was ended or cleared:
+    it reads the remembered copy, and never falls through to a saved league or simulator board.
     """
-    if live_draft_sync_enabled(session) and live_draft_context_available(session):
+    if live_draft_sync_enabled(session):
+        room = _resolve_live_room(session)
+        runtime = session.get("live_draft_room")
+        loaded = room if _room_has_picks(room) else (runtime if _room_has_picks(runtime) else None)
+        if loaded is not None:
+            remember_live_override_snapshot(session, loaded)
         return FantasyContextSource(
             SOURCE_LIVE_DRAFT, "Live Draft Room (temporary override)", origin="override"
         )
@@ -371,11 +462,15 @@ def _has_filterable_fantasy_source(session: dict[str, Any]) -> bool:
 
 
 def live_draft_feeds_draft_assistant(session: dict[str, Any]) -> bool:
-    """Live Draft Room feeds Draft Assistant during in-progress drafts (no Research Mode required)."""
+    """Live Draft Room feeds Draft Assistant (no Research Mode required).
+
+    An in-progress or paused Live Draft always does. With Live Draft Override ON, the selected
+    Live Draft does too when it is completed: its picks stay unavailable until the override is off.
+    """
     source = resolve_fantasy_context_source(session)
     if source.kind != SOURCE_LIVE_DRAFT:
         return False
-    return is_live_draft_in_progress(session)
+    return is_live_draft_in_progress(session) or source.origin == "override"
 
 
 def simulator_feeds_draft_assistant(session: dict[str, Any]) -> bool:
@@ -792,7 +887,7 @@ def _resolve_my_team_for_ephemeral(session: dict[str, Any], *, source: FantasyCo
             return board_teams[0]
         return candidate
     if source.kind == SOURCE_LIVE_DRAFT:
-        room = _resolve_live_room(session)
+        room = resolve_live_override_room(session) or _resolve_live_room(session)
         room_teams = _live_room_team_names(room if isinstance(room, dict) else None)
         # Prefer the Live Draft Room selectbox / room config — only if on this board.
         candidates: list[str] = []
@@ -857,8 +952,12 @@ def get_effective_fantasy_context(
 
     my_team = _resolve_my_team_for_ephemeral(session, source=source)
     if source.kind == SOURCE_LIVE_DRAFT:
-        room = _resolve_live_room(session)
+        room = resolve_live_override_room(session) if source.origin == "override" else _resolve_live_room(session)
         if not isinstance(room, dict):
+            room = _resolve_live_room(session)
+        if not isinstance(room, dict):
+            if source.origin == "override":
+                return None  # never a saved league in place of the explicit Live Draft
             return _get_saved_active_league_context_for_pages(session)
         cfg = dict(room.get("config") or {})
         label = str(cfg.get("league_name") or "Live Draft Room").strip() or "Live Draft Room"
@@ -966,7 +1065,7 @@ def _workflow_descriptor_cache_fingerprint(session: dict[str, Any]) -> str:
     live_rev = ""
     live_my = ""
     live_teams = ""
-    room = _resolve_live_room(session)
+    room = resolve_live_override_room(session) or _resolve_live_room(session)
     if isinstance(room, dict):
         live_id = str(room.get("draft_room_id") or room.get("room_id") or "").strip()
         board = room.get("draft_board") or []
@@ -1210,7 +1309,7 @@ def resolve_fantasy_workflow_source_descriptor(session: dict[str, Any]) -> dict[
     matchup = _workflow_matchup_line(my_team_name, team_names)
     board_pick_count = _simulator_board_pick_count(session) if source.kind == SOURCE_SIMULATOR_BOARD else 0
     if source.kind == SOURCE_LIVE_DRAFT:
-        room = _resolve_live_room(session)
+        room = resolve_live_override_room(session) or _resolve_live_room(session)
         if isinstance(room, dict):
             board = room.get("draft_board") or []
             board_pick_count = len(board) if isinstance(board, list) else 0

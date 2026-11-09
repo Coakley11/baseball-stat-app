@@ -164,6 +164,12 @@ def save_draft_archive(
             )
         except ImportError:
             pass
+    if entry_id and str(draft_type or DRAFT_TYPE_SIMULATOR) == DRAFT_TYPE_SIMULATOR:
+        _existing = get_draft_archive(session, entry_id)
+        if isinstance(_existing, dict) and str(_existing.get("draft_type") or "") == DRAFT_TYPE_LIVE:
+            # A mock save never rewrites a Live Draft record (same picks, e.g. an unedited Live
+            # Draft handoff on the Simulator): it becomes its own entry.
+            entry_id, league_context_id = None, None
     entry_id = str(entry_id or uuid.uuid4().hex[:12])
     entry: dict[str, Any] = {
         "draft_id": entry_id,
@@ -219,6 +225,8 @@ def save_draft_archive(
                 continue
             existing_type = str(existing.get("draft_type") or "").strip()
             incoming_type = str(draft_type or "").strip()
+            if existing_type == DRAFT_TYPE_LIVE and incoming_type in ("", DRAFT_TYPE_SIMULATOR):
+                continue  # the historical Live Draft record is never replaced by a mock save
             if existing_type == DRAFT_TYPE_IMPORTED and incoming_type == DRAFT_TYPE_SIMULATOR:
                 entry["draft_type"] = DRAFT_TYPE_IMPORTED
             entry["draft_id"] = str(existing.get("draft_id") or entry_id)

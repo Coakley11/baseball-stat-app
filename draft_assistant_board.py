@@ -269,6 +269,26 @@ def _board_has_populated_picks(df: pd.DataFrame) -> bool:
     return bool(player.astype(str).str.strip().ne("").any())
 
 
+def _board_signature(df: pd.DataFrame | None) -> str:
+    """Cheap content signature: a same-length edit (Judge replaced by Soto) must miss the cache."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty or "Player" not in df.columns:
+        return "0"
+    player = df["Player"]
+    if isinstance(player, pd.DataFrame):
+        player = player.iloc[:, 0]
+    names = "|".join(player.astype(str).str.strip().tolist())
+    return f"{len(df)}:{hash(names)}"
+
+
+def _rows_signature(rows: Any) -> str:
+    if not isinstance(rows, list):
+        return "0"
+    names = "|".join(
+        str(r.get("playerID") or r.get("fullName") or r.get("Player") or "") for r in rows if isinstance(r, dict)
+    )
+    return f"{len(rows)}:{hash(names)}"
+
+
 def resolve_draft_assistant_board(
     session: dict[str, Any],
     *,
@@ -277,15 +297,33 @@ def resolve_draft_assistant_board(
     live_room: dict[str, Any] | None = None,
     context_mode: str = "",
 ) -> dict[str, Any]:
-    """Resolve Draft Assistant board with explicit source priority."""
+    """Resolve the Draft Assistant board from the effective source only.
+
+    Each mode reads only its own source, so a larger board from another source (an old saved
+    league, a stale Simulator board, or the Saved Active Draft) can never replace it:
+
+    - ``live_board``: the selected Live Draft (loaded room or the override's remembered copy).
+    - ``simulator_board``: the current Simulator working board.
+    - ``active_draft`` / ``research_context``: the Saved Active Draft / League (and its archive).
+    - ``none``: no exclusions apply; any board is shown for context only.
+    """
     mode = str(context_mode or "").strip().lower()
+    room = live_room if isinstance(live_room, dict) else session.get("live_draft_room")
+    sim_sig = "-"
+    if mode in ("simulator_board", "", "none"):
+        try:
+            from draft_room_state import DRAFT_ROOM_TABLE_KEY, coerce_board_table
+
+            sim_sig = _board_signature(coerce_board_table(session.get(DRAFT_ROOM_TABLE_KEY)))
+        except ImportError:
+            sim_sig = "?"
     fp = (
         mode,
         str((effective_context or {}).get("league_context_id") or ""),
         str((active_archive or {}).get("draft_id") or ""),
-        int(len((live_room or session.get("live_draft_room") or {}).get("draft_board") or []))
-        if isinstance(live_room or session.get("live_draft_room"), dict)
-        else 0,
+        str(room.get("draft_room_id") or "") if isinstance(room, dict) else "",
+        _rows_signature(room.get("draft_board")) if isinstance(room, dict) else "0",
+        sim_sig,
         str(session.get("_suite_auth_user_id") or ""),
     )
     if session.get("_da_board_cache_fp") == fp:
@@ -317,18 +355,12 @@ def resolve_draft_assistant_board(
     candidates: list[tuple[str, pd.DataFrame]] = []
 
     if mode == "live_board":
-        room = live_room if isinstance(live_room, dict) else session.get("live_draft_room")
         if isinstance(room, dict):
             board = room.get("draft_board")
             if isinstance(board, list) and board:
                 candidates.append(("live_room_draft_board", pd.DataFrame(board)))
-            try:
-                from draft_room_state import get_canonical_draft_board
-
-                canonical = get_canonical_draft_board(session)
-                candidates.append(("live_canonical_board", canonical))
-            except ImportError:
-                pass
+        if isinstance(effective_context, dict):  # built from the same Live Draft
+            candidates.append(("effective_live_context", board_from_league_context(effective_context)))
     elif mode == "simulator_board":
         try:
             from draft_room_state import get_canonical_draft_board
@@ -336,24 +368,34 @@ def resolve_draft_assistant_board(
             candidates.append(("simulator_canonical_board", get_canonical_draft_board(session)))
         except ImportError:
             pass
+    elif mode in ("active_draft", "research_context"):
+        if isinstance(effective_context, dict):
+            candidates.append(("effective_league_context", board_from_league_context(effective_context)))
+        archive = active_archive
+        if not isinstance(archive, dict):
+            try:
+                from draft_archive_state import get_active_draft_archive
 
-    if isinstance(effective_context, dict):
-        candidates.append(("effective_league_context", board_from_league_context(effective_context)))
+                archive = get_active_draft_archive(session)
+            except ImportError:
+                archive = None
+        if isinstance(archive, dict):
+            matches = True
+            if isinstance(effective_context, dict):
+                try:
+                    from fantasy_context_source import _archive_matches_context
 
-    if isinstance(active_archive, dict):
-        candidates.append(("active_archive", board_from_archive(active_archive, session)))
-
-    if not isinstance(active_archive, dict) and mode in ("", "none", "research_context", "active_draft"):
-        try:
-            from draft_archive_state import get_active_draft_archive
-
-            archive = get_active_draft_archive(session)
-            if isinstance(archive, dict):
-                candidates.append(("session_active_archive", board_from_archive(archive, session)))
-        except ImportError:
-            pass
-
-    if mode not in ("live_board",) and not any(src.startswith("live") for src, _ in candidates):
+                    matches = _archive_matches_context(archive, effective_context)
+                except ImportError:
+                    matches = True
+            if matches:  # never another draft's archive
+                candidates.append(("active_archive", board_from_archive(archive, session)))
+    else:
+        # No exclusions apply in this mode; the board only says whether one exists.
+        if isinstance(effective_context, dict):
+            candidates.append(("effective_league_context", board_from_league_context(effective_context)))
+        if isinstance(active_archive, dict):
+            candidates.append(("active_archive", board_from_archive(active_archive, session)))
         try:
             from draft_room_state import get_canonical_draft_board
 
@@ -381,6 +423,97 @@ def resolve_draft_assistant_board(
     session["_da_board_cache_fp"] = fp
     session["_da_board_cache"] = result
     return result
+
+
+_ID_COLUMNS = ("playerID", "player_id")
+
+
+def _name_normalizer():
+    try:
+        from player_name_normalization import normalize_player_name_for_merge
+
+        return normalize_player_name_for_merge
+    except ImportError:  # pragma: no cover
+        return lambda v: str(v or "").strip().lower()
+
+
+def board_player_keys(board: pd.DataFrame | None) -> tuple[set[str], set[str]]:
+    """Stable player IDs and raw names on a board."""
+    ids: set[str] = set()
+    names: set[str] = set()
+    if board is None or not isinstance(board, pd.DataFrame) or board.empty:
+        return ids, names
+    for col in _ID_COLUMNS:
+        if col in board.columns:
+            ids.update(
+                str(v).strip() for v in board[col].tolist() if str(v or "").strip() and str(v).strip() != "nan"
+            )
+    for col in ("Player", "fullName"):
+        if col in board.columns:
+            names.update(str(v).strip() for v in board[col].tolist() if str(v or "").strip())
+    return ids, names
+
+
+def exclude_drafted_players(
+    pool: pd.DataFrame,
+    *,
+    names: Any = None,
+    ids: Any = None,
+    name_col: str = "fullName",
+) -> pd.DataFrame:
+    """Drop drafted players from a pool by stable ID or by normalised name (either matches).
+
+    The ID catches name variations (accents, "Jr.", nicknames); the name keeps boards without
+    IDs (imported or hand-entered) working.
+    """
+    if pool is None or not isinstance(pool, pd.DataFrame) or pool.empty:
+        return pool
+    norm = _name_normalizer()
+    raw_names = {str(n).strip() for n in (names or []) if str(n or "").strip()}
+    norm_names = {norm(n) for n in raw_names} - {""}
+    id_set = {str(i).strip() for i in (ids or []) if str(i or "").strip()}
+    mask = pd.Series(False, index=pool.index)
+    if name_col in pool.columns:
+        col = pool[name_col].astype(str)
+        mask |= col.str.strip().isin(raw_names)
+        if norm_names:
+            mask |= col.map(norm).isin(norm_names)
+    if id_set:
+        for id_col in _ID_COLUMNS:
+            if id_col in pool.columns:
+                mask |= pool[id_col].astype(str).str.strip().isin(id_set)
+    return pool[~mask].copy()
+
+
+def effective_source_board(session: dict[str, Any]) -> pd.DataFrame:
+    """The board of the effective fantasy source, the same one Draft Assistant reads.
+
+    Empty when no source applies (no Live Draft, no override, no Saved Active Draft).
+    """
+    try:
+        from fantasy_context_source import draft_assistant_context_mode, resolve_live_override_room
+        from fantasy_league_context import get_active_league_context
+    except ImportError:
+        return pd.DataFrame()
+    mode = draft_assistant_context_mode(session)
+    if mode == "none":
+        return pd.DataFrame()
+    archive = None
+    try:
+        from draft_archive_state import get_active_draft_archive
+
+        archive = get_active_draft_archive(session) if mode in ("active_draft", "research_context") else None
+    except ImportError:
+        pass
+    result = resolve_draft_assistant_board(
+        session,
+        effective_context=get_active_league_context(session),
+        active_archive=archive,
+        live_room=resolve_live_override_room(session) if mode == "live_board" else None,
+        context_mode=mode,
+    )
+    board = result.get("board")
+    return board.copy() if isinstance(board, pd.DataFrame) else pd.DataFrame()
 
 
 def invalidate_draft_assistant_board_cache(session: dict[str, Any]) -> None:
