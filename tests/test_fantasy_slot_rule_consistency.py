@@ -63,10 +63,12 @@ class PositionFilterTests(unittest.TestCase):
         self.assertEqual(names("SS"), [])
         self.assertEqual(names("OF"), ["Springer"])
 
-    def test_research_filter_is_unchanged(self):
+    def test_research_filter_uses_the_same_strict_rule(self):
+        # Owner decision 2026-11-08: one eligibility rule everywhere. The research pages' old 1B<->3B / 2B<->SS
+        # shortcut is gone: a 3B filter no longer lists 1B-only players.
         names = lambda choice: sorted(filter_players_by_fantasy_position(self.pool, choice)["Player"])
-        self.assertEqual(names("3B"), ["Corner", "First Only", "Third"])  # older shortcut kept for research pages
-        self.assertEqual(names("SS"), ["Second Only"])
+        self.assertEqual(names("3B"), ["Corner", "Third"])
+        self.assertEqual(names("SS"), [])
 
 
 if __name__ == "__main__":

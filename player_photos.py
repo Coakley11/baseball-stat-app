@@ -1577,14 +1577,7 @@ def _eligible_for_slot(pos_tokens: list[str], slot: str) -> bool:
             return False
         if slot in pos_tokens:
             return True
-        if slot == "1B" and "3B" in pos_tokens:
-            return True
-        if slot == "3B" and "1B" in pos_tokens:
-            return True
-        if slot == "2B" and "SS" in pos_tokens:
-            return True
-        if slot == "SS" and "2B" in pos_tokens:
-            return True
+        # Strict eligibility (owner decision 2026-11-08): only positions the player is listed at.
     return False
 
 

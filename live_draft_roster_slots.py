@@ -305,23 +305,15 @@ def _eligible_for_draft_slot(pos_tokens: list[str], position_code: str) -> bool:
             return False
         if slot in pos_tokens:
             return True
-        if slot == "1B" and "3B" in pos_tokens:
-            return True
-        if slot == "3B" and "1B" in pos_tokens:
-            return True
-        if slot == "2B" and "SS" in pos_tokens:
-            return True
-        if slot == "SS" and "2B" in pos_tokens:
-            return True
+        # Strict eligibility (owner decision 2026-11-08): only positions the player is listed at.
     return False
 
 
 def _eligible_for_open_need_recommendation(pos_tokens: list[str], position_code: str) -> bool:
     """Stricter eligibility for recommendation/Auto Pick hard filters.
 
-    MI/CI cross-flex (SS→2B, 3B→1B) is fine for *roster assignment*, but must not
-    keep recommending SS-only players after SS is filled merely because 2B is open.
-    Multi-position players listed as SS,2B still qualify for open 2B.
+    Same strict rule as roster assignment (_eligible_for_draft_slot): a player fills only positions they are
+    listed at. Multi-position players listed as SS,2B qualify for an open 2B.
     """
     slot = "UTIL" if position_code == "DH" else position_code
     if slot == "BN":
@@ -343,10 +335,9 @@ def assign_roster_to_slot_instances(
 ) -> dict[str, Any]:
     """Assign drafted players to host slot instances in canonical order.
 
-    Exact primary-position matches are assigned before MI/CI cross-eligibility
-    (e.g. an SS-only player fills SS, not 2B). That keeps open-need gaps aligned
-    with what the user actually drafted so recommendations stop re-pushing a
-    filled shortstop while other starters remain open.
+    Exact matches are assigned before flexible slots (UTIL/DH, bench). Eligibility is strict: a player fills
+    only positions they are listed at (owner decision 2026-11-08), so a 2B-only player never fills SS. That keeps
+    open-need gaps aligned with what the user actually drafted.
     """
     slots = get_active_draft_roster_slots(config)
     if not slots:

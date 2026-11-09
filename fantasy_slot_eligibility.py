@@ -153,15 +153,7 @@ def _player_eligible_for_slot(pos_tokens, slot):
             return False
         if slot in pos_tokens:
             return True
-        # Corner / middle infield flexibility when eligibility lists multiple IF spots.
-        if slot == "1B" and "3B" in pos_tokens:
-            return True
-        if slot == "3B" and "1B" in pos_tokens:
-            return True
-        if slot == "2B" and "SS" in pos_tokens:
-            return True
-        if slot == "SS" and "2B" in pos_tokens:
-            return True
+        # Strict eligibility (owner decision 2026-11-08): only positions the player is listed at.
         return False
     return False
 
