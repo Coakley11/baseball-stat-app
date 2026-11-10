@@ -1131,11 +1131,9 @@ def on_permanently_end_live_draft() -> None:
         import streamlit as st_mod
     except Exception:
         return
+    # Button callback: Streamlit reruns after it on its own (st.rerun() here is a no-op and
+    # showed "Calling st.rerun() within a callback is a no-op" to the user).
     permanently_end_live_draft(st_mod.session_state, st=st_mod)
-    try:
-        st_mod.rerun()
-    except Exception:
-        pass
 
 
 def on_permanently_delete_live_draft() -> None:
@@ -1143,8 +1141,6 @@ def on_permanently_delete_live_draft() -> None:
         import streamlit as st_mod
     except Exception:
         return
+    # Button callback: Streamlit reruns after it on its own (st.rerun() here is a no-op and
+    # showed "Calling st.rerun() within a callback is a no-op" to the user).
     permanently_delete_live_draft(st_mod.session_state, st=st_mod)
-    try:
-        st_mod.rerun()
-    except Exception:
-        pass

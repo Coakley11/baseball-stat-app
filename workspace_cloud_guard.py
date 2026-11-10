@@ -43,6 +43,11 @@ PROTECTED_WORKSPACE_KEYS: tuple[str, ...] = (
     "simulator_previous_boards",
 )
 
+# Stamped on a full-session write the guard approved as an explicit board reset. The storage
+# layer otherwise keeps a richer stored board over an empty incoming one (protection against
+# accidental blanking); a new stamp tells it this empty board is the user's deliberate reset.
+BOARD_RESET_MARKER_KEY = "_draft_board_explicit_reset"
+
 BOARD_MUTATION_REASONS = frozenset(
     {
         "undo_last_pick",
@@ -408,6 +413,11 @@ def prepare_cloud_full_session_write(
         )
     if explicit_reset:
         consume_explicit_reset(session, reason)
+        outgoing[BOARD_RESET_MARKER_KEY] = {
+            "reason": reason,
+            "source_revision": revision,
+            "at": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+        }
 
     if read_status == CLOUD_READ_OK and cloud_picks > incoming_picks and not explicit_reset:
         if reason not in BOARD_MUTATION_REASONS or not previously_observed:

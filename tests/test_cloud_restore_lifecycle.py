@@ -184,10 +184,26 @@ class UndoResetAndFailureTests(_Base):
     def test_an_explicit_reset_still_empties_the_board_everywhere(self) -> None:  # 13
         dev = self.saved_one_pick()
         dev.click("Reset Draft Room Simulator")
+        dev.click("Reset board")  # the confirmation step
         self.assertEqual(dev.board(), [])
         dev.run()
         self.assertEqual(dev.board(), [])
+        self.assertEqual(self.store.board(self.cloud_key), [])               # the cloud row really emptied
         self.assertEqual(self.device("refresh").run().board(), [])
+
+    def test_a_new_mock_after_reset_survives_navigation_refresh_and_a_new_device(self) -> None:
+        dev = self.saved_one_pick()
+        dev.click("Reset Draft Room Simulator")
+        dev.click("Reset board")
+        dev.pick(JUDGE)
+        dev.go("Leaderboards")
+        dev.go("Draft Room Simulator")
+        self.assertEqual(dev.board(), [JUDGE])
+        dev.save()
+        self.assertEqual(self.store.board(self.cloud_key), [JUDGE])
+        self.assertEqual(self.device("refresh").run().board(), [JUDGE])
+        self.wipe_local_disk()
+        self.assertEqual(self.device("phone").run().board(), [JUDGE])
 
     def test_a_failed_cloud_read_cannot_erase_saved_data(self) -> None:  # 17
         self.saved_one_pick()

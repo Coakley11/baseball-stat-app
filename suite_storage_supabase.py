@@ -220,7 +220,14 @@ def _merge_full_session_preserve_richer_draft(
         incoming_picks = filled_pick_count(new)
     except Exception:
         prior_picks = incoming_picks = 0
-    if incoming_picks == 0 and prior_picks > 0:
+    try:
+        from workspace_cloud_guard import BOARD_RESET_MARKER_KEY
+    except Exception:
+        BOARD_RESET_MARKER_KEY = "_draft_board_explicit_reset"
+    reset_mark = new.get(BOARD_RESET_MARKER_KEY)
+    # A reset the cloud guard approved for this write (a new stamp): the empty board is the user's.
+    explicit_reset = isinstance(reset_mark, dict) and reset_mark != base.get(BOARD_RESET_MARKER_KEY)
+    if incoming_picks == 0 and prior_picks > 0 and not explicit_reset:
         for key in ("draft_room_state", "draft_room_table"):
             if key in base:
                 merged[key] = copy.deepcopy(base.get(key))
