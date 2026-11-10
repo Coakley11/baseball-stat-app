@@ -12,6 +12,8 @@ Docs:
 - [`docs/NEXTJS_FRONTEND_FOUNDATION.md`](../docs/NEXTJS_FRONTEND_FOUNDATION.md): architecture.
 - [`docs/WEB_M2_SCHEMA_COMPATIBILITY.md`](../docs/WEB_M2_SCHEMA_COMPATIBILITY.md): API contract
   status.
+- [`docs/WEB_M4A_HARDENING.md`](../docs/WEB_M4A_HARDENING.md): security headers, `/api/health` and
+  `/api/ready`, proxy logging, error boundaries, cold-start behavior.
 
 ## Requirements
 
@@ -35,6 +37,7 @@ Docs:
 | Variable | Where | Meaning |
 |---|---|---|
 | `BASEBALL_API_ORIGIN` | server (proxy) | Python API origin. Development defaults to `http://127.0.0.1:8601`; **required in production** (the proxy answers 503 without it) |
+| `BASEBALL_WEB_HSTS=off` | build time | Omit the HSTS header from a production build that is not served over HTTPS (it is on by default in production builds) |
 | `NEXT_PUBLIC_BASEBALL_DATA_SOURCE=mock` | local development only | Use sample fixtures instead of the API. `next build` refuses it, and production builds contain no fixtures |
 
 ## Commands
