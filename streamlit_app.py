@@ -14073,6 +14073,9 @@ def _render_baseball_sidebar_chrome(st_obj) -> None:
             return
     except ImportError:
         pass
+    from suite_parent_brand import render_suite_logo
+
+    render_suite_logo(st_obj.sidebar)
     head = "?"
     try:
         from pathlib import Path

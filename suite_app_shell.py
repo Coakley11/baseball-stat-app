@@ -62,6 +62,10 @@ def render_suite_sidebar_account_shell(
     except ImportError:
         pass
 
+    from suite_parent_brand import render_suite_logo
+
+    render_suite_logo(st.sidebar)
+
     if top_divider:
         st.sidebar.divider()
 
