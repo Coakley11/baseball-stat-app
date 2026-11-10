@@ -1802,6 +1802,11 @@ def reset_simulator_board_only(session: dict[str, Any]) -> pd.DataFrame:
     except ImportError:
         pass
     mark_draft_room_board_authority(session, pick_count=0, reason="simulator_reset_only")
+    if not is_live_draft_runtime_active(session):
+        # A deliberate new mock: a finished Live Draft that is still loaded never re-takes it.
+        from simulator_board_history import note_mock_pick_beside_finished_live
+
+        note_mock_pick_beside_finished_live(session)
     return out
 
 

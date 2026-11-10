@@ -1878,7 +1878,9 @@ def _render_u4_draft_room_answer(board, *, room_df, your_team, team_names, team_
     answer = u4a.draft_room_answer(progress, your_team=your_team, rounds=rounds,
                                    source=str(get_canonical_draft_meta(st.session_state).get("source") or ""),
                                    unsaved=is_draft_room_locally_dirty(st.session_state),
-                                   on_clock_team=str(progress.get("on_clock_team") or ""))
+                                   on_clock_team=str(progress.get("on_clock_team") or ""),
+                                   board_teams=(sorted({str(t).strip() for t in board["Team"].tolist() if str(t).strip()})
+                                                if isinstance(board, pd.DataFrame) and "Team" in board.columns else None))
     u1.answer_card(st, answer["headline"], answer["body"], kicker="Draft board", tone=answer["tone"])
     u1.metric_tiles(st, answer["tiles"])
     flash = st.session_state.pop("_u4_dr_flash", None)

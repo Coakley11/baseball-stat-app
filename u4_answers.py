@@ -37,7 +37,8 @@ def _pick_text(n: Any) -> str:
 
 
 def draft_room_answer(summary: Mapping[str, Any], *, your_team: str = "", rounds: int = 0,
-                      source: str = "", unsaved: bool = False, on_clock_team: str = "") -> dict[str, Any]:
+                      source: str = "", unsaved: bool = False, on_clock_team: str = "",
+                      board_teams: list[str] | None = None) -> dict[str, Any]:
     """Draft Room Simulator: where the board stands. ``summary`` is
     ``draft_room_state.draft_board_summary_for_team`` for the board on screen."""
     filled = int(_num(summary.get("filled_picks")) or 0)
@@ -57,7 +58,11 @@ def draft_room_answer(summary: Mapping[str, Any], *, your_team: str = "", rounds
     if not complete and on_clock_team:
         parts.append(f"{on_clock_team} is on the clock.")
     nxt = summary.get("your_next_pick")
-    if your_team and not complete:
+    on_board = [str(t).strip() for t in (board_teams or []) if str(t).strip()]
+    if your_team and not complete and on_board and your_team not in on_board:
+        # e.g. a Live Draft handed its board over with its own team names.
+        parts.append(f"Your team ({your_team}) is not on this board: choose yours under League setup.")
+    elif your_team and not complete:
         parts.append(f"{your_team} picks next at {_pick_text(nxt)}." if _num(nxt) is not None
                      else f"{your_team} has no open picks left.")
     src = board_source_text(source)

@@ -79,8 +79,16 @@ class FileStore:
             return False
         rev = sum(1 for line in self.log if "write" in line) + 1
         stamp = f"2026-10-28T17:{rev // 60:02d}:{rev % 60:02d}.{rev:06d}+00:00"
-        merged = dict((cur or {}).get("metrics") or {})
+        prior_metrics = dict((cur or {}).get("metrics") or {})
+        merged = dict(prior_metrics)
         merged.update(metrics)
+        if isinstance(prior_metrics.get("full_session"), dict) and isinstance(merged.get("full_session"), dict):
+            # Same full-session merge the real Supabase store applies on every write.
+            from suite_storage_supabase import _merge_full_session_preserve_richer_draft
+
+            merged["full_session"] = _merge_full_session_preserve_richer_draft(
+                prior_metrics["full_session"], merged["full_session"]
+            )
         data[app_key] = {"updated_at": stamp, "metrics": merged, "page": page}
         self.path.write_text(json.dumps(data, default=str), encoding="utf-8")
         self.log.append(f"[{self.who}] write")
