@@ -14074,8 +14074,10 @@ def _render_baseball_sidebar_chrome(st_obj) -> None:
     except ImportError:
         pass
     from suite_parent_brand import render_suite_logo
+    from suite_auth import is_auth_enabled, is_authenticated
 
-    render_suite_logo(st_obj.sidebar)
+    _suite_logo_placement = "login" if is_auth_enabled() and not is_authenticated(st_obj.session_state) else "sidebar"
+    render_suite_logo(st_obj.sidebar, placement=_suite_logo_placement)
     head = "?"
     try:
         from pathlib import Path
