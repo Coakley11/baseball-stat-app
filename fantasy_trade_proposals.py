@@ -224,7 +224,52 @@ def finalize_accepted_trade(
     return saved, save_shared_ok, save_shared_error
 
 
-def get_trade_history(context: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
+def _team_control_error(session: dict[str, Any], context: dict[str, Any], team: str, action: str) -> str:
+    """Empty when this account may act for ``team`` (its verified owner, or the commissioner acting
+    for an unclaimed team); otherwise the reason. Never decided by a team name the user picked."""
+    try:
+        from fantasy_team_control import resolve_team_control
+    except ImportError:
+        return ""
+    ctx = context
+    try:
+        # Decide on the shared league's current claims (the local copy can lag behind them).
+        if resolve_canonical_league_id(ctx):
+            from fantasy_shared_league_store import sync_context_with_shared_store
+
+            ctx = sync_context_with_shared_store(session, ctx) or ctx
+    except Exception:
+        ctx = context
+    control = resolve_team_control(session, ctx, team)
+    if control.can_manage:
+        return ""
+    return control.reason or f"Your account cannot {action} for {team}."
+
+
+def viewer_trade_teams(session: dict[str, Any] | None, context: dict[str, Any] | None) -> set[str] | None:
+    """Teams this account may act for (owned + commissioner proxy). None = no viewer filter."""
+    if session is None or not isinstance(context, dict):
+        return None
+    try:
+        from fantasy_team_control import manageable_teams
+
+        return {c.team for c in manageable_teams(session, context)}
+    except ImportError:
+        return None
+
+
+def get_trade_history(
+    context: dict[str, Any] | None,
+    session: dict[str, Any] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Trade history. With ``session``: completed (accepted) trades are league-wide; pending,
+    declined, canceled, countered and expired offers are shown only to the teams in them (or the
+    commissioner acting for one of those teams)."""
+    viewer = viewer_trade_teams(session, context)
+
+    def _party(proposer: str, recipient: str) -> bool:
+        return viewer is None or proposer in viewer or recipient in viewer
+
     pending: list[dict[str, Any]] = []
     accepted: list[dict[str, Any]] = []
     declined: list[dict[str, Any]] = []
@@ -235,6 +280,10 @@ def get_trade_history(context: dict[str, Any] | None) -> dict[str, list[dict[str
     for proposal in get_trade_proposals(context):
         status = str(proposal.get("status") or TRADE_PROPOSAL_STATUS_PENDING).strip()
         display = get_display_status(context, proposal)
+        if status != TRADE_PROPOSAL_STATUS_ACCEPTED and not _party(
+            str(proposal.get("proposer_team") or "").strip(), str(proposal.get("recipient_team") or "").strip()
+        ):
+            continue  # another teams' private negotiation
         row = copy.deepcopy(proposal)
         if league_id:
             row["league_id"] = league_id
@@ -250,6 +299,10 @@ def get_trade_history(context: dict[str, Any] | None) -> dict[str, list[dict[str
             continue
         action = str(raw.get("action") or "")
         if not action.startswith("trade_"):
+            continue
+        if action != f"trade_{TRADE_PROPOSAL_STATUS_ACCEPTED}" and not _party(
+            str(raw.get("team_name") or "").strip(), str(raw.get("counterparty") or "").strip()
+        ):
             continue
         entry = copy.deepcopy(raw)
         if league_id:
@@ -773,6 +826,12 @@ def create_trade_proposal(
             create_error=err,
         )
         return None, err
+    control_err = _team_control_error(session, context, proposer, "propose a trade")
+    if control_err:
+        record_trade_submit_trace(
+            session, propose_trade_called=True, proposer_team=proposer, recipient_team=recipient, create_error=control_err
+        )
+        return None, control_err
 
     gives = [str(x).strip() for x in proposer_gives if str(x).strip()]
     receives = [str(x).strip() for x in proposer_receives if str(x).strip()]
@@ -1051,6 +1110,10 @@ def accept_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[di
         err = f"Only the owner of {recipient} can accept this trade."
         record_trade_response_trace(session, validation_error=err, update_error=err)
         return None, err
+    control_err = _team_control_error(session, context, recipient, "accept this trade")
+    if control_err:
+        record_trade_response_trace(session, validation_error=control_err, update_error=control_err)
+        return None, control_err
 
     record_trade_response_trace(session, roster_mutation_attempted=True)
     if not _execute_roster_swap(context, proposal):
@@ -1195,6 +1258,9 @@ def decline_trade_proposal(session: dict[str, Any], proposal_id: str) -> tuple[d
     my_owned = resolve_trade_team_for_session(context, session)
     if my_owned and recipient != my_owned:
         return None, f"Only the owner of {recipient} can decline this trade."
+    control_err = _team_control_error(session, context, recipient, "decline this trade")
+    if control_err:
+        return None, control_err
 
     now = _utc_now_iso()
     proposal["status"] = TRADE_PROPOSAL_STATUS_DECLINED
@@ -1247,6 +1313,9 @@ def cancel_trade_proposal(
         return None, f"Your account owns {my_owned}; only that team can cancel offers."
     if team != proposer:
         return None, "Only the proposing team can cancel this offer."
+    control_err = _team_control_error(session, context, proposer, "cancel this offer")
+    if control_err:
+        return None, control_err
 
     now = _utc_now_iso()
     proposal["status"] = TRADE_PROPOSAL_STATUS_CANCELED
@@ -1309,6 +1378,9 @@ def counter_trade_proposal(
     team = str(countered_by_team or "").strip()
     if team != recipient:
         return None, "Only the receiving team can counter this offer."
+    control_err = _team_control_error(session, context, recipient, "counter this offer")
+    if control_err:
+        return None, control_err
 
     gives = [str(x).strip() for x in counter_gives if str(x).strip()]
     receives = [str(x).strip() for x in counter_receives if str(x).strip()]

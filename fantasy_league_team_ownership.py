@@ -473,6 +473,45 @@ def needs_team_assignment(context: dict[str, Any] | None, user_id: str = "") -> 
     return len(teams) >= 1
 
 
+def team_claim_prompt_for_session(
+    context: dict[str, Any] | None, session: dict[str, Any] | None
+) -> tuple[str, list[str]]:
+    """(verified_team, claimable_teams) for the "claim your team" prompt.
+
+    verified_team: the team this signed-in account already controls as owner, read from the
+    shared league's current claims; when set, no prompt is shown. claimable_teams: teams with no
+    firm claim and no invitee reservation — empty for mock / simulator leagues, where real league
+    trades are off and no team needs claiming. The prompt never grants anything by itself:
+    ``assign_my_team`` re-checks every claim.
+    """
+    if not isinstance(context, dict):
+        return "", []
+    ctx = context
+    try:
+        if isinstance(session, dict) and resolve_canonical_league_id(ctx):
+            from fantasy_shared_league_store import sync_context_with_shared_store
+
+            ctx = sync_context_with_shared_store(session, ctx) or ctx
+    except Exception:
+        ctx = context
+    try:
+        from fantasy_team_control import MODE_OWNER, resolve_team_control
+    except ImportError:
+        return "", []
+    teams = sorted(str(t) for t in (ctx.get("league_rosters") or {}) if str(t).strip())
+    for team in teams:
+        if resolve_team_control(session, ctx, team).mode == MODE_OWNER:
+            return team, []
+    if str(ctx.get("context_type") or "").strip() != CONTEXT_TYPE_REAL_LEAGUE:
+        return "", []
+    ownership = get_team_ownership(ctx)
+    claimable = [
+        t for t in teams
+        if not ownership_is_firm_claim(ownership.get(t)) and not ownership_is_provisional(ownership.get(t))
+    ]
+    return "", claimable
+
+
 def trades_enabled(context: dict[str, Any] | None, session: dict[str, Any] | None = None) -> tuple[bool, str]:
     del session
     if not isinstance(context, dict):
