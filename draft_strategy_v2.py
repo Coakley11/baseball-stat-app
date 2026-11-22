@@ -580,8 +580,9 @@ def append_research(session: dict[str, Any], strategy_id: str, text: str, *, kin
 # permanent delete, and the purge, also remove the strategy's research and v1-backup rows unless
 # the strategy (or another deleted copy of it) still exists.
 #
-# Storage lifecycle (cloud): Delete (soft) and Restore only *hide* rows (valid = false), which is
-# fine because the trash row holds the recoverable copy. Delete permanently and the 30-day purge
+# Storage lifecycle (cloud): Delete (soft) only *hides* the live row (valid = false), which is fine
+# because the trash row holds the recoverable copy. Restore removes the trash row for good (the
+# strategy is live again). Delete permanently and the 30-day purge
 # *remove* rows for good (`_purge`, a real DELETE scoped to the account): the trash row, the
 # strategy's hidden live row (only if it is hidden, never a live strategy), and its research and
 # v1-backup rows when nothing else still needs them.
@@ -720,7 +721,7 @@ def restore_from_trash(session: dict[str, Any], trash_id: str) -> dict[str, Any]
         name = f"{base} (restored)" if n == 2 else f"{base} (restored {n - 1})"
     saved["name"] = name[:store.NAME_MAX]
     store._store_call(backend.put, str(saved["id"]), saved["name"], saved)  # back first, then out of the trash
-    _delete(store._backend(TRASH_ITEM_TYPE), trash_id)
+    _purge(store._backend(TRASH_ITEM_TYPE), trash_id)  # the strategy is back: its trash copy goes for good
     return saved
 
 
