@@ -251,7 +251,8 @@ class AppWiringTests(unittest.TestCase):
     def test_load_data_delegates_to_baseball_history(self) -> None:
         body = APP[APP.index("def load_data(_hof_cache_key: float = 0.0):"):]
         body = body[: body.index("\n\n\n")]
-        self.assertIn("return _history.load_history_frames(BASE_DIR, read_csv=read_required_csv)", body)
+        # Still the one shared loader (2026-11-22: frozen, shared read-only copies; see shared_reference_frames).
+        self.assertIn("_history.load_history_frames(BASE_DIR, read_csv=read_required_csv)", body)
 
 class U2U3HelpTests(unittest.TestCase):
     """Help for the U2/U3 pages restates each page's own rule; every rule is pinned to its source."""
