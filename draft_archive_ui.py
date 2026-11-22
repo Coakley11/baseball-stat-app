@@ -3903,6 +3903,10 @@ def render_live_draft_completion_panel(
             },
         )
     with analyze_col:
+        from baseball_monetization_ui import render_pro_note
+
+        render_pro_note(st, st.session_state, "draft_lab", key=f"pro_{key_prefix}_analyze",
+                        label="Draft Lab grading (viewing, saving and exporting your draft stay Free)")
         st.button(
             "Analyze Draft",
             key=f"{key_prefix}_analyze_btn",
