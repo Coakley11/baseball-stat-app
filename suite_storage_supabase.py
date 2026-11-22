@@ -1324,6 +1324,39 @@ def invalidate_browser_auth_session(session_id: str) -> dict[str, Any]:
     return out
 
 
+def delete_saved_item(app: str, item_type: str, item_key: str, *, only_hidden: bool = False) -> int:
+    """Remove one saved item from the database for good (a real DELETE, unlike
+    :func:`invalidate_saved_item`, which only hides it).
+
+    Same account scope and filters as ``invalidate_saved_item``: the signed-in account's
+    ``user_id`` (``_scoped_user_id`` refuses guests), the scoped app, the item type and the key, so
+    it can only ever match that account's one row (unique on all four). ``only_hidden=True`` adds
+    ``valid = false``: it removes a row only if it is already hidden, so a live row can never be
+    removed by it. Returns how many rows were removed (0 or 1).
+    """
+    try:
+        from strategy_deletion_guard import assert_strategy_deletion_allowed
+    except ImportError:  # pragma: no cover - module ships with this file
+        assert_strategy_deletion_allowed = None
+    if assert_strategy_deletion_allowed is not None:
+        assert_strategy_deletion_allowed(item_type)
+    app_key = _scoped_storage_app(app)
+    key = str(item_key or "").strip()
+    itype = str(item_type or "item").strip() or "item"
+    if not app_key or not key:
+        return 0
+    params = {
+        "user_id": f"eq.{_scoped_user_id()}",
+        "app": f"eq.{app_key}",
+        "item_type": f"eq.{itype}",
+        "item_key": f"eq.{key}",
+    }
+    if only_hidden:
+        params["valid"] = "eq.false"
+    rows = _request("DELETE", _TABLE_SAVED, params=params, prefer="return=representation")
+    return len(rows) if isinstance(rows, list) else 0
+
+
 def invalidate_saved_item(app: str, item_type: str, item_key: str) -> None:
     try:
         from strategy_deletion_guard import assert_strategy_deletion_allowed

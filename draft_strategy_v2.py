@@ -579,6 +579,12 @@ def append_research(session: dict[str, Any], strategy_id: str, text: str, *, kin
 # owner lists their own Recently deleted strategies (lazily; there is no background job). A
 # permanent delete, and the purge, also remove the strategy's research and v1-backup rows unless
 # the strategy (or another deleted copy of it) still exists.
+#
+# Storage lifecycle (cloud): Delete (soft) and Restore only *hide* rows (valid = false), which is
+# fine because the trash row holds the recoverable copy. Delete permanently and the 30-day purge
+# *remove* rows for good (`_purge`, a real DELETE scoped to the account): the trash row, the
+# strategy's hidden live row (only if it is hidden, never a live strategy), and its research and
+# v1-backup rows when nothing else still needs them.
 
 
 def _parse_ts(value: Any):
@@ -593,6 +599,31 @@ def _parse_ts(value: Any):
 
 def _delete(backend: Any, key: str) -> None:
     store._store_call(backend.delete, key)
+
+
+def _purge(backend: Any, key: str, *, only_hidden: bool = False) -> None:
+    """Remove a row for good (permanent deletion). Backends without ``purge`` (test fakes whose
+    ``delete`` already removes) fall back to ``delete``; ``only_hidden`` never touches a live row."""
+    purge = getattr(backend, "purge", None)
+    if purge is None:
+        if not only_hidden:
+            _delete(backend, key)
+        return
+    store._store_call(lambda k: purge(k, only_hidden=only_hidden), key)
+
+
+def _purge_strategy_rows(session: dict[str, Any], strategy_id: str, *, trash_id: str) -> None:
+    """Everything Delete permanently removes for one trash row: the trash row itself, then, if no
+    live strategy and no other deleted copy still uses this id, the hidden live row and the
+    research and v1-backup rows."""
+    _purge(store._backend(TRASH_ITEM_TYPE), trash_id)
+    if not strategy_id or _fetch(store._backend(ITEM_TYPE), strategy_id) is not None:
+        return  # the strategy is live again (e.g. the copy kept before Restore Original): keep its rows
+    if any(r.get("strategy_id") == strategy_id and r.get("trash_id") != trash_id for r in _trash_rows(session)):
+        return  # another deleted copy still needs its research and backup
+    _purge(store._backend(ITEM_TYPE), strategy_id, only_hidden=True)
+    for item_type in (RESEARCH_ITEM_TYPE, BACKUP_ITEM_TYPE):
+        _purge(store._backend(item_type), strategy_id)
 
 
 def _to_trash(stored: dict[str, Any], *, reason: str, at: str) -> dict[str, Any]:
@@ -641,17 +672,6 @@ def _trash_rows(session: dict[str, Any]) -> list[dict[str, Any]]:
     return [r for r in rows or [] if isinstance(r, dict) and r.get("trash_id") and isinstance(r.get("strategy"), dict)]
 
 
-def _drop_side_rows_if_orphaned(session: dict[str, Any], strategy_id: str, *, ignore_trash_id: str = "") -> None:
-    if not strategy_id or _fetch(store._backend(ITEM_TYPE), strategy_id) is not None:
-        return
-    if any(r.get("strategy_id") == strategy_id and r.get("trash_id") != ignore_trash_id for r in _trash_rows(session)):
-        return
-    for item_type in (RESEARCH_ITEM_TYPE, BACKUP_ITEM_TYPE):
-        backend = store._backend(item_type)
-        if _fetch(backend, strategy_id) is not None:
-            _delete(backend, strategy_id)
-
-
 def list_trash(session: dict[str, Any], *, now: str | None = None) -> list[dict[str, Any]]:
     """Recently deleted strategies, newest first, each with ``days_left``. Purges expired rows."""
     from datetime import timedelta
@@ -662,8 +682,7 @@ def list_trash(session: dict[str, Any], *, now: str | None = None) -> list[dict[
         deleted = _parse_ts(row.get("deleted_at"))
         expires = (deleted + timedelta(days=RECOVERY_DAYS)) if deleted else None
         if expires is not None and current is not None and current >= expires:
-            _delete(store._backend(TRASH_ITEM_TYPE), row["trash_id"])
-            _drop_side_rows_if_orphaned(session, str(row.get("strategy_id") or ""), ignore_trash_id=row["trash_id"])
+            _purge_strategy_rows(session, str(row.get("strategy_id") or ""), trash_id=row["trash_id"])
             continue
         if expires is not None and current is not None:
             remaining = expires - current
@@ -716,8 +735,7 @@ def permanent_delete(session: dict[str, Any], trash_id: str, *, confirmed: bool)
         raise StrategyError("Confirm before deleting this strategy permanently.")
     store._require_access(session)
     row = _trash_row(session, trash_id)
-    _delete(store._backend(TRASH_ITEM_TYPE), trash_id)
-    _drop_side_rows_if_orphaned(session, str(row.get("strategy_id") or ""), ignore_trash_id=trash_id)
+    _purge_strategy_rows(session, str(row.get("strategy_id") or ""), trash_id=trash_id)
 
 
 def restore_original_version(session: dict[str, Any], strategy_id: str, *, confirmed: bool,
