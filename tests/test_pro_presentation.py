@@ -141,9 +141,18 @@ class DecisionTests(unittest.TestCase):
         import ami_assistant.tools  # noqa: F401  (registers tools)
         from ami_assistant.ui import _used_strategy_coaching
 
-        self.assertTrue(_used_strategy_coaching({"tools": ["list_my_strategies"]}))
-        self.assertFalse(_used_strategy_coaching({"tools": ["get_global_list"]}))
+        # The engine's answer record lists tools as dicts ({"tool", "ok", "ms", "error_code"}).
+        self.assertTrue(_used_strategy_coaching({"tools": [{"tool": "list_my_strategies", "ok": True}]}))
+        self.assertTrue(_used_strategy_coaching({"tools": [{"tool": "list_my_strategies", "ok": False}]}))
+        self.assertFalse(_used_strategy_coaching({"tools": [{"tool": "get_global_list", "ok": True}]}))
         self.assertFalse(_used_strategy_coaching({}))
+
+    def test_the_label_check_reads_the_engine_record_format(self):
+        import inspect
+
+        import ami_assistant.engine as engine
+
+        self.assertIn('tool_log.append({"tool": call.name', inspect.getsource(engine))
 
 
 class RenderedTests(unittest.TestCase):

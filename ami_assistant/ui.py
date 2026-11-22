@@ -156,8 +156,8 @@ def _used_strategy_coaching(last: dict[str, Any]) -> bool:
     try:
         from ami_assistant.tools.registry import REGISTRY
 
-        return any(getattr(REGISTRY.get(str(n)), "plan_capability", "") == "draft_strategy_library"
-                   for n in last.get("tools") or [])
+        names = [str(t.get("tool") if isinstance(t, dict) else t) for t in last.get("tools") or []]
+        return any(getattr(REGISTRY.get(n), "plan_capability", "") == "draft_strategy_library" for n in names)
     except Exception:
         return False
 
