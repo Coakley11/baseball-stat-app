@@ -121,6 +121,17 @@ class IndicatorPlacementTests(unittest.TestCase):
         self.assertNotRegex(_app_text(), r"(if|and|or|not)\s+render_pro_note\(")
 
 
+class RobustnessTests(unittest.TestCase):
+    def test_a_label_never_breaks_its_page(self):
+        class _NoCaption:  # a stand-in Streamlit without the calls a label needs
+            pass
+
+        self.assertTrue(ui.render_pro_note(_NoCaption(), {}, "draft_lab", key="x"))
+        with mock.patch.object(bm, "ENFORCED_FEATURES", frozenset({bm.FeatureId.DRAFT_LAB})):
+            self.assertFalse(ui.render_pro_note(_NoCaption(), {}, "draft_lab", key="x"),
+                             "an enforced feature fails closed")
+
+
 class DecisionTests(unittest.TestCase):
     """Owner decisions 2026-11-22 are reflected in the registry."""
 
