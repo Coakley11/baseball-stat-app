@@ -151,8 +151,11 @@ def render_mobile_quick_nav(
     # active_page for THIS rerun. Without this, navigating via the sidebar (or a
     # deep link) would leave this selectbox showing a stale prior selection —
     # Streamlit widgets prefer their session_state[key] over `index=` once set.
-    if st.session_state.get(QUICK_NAV_SELECT_KEY) != active_page:
-        st.session_state[QUICK_NAV_SELECT_KEY] = active_page
+    # The session value alone drives the selectbox (no ``index=`` as well: Streamlit warns when a keyed
+    # widget gets both a default and a Session State value). It is always one of the options.
+    selected_page = section_pages[current_index] if section_pages else active_page
+    if st.session_state.get(QUICK_NAV_SELECT_KEY) != selected_page:
+        st.session_state[QUICK_NAV_SELECT_KEY] = selected_page
     if section and st.session_state.get(QUICK_NAV_SECTION_KEY) != section:
         st.session_state[QUICK_NAV_SECTION_KEY] = section
 
@@ -214,7 +217,6 @@ def render_mobile_quick_nav(
         st.selectbox(
             "Jump to page",
             section_pages,
-            index=current_index,
             format_func=_format,
             key=QUICK_NAV_SELECT_KEY,
             on_change=_on_change,
