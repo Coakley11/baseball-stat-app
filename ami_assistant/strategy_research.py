@@ -87,6 +87,57 @@ def resolve_top_question(question: str, call_tool) -> TopResolution | None:
     return TopResolution(question=" ".join(rewritten.split()), lead=lead, tool_result=res)
 
 
+# "How deep is catcher in my strategy?", "Do I have enough catchers in my strategy?", "positional depth at SS"
+_DEPTH = re.compile(r"\b(?:how deep|depth|scarce|scarcity|enough)\b", re.IGNORECASE)
+_DEPTH_POSITION = re.compile(rf"\b(?P<pos>{_POSITION_ALTERNATION}|1b|2b|3b|ss|of)\b", re.IGNORECASE)
+# Only questions that name the strategy: "Do I have enough catchers?" alone stays a draft team-needs question.
+_PERSONAL = re.compile(r"\bstrateg(?:y|ies)\b", re.IGNORECASE)
+
+
+def resolve_depth_question(question: str, call_tool) -> str | None:
+    """A full answer for a strategy positional-depth question, or None when the question is something else.
+
+    The strategy side quotes the user's own entries; the board side comes from the draft pages' positional
+    depth table when a board exists. Without a board, AMI says it needs one instead of guessing.
+    """
+    if not (_DEPTH.search(question) and _PERSONAL.search(question)):
+        return None
+    m = _DEPTH_POSITION.search(question)
+    code = position_code(m.group("pos")) if m else ""
+    if not code:
+        return None
+    named = _IN_STRATEGY.search(question)
+    res = call_tool("strategy_top_at_position",
+                    {"position": code, "count": 4, "name": named.group("name").strip() if named else ""})
+    if not getattr(res, "ok", False):
+        return str(getattr(res, "message", "") or "I couldn't read your strategy.")
+    data = res.data or {}
+    strategy = data.get("strategy") or "your strategy"
+    n = int(data.get("at_position") or 0)
+    shown = ", ".join(f"{p['name']} (#{p['rank']})" for p in data.get("players") or [])
+    parts = [f"Your **{strategy}** strategy has {n} {_position_label(code, n)}" + (f": {shown}" if shown else "")
+             + (" and more." if n > len(data.get("players") or []) else ".")]
+    if data.get("without_position"):
+        parts.append(f"{data['without_position']} of its players have no position recorded, so they aren't counted.")
+    board = call_tool("get_active_draft_context", {})
+    rows = (board.data or {}).get("position_scarcity") if getattr(board, "ok", False) else None
+    row = next((r for r in rows or [] if str(r.get("Position") or "").upper() == code), None)
+    if row is None:
+        parts.append("To judge how deep the position is in your draft, I need a draft board: open Draft Assistant "
+                     "Simulator or a draft room, then ask again.")
+    else:
+        bits = []
+        if row.get("Available Players") is not None:
+            bits.append(f"{row['Available Players']} still available")
+        if row.get("Top Available"):
+            bits.append(f"best available {row['Top Available']}")
+        if row.get("Scarcity Dropoff") is not None:
+            bits.append(f"scarcity drop-off {row['Scarcity Dropoff']}")
+        parts.append(f"On your current draft board ({code}): " + (", ".join(bits) if bits else "no depth numbers yet")
+                     + ". (From the draft page's positional depth table.)")
+    return " ".join(parts)
+
+
 def membership_line(result: Any) -> str:
     """One line for the answer, or "" (no strategy selected, not entitled, signed out, nothing to say)."""
     if not getattr(result, "ok", False):

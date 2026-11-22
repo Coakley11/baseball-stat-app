@@ -202,6 +202,38 @@ class ResearchContextLine(_Base):
         self.assertEqual(self.writes(), [])
 
 
+class PositionalDepth(_Base):
+    BOARD = {"page": "Draft Assistant Simulator", "position_scarcity_table": [
+        {"Position": "SS", "Available Players": 7, "Top Available": "Gunnar Henderson", "Scarcity Dropoff": 4.2},
+        {"Position": "C", "Available Players": 3, "Top Available": "Adley Rutschman", "Scarcity Dropoff": 9.1}]}
+
+    def test_strategy_depth_with_a_board_uses_the_draft_pages_table(self) -> None:
+        self.s["_ami_draft_snapshot"] = copy.deepcopy(self.BOARD)
+        a = self.ask("How deep is shortstop in my strategy?", page="Draft Assistant Simulator").answer
+        self.assertIn("Your **Sluggers** strategy has 2 shortstops: Corey Seager (#3), Mookie Betts (#4).", a)
+        self.assertIn("On your current draft board (SS): 7 still available, best available Gunnar Henderson, "
+                      "scarcity drop-off 4.2.", a)
+
+    def test_without_a_board_ami_says_it_needs_one(self) -> None:
+        a = self.ask("Is catcher scarce in my strategy?").answer
+        self.assertIn("has 0 catchers.", a)
+        self.assertIn("I need a draft board", a)
+
+    def test_depth_questions_without_the_strategy_keep_their_route(self) -> None:
+        from ami_assistant.strategy_research import resolve_depth_question
+
+        for q in ("Do I have enough catchers?", "How deep is shortstop this year?", "Is catcher scarce?"):
+            self.assertIsNone(resolve_depth_question(q, lambda *a: self.fail("no tool call expected")), q)
+
+    def test_depth_is_read_only_and_gated(self) -> None:
+        free = bm.default_entitlement()
+        with mock.patch.object(bm, "ENFORCED_FEATURES", frozenset({bm.FeatureId.DRAFT_STRATEGIES})):
+            self.assertIn("part of Pro", self.ask("How deep is shortstop in my strategy?", entitlement=free).answer)
+        with mock.patch("suite_auth.is_anonymous_guest", return_value=True):
+            self.assertIn("Sign in", self.ask("How deep is shortstop in my strategy?").answer)
+        self.assertEqual(self.writes(), [])
+
+
 class LineWording(unittest.TestCase):
     def test_empty_or_refused_results_give_no_line(self) -> None:
         from ami_assistant.tools.registry import ToolResult, fail
