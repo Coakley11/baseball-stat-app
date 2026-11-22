@@ -38,9 +38,10 @@ RETURN_PAGE_KEY = "monetization_return_page"
 DEV_PLAN_KEY = "_dev_monetization_plan"
 
 PRICING_TITLE = "Unlock Baseball Explorer Pro"
+PRICING_CAPTION = "Choose the level that fits how deeply you analyze and manage baseball."  # = AMI page help purpose
 LOCKED_SENTENCE = "This feature is included with Baseball Explorer Pro."
 PRICE_FALLBACK = "Price shown at secure checkout"
-PRO_BADGE = ":orange-badge[:material/workspace_premium: PRO]"
+PRO_BADGE = ":orange-badge[✨ PRO]"
 PREVIEW_NOTE = "open to everyone while billing is in preview"
 PRICE_LABEL_ENV = "BASEBALL_PRO_PRICE_LABEL"  # same setting as fix/billing-portal-completion
 PRICE_LABEL_MAX = 40
@@ -291,6 +292,7 @@ def render_pricing_page(st, session: MutableMapping, snapshot: EntitlementSnapsh
     label = pro_price_label()
     st.markdown(_PRICING_CSS, unsafe_allow_html=True)
     st.title(PRICING_TITLE)
+    st.caption(PRICING_CAPTION)
     st.markdown(
         "<div class='bxp-hero'><p>Baseball Explorer stays free for research, drafting and running your "
         "league. <b>Pro</b> adds advanced analytics, forecasting and strategy tools for serious fantasy "
@@ -300,7 +302,7 @@ def render_pricing_page(st, session: MutableMapping, snapshot: EntitlementSnapsh
     )
     if not enforced_features():
         st.info("Billing is in preview: every Pro feature below is open to all accounts for now. "
-                "Pro tools carry a Pro label in the app.", icon=":material/info:")
+                "Pro tools carry a Pro label in the app.", icon="ℹ️")
     render_subscription_actions(st, session, snapshot, key_prefix="pricing")
 
     st.subheader("What Pro adds")
@@ -313,11 +315,11 @@ def render_pricing_page(st, session: MutableMapping, snapshot: EntitlementSnapsh
 
     later = planned_items()
     if later:
-        with st.expander("Planned for Pro — not included yet", icon=":material/schedule:"):
+        with st.expander("Planned for Pro — not included yet", icon="🛠️"):
             st.caption("These are being built. They are not part of Pro until they are released.")
             st.markdown("\n".join(f"- {item}" for item in later))
 
-    with st.expander("Billing, renewal and cancellation", icon=":material/receipt_long:", expanded=False):
+    with st.expander("Billing, renewal and cancellation", icon="💳", expanded=False):
         st.markdown(
             f"- **Price and billing period:** {label or 'shown on the secure Stripe Checkout page before you pay'}."
             " Checkout always shows the exact amount and how often you are billed.\n"
