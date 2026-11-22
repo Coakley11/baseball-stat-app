@@ -6767,10 +6767,19 @@ def add_primary_team_for_career(grouped_df, source_df):
         .merge(career_pos_basis, on="playerID", how="left")
     )
 
-@st.cache_data(show_spinner=False)
+@st.cache_resource(show_spinner=False, max_entries=2)
 def load_data(_hof_cache_key: float = 0.0):
-    """Lahman batting / yearly / people (baseball_history.load_history_frames; cached here)."""
-    return _history.load_history_frames(BASE_DIR, read_csv=read_required_csv)
+    """Lahman batting / yearly / people (baseball_history.load_history_frames), one shared read-only copy.
+
+    Memory (2026-11-22 profile): with ``st.cache_data`` every script run got its own copy, and earlier runs
+    stay alive through the widget callbacks / fragments they defined, so one visitor held several full
+    copies. These are public reference tables, identical for every visitor, so one process-wide object is
+    shared; ``shared_reference_frames.freeze`` makes any in-place change raise instead of altering it for
+    every session. Code that needs to edit copies first (as it already does).
+    """
+    from shared_reference_frames import freeze
+
+    return tuple(freeze(df) for df in _history.load_history_frames(BASE_DIR, read_csv=read_required_csv))
 
 
 
