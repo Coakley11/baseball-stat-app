@@ -229,7 +229,10 @@ class EntitlementGateTests(unittest.TestCase):
                        "get_team_needs": "draft_team_needs"}
         # A1 (2026-11-08): the user's saved strategies, gated like Draft Strategy · PRO itself.
         strategy_tools = {"list_my_strategies": "draft_strategy_library", "get_my_strategy": "draft_strategy_library",
-                          "compare_strategy_to_global": "draft_strategy_library"}
+                          "compare_strategy_to_global": "draft_strategy_library",
+                          # A2 (2026-11-22): the research bridge, under the same Pro capability.
+                          "strategy_membership": "draft_strategy_library",
+                          "strategy_top_at_position": "draft_strategy_library"}
         self.assertEqual(tagged, {**draft_tools, **strategy_tools})
         for cap in draft_tools.values():
             self.assertEqual(CAPABILITY_FEATURES[cap], FeatureId.ADVANCED_DRAFT_INTELLIGENCE)

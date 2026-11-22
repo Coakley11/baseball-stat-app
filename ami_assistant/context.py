@@ -75,6 +75,11 @@ PAGE_KEYS: dict[str, dict[str, tuple[str, ...]]] = {
         "weight_trend": ("value_w_trend",),
     },
 }
+# A2 (2026-11-22): research pages name the selected Pro strategy too (editor state only, no storage call).
+RESEARCH_STRATEGY_PAGES = ("Historical Explorer", "Career Totals", "Comparison Tool", "Trend Value", "Valuation",
+                           "Fantasy Sleepers & Busts")
+for _page in RESEARCH_STRATEGY_PAGES:
+    PAGE_KEYS.setdefault(_page, {})["strategy"] = PAGE_KEYS["Draft Strategy Assistant"]["strategy"]
 DRAFT_PAGES = ("Draft Assistant Simulator", "Live Draft Room", "Draft Room Simulator", "Draft Lab / Simulation")
 # Pages whose context line names the active league (read through fantasy_league_peek; never writes).
 LEAGUE_PAGES = ("Home", "Fantasy Standings Tracker", "Fantasy Lineup Assistant", "Waiver Wire / Add-Drop Center",
@@ -134,7 +139,7 @@ class AmiPageContext:
         if self.draft:
             pick = self.draft.get("current_pick")
             bits.append(f"draft pick {pick}" if pick else "draft in progress")
-        if self.strategy and self.page == STRATEGY_PAGE:
+        if self.strategy and (self.page == STRATEGY_PAGE or self.page in RESEARCH_STRATEGY_PAGES):
             tag = " (not saved yet)" if self.strategy.get("never_saved") else (
                 " (unsaved changes)" if self.strategy.get("unsaved") else "")
             bits.append(f"strategy {self.strategy.get('selected')}{tag}")
