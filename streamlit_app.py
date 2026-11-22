@@ -4179,7 +4179,7 @@ def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
     if len(numeric_cols) < 2:
         return
 
-    with st.expander("Relationship Finder", expanded=False):
+    with st.expander("Relationship Finder · PRO", expanded=False):
         render_pro_note(st, st.session_state, "advanced_analytics", key=f"pro_{key_prefix}_rf",
                         label="Relationship Finder")
         st.caption(
@@ -17250,7 +17250,7 @@ elif active_page == "Leaderboards":
     for _ws in weight_stats:
         st.session_state.setdefault(f"leaders_w_{_ws}", _default_weights.get(_ws, 0.0))
     weight_values = {}
-    with st.expander("Custom stat weights (defaults: HR / RBI / SB at 1.0; others 0)", expanded=False):
+    with st.expander("Custom stat weights · PRO (defaults: HR / RBI / SB at 1.0; others 0)", expanded=False):
         render_pro_note(st, st.session_state, "advanced_analytics", key="pro_leaders_weights",
                         label="Custom leaderboard weights")
         st.caption("Weights feed the Score column only; raw counting and rate stats in the table are unchanged.")
@@ -17813,7 +17813,7 @@ elif active_page == "Comparison Tool":
 
     st.divider()
     if not pp.skip_heavy_work(st):
-      with st.expander("Advanced: Statistical significance test", expanded=False):
+      with st.expander("Advanced: Statistical significance test · PRO", expanded=False):
         render_pro_note(st, st.session_state, "advanced_analytics", key="pro_compare_significance",
                         label="Significance test")
         _sig_axis_mode = st.session_state.get("compare_x_axis_mode", "Season Year")
@@ -19288,7 +19288,7 @@ elif active_page == "Fantasy Sleepers & Busts":
             normalize_score(fantasy_df["SB"]) + normalize_score(fantasy_df["BA"])
         ) / 5
     else:
-        with st.expander("Points League Scoring Settings"):
+        with st.expander("Points League Scoring Settings · PRO"):
             render_pro_note(st, st.session_state, "advanced_analytics", key="pro_sleepers_points",
                             label="Custom points scoring")
             with mobile_wrap_row(st, "sleepers-points-p1"):
@@ -21323,7 +21323,7 @@ elif active_page == "Draft Assistant Simulator":
             help_text="Pick a name from the recommendation table, then Add to Watchlist, Add to Draft Queue, Send to Comparison, Send to Trend, or Simulate Draft Pick in one click.",
         )
 
-        with st.expander("Position scarcity & roster category heatmap", expanded=False):
+        with st.expander("Position scarcity & roster category heatmap · PRO", expanded=False):
             render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_da_scarcity",
                             label="Scarcity heatmap")
             st.subheader("Position scarcity")
@@ -31504,7 +31504,7 @@ elif active_page == "Valuation":
         fantasy_format=st.session_state.get("fantasy_market_format", "5x5 Roto"),
     )
 
-    with st.expander("Valuation blend weights", expanded=False):
+    with st.expander("Valuation blend weights · PRO", expanded=False):
         render_pro_note(st, st.session_state, "advanced_analytics", key="pro_valuation_weights",
                         label="Custom valuation weights")
         st.caption(
@@ -31817,7 +31817,7 @@ elif active_page == "ML Predictions":
             on_change=projections_filter_changed,
         )
 
-        with st.expander("Advanced projection tuning (defaults work well)", expanded=False):
+        with st.expander("Advanced projection tuning · PRO (defaults work well)", expanded=False):
             render_pro_note(st, st.session_state, "ml_predictions", key="pro_ml_tuning", label="Projection tuning")
             st.caption("Adjust how strongly the projection blends regression, age, and similar-player context.")
             ml_projection_style = st.selectbox(
