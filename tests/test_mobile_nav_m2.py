@@ -10,6 +10,9 @@ import mobile_nav_m2 as nav
 ROOT = Path(__file__).resolve().parents[1]
 
 
+_UNSET = object()
+
+
 class _FakeContainer:
     def __enter__(self):
         return self
@@ -32,7 +35,7 @@ class _FakeSt:
         self.container_keys.append(key)
         return _FakeContainer()
 
-    def selectbox(self, label, options, *, index=0, format_func=None, key=None, on_change=None, label_visibility=None):
+    def selectbox(self, label, options, *, index=_UNSET, format_func=None, key=None, on_change=None, label_visibility=None):
         self.selectbox_calls.append(
             {
                 "label": label,
@@ -43,7 +46,12 @@ class _FakeSt:
                 "on_change": on_change,
             }
         )
-        return options[index] if options else None
+        if not options:
+            return None
+        if index is _UNSET:  # like Streamlit: the Session State value, else the first option
+            value = self.session_state.get(key)
+            return value if value in options else options[0]
+        return options[index]
 
 
 class _FakeStWithPills(_FakeSt):
@@ -249,7 +257,26 @@ class RenderMobileQuickNavTests(unittest.TestCase):
             main_sidebar_page_key="main_sidebar_page",
             on_sidebar_page_change=lambda: None,
         )
-        self.assertEqual(st.selectbox_calls[0]["index"], 0)
+        # The selectbox shows the first option, through its Session State value (never an index too).
+        self.assertEqual(st.session_state[nav.QUICK_NAV_SELECT_KEY], "Historical Explorer")
+        self.assertIs(st.selectbox_calls[0]["index"], _UNSET)
+
+    def test_selectbox_never_gets_a_default_and_a_session_value_together(self) -> None:
+        """D4J log 2026-11-22 13:48 UTC: Streamlit warned that _mobile_quick_nav_select was created with a
+        default value but also had its value set via the Session State API (mobile_nav_m2.py line 214)."""
+        for active in ("Live Draft Room", "Historical Explorer", "Not A Real Page"):
+            st = _FakeSt(session_state={nav.QUICK_NAV_SELECT_KEY: "Fantasy Standings Tracker"})
+            nav.render_mobile_quick_nav(
+                st,
+                active_page=active,
+                page_options=["Historical Explorer", "Live Draft Room", "Fantasy Standings Tracker"],
+                page_option_label=self._label,
+                main_sidebar_page_key="main_sidebar_page",
+                on_sidebar_page_change=lambda: None,
+            )
+            sb = st.selectbox_calls[0]
+            self.assertIs(sb["index"], _UNSET, active)
+            self.assertIn(st.session_state[nav.QUICK_NAV_SELECT_KEY], sb["options"], active)
 
 
 class CssScopingTests(unittest.TestCase):
@@ -318,7 +345,8 @@ class SectionPillsTests(unittest.TestCase):
         self.assertEqual(st.pills_calls[0]["key"], nav.QUICK_NAV_SECTION_KEY)
         self.assertEqual(st.session_state[nav.QUICK_NAV_SECTION_KEY], "Players")
         self.assertEqual(st.selectbox_calls[0]["options"], ["Historical Explorer", "Leaderboards"])
-        self.assertEqual(st.selectbox_calls[0]["index"], 1)
+        self.assertEqual(st.session_state[nav.QUICK_NAV_SELECT_KEY], "Leaderboards")  # shown via Session State
+        self.assertIs(st.selectbox_calls[0]["index"], _UNSET)
 
     def test_picking_a_section_opens_its_first_page_through_the_sidebar_key(self) -> None:
         changed = []
