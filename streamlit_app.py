@@ -341,7 +341,8 @@ from projection_style import PROJECTION_STYLE_OPTIONS, get_draft_projection_fact
 
 BASE_DIR = Path(__file__).resolve().parent
 
-@st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
+# Not cached: only load_data reads these files, and load_data is cached once per process (st.cache_resource),
+# so a second cache here only kept ~47 MB of raw CSV frames alive for nothing (2026-11-22 memory profile).
 def read_required_csv(filename):
     path = BASE_DIR / filename
     if not path.exists():
