@@ -120,6 +120,16 @@ class PermanentDeleteTests(_Base):
         self.assertEqual(self.keys_anywhere("B"), {})
         self.assertTrue(self.b[v2.ITEM_TYPE].stored["A"]["valid"])
 
+    def test_delete_restore_delete_then_permanent_leaves_nothing(self) -> None:
+        """The QA sequence of 2026-11-22: a restored strategy's old trash copy must not linger hidden."""
+        first = v2.soft_delete(self.s, "A", confirmed=True)
+        v2.restore_from_trash(self.s, first["trash_id"])
+        self.assertNotIn(first["trash_id"], self.b[v2.TRASH_ITEM_TYPE].stored, "restore removes its trash copy")
+        with mock.patch("draft_strategy_store._now", return_value="2099-01-01T00:00:00+00:00"):
+            second = v2.soft_delete(self.s, "A", confirmed=True)
+        v2.permanent_delete(self.s, second["trash_id"], confirmed=True)
+        self.assertEqual(self.keys_anywhere("A"), {})
+
     def test_soft_delete_and_restore_still_recover_everything(self) -> None:
         v2.append_research(self.s, "A", "note")
         row = v2.soft_delete(self.s, "A", confirmed=True)
@@ -127,7 +137,8 @@ class PermanentDeleteTests(_Base):
         self.assertEqual(restored["id"], "A")
         self.assertTrue(self.b[v2.ITEM_TYPE].stored["A"]["valid"])
         self.assertIn("A", self.b[v2.RESEARCH_ITEM_TYPE].stored)
-        self.assertEqual(self.b[v2.ITEM_TYPE].purged, [], "nothing is removed for good by soft delete/restore")
+        self.assertEqual(self.b[v2.ITEM_TYPE].purged, [], "the strategy's own row is never removed by soft delete/restore")
+        self.assertEqual(self.b[v2.TRASH_ITEM_TYPE].stored, {}, "only its trash copy is gone")
 
     def test_confirmation_and_the_pause_switch_still_apply(self) -> None:
         row = v2.soft_delete(self.s, "A", confirmed=True)
