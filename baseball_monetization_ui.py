@@ -113,15 +113,19 @@ def render_pro_note(
     Uses this run's snapshot (``RUN_SNAPSHOT_KEY``, set by the app) unless one is passed.
     """
     feature_id = FeatureId(feature_id)  # a typo fails loudly in tests
-    snap = snapshot if snapshot is not None else session.get(RUN_SNAPSHOT_KEY)
-    if not isinstance(snap, EntitlementSnapshot):
-        snap = current_entitlement(session)
-    state = pro_state(snap, feature_id)
-    if state == "locked":
-        render_locked_feature(st, session, feature_id, key=key)
-        return False
-    st.caption(pro_note_text(feature_id, state, label))
-    return state != "checking"
+    try:
+        snap = snapshot if snapshot is not None else session.get(RUN_SNAPSHOT_KEY)
+        if not isinstance(snap, EntitlementSnapshot):
+            snap = current_entitlement(session)
+        state = pro_state(snap, feature_id)
+        if state == "locked":
+            render_locked_feature(st, session, feature_id, key=key)
+            return False
+        st.caption(pro_note_text(feature_id, state, label))
+        return state != "checking"
+    except Exception:
+        # A label must never break the page it sits on. Fail closed only for an enforced feature.
+        return not is_enforced(feature_id)
 
 
 def render_locked_feature(st, session: MutableMapping, feature_id: FeatureId, *, key: str) -> None:
