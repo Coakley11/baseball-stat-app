@@ -150,6 +150,18 @@ def _full_analysis_status(st: Any, last: dict[str, Any]) -> None:
         st.success("Full analysis requested. Open Command Center when you're ready to review it.")
 
 
+def _used_strategy_coaching(last: dict[str, Any]) -> bool:
+    """True when the answer read the user's saved strategies (tools gated by the Draft Strategies
+    capability): the Pro "AMI strategy coaching" label is shown under it. Presentation only."""
+    try:
+        from ami_assistant.tools.registry import REGISTRY
+
+        return any(getattr(REGISTRY.get(str(n)), "plan_capability", "") == "draft_strategy_library"
+                   for n in last.get("tools") or [])
+    except Exception:
+        return False
+
+
 def _panel_body(st: Any, active_page: str, yearly_df: Any, entitlement: Any = None, *,
                 full_analysis: FullAnalysis | None = None, surface: str = "sidebar") -> None:
     prefix = PHONE_PREFIX if surface == "phone" else ""
@@ -197,6 +209,15 @@ def _panel_body(st: Any, active_page: str, yearly_df: Any, entitlement: Any = No
             meta = [x for x in (last.get("grounding_label"), *(last.get("basis") or [])) if x]
             if meta:
                 box.caption(" · ".join(meta))
+            if _used_strategy_coaching(last):
+                with box:
+                    try:
+                        from baseball_monetization_ui import render_pro_note
+
+                        render_pro_note(st, ss, "ami_strategy_coaching", key=f"{prefix}pro_ami_coaching",
+                                        label="AMI strategy coaching (answers about your saved strategies)")
+                    except Exception:  # presentation only; never break the panel
+                        pass
         if full_analysis is not None and full_analysis_offered(last):
             # One send per answer: once requested, the button is spent (a failed send can be retried).
             done = ss.get(FULL_ANALYSIS_KEY)

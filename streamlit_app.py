@@ -11280,6 +11280,8 @@ def compact_player_action_center(
     sim_result = st.session_state.get(f"{key}_draft_simulation_result")
     if isinstance(sim_result, dict):
         st.markdown("##### Simulate Draft Pick")
+        render_pro_note(st, st.session_state, "advanced_draft_intelligence", key=f"pro_{key}_simulate_result",
+                        label="Simulate Draft Pick (roster impact)")
         render_draft_simulation_result(sim_result)
         if st.button("Clear simulation", key=f"{key}_clear_draft_simulation", icon=_icons.CLEAR):
             st.session_state.pop(f"{key}_draft_simulation_result", None)
@@ -11656,6 +11658,9 @@ def player_quick_actions_popover(
         sim_state_key = f"{key}_draft_simulation_result"
         proj_dialog_key = f"{key}_projection_breakdown_pending"
 
+        if active_current and has_draft_room_context():
+            render_pro_note(st, st.session_state, "advanced_draft_intelligence", key=f"pro_{sfx}_simulate",
+                            label="Simulate Draft Pick (roster impact)")
         extra = st.columns(2)
         with extra[0]:
             if active_current and has_draft_room_context():
@@ -11793,6 +11798,8 @@ def render_contextual_player_actions(
             _maybe_show_projection_breakdown_dialog(ctx_proj_key)
 
         if active_available:
+            render_pro_note(st, st.session_state, "advanced_draft_intelligence", key=f"pro_{act_id}_simulate",
+                            label="Simulate Draft Pick (roster impact)")
             st.button(
                 "Simulate Draft Pick",
                 key=f"plr_act_{act_id}_simulate_draft_button",

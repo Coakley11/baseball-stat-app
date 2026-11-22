@@ -15,7 +15,8 @@ import baseball_monetization_ui as ui
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_SOURCES = ["streamlit_app.py", "fantasy_weekly_lineup_ui.py", "fantasy_lineup_management_ui.py",
-               "fantasy_trade_center_ui.py", "fantasy_waiver_wire_ui.py", "draft_strategy_ui.py"]
+               "fantasy_trade_center_ui.py", "fantasy_waiver_wire_ui.py", "draft_strategy_ui.py",
+               "draft_archive_ui.py", "ami_assistant/ui.py"]
 
 
 def _app_text() -> str:
@@ -103,7 +104,7 @@ class PricingContentTests(unittest.TestCase):
 class IndicatorPlacementTests(unittest.TestCase):
     def test_every_indicator_names_a_registered_feature(self):
         used = re.findall(r'render_pro_note\(\s*st,\s*[\w.]+,\s*"(\w+)"', _app_text())
-        self.assertGreaterEqual(len(used), 20)
+        self.assertGreaterEqual(len(used), 28)
         for fid in used:
             bm.FeatureId(fid)  # raises on a typo
 
@@ -112,12 +113,37 @@ class IndicatorPlacementTests(unittest.TestCase):
         used = set(re.findall(r'render_pro_note\(\s*st,\s*[\w.]+,\s*"(\w+)"', text))
         used |= set(re.findall(r'pro_note_text\(\s*"(\w+)"', text))
         missing = {d.feature_id.value for d in bm.catalog()
-                   if d.status is not bm.FeatureStatus.PLANNED} - used - {"ami_strategy_coaching"}
+                   if d.status is not bm.FeatureStatus.PLANNED} - used
         self.assertFalse(missing, f"no Pro label for: {sorted(missing)}")
 
     def test_indicators_do_not_gate_anything_today(self):
         """Presentation only: callers ignore the return value, so nothing can be hidden yet."""
         self.assertNotRegex(_app_text(), r"(if|and|or|not)\s+render_pro_note\(")
+
+
+class DecisionTests(unittest.TestCase):
+    """Owner decisions 2026-11-22 are reflected in the registry."""
+
+    def test_ml_free_keeps_the_top_25(self):
+        self.assertIn("top 25", bm.feature_definition(bm.FeatureId.ML_PREDICTIONS).free_keeps)
+
+    def test_live_draft_viewing_stays_free_and_grading_is_draft_lab(self):
+        lab = bm.feature_definition(bm.FeatureId.DRAFT_LAB)
+        self.assertIn("viewing, saving and exporting your completed drafts", lab.free_keeps)
+        self.assertTrue(any("completed Live drafts" in i.text for i in lab.available_items))
+        self.assertIs(bm.CAPABILITY_FEATURES["draft_lab_live_analysis"], bm.FeatureId.DRAFT_LAB)
+
+    def test_simulate_draft_pick_is_pro_with_one_capability(self):
+        self.assertIs(bm.CAPABILITY_FEATURES["draft_pick_simulation"], bm.FeatureId.ADVANCED_DRAFT_INTELLIGENCE)
+        self.assertEqual(_app_text().count('label="Simulate Draft Pick (roster impact)"'), 3)
+
+    def test_ami_coaching_label_follows_the_strategy_capability(self):
+        import ami_assistant.tools  # noqa: F401  (registers tools)
+        from ami_assistant.ui import _used_strategy_coaching
+
+        self.assertTrue(_used_strategy_coaching({"tools": ["list_my_strategies"]}))
+        self.assertFalse(_used_strategy_coaching({"tools": ["get_global_list"]}))
+        self.assertFalse(_used_strategy_coaching({}))
 
 
 class RenderedTests(unittest.TestCase):

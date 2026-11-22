@@ -198,14 +198,14 @@ _CATEGORY_STYLE: dict[Category, tuple[str, str, str, str]] = {
 }
 
 _FREE_INCLUDES = (
-    "Historical Explorer, Career Totals and Leaderboards",
-    "Player search, profiles, comparisons and standard charts",
-    "Trend Value, Valuation and Sleepers & Busts",
-    "25 ML predictions for your filters",
-    "Draft Room Simulator, Draft Assistant and Live Drafts",
-    "Your personal Global Queue",
-    "Lineups, trades, waivers and league standings",
-    "General Ask AMI help",
+    "Every season since 1871: Historical Explorer, Career Totals and Leaderboards",
+    "Player search, profiles, side-by-side comparisons and charts",
+    "Trend Value, Valuation and the Sleepers & Busts lists",
+    "The top 25 ML projections for your filters",
+    "Live Drafts, the Draft Room Simulator and Draft Assistant recommendations",
+    "Your Global Queue: one personal ranked list for every draft",
+    "Setting lineups, making trades, waiver pickups and league standings",
+    "Ask AMI for help with any page, stat or player",
 )
 
 _PRICING_CSS = """<style>
@@ -263,6 +263,13 @@ def pricing_cards_html() -> str:
     return "<div class='bxp-grid'>" + "".join(cards) + "</div>"
 
 
+def free_card_html() -> str:
+    """What every account can use, free: the same card style as the Pro groups, in green."""
+    items = "".join(f"<li>{_esc(t)}</li>" for t in _FREE_INCLUDES)
+    return ("<div class='bxp-card' style='--bxp-accent:#2e7d4f;--bxp-tint:#ebf6ef;--bxp-border:#c3e3cf;margin:6px 0 12px'>"
+            "<h4>✅ Free for everyone</h4><div class='bxp-feat'><ul>" + items + "</ul></div></div>")
+
+
 def comparison_table_html() -> str:
     """Free vs Pro, one row per Pro feature: what Free keeps in that area and what Pro adds."""
     rows = []
@@ -310,7 +317,7 @@ def render_pricing_page(st, session: MutableMapping, snapshot: EntitlementSnapsh
 
     st.subheader("Free vs Pro")
     st.caption("Free stays a complete app. Pro adds the advanced layer in each area.")
-    st.markdown("**Free includes:** " + " · ".join(_FREE_INCLUDES))
+    st.markdown(free_card_html(), unsafe_allow_html=True)
     st.markdown(comparison_table_html(), unsafe_allow_html=True)
 
     later = planned_items()
