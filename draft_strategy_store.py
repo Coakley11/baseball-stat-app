@@ -79,6 +79,16 @@ class _CloudBackend:
 
         sss.invalidate_saved_item(APP_ID, self.item_type, key)
 
+    def purge(self, key: str, *, only_hidden: bool = False) -> int:
+        """Remove the row from the database for good (``delete`` only hides it). ``only_hidden``
+        removes it only if it is already hidden, never a live row. Used by permanent deletion."""
+        from strategy_deletion_guard import assert_strategy_deletion_allowed
+
+        assert_strategy_deletion_allowed(ITEM_TYPE)
+        import suite_storage_supabase as sss
+
+        return sss.delete_saved_item(APP_ID, self.item_type, key, only_hidden=only_hidden)
+
 
 class _LocalBackend:
     """Single-user install without cloud storage: one JSON file per item type in the active workspace
@@ -130,6 +140,15 @@ class _LocalBackend:
         data = self._read()
         data.pop(key, None)
         self._write(data)
+
+    def purge(self, key: str, *, only_hidden: bool = False) -> int:
+        """The local file keeps no hidden rows: ``delete`` already removed it, so there is nothing
+        hidden to remove; a full purge is the same as ``delete``."""
+        if only_hidden:
+            return 0
+        present = key in self._read()
+        self.delete(key)
+        return int(present)
 
 
 def _backend(item_type: str = ITEM_TYPE):
