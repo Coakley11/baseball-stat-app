@@ -70,13 +70,32 @@ def ask(
             dataset = dataset_from_yearly(yearly_df) if yearly_df is not None else load_standalone_dataset()
         timings["dataset_ms"] = _ms(t)
 
+        # A2: "compare my top two first basemen" → players resolved from the user's own strategy first.
         t = time.perf_counter()
-        plan = Router(dataset).route(q, ctx, conv)
+        from ami_assistant.strategy_research import membership_line, membership_players, resolve_top_question
+
+        pre_log: list[dict[str, Any]] = []
+
+        def _call(name: str, args: dict[str, Any]) -> Any:
+            res = REGISTRY.call(name, args, dataset=dataset, session=session, entitlement=entitlement)
+            pre_log.append({"tool": name, "ok": res.ok, "ms": res.elapsed_ms, "error_code": res.error_code})
+            return res
+
+        top = resolve_top_question(q, _call)
+        if top is not None and top.answer:
+            timings["total_ms"] = _ms(t_all)
+            return AmiResponse(
+                answer=top.answer, intent="my_strategy", grounding="app_data",
+                grounding_label=GROUNDING_LABELS.get("app_data", ""), tools=pre_log,
+                context_summary=ctx.summary(), timings_ms=timings, provider="deterministic",
+            )
+        routed_q = top.question if top is not None else q
+        plan = Router(dataset).route(routed_q, ctx, conv)
         timings["route_ms"] = _ms(t)
 
         t = time.perf_counter()
         results: dict[str, list[Any]] = {}
-        tool_log: list[dict[str, Any]] = []
+        tool_log: list[dict[str, Any]] = list(pre_log)
         for call in plan.calls:
             res = REGISTRY.call(call.name, call.args, dataset=dataset, session=session, entitlement=entitlement)
             results.setdefault(call.name, []).append(res)
@@ -96,7 +115,22 @@ def ask(
         )
         timings["compose_ms"] = _ms(t)
 
-        ok = all(entry["ok"] for entry in tool_log)
+        # A2: where the answer's players sit in the selected strategy (nothing when there is none).
+        answer_text = composed.text
+        if top is not None and top.lead:
+            answer_text = top.lead + "\n\n" + answer_text
+        names = membership_players(plan)
+        if names and not getattr(plan, "clarification", ""):
+            res = REGISTRY.call("strategy_membership", {"players": names}, dataset=dataset, session=session,
+                                entitlement=entitlement)
+            tool_log.append({"tool": "strategy_membership", "ok": res.ok, "ms": res.elapsed_ms,
+                             "error_code": res.error_code})
+            line = membership_line(res)
+            if line:
+                answer_text = answer_text + "\n\n" + line
+
+        # The membership line is optional: a refused or empty lookup never marks the answer as failed.
+        ok = all(entry["ok"] for entry in tool_log if entry["tool"] != "strategy_membership")
         if remember and session_state is not None:
             if plan.intent in STAT_INTENTS and ok:
                 conv.remember(
@@ -117,11 +151,11 @@ def ask(
                 # Same league/team every turn (resolved fresh); remember the slot, player and week.
                 conv.remember(intent=plan.intent, position=plan.position, page=ctx.page,
                               subject_player=plan.subject, week=plan.week)
-            conv.add_turn(Turn(q, composed.text, plan.intent, plan.grounding, [e["tool"] for e in tool_log]))
+            conv.add_turn(Turn(q, answer_text, plan.intent, plan.grounding, [e["tool"] for e in tool_log]))
             save_conversation(session_state, conv)
         timings["total_ms"] = _ms(t_all)
         return AmiResponse(
-            answer=composed.text,
+            answer=answer_text,
             intent=plan.intent,
             grounding=plan.grounding,
             grounding_label=GROUNDING_LABELS.get(plan.grounding, ""),
