@@ -88,6 +88,9 @@ class SharedFramesAreReadOnly(unittest.TestCase):
         self.assertRegex(block, r"@st\.cache_resource\(show_spinner=False, max_entries=2\)\s*\ndef load_data\(")
         self.assertIn("freeze(df) for df in _history.load_history_frames", block)
         self.assertTrue(re.search(r"^batting_df, yearly_df, people_df = load_data\(HOF_CACHE_KEY\)", src, re.M))
+        # The raw CSV reader is no longer a second cache (only load_data, cached once, reads the files).
+        reader = src[src.index("def read_required_csv(") - 300: src.index("def read_required_csv(")]
+        self.assertNotIn("@st.cache_data", reader.splitlines()[-1] if reader.splitlines() else "")
 
 
 if __name__ == "__main__":
