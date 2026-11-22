@@ -72,7 +72,12 @@ def ask(
 
         # A2: "compare my top two first basemen" → players resolved from the user's own strategy first.
         t = time.perf_counter()
-        from ami_assistant.strategy_research import membership_line, membership_players, resolve_top_question
+        from ami_assistant.strategy_research import (
+            membership_line,
+            membership_players,
+            resolve_depth_question,
+            resolve_top_question,
+        )
 
         pre_log: list[dict[str, Any]] = []
 
@@ -82,10 +87,11 @@ def ask(
             return res
 
         top = resolve_top_question(q, _call)
-        if top is not None and top.answer:
+        depth = None if top is not None else resolve_depth_question(q, _call)
+        if depth is not None or (top is not None and top.answer):
             timings["total_ms"] = _ms(t_all)
             return AmiResponse(
-                answer=top.answer, intent="my_strategy", grounding="app_data",
+                answer=depth if depth is not None else top.answer, intent="my_strategy", grounding="app_data",
                 grounding_label=GROUNDING_LABELS.get("app_data", ""), tools=pre_log,
                 context_summary=ctx.summary(), timings_ms=timings, provider="deterministic",
             )
