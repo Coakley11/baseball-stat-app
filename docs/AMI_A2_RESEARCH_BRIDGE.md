@@ -37,7 +37,7 @@ strategies and none selected, research answers add nothing (they never ask "whic
 
 ## Tests
 
-`tests/test_ami_a2_research_bridge.py` (26): membership on compare/trend/valuation/historical answers; not-in-strategy;
+`tests/test_ami_a2_research_bridge.py` (24): membership on compare/trend/valuation/historical answers; not-in-strategy;
 no selection; only-one counts as selected; unsaved labelled; deleted never read; leaderboards unchanged; no writes
 and session unchanged apart from AMI memory; signed-out (no line, no read); enforced gate (free vs Pro); two-account
 isolation; top-N resolution (named strategy, multi-position entries, too few, single player → profile); depth with
