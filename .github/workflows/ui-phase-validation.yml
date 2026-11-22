@@ -6,7 +6,7 @@ name: UI phase validation
 
 on:
   push:
-    branches: ["ci/ui-phase-remote-validation", "ci/adaptive-queue-validation", "ci/post-release-validation", "ci/pro-strategy-s2-validation", "ci/strategy-s0-validation", "ci/pro-strategy-s2-integrated", "ci/ami-a1-validation", "ci/post-release-review-2", "ci/review-2-candidate", "ci/draft-source-privacy", "ci/ami-a2-validation", "ci/memory-retention"]
+    branches: ["ci/ui-phase-remote-validation", "ci/adaptive-queue-validation", "ci/post-release-validation", "ci/pro-strategy-s2-validation", "ci/strategy-s0-validation", "ci/pro-strategy-s2-integrated", "ci/ami-a1-validation", "ci/post-release-review-2", "ci/review-2-candidate", "ci/draft-source-privacy", "ci/ami-a2-validation", "ci/memory-retention", "ci/ami-a2-release"]
 
 permissions:
   contents: read
