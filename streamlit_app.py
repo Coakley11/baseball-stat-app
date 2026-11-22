@@ -17250,7 +17250,7 @@ elif active_page == "Leaderboards":
     for _ws in weight_stats:
         st.session_state.setdefault(f"leaders_w_{_ws}", _default_weights.get(_ws, 0.0))
     weight_values = {}
-    with st.expander("Custom stat weights · PRO (defaults: HR / RBI / SB at 1.0; others 0)", expanded=False):
+    with st.expander("Custom stat weights (defaults: HR / RBI / SB at 1.0; others 0) · PRO", expanded=False):
         render_pro_note(st, st.session_state, "advanced_analytics", key="pro_leaders_weights",
                         label="Custom leaderboard weights")
         st.caption("Weights feed the Score column only; raw counting and rate stats in the table are unchanged.")
@@ -31817,7 +31817,7 @@ elif active_page == "ML Predictions":
             on_change=projections_filter_changed,
         )
 
-        with st.expander("Advanced projection tuning · PRO (defaults work well)", expanded=False):
+        with st.expander("Advanced projection tuning (defaults work well) · PRO", expanded=False):
             render_pro_note(st, st.session_state, "ml_predictions", key="pro_ml_tuning", label="Projection tuning")
             st.caption("Adjust how strongly the projection blends regression, age, and similar-player context.")
             ml_projection_style = st.selectbox(
