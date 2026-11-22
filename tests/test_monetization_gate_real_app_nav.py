@@ -52,7 +52,7 @@ class MonetizationAcceptanceRealAppTests(unittest.TestCase):
             at.radio(key="main_sidebar_page").set_value("Pricing & Upgrade").run()
             self.assertFalse(at.exception, [str(e.value)[:200] for e in at.exception])
             self.assertEqual(at.session_state["main_sidebar_page"], "Pricing & Upgrade")
-            self.assertIn("Baseball Free & Pro", _titles(at))
+            self.assertIn("Unlock Baseball Explorer Pro", _titles(at))
         finally:
             os.chdir(cwd)
 

@@ -21,7 +21,7 @@ DRAFT_TOOLS: tuple[tuple[str, str, str, str], ...] = (
     ("Draft Assistant Simulator", "🧩", "Draft Assistant",
      "Who to pick next: rankings from your board's team needs, positional scarcity and market value, with reasons."),
     ("Draft Lab / Simulation", "🧪", "Draft Lab",
-     "Test a strategy: the computer runs a four-team snake mock draft, then grades every roster."),
+     "Rehearse a draft: the computer runs a four-team snake mock draft, then grades every pick and roster."),
     ("Saved Draft Library", "📁", "Saved Draft Library",
      "Your saved drafts and leagues: open, rename, share, or make one your active league."),
     ("Draft Strategy Assistant", "♟️", "Draft Strategy · PRO",

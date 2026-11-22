@@ -859,6 +859,10 @@ def _render_build_analyze(
         def phone_wrap_row(_st, _key):
             return nullcontext()
 
+    from baseball_monetization_ui import render_pro_note
+
+    render_pro_note(st, session, "trade_intelligence", key="pro_trade_tools",
+                    label="Find Trade Ideas and Analyze Exact Trade (proposing and answering trades stay Free)")
     # Phones: ~2-up action tiles instead of five full-width buttons (desktop unchanged).
     with phone_wrap_row(st, "trade-actions"):
         c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 1, 1])

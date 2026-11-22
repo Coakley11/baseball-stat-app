@@ -293,6 +293,10 @@ def render_lineup_management_page(
             st.warning(w)
 
         st.subheader("Recommended Starters")
+        from baseball_monetization_ui import render_pro_note
+
+        render_pro_note(st, session, "lineup_intelligence", key="pro_lineup_startsit",
+                        label="Start/Sit recommendations")
         st.caption(
             "Position-aware starters for your active team. **Start/Sit Recommendation** shows the call; "
             "**Lineup Reason** explains confidence and why."
@@ -356,6 +360,7 @@ def render_lineup_management_page(
         )
 
         st.subheader("Lineup Diagnosis / How to Improve This Team")
+        render_pro_note(st, session, "lineup_intelligence", key="pro_lineup_diagnosis", label="Lineup diagnosis")
         st.caption(
             "Uses **Standings Tracker current-season stats** merged with your Draft Room roster. "
             "**Lineup** = the **position-aware recommended starters** above; **team** = full drafted team on this page. "

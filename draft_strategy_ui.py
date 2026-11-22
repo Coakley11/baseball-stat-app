@@ -301,12 +301,14 @@ def render_draft_strategy_page(st: Any, session: dict[str, Any], *, pool_fn=None
         from draft_strategy_store import reconcile_loaded_strategy
 
         reconcile_loaded_strategy(session)
+    from baseball_monetization_ui import pro_note_text
+
     if is_pro:
-        st.caption("♟️ **PRO** · included in your plan")
+        st.caption(pro_note_text("draft_strategies", "included"))
     elif can_use:
-        st.caption("♟️ **PRO** feature · open to everyone while billing is in preview")
+        st.caption(pro_note_text("draft_strategies", "preview"))
     else:
-        st.caption("♟️ **PRO** feature")
+        st.caption(pro_note_text("draft_strategies", "locked"))
     _show_flash(st)
     _render_settings(st, session)
     plan_state = _render_plan(st, session, pool_fn) if pool_fn is not None else {}

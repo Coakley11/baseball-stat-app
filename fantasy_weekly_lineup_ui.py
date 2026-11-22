@@ -707,6 +707,11 @@ def render_weekly_lineup_section(
         actions.append("waivers")
     if proxy_control is None:
         actions.append("trades")
+    if "suggest" in actions:
+        from baseball_monetization_ui import render_pro_note
+
+        render_pro_note(st, session, "lineup_intelligence", key=f"pro_lineup_suggest_{prefix}",
+                        label="Use Suggested Lineup (saving your own lineup stays Free)")
     with _wrap_row(st, f"u3-lineup-actions-{prefix}"):
         action_cols = st.columns(max(1, len(actions)))
     for action, col in zip(actions, action_cols):
