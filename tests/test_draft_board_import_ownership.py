@@ -262,7 +262,9 @@ class HostedSignedOutOwnershipTests(unittest.TestCase):
         _next_rerun(session)
         other = _refresh(session, **{k: v for k, v in _identity(signed_in=False).items() if k != "_suite_device_id"})
         scrub = scrub_simulator_runtime_for_current_account(other, reason="prepare_baseball_workspace")
-        self.assertEqual(scrub.get("reason"), "foreign_board_anonymous_owner_mismatch")
+        # Refused either at the account boundary (no verified sign-in: the blob is never applied, so
+        # the board is empty) or by the board's own owner check.
+        self.assertIn(scrub.get("reason"), ("empty_board", "foreign_board_anonymous_owner_mismatch"))
         self.assertEqual(table_pick_count(other.get(DRAFT_ROOM_TABLE_KEY)), 0)
 
     def test_signing_in_does_not_adopt_it(self, _auth) -> None:
@@ -271,7 +273,9 @@ class HostedSignedOutOwnershipTests(unittest.TestCase):
         _next_rerun(session)
         restored = _refresh(session, **_identity(signed_in=True))
         scrub = scrub_simulator_runtime_for_current_account(restored, reason="prepare_baseball_workspace")
-        self.assertEqual(scrub.get("reason"), "foreign_board_owner_mismatch")
+        # Refused either at the account boundary (no verified sign-in: the blob is never applied, so
+        # the board is empty) or by the board's own owner check.
+        self.assertIn(scrub.get("reason"), ("empty_board", "foreign_board_owner_mismatch"))
         self.assertEqual(table_pick_count(restored.get(DRAFT_ROOM_TABLE_KEY)), 0)
 
 
