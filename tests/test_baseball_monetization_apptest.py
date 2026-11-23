@@ -22,7 +22,7 @@ def test_rendered_free_pages_stay_available_during_billing_acceptance():
 
     at.radio(key="test_page").set_value("Pricing & Upgrade").run()
     assert not at.exception
-    assert "Baseball Free & Pro" in _text(at.title)
+    assert "Unlock Baseball Explorer Pro" in _text(at.title)
     assert "Current plan: **Free**" in _text(at.info)
 
     at.button(key="monetization_pricing_back").click().run()

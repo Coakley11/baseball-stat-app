@@ -122,6 +122,30 @@ def render_plan_selector(st: Any, session: dict[str, Any], view: dict[str, Any],
     flash = session.pop(flash_key, None)
     if isinstance(flash, dict):
         (st.success if flash.get("kind") == "success" else st.warning)(flash.get("text"))
+    if len(options) < 2 and _strategies_locked(session):
+        from baseball_monetization_ui import pro_note_text
+
+        st.caption(pro_note_text("draft_strategies", "locked", "Saved strategies as a starting plan"))
+
+
+def _strategies_locked(session: dict[str, Any]) -> bool:
+    """True only when a signed-in account is refused by the Pro gate (not a guest, not loading).
+    Never raises: the live draft panel must keep working whatever the membership state."""
+    try:
+        import baseball_monetization as bm
+        from baseball_monetization_ui import snapshot_for_run
+
+        try:
+            from suite_auth import is_anonymous_guest
+
+            if is_anonymous_guest(session):
+                return False
+        except ImportError:
+            pass
+        snap = snapshot_for_run(session)
+        return snap.ready and not bm.allows(snap, "draft_strategy_library")
+    except Exception:
+        return False
 
 
 def _add_to_queue(session: dict[str, Any], name: str) -> None:
@@ -375,6 +399,11 @@ def _render_save_back(st: Any, session: dict[str, Any], source: str, strategy_pl
     name = strategy_plan.get("name") or "the strategy"
     st.caption("Changes here stay with this draft."
                + (" This draft's copy has changes." if strategy_plan.get("edited") else ""))
+    if _strategies_locked(session):  # this draft's copy keeps working; only saving back needs Pro
+        from baseball_monetization_ui import pro_note_text
+
+        st.caption(pro_note_text("draft_strategies", "locked", f"Saving back to “{name}”"))
+        return
     ok = st.checkbox(f"Update my saved strategy “{name}” with this draft's order, pins and notes",
                      key=f"{kp}_dq_saveback_ok")
     st.button(f"Save back to “{name}”", key=f"{kp}_dq_saveback", icon=_icons.SAVE, disabled=not ok,

@@ -213,6 +213,10 @@ def _render_u1_waiver_answer(
     )
     if open_slots:
         u1.chips(st, [(f"Open roster spot: {', '.join(str(s) for s in open_slots[:4])}", "warn")])
+    from baseball_monetization_ui import render_pro_note
+
+    render_pro_note(st, st.session_state, "waiver_intelligence", key="pro_waiver_personalized",
+                    label="Personalized recommendations (standard picks and every add/drop stay Free)")
     if adds is None or adds.empty:
         st.info("No recommended adds for this filter. Try All positions under Explore more.")
         return

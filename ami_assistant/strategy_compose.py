@@ -112,7 +112,7 @@ class StrategyComposer:
             return (res.message + " Create one on **Draft Strategy · PRO**: start empty or from a copy of your "
                     "Global Queue.")
         if res.error_code == NOT_ENTITLED:
-            return res.message + " Your Global Queue stays free; see **Pricing & Upgrade** to compare plans."
+            return res.message + " Your Global Queue stays free."  # the registry message already points to Pricing
         if res.error_code == ts.SIGN_IN_REQUIRED:
             return "Sign in to use your saved Draft Strategies. Your Global Queue works without an account."
         return res.message or "I couldn't read your strategies just now; nothing was changed."

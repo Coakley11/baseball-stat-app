@@ -243,7 +243,7 @@ class AppWiringTests(unittest.TestCase):
         self.assertEqual(APP.count(call), 1)
         self.assertIn("full_analysis=_ami_full_analysis)", APP[APP.index(call): APP.index(call) + 200])
         # AMI gets the page gate's own plan snapshot for this run, resolved before the panel renders.
-        self.assertLess(APP.index("_monetization_snapshot = current_entitlement("), APP.index(call))
+        self.assertLess(APP.index("_monetization_snapshot = run_entitlement("), APP.index(call))
         self.assertNotIn("render_baseball_insight_sidebar(", APP)  # U5: no second question box
         block = APP[APP.index("from ami_assistant.ui import render_ami_assistant_panel") - 10: APP.index(call) + 300]
         self.assertIn("except ImportError:", block)

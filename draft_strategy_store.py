@@ -171,10 +171,14 @@ def _require_access(session: dict[str, Any]) -> None:
     except ImportError:
         pass
     import baseball_monetization as bm
-    from baseball_monetization_ui import current_entitlement
+    from baseball_monetization_ui import snapshot_for_run
 
-    if not bm.entitlement_for_capability(current_entitlement(session), CAPABILITY):
-        raise StrategyError("Saved Draft Strategies are a Pro feature.")
+    try:
+        bm.require(snapshot_for_run(session), CAPABILITY)
+    except bm.ProFeatureRequired as exc:
+        if exc.loading:  # never decide on a membership that is still loading
+            raise StrategyError("Checking your membership… try again in a moment.") from exc
+        raise StrategyError("Saved Draft Strategies are a Pro feature.") from exc
 
 
 def _store_call(fn, *args) -> Any:

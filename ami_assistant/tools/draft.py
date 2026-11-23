@@ -202,7 +202,7 @@ def explain_draft_recommendation(*, session: Mapping[str, Any], player: str) -> 
 @tool(
     "get_team_needs",
     capability="draft_intelligence",
-    plan_capability="draft_team_needs",
+    # Free (owner 2026-11-22): the same needs are shown on Free pages, so no plan capability.
     description="Your draft team's open positions and category strengths/weaknesses versus the remaining pool.",
     reuses=("applied_math_context.cache_draft_assistant_ami_context (category_diagnostics)",),
     needs_session=True,

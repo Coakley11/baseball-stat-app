@@ -212,7 +212,7 @@ class EntitlementGateTests(unittest.TestCase):
     """AMI applies the shared plan gate (CAPABILITY_FEATURES + entitlement_for_capability) to the tools that
     serve a plan capability, and only while the app enforces that feature."""
 
-    DRAFT_TOOLS = {"get_draft_recommendations", "explain_draft_recommendation", "get_team_needs"}
+    DRAFT_TOOLS = {"get_draft_recommendations", "explain_draft_recommendation"}  # get_team_needs is Free
     ARGS = {"explain_draft_recommendation": {"player": "Bobby Witt"}}
 
     def _enforce(self, *features):
@@ -225,8 +225,8 @@ class EntitlementGateTests(unittest.TestCase):
 
         tagged = {s.name: s.plan_capability for s in REGISTRY.specs() if s.plan_capability}
         draft_tools = {"get_draft_recommendations": "draft_recommendations",
-                       "explain_draft_recommendation": "draft_recommendation_explanation",
-                       "get_team_needs": "draft_team_needs"}
+                       "explain_draft_recommendation": "draft_recommendation_explanation"}
+        self.assertIsNone(REGISTRY.get("get_team_needs").plan_capability or None)  # Free, like the pages
         # A1 (2026-11-08): the user's saved strategies, gated like Draft Strategy · PRO itself.
         strategy_tools = {"list_my_strategies": "draft_strategy_library", "get_my_strategy": "draft_strategy_library",
                           "compare_strategy_to_global": "draft_strategy_library",
@@ -270,6 +270,9 @@ class EntitlementGateTests(unittest.TestCase):
                 # Pro passes the gate (and then needs a draft, as before).
                 self.assertEqual(REGISTRY.call(name, args, session={}, entitlement=pro).error_code, codes.MISSING_DRAFT_CONTEXT)
             self.assertFalse(can_use_feature(free, FeatureId.ADVANCED_DRAFT_INTELLIGENCE))  # same answer as the UI's check
+            # Basic team needs stay Free even while draft intelligence is enforced (owner 2026-11-22).
+            self.assertEqual(REGISTRY.call("get_team_needs", {}, session={}, entitlement=free).error_code,
+                             codes.MISSING_DRAFT_CONTEXT)
             # Untagged tools are never gated.
             self.assertTrue(REGISTRY.call("explain_metric", {"term": "ops"}, entitlement=free).ok)
             answer = ask("Who should I draft next?", session_state={}, active_page="Draft Assistant Simulator",
@@ -290,7 +293,7 @@ class EntitlementGateTests(unittest.TestCase):
 
         with mock.patch.object(bm, "ENFORCED_PAGE_FEATURES",
                                MappingProxyType({"Draft Assistant Simulator": FeatureId.ADVANCED_DRAFT_INTELLIGENCE})):
-            self.assertEqual(REGISTRY.call("get_team_needs", {}, session={}, entitlement=free).error_code,
+            self.assertEqual(REGISTRY.call("get_draft_recommendations", {}, session={}, entitlement=free).error_code,
                              codes.NOT_ENTITLED)
 
     def test_ami_never_resolves_entitlements_itself(self) -> None:

@@ -4179,7 +4179,9 @@ def render_relationship_finder_section(plot_df, *, key_prefix, row_context):
     if len(numeric_cols) < 2:
         return
 
-    with st.expander("Relationship Finder", expanded=False):
+    with st.expander("Relationship Finder · PRO", expanded=False):
+        render_pro_note(st, st.session_state, "advanced_analytics", key=f"pro_{key_prefix}_rf",
+                        label="Relationship Finder")
         st.caption(
             "Uses the same **Auto Best Fit** logic as the scatterplot (linear / polynomial / log / exponential). "
             "Scans numeric columns on your current filters, then lists only the **strongest** pairs. "
@@ -4471,6 +4473,8 @@ def render_scatterplot_section(
         show_trendline = st.checkbox("Show trendline", value=False, key=f"{key_prefix}_scatter_show_trendline")
         trendline_type = "Linear"
         if show_trendline:
+            render_pro_note(st, st.session_state, "advanced_analytics", key=f"pro_{key_prefix}_trendline",
+                            label="Curved trendlines and fit statistics (straight line stays Free)")
             trendline_type = st.selectbox(
                 "Trendline type",
                 ["Linear", "Polynomial (2nd Order)", "Polynomial (3rd Order)", "Logarithmic", "Exponential", "Auto Best Fit"],
@@ -11276,6 +11280,8 @@ def compact_player_action_center(
     sim_result = st.session_state.get(f"{key}_draft_simulation_result")
     if isinstance(sim_result, dict):
         st.markdown("##### Simulate Draft Pick")
+        render_pro_note(st, st.session_state, "advanced_draft_intelligence", key=f"pro_{key}_simulate_result",
+                        label="Simulate Draft Pick (roster impact)")
         render_draft_simulation_result(sim_result)
         if st.button("Clear simulation", key=f"{key}_clear_draft_simulation", icon=_icons.CLEAR):
             st.session_state.pop(f"{key}_draft_simulation_result", None)
@@ -11652,6 +11658,9 @@ def player_quick_actions_popover(
         sim_state_key = f"{key}_draft_simulation_result"
         proj_dialog_key = f"{key}_projection_breakdown_pending"
 
+        if active_current and has_draft_room_context():
+            render_pro_note(st, st.session_state, "advanced_draft_intelligence", key=f"pro_{sfx}_simulate",
+                            label="Simulate Draft Pick (roster impact)")
         extra = st.columns(2)
         with extra[0]:
             if active_current and has_draft_room_context():
@@ -11789,6 +11798,8 @@ def render_contextual_player_actions(
             _maybe_show_projection_breakdown_dialog(ctx_proj_key)
 
         if active_available:
+            render_pro_note(st, st.session_state, "advanced_draft_intelligence", key=f"pro_{act_id}_simulate",
+                            label="Simulate Draft Pick (roster impact)")
             st.button(
                 "Simulate Draft Pick",
                 key=f"plr_act_{act_id}_simulate_draft_button",
@@ -15126,9 +15137,15 @@ _monetization_snapshot = None
 _monetization_gate_page = ""
 try:
     from baseball_monetization import ENFORCED_PAGE_FEATURES, entitlement_for_page
-    from baseball_monetization_ui import current_entitlement, remember_paywall_context
+    from baseball_monetization_ui import refresh_entitlement, remember_paywall_context, run_entitlement
 
-    _monetization_snapshot = current_entitlement(
+    try:  # back from Stripe Checkout / the billing portal: read membership fresh
+        if "billing" in st.query_params:
+            refresh_entitlement(st.session_state)
+    except Exception:
+        pass
+    # E0: the one trusted snapshot for this run (cached per account for 60 s), used by every gate.
+    _monetization_snapshot = run_entitlement(
         st.session_state,
         developer_mode=developer_mode_enabled(),
     )
@@ -15141,6 +15158,16 @@ try:
         active_page = "__MONETIZATION_GATE__"
 except ImportError:
     pass
+
+# Pro indicators (baseball_monetization_ui.render_pro_note) read this run's snapshot from the session,
+# so helper modules show the same state without resolving it again. Presentation only.
+try:
+    from baseball_monetization_ui import RUN_SNAPSHOT_KEY as _PRO_RUN_SNAPSHOT_KEY, render_pro_note
+
+    st.session_state[_PRO_RUN_SNAPSHOT_KEY] = _monetization_snapshot
+except ImportError:  # pragma: no cover - modules ship with the app
+    def render_pro_note(*_args, **_kwargs):  # type: ignore[no-redef]
+        return True
 
 try:
     from app_page_generation import begin_page_run
@@ -15966,10 +15993,10 @@ elif active_page == "__MONETIZATION_GATE__":
 
 
 elif active_page == "Pricing & Upgrade":
-    from baseball_monetization_ui import current_entitlement, render_pricing_page
+    from baseball_monetization_ui import render_pricing_page, run_entitlement
 
     if _monetization_snapshot is None:
-        _monetization_snapshot = current_entitlement(
+        _monetization_snapshot = run_entitlement(
             st.session_state,
             developer_mode=developer_mode_enabled(),
         )
@@ -16723,6 +16750,8 @@ elif active_page == "Career Totals":
                 )
             except ImportError:
                 pass
+            render_pro_note(st, st.session_state, "advanced_analytics", key="pro_hof_case",
+                            label="Hall of Fame case analysis with AMI")
             if st.button(HOF_CASE_ANALYZE_BUTTON_LABEL, type="primary", key="career_hof_case_analyze_btn", icon=_icons.ANALYZE):
                 filters_summary = summarize_career_filters(st.session_state)
                 hof_packet = build_hof_case_packet(
@@ -17234,7 +17263,9 @@ elif active_page == "Leaderboards":
     for _ws in weight_stats:
         st.session_state.setdefault(f"leaders_w_{_ws}", _default_weights.get(_ws, 0.0))
     weight_values = {}
-    with st.expander("Custom stat weights (defaults: HR / RBI / SB at 1.0; others 0)", expanded=False):
+    with st.expander("Custom stat weights (defaults: HR / RBI / SB at 1.0; others 0) · PRO", expanded=False):
+        render_pro_note(st, st.session_state, "advanced_analytics", key="pro_leaders_weights",
+                        label="Custom leaderboard weights")
         st.caption("Weights feed the Score column only; raw counting and rate stats in the table are unchanged.")
         with mobile_wrap_row(st, "leaderboards-weights"):
             weight_cols = st.columns(4)
@@ -17708,6 +17739,8 @@ elif active_page == "Comparison Tool":
             plt.close(fig)
 
         st.subheader("Advanced Trend Intelligence")
+        render_pro_note(st, st.session_state, "advanced_analytics", key="pro_compare_ati",
+                        label="Advanced Trend Intelligence")
         compare_intel = build_advanced_trend_intelligence(compare, selected_ids_compare, stat_choice_compare)
         if compare_intel.empty:
             st.info("Not enough data to generate advanced trend intelligence for the selected players/stat.")
@@ -17793,7 +17826,9 @@ elif active_page == "Comparison Tool":
 
     st.divider()
     if not pp.skip_heavy_work(st):
-      with st.expander("Advanced: Statistical significance test", expanded=False):
+      with st.expander("Advanced: Statistical significance test · PRO", expanded=False):
+        render_pro_note(st, st.session_state, "advanced_analytics", key="pro_compare_significance",
+                        label="Significance test")
         _sig_axis_mode = st.session_state.get("compare_x_axis_mode", "Season Year")
         _sig_year_range = st.session_state.get("compare_year_range", (year_min, year_max))
         _sig_age_range = st.session_state.get("compare_age_range", (16, 50))
@@ -18862,6 +18897,8 @@ elif active_page == "Trend Value":
                 st.error(f"Developer activity panel failed: {exc}")
 
         st.subheader("Advanced Trend Intelligence")
+        render_pro_note(st, st.session_state, "advanced_analytics", key="pro_trend_ati",
+                        label="Advanced Trend Intelligence")
         trend_intel = build_advanced_trend_intelligence(player_trend, selected_ids_trend, stat_choice_trend)
         if trend_intel.empty:
             st.info("Not enough data to generate advanced trend intelligence for the selected players/stat.")
@@ -19264,7 +19301,9 @@ elif active_page == "Fantasy Sleepers & Busts":
             normalize_score(fantasy_df["SB"]) + normalize_score(fantasy_df["BA"])
         ) / 5
     else:
-        with st.expander("Points League Scoring Settings"):
+        with st.expander("Points League Scoring Settings · PRO"):
+            render_pro_note(st, st.session_state, "advanced_analytics", key="pro_sleepers_points",
+                            label="Custom points scoring")
             with mobile_wrap_row(st, "sleepers-points-p1"):
                 p1, p2, p3, p4, p5 = st.columns(5)
             with p1: pts_r = st.number_input("Run", value=1.0, step=0.5, key="fantasy_pts_r")
@@ -19525,6 +19564,8 @@ elif active_page == "Fantasy Sleepers & Busts":
                 help="Focused View keeps the main cluster readable. Full Outlier View expands the axes to include every player/outlier.",
                 on_change=_sleepers_chart_changed,
             )
+            render_pro_note(st, st.session_state, "advanced_analytics", key="pro_sleepers_edge_fit",
+                            label="Edge Map trendline types and fit statistics")
             fantasy_trendline_type = st.selectbox(
                 "Market Edge Trendline Type",
                 ["Linear", "Polynomial (2nd Order)", "Polynomial (3rd Order)", "Logarithmic", "Exponential", "Auto Best Fit"],
@@ -19651,6 +19692,8 @@ elif active_page == "Fantasy Sleepers & Busts":
                     if "Curve Edge Rank" in curve_display.columns:
                         curve_display["Curve Edge Rank"] = pd.to_numeric(curve_display["Curve Edge Rank"], errors="coerce").round(0).astype("Int64")
                     st.subheader("Curve-Adjusted Sleepers")
+                    render_pro_note(st, st.session_state, "advanced_analytics", key="pro_sleepers_curve",
+                                    label="Curve-Adjusted Sleepers")
                     st.caption(
                         "Curve Expected Model Rank is the rank predicted by the red curve for that player's Market Rank. "
                         "Curve Edge = Curve Expected Model Rank − actual Model Rank. Positive Curve Edge means your model ranks the player better than expected after accounting for the market/model curve."
@@ -20665,6 +20708,8 @@ elif active_page == "Draft Assistant Simulator":
                         st.session_state.pop("_draft_assistant_scoring_cache", None)
                     st.session_state["da_effective_category_priorities"] = dict(_effective_priorities)
 
+                render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_da_categories",
+                                label="Category priorities")
                 st.caption("High / Medium / Low / Off. These values change recommendation scores, not just labels.")
                 _pri_cols = st.columns(min(3, max(1, len(_cat_labels))))
                 for _i, _cat_label in enumerate(_cat_labels):
@@ -20966,6 +21011,8 @@ elif active_page == "Draft Assistant Simulator":
             "Positional Scarcity",
             "Primary Position",
         ]
+        render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_da_sort",
+                        label="Ranking modes beyond Roster Fit")
         _da_sort_choice = st.selectbox(
             "Sort recommendations by",
             _da_sort_labels,
@@ -21258,6 +21305,8 @@ elif active_page == "Draft Assistant Simulator":
                         key_suffix="assistant",
                     )
         st.subheader("Selected Player Insight")
+        render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_da_insight",
+                        label="Selected Player Insight")
         selected_draft_row = _select_insight_row(
             recs,
             key="draft_assistant_selected_player",
@@ -21287,7 +21336,9 @@ elif active_page == "Draft Assistant Simulator":
             help_text="Pick a name from the recommendation table, then Add to Watchlist, Add to Draft Queue, Send to Comparison, Send to Trend, or Simulate Draft Pick in one click.",
         )
 
-        with st.expander("Position scarcity & roster category heatmap", expanded=False):
+        with st.expander("Position scarcity & roster category heatmap · PRO", expanded=False):
+            render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_da_scarcity",
+                            label="Scarcity heatmap")
             st.subheader("Position scarcity")
             st.caption(
                 "Top available vs replacement at each position. Larger dropoff = thinner position."
@@ -22206,6 +22257,8 @@ elif active_page == "Draft Room Simulator":
                         )
 
         st.subheader("Post-draft roster grades")
+        render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_dr_grades",
+                        label="Post-draft roster grades")
         st.caption(
             "**Relative Draft Grade** (0–100) compares teams within this draft room only. "
             "**Draft Rank** shows placement (#1 of N). "
@@ -22313,6 +22366,7 @@ elif active_page == DRAFT_LAB_PAGE:
 
     render_draft_page_head("🧪 Draft Lab / Simulation", draft_tools.purpose(active_page))
     render_page_guide(active_page)
+    render_pro_note(st, st.session_state, "draft_lab", key="pro_draft_lab")
     draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
     lab_answer_slot = st.container()  # U4: the result first, then Run, then the model controls
     lab_run_slot = st.container()
@@ -31463,7 +31517,9 @@ elif active_page == "Valuation":
         fantasy_format=st.session_state.get("fantasy_market_format", "5x5 Roto"),
     )
 
-    with st.expander("Valuation blend weights", expanded=False):
+    with st.expander("Valuation blend weights · PRO", expanded=False):
+        render_pro_note(st, st.session_state, "advanced_analytics", key="pro_valuation_weights",
+                        label="Custom valuation weights")
         st.caption(
             "Weights apply to each player's rank among the players shown — on current production and on "
             "trend — so 1:1 gives both equal influence on Valuation Score."
@@ -31774,7 +31830,8 @@ elif active_page == "ML Predictions":
             on_change=projections_filter_changed,
         )
 
-        with st.expander("Advanced projection tuning (defaults work well)", expanded=False):
+        with st.expander("Advanced projection tuning (defaults work well) · PRO", expanded=False):
+            render_pro_note(st, st.session_state, "ml_predictions", key="pro_ml_tuning", label="Projection tuning")
             st.caption("Adjust how strongly the projection blends regression, age, and similar-player context.")
             ml_projection_style = st.selectbox(
                 "Projection Style",
@@ -31945,6 +32002,8 @@ elif active_page == "ML Predictions":
                 metrics_df = pd.DataFrame(metric_rows)
                 if not metrics_df.empty:
                     st.subheader("Model Accuracy Check")
+                    render_pro_note(st, st.session_state, "ml_predictions", key="pro_ml_accuracy",
+                                    label="Model accuracy, age curve and feature importance")
                     st.caption("MAE means average miss. For example, HR MAE of 4 means the model is typically off by about 4 home runs on the test seasons.")
                     metrics_table = clean_ui_columns(metrics_df.round({"MAE": 3, "R²": 3}))
                     render_output_table(metrics_table, key="ml_accuracy", file_name="ml_model_accuracy.csv")
@@ -31973,6 +32032,8 @@ elif active_page == "ML Predictions":
                     )
 
                 view_df = _ml_apply_display_view(stored_df, ml_position_filter, ml_sort_by)
+                render_pro_note(st, st.session_state, "ml_predictions", key="pro_ml_full_list",
+                                label="Full prediction list (Free: top 25 for your filters)")
                 display_cols = [
                     "fullName", "Position", "primaryTeamID", "bats", "prediction_year", "age_entering_year",
                     "Predicted R", "Predicted H", "Predicted 2B", "Predicted 3B", "Predicted HR", "Predicted RBI", "Predicted SB", "Predicted BB",

@@ -3903,6 +3903,13 @@ def render_live_draft_completion_panel(
             },
         )
     with analyze_col:
+        try:  # presentation only: never let the Pro note break the completion panel
+            from baseball_monetization_ui import render_pro_note
+
+            render_pro_note(st, session, "draft_lab", key=f"pro_{key_prefix}_analyze",
+                            label="Draft Lab grading (viewing, saving and exporting your draft stay Free)")
+        except Exception:
+            pass
         st.button(
             "Analyze Draft",
             key=f"{key_prefix}_analyze_btn",
