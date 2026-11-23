@@ -31909,16 +31909,22 @@ elif active_page == "ML Predictions":
                 k_neighbors = st.slider("Similar Players Used", 5, 50, 10, 5, key="ml_k_neighbors", on_change=projections_filter_changed, disabled=not _ml_tuning_ok)
             _ml_style_mode = "Aggressive / Upside" if ml_projection_style == "Aggressive" else ml_projection_style
             _ml_style_factors = get_draft_projection_factors(_ml_style_mode)
+            # E3: show the blend this run actually uses (the defaults while tuning is locked).
+            _ml_shown = (
+                (regression_strength, comp_weight, age_strength) if _ml_tuning_ok else
+                (ML_DEFAULT_TUNING["regression_strength"], ML_DEFAULT_TUNING["comp_weight"], ML_DEFAULT_TUNING["age_strength"])
+            )
             effective_regression_strength = float(
-                np.clip(regression_strength * float(_ml_style_factors.get("regression_strength_multiplier", 1.0)), 0.0, 0.80)
+                np.clip(_ml_shown[0] * float(_ml_style_factors.get("regression_strength_multiplier", 1.0)), 0.0, 0.80)
             )
             effective_comp_weight = float(
-                np.clip(comp_weight * (float(_ml_style_factors.get("anchor_player_weight", 0.84)) / 0.84), 0.0, 0.80)
+                np.clip(_ml_shown[1] * (float(_ml_style_factors.get("anchor_player_weight", 0.84)) / 0.84), 0.0, 0.80)
             )
-            effective_age_strength = float(age_strength)
+            effective_age_strength = float(_ml_shown[2])
             st.caption(
                 f"Effective blend: regression {effective_regression_strength:.2f}, "
                 f"similar players {effective_comp_weight:.2f}, age {effective_age_strength:.2f}."
+                + ("" if _ml_tuning_ok else " Default tuning is used; your saved slider values apply with Pro.")
             )
             st.checkbox(
                 "Apply tuning changes automatically when sliders move",

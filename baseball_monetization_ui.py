@@ -199,14 +199,15 @@ def render_pro_note(
     snapshot: EntitlementSnapshot | None = None,
     capability: str = "",
     compact: bool = False,
+    locked_label: str = "",
 ) -> bool:
     """One restrained Pro indicator next to a Pro control. Returns whether the control may run.
 
     Preview and included show a single caption line. Locked shows :func:`render_locked_feature`
     (what it does + Upgrade) instead of the control; the caller must not compute the Pro result
     when this returns False. The real check stays in the operation (the capability gate).
-    ``compact=True`` (narrow button rows) shows :func:`render_compact_lock` instead: one caption line
-    and an Upgrade button in the control's place, the same footprint as the unlocked control.
+    ``compact=True`` (narrow button rows) shows :func:`render_compact_lock` instead: an Upgrade button
+    in the control's place and one short caption (``locked_label``, else ``label``).
     Uses this run's snapshot (``RUN_SNAPSHOT_KEY``, set by the app) unless one is passed.
     """
     feature_id = FeatureId(feature_id)  # a typo fails loudly in tests
@@ -215,7 +216,7 @@ def render_pro_note(
         state = pro_state(snap, feature_id, capability)
         if state == "locked":
             if compact:
-                render_compact_lock(st, session, feature_id, key=key, label=label)
+                render_compact_lock(st, session, feature_id, key=key, label=locked_label or label)
             else:
                 render_locked_feature(st, session, feature_id, key=key)
             return False
@@ -245,13 +246,13 @@ COMPACT_LOCKED_NOTE = "included with Pro"
 
 
 def render_compact_lock(st, session: MutableMapping, feature_id: FeatureId, *, key: str, label: str = "") -> None:
-    """The lock for a narrow column of buttons: one caption line and an Upgrade button where the
-    control would be. Shows no Pro result and no subscriber data."""
+    """The lock for a row of buttons: an Upgrade button in the control's place (aligned with its
+    neighbours) and one short caption under it. Shows no Pro result and no subscriber data."""
     name = label or feature_definition(feature_id).name
-    st.caption(f"{PRO_BADGE} {name} · {COMPACT_LOCKED_NOTE}")
     if st.button("See Pro plans", key=f"{key}__pro_upgrade", icon=_icons.UPGRADE, use_container_width=True):
         schedule_page(session, PRICING_PAGE)
         st.rerun()
+    st.caption(f"{PRO_BADGE} {name} · {COMPACT_LOCKED_NOTE}")
 
 
 def current_entitlement(

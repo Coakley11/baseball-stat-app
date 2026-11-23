@@ -136,7 +136,8 @@ class WiringTests(unittest.TestCase):
 
     def test_live_draft_grading_is_gated_in_the_handler_and_the_button(self):
         self.assertIn('allowed_now(session, "draft_lab_live_analysis", fresh=True)', ARCHIVE)
-        self.assertIn('capability="draft_lab_live_analysis", compact=True)', ARCHIVE, "compact lock in the narrow column")
+        self.assertRegex(ARCHIVE, r'capability="draft_lab_live_analysis", compact=True,\s+locked_label="Draft Lab grading"\)',
+                         "compact lock with a short label in the narrow column")
 
     def test_compact_lock_is_one_caption_and_an_upgrade_button(self):
         calls = []
@@ -150,11 +151,11 @@ class WiringTests(unittest.TestCase):
 
         s = {ui.RUN_SNAPSHOT_KEY: FREE}
         with mock.patch.dict("os.environ", ON):
-            ok = ui.render_pro_note(_St(), s, "draft_lab", key="k", label="Draft Lab grading",
-                                    capability="draft_lab_live_analysis", compact=True)
+            ok = ui.render_pro_note(_St(), s, "draft_lab", key="k", label="Draft Lab grading (long preview wording)",
+                                    capability="draft_lab_live_analysis", compact=True, locked_label="Draft Lab grading")
         self.assertFalse(ok)
-        self.assertEqual(calls[0], ("caption", f"{ui.PRO_BADGE} Draft Lab grading · included with Pro"))
-        self.assertEqual(calls[1], ("button", "See Pro plans", True))
+        self.assertEqual(calls[0], ("button", "See Pro plans", True), "the button lines up with the row")
+        self.assertEqual(calls[1], ("caption", f"{ui.PRO_BADGE} Draft Lab grading · included with Pro"))
         self.assertEqual(len(calls), 2)
         calls.clear()
         self.assertTrue(ui.render_pro_note(_St(), s, "draft_lab", key="k", capability="draft_lab_live_analysis",
