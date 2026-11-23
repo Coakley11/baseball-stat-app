@@ -171,7 +171,8 @@ class CapabilityFeatureTests(unittest.TestCase):
             with self.subTest(capability=capability):
                 self.assertIsInstance(feature, bm.FeatureId)
                 self.assertIn(feature, bm.FEATURE_REGISTRY)
-        self.assertEqual(bm.feature_for_capability("draft_team_needs"), bm.FeatureId.ADVANCED_DRAFT_INTELLIGENCE)
+        self.assertEqual(bm.feature_for_capability("draft_recommendations"), bm.FeatureId.ADVANCED_DRAFT_INTELLIGENCE)
+        self.assertIsNone(bm.feature_for_capability("draft_team_needs"), "team needs are Free (owner 2026-11-22)")
         self.assertIsNone(bm.feature_for_capability("player_owner"))
         for reader in ("player_owner", "week_lineup_status", "waiver_recommendations_view", "loaded_player_pool",
                        "evaluate_trade_for_team", "pending_trade_draft", "week_view"):
