@@ -96,7 +96,7 @@ Gate (kind @ point) · Bypass routes to close · Work + tests.**
 | Generate/Refresh, position filter, sort, lookback, min games, scope, min AB, model status | 31721–31767, 31866 | built | **Free** | Owner (approved) | none |
 | Prediction list | 31975–32046 | built | **Free: top 25 within the user's filters and sort; Pro: full list** | Owner (approved 2026-11-22) | C: one `.head(25)` inside `_ml_apply_display_view` (5485) caps both tables, both CSVs, the U2 answer (top 5), the insight picker and nav results together |
 | Selected-player insight text | 32049 | built | **Free** (within the 25) | Owner (approved) | covered by the cap |
-| Projection tuning (style, regression, age, similar-player weight, neighbours, auto-apply, Apply) | 31777–31838 | built | **Pro** | Owner (approved) | B: force defaults into the **arguments** at 31840–31851. `ml_projection_style` is aliased to the global draft style (shared_draft_context.py:52) — never write the key |
+| Projection tuning (regression, age, similar-player weight, neighbours, auto-apply, Apply; **style stays Free**, owner 2026-11-23) | 31777–31838 | built | **Pro** | Owner (approved) | B: force defaults into the **arguments** at 31840–31851. `ml_projection_style` is aliased to the global draft style (shared_draft_context.py:52) — never write the key |
 | Model Accuracy Check (MAE/R² + CSV) | 31947 | built | **Pro** | Owner (approved) | C |
 | Age curve, feature importance | 32059–32078 | built | **Pro** | Owner (approved) | C |
 | Prediction intervals / uncertainty | — | **not built** | planned | — | — |
@@ -105,6 +105,9 @@ Why the split beats a whole-page gate: Free users get a real taste of the model 
 U2 answer card) and learn what Pro adds; the cap is one line at one function every display already
 uses; no other page or AMI tool reads ML output (AMI refuses projection questions,
 router.py:388–393), so there is no bypass.
+
+**E3 built, not active (2026-11-23):** group `ml` (`ml_full_list`, `ml_tuning`, `ml_diagnostics`);
+see `BASEBALL_ENTITLEMENT_ENFORCEMENT_PLAN.md` §6.
 
 ### 2.3 Research and analytics
 

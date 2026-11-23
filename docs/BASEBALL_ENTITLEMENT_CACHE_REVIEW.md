@@ -44,3 +44,14 @@ immediately.
 
 None of this changes current behaviour: enforcement is off, so the cache only drives labels today.
 Item 2 is planned for the first activation step and is included in the E2 branch design.
+
+## Where fresh checks are used (E2 on Dev, E3 built)
+
+| Operation | Fresh membership read (only when its group is enforced) |
+|---|---|
+| Run a Draft Lab simulation | `allowed_now(…, "draft_lab_simulation", fresh=True)` in the Run handler |
+| Grade a completed Live draft (Analyze Draft) | `allowed_now(session, "draft_lab_live_analysis", fresh=True)` in the click handler |
+| Simulate Draft Pick | `allowed_now(…, "draft_pick_simulation", fresh=True)` in the shared handler |
+| ML Predictions page (E3) | one `allowed_now(…, "ml_tuning", fresh=True)` per page run, before the tuned pipeline runs; the 25-row cap and diagnostics reuse that answer |
+
+With the switch off, none of these adds a billing read. A simulated developer plan is never refreshed.

@@ -79,3 +79,52 @@ mechanics of `plan/free-pro-entitlements` (`BASEBALL_ENTITLEMENTS_STAGE1_PLAN.md
 
 Each step: focused tests, CI against the then-current Dev, browser QA with QA accounts (Free = qa_danny,
 Pro = qa_other via the Stripe test sandbox), then owner approval to switch on.
+
+Status (2026-11-23): E0, E1 and E2 are on Dev (`eefb53c`) with enforcement off. E3 and the rollout
+groups below are built on `feature/entitlement-e3-ml`, not active.
+
+## 5. Staged activation: master switch + rollout groups (owner-approved design, 2026-11-23)
+
+Two server-side settings (Streamlit secrets are exposed as environment variables):
+
+| Setting | Values | Default |
+|---|---|---|
+| `BASEBALL_ENTITLEMENT_ENFORCEMENT` | `off` · `preview` · `on` | unset = `off` |
+| `BASEBALL_ENTITLEMENT_GROUPS` | comma list of group names | unset = none |
+
+A gate is enforced only when the switch is `on` **and** its group is listed. Groups are defined in code
+(`baseball_monetization.ROLLOUT_GROUPS`), so listing one can never lock another:
+
+| Group | Restricts | Free keeps |
+|---|---|---|
+| `strategies` | E1: Saved Draft Strategies and AMI strategy coaching | Global Queue, saved data (kept, returns with Pro) |
+| `draft_lab` | E2: Draft Lab runs/results, grading of a completed Live draft | the Live draft, its results, picks, saving and exports |
+| `simulate_pick` | E2: Simulate Draft Pick (Player Actions) | every other Player Action |
+| `ml` | E3: ML list beyond the top 25, model tuning, model diagnostics | top 25 for the user's filters and sort, projection style |
+
+**Fail-safe.** Switch `off`/`preview`/unrecognized, an empty list, or an unrecognized name restricts
+nothing. Unrecognized names are ignored (never widened) and **reported**: once per server process the log
+gets `entitlement enforcement: <mode>; active groups: <names>` plus `unrecognized group names ignored: …`
+or `unrecognized BASEBALL_ENTITLEMENT_ENFORCEMENT value treated as off`; the owner-only Developer Mode
+sidebar shows the same line. The raw switch value is never echoed.
+
+**Activation procedure (each group separately approved):** set the group list first while the switch is
+`off` → confirm the Developer Mode line shows no unrecognized names → switch `on` → verify Free and Pro
+on that group only → the other groups' surfaces still show "open to everyone". Roll back by removing the
+group (or setting the switch `off`); saved data and settings are untouched either way.
+
+## 6. E3 — ML Predictions (built, not active; group `ml`)
+
+- **Free:** the top 25 after the user's filters and sort (`ML_FREE_PREDICTIONS`), basic results and
+  projection style (shared with the draft pages, so it stays Free everywhere).
+- **Pro:** `ml_full_list` (the full list), `ml_tuning` (the four tuning sliders, auto-apply and Apply),
+  `ml_diagnostics` (model accuracy table, age curve, feature importance).
+- **One display path.** Every ML view — both tables and their CSVs, the answer card, the insight picker
+  and the "Use these filters in another tool" results — goes through `_ml_apply_display_view`, which caps
+  *after* filtering and sorting. The prediction engine and its stored output are unchanged; nothing else
+  reads the stored predictions.
+- **Tuning (kind B).** Locked sliders are disabled, not removed, so saved values stay stored and return
+  with Pro. Free runs pass `ML_DEFAULT_TUNING` into the pipeline; results tuned while Pro was active are
+  re-blended with the defaults on the next run, even when auto-apply is off.
+- **Freshness.** When the group is enforced, the ML page re-reads membership once per run before the
+  tuned pipeline runs; the cap and the diagnostics use that answer.
