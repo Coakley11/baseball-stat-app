@@ -44,6 +44,7 @@ PROJECTIONS_ALL_STATE_KEYS = (
 
 PROJECTIONS_SKIP_PREFIXES = ("_ml_",)
 PROJECTIONS_SKIP_EXACT = frozenset({
+    "_projections_page_rendered",
     "ml_predictions_df",
     "ml_predictions_status",
     "ml_full_generation_requested",
@@ -274,7 +275,33 @@ def gather_projections_state(session: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def prepare_projections_page(session: dict[str, Any]) -> dict[str, Any]:
+PROJECTIONS_RENDERED_KEY = "_projections_page_rendered"
+# Keys only the ML page owns. Lookback, minimums, projection style and the research position filter are
+# shared with the draft pages / other research pages and keep their existing sync rules.
+PROJECTIONS_ENTRY_OWNED_KEYS = (
+    "ml_regression_strength",
+    "ml_age_strength",
+    "ml_comp_weight",
+    "ml_k_neighbors",
+    "ml_auto_apply_tuning",
+)
+
+
+def prepare_projections_page(session: dict[str, Any], *, entering: bool = False) -> dict[str, Any]:
+    """Reconcile the ML page's canonical state with its widget keys at the top of an ML page run.
+
+    ``entering`` (the ML page did not render on the previous run): Streamlit drops widget keys while
+    another page is open, and a generic session refill can put back an older copy (seen in the browser
+    as tuning snapping back to an earlier value). For the ML-only tuning keys the page's canonical state
+    already holds the user's latest values, so it wins — unless an edit is pending this run. AMI
+    returns, cloud restores and contextual transfers write the canonical state themselves (or run after
+    this), so they still apply. Shared keys are untouched here.
+    """
+    if entering and not session.get(PROJECTIONS_PENDING_SYNC_KEY):
+        canonical = canonical_projections_state(session) or {}
+        for key in PROJECTIONS_ENTRY_OWNED_KEYS:
+            if key in canonical:
+                session[key] = _normalize_filter_value(key, canonical[key])
     widget = _extract_state_from_session(session)
     canonical = canonical_projections_state(session) or {}
     drift = _projections_widget_drift(session) or bool(session.get(PROJECTIONS_PENDING_SYNC_KEY))

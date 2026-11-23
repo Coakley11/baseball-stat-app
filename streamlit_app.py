@@ -15260,6 +15260,9 @@ try:
 except ImportError:
     pass
 
+# The ML page is "entered" again after any run on another page (see prepare_projections_page).
+if active_page != "ML Predictions":
+    st.session_state.pop("_projections_page_rendered", None)
 # Save filters when leaving a page; restore when returning via left sidebar (not contextual transfer).
 pg_state.handle_sidebar_page_state(
     st.session_state,
@@ -31767,7 +31770,11 @@ elif active_page == "ML Predictions":
         render_projections_state_debug,
     )
 
-    prepare_projections_page(st.session_state)
+    from projections_state import PROJECTIONS_RENDERED_KEY
+
+    # Entering the page (it did not render on the previous run): its own state wins over widget keys
+    # that were dropped and refilled while another page was open (ML tuning persistence fix).
+    prepare_projections_page(st.session_state, entering=not st.session_state.get(PROJECTIONS_RENDERED_KEY))
     prepare_projections_filters(st.session_state)
 
     if pp.skip_heavy_work(st):
@@ -32268,6 +32275,7 @@ elif active_page == "ML Predictions":
         )
 
         flush_projections_filter_edits(st.session_state, st, reason="projections_page_save")
+        st.session_state[PROJECTIONS_RENDERED_KEY] = True
         if developer_mode_enabled():
             render_projections_state_debug(st, st.session_state)
         save_page_state(active_page)
