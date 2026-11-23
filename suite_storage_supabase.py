@@ -1084,6 +1084,17 @@ _AUTH_BROWSER_APP = "_auth_browser"
 _AUTH_SESSION_ITEM_TYPE = "browser_session"
 
 
+def _browser_auth_bridge_enabled() -> bool:
+    """URL sign-in restore is disabled (security hotfix 2026-11-23): no bridge token is read or
+    written, so a copied ``suite_sid`` URL can never yield an account's tokens."""
+    try:
+        from suite_auth_browser import url_auth_restore_enabled
+
+        return bool(url_auth_restore_enabled())
+    except ImportError:
+        return False
+
+
 def save_browser_auth_session(
     session_id: str,
     *,
@@ -1124,7 +1135,7 @@ def save_browser_auth_session(
 def load_browser_auth_session_record(session_id: str) -> dict[str, Any] | None:
     """Load bridge row metadata + tokens (uncached)."""
     sid = str(session_id or "").strip()
-    if not sid:
+    if not sid or not _browser_auth_bridge_enabled():
         return None
     with _egress("load_browser_auth_session"):
         rows = _request(
@@ -1191,6 +1202,10 @@ def save_browser_auth_session_versioned(
         "row_id_prefix": "",
     }
     if not sid or not uid or not access or not refresh:
+        return meta
+    if not _browser_auth_bridge_enabled():
+        meta["write_attempted"] = False
+        meta["write_mode"] = "url_restore_disabled"
         return meta
     current_gen = 0
     try:
@@ -1262,7 +1277,7 @@ def save_browser_auth_session_versioned(
 def load_browser_auth_session(session_id: str) -> dict[str, Any] | None:
     """Load token bundle by opaque browser session id (capability URL)."""
     sid = str(session_id or "").strip()
-    if not sid:
+    if not sid or not _browser_auth_bridge_enabled():
         return None
     with _egress("load_browser_auth_session"):
         rows = _request(
@@ -1316,7 +1331,8 @@ def invalidate_browser_auth_session(session_id: str) -> dict[str, Any]:
             "item_type": f"eq.{_AUTH_SESSION_ITEM_TYPE}",
             "item_key": f"eq.{sid}",
         },
-        json_body={"valid": False, "updated_at": _now_iso()},
+        # Revoke and erase: the stored tokens are removed, not only hidden behind ``valid``.
+        json_body={"valid": False, "payload": {"revoked": True}, "updated_at": _now_iso()},
         prefer="return=minimal",
     )
     out["invalidated"] = True

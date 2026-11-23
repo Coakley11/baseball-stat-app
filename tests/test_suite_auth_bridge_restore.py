@@ -15,6 +15,20 @@ from suite_auth_bridge_token_meta import enrich_bridge_payload, token_fingerprin
 from suite_storage_supabase import save_browser_auth_session_versioned
 
 
+
+# The URL token bridge is disabled (security hotfix 2026-11-23). These tests cover its mechanics as
+# they would behave if it were ever re-enabled, so they run with the flag on.
+_URL_RESTORE_PATCH = mock.patch("suite_auth_browser.URL_AUTH_RESTORE_ENABLED", True)
+
+
+def setUpModule():  # noqa: N802
+    _URL_RESTORE_PATCH.start()
+
+
+def tearDownModule():  # noqa: N802
+    _URL_RESTORE_PATCH.stop()
+
+
 def _tokens(*, access: str = "access-a", refresh: str = "refresh-a") -> dict:
     return {"access_token": access, "refresh_token": refresh, "expires_at": 999}
 

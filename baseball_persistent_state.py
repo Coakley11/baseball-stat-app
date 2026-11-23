@@ -607,6 +607,11 @@ def _comparison_players_from_workspace_blob(state: dict[str, Any]) -> list[str] 
 def apply_baseball_disk_state(st: Any, state: dict[str, Any]) -> None:
     """Apply one authoritative workspace blob atomically (page + all page_filter_state)."""
     ss = st.session_state
+    from account_session_boundary import account_data_load_allowed
+
+    if not account_data_load_allowed(ss):
+        ss["_suite_workspace_apply_refused"] = "no_verified_identity"
+        return
     try:
         from live_draft_auth_prestart_stage1_diag import emit_prestart_hydration_checkpoint
 
@@ -1698,6 +1703,11 @@ def prepare_baseball_workspace(st: Any) -> bool:
     """Single authoritative cloud/disk workspace sync before sidebar widgets."""
     ss = st.session_state
     _ensure_trusted_auth_before_workspace(st, ss)
+    # Security boundary: an identity change since the last run clears the previous identity's data
+    # before anything loads; a guest loads nothing account-scoped.
+    from account_session_boundary import enforce_account_session_boundary
+
+    enforce_account_session_boundary(ss, st=st)
     try:
         from live_draft_key_ownership_diag import diag_enabled, record_key_ownership
 

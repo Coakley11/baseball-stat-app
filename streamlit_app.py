@@ -625,6 +625,10 @@ except Exception as _ws_boot_exc:
         )
     except Exception:
         pass
+# Security boundary (2026-11-23): only a verified sign-in may hold account data in this session.
+from account_session_boundary import enforce_account_session_boundary as _enforce_account_boundary
+
+_enforce_account_boundary(st.session_state, st=st)
 try:
     from suite_auth import hard_clamp_owned_workspace_before_scoped_load
 

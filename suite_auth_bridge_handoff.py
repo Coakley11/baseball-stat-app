@@ -396,6 +396,13 @@ def maybe_finalize_bridge_token_handoff(
     expected_suite_sid: str = "",
 ) -> dict[str, Any]:
     """Finalize once when auth session is complete and a Streamlit handle exists."""
+    try:
+        from suite_auth_browser import url_auth_restore_enabled
+
+        if not url_auth_restore_enabled():
+            return {"ok": False, "failure_reason": "url_restore_disabled", "skipped": True}
+    except ImportError:
+        pass
     if st is None:
         return {"ok": False, "failure_reason": "st_missing", "skipped": True}
     if is_handoff_frozen(session_state):

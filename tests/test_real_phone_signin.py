@@ -81,6 +81,7 @@ class FreshSessionIdTests(unittest.TestCase):
         self.assertIsNone(seen["url_sid"])      # the save mints its own id
         self.assertIsNone(seen["session_sid"])
 
+    @mock.patch("suite_auth_browser.URL_AUTH_RESTORE_ENABLED", True)
     def test_a_failed_attempt_restores_the_previous_sid(self) -> None:
         st = _St({SESSION_STATE_SID_KEY: "stale-sid"}, "stale-sid")
         ok, msg = _sign_in(st, persist_ok=False, reason="token_record_ambiguous")
@@ -97,6 +98,7 @@ class FreshSessionIdTests(unittest.TestCase):
 
 
 class TraceTests(unittest.TestCase):
+    @mock.patch("suite_auth_browser.URL_AUTH_RESTORE_ENABLED", True)
     def test_the_trace_shows_where_a_failed_sign_in_stopped(self) -> None:
         st = _St({}, "stale-sid")
         _sign_in(st, persist_ok=False, reason="token_record_ambiguous")

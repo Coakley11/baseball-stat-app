@@ -1095,6 +1095,20 @@ def _clear_previous_session_work(session_state: dict[str, Any]) -> None:
         pass
 
 
+def browser_refresh_session_required() -> bool:
+    """A sign-in needs a saved browser refresh session only while URL restore is enabled.
+
+    Security hotfix 2026-11-23: URL restore is disabled, so a sign-in lasts for this browser session
+    and a page reload asks to sign in again; no refresh session is saved anywhere.
+    """
+    try:
+        from suite_auth_browser import url_auth_restore_enabled
+
+        return bool(url_auth_restore_enabled())
+    except ImportError:
+        return False
+
+
 def _persist_auth_session(
     session_state: dict[str, Any],
     *,
@@ -1121,7 +1135,15 @@ def _persist_auth_session(
     except Exception:
         pass
     browser_persistence: dict[str, Any] | None = None
-    if st is not None:
+    if st is not None and not browser_refresh_session_required():
+        browser_persistence = {
+            "persistence_attempted": False,
+            "persistence_succeeded": False,
+            "persistence_required": False,
+            "failure_reason": "url_restore_disabled",
+            "handoff_phase": "",
+        }
+    elif st is not None:
         try:
             from suite_auth_browser import BROWSER_PERSIST_RESULT_KEY
 
@@ -2809,7 +2831,11 @@ def login_with_email(
         trace.record(session_state, "refresh_session_saved", bool(_p.get("persistence_succeeded")),
                      reason=_p.get("failure_reason"), write_committed=_p.get("write_committed"),
                      write_mode=_p.get("write_mode"), handoff_phase=_p.get("handoff_phase"))
-        if st is not None and not bool((persistence or {}).get("persistence_succeeded")):
+        if (
+            st is not None
+            and browser_refresh_session_required()
+            and not bool((persistence or {}).get("persistence_succeeded"))
+        ):
             # A verified password is not enough for a refresh-safe Streamlit login.
             # Roll back only the in-memory login attempt before any workspace cleanup,
             # and retain a sanitized failure result for operator diagnostics.
