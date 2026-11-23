@@ -5486,8 +5486,31 @@ def _ml_transfer_extra_context(
     }
 
 
+ML_FREE_PREDICTIONS = 25  # E3: Free shows the top 25 for the user's filters and sort
+
+
+def _ml_full_list_allowed() -> bool:
+    """E3 display limit (Free: top 25). Reads this run's membership (refreshed once at the top of the
+    ML page); never raises, and fails closed only when the ml group is enforced."""
+    try:
+        from baseball_monetization_ui import allowed_now
+
+        return allowed_now(st.session_state, "ml_full_list")
+    except Exception:
+        return True
+
+
 def _ml_apply_display_view(stored_df, position_filter, sort_col):
-    """Display-only filter/sort — never retrains or recalibrates."""
+    """Display-only filter/sort — never retrains or recalibrates. Every ML display goes through here
+    (tables and their CSVs, the answer card, the insight picker, nav results), so the Free top-25 limit
+    is applied once, after filtering and sorting."""
+    view = _ml_sorted_display_view(stored_df, position_filter, sort_col)
+    if view is None or getattr(view, "empty", True) or _ml_full_list_allowed():
+        return view
+    return view.head(ML_FREE_PREDICTIONS).reset_index(drop=True)
+
+
+def _ml_sorted_display_view(stored_df, position_filter, sort_col):
     if stored_df is None or stored_df.empty:
         return stored_df
     view = stored_df.copy()
@@ -31847,7 +31870,13 @@ elif active_page == "ML Predictions":
         )
 
         with st.expander("Advanced projection tuning (defaults work well) · PRO", expanded=False):
-            render_pro_note(st, st.session_state, "ml_predictions", key="pro_ml_tuning", label="Projection tuning")
+            # E3: one authoritative membership read per ML page run (when the ml group is enforced);
+            # every later check in this run uses it.
+            from baseball_monetization_ui import allowed_now as _pro_allowed_now
+
+            _pro_allowed_now(st.session_state, "ml_tuning", fresh=True)
+            _ml_tuning_ok = render_pro_note(st, st.session_state, "ml_predictions", key="pro_ml_tuning",
+                                            label="Projection tuning", capability="ml_tuning")
             st.caption("Adjust how strongly the projection blends regression, age, and similar-player context.")
             ml_projection_style = st.selectbox(
                 "Projection Style",
@@ -31863,13 +31892,13 @@ elif active_page == "ML Predictions":
             with mobile_wrap_row(st, "ml-tuning"):
                 a1, a2, a3, a4 = st.columns(4)
             with a1:
-                regression_strength = st.slider("Regression to Mean", 0.00, 0.60, 0.20, 0.05, key="ml_regression_strength", on_change=projections_filter_changed)
+                regression_strength = st.slider("Regression to Mean", 0.00, 0.60, 0.20, 0.05, key="ml_regression_strength", on_change=projections_filter_changed, disabled=not _ml_tuning_ok)
             with a2:
-                age_strength = st.slider("Aging Curve Strength", 0.00, 1.00, 0.50, 0.05, key="ml_age_strength", on_change=projections_filter_changed)
+                age_strength = st.slider("Aging Curve Strength", 0.00, 1.00, 0.50, 0.05, key="ml_age_strength", on_change=projections_filter_changed, disabled=not _ml_tuning_ok)
             with a3:
-                comp_weight = st.slider("Similar Player Weight", 0.00, 0.60, 0.10, 0.05, key="ml_comp_weight", on_change=projections_filter_changed)
+                comp_weight = st.slider("Similar Player Weight", 0.00, 0.60, 0.10, 0.05, key="ml_comp_weight", on_change=projections_filter_changed, disabled=not _ml_tuning_ok)
             with a4:
-                k_neighbors = st.slider("Similar Players Used", 5, 50, 10, 5, key="ml_k_neighbors", on_change=projections_filter_changed)
+                k_neighbors = st.slider("Similar Players Used", 5, 50, 10, 5, key="ml_k_neighbors", on_change=projections_filter_changed, disabled=not _ml_tuning_ok)
             _ml_style_mode = "Aggressive / Upside" if ml_projection_style == "Aggressive" else ml_projection_style
             _ml_style_factors = get_draft_projection_factors(_ml_style_mode)
             effective_regression_strength = float(
@@ -31889,6 +31918,7 @@ elif active_page == "ML Predictions":
                 key="ml_auto_apply_tuning",
                 help="Turn off to adjust multiple sliders, then click **Apply tuning changes** once.",
                 on_change=projections_filter_changed,
+                disabled=not _ml_tuning_ok,
             )
 
         _tune_cols = st.columns([1, 2])
@@ -31898,6 +31928,7 @@ elif active_page == "ML Predictions":
                 key="ml_apply_tuning_button",
                 help="Re-blend projections using current sliders without retraining Random Forest models.",
                 icon=_icons.SETTINGS,
+                disabled=not _ml_tuning_ok,
             ):
                 st.session_state["ml_tuning_apply_requested"] = True
                 try:
@@ -31916,12 +31947,15 @@ elif active_page == "ML Predictions":
             ml_min_games=ml_min_games,
             ml_max_players=ml_max_players,
             ml_min_ab=ml_min_ab,
-            regression_strength=regression_strength,
-            age_strength=age_strength,
-            comp_weight=comp_weight,
-            k_neighbors=k_neighbors,
+            # E3 (B gate): Free runs use the default tuning; the user's saved values stay stored and apply
+            # again with Pro. Projection style is a shared Free draft setting and is not gated.
+            regression_strength=regression_strength if _ml_tuning_ok else 0.20,
+            age_strength=age_strength if _ml_tuning_ok else 0.50,
+            comp_weight=comp_weight if _ml_tuning_ok else 0.10,
+            k_neighbors=k_neighbors if _ml_tuning_ok else 10,
             ml_projection_style=ml_projection_style,
         )
+        _ml_diag_ok = _pro_allowed_now(st.session_state, "ml_diagnostics")
         if not _ml_pipeline_ran and _ml_is_nonempty_dataframe(st.session_state.get(ML_PREDICTIONS_DF_KEY)):
             st.session_state["_ml_page_last_action"] = "display_only"
 
@@ -32018,11 +32052,12 @@ elif active_page == "ML Predictions":
                 metrics_df = pd.DataFrame(metric_rows)
                 if not metrics_df.empty:
                     st.subheader("Model Accuracy Check")
-                    render_pro_note(st, st.session_state, "ml_predictions", key="pro_ml_accuracy",
-                                    label="Model accuracy, age curve and feature importance")
-                    st.caption("MAE means average miss. For example, HR MAE of 4 means the model is typically off by about 4 home runs on the test seasons.")
-                    metrics_table = clean_ui_columns(metrics_df.round({"MAE": 3, "R²": 3}))
-                    render_output_table(metrics_table, key="ml_accuracy", file_name="ml_model_accuracy.csv")
+                    if render_pro_note(st, st.session_state, "ml_predictions", key="pro_ml_accuracy",
+                                       label="Model accuracy, age curve and feature importance",
+                                       capability="ml_diagnostics"):
+                        st.caption("MAE means average miss. For example, HR MAE of 4 means the model is typically off by about 4 home runs on the test seasons.")
+                        metrics_table = clean_ui_columns(metrics_df.round({"MAE": 3, "R²": 3}))
+                        render_output_table(metrics_table, key="ml_accuracy", file_name="ml_model_accuracy.csv")
 
         st.subheader("Next-Season ML Projections")
 
@@ -32048,8 +32083,10 @@ elif active_page == "ML Predictions":
                     )
 
                 view_df = _ml_apply_display_view(stored_df, ml_position_filter, ml_sort_by)
-                render_pro_note(st, st.session_state, "ml_predictions", key="pro_ml_full_list",
-                                label="Full prediction list (Free: top 25 for your filters)")
+                if not render_pro_note(st, st.session_state, "ml_predictions", key="pro_ml_full_list",
+                                       label="Full prediction list (Free: top 25 for your filters)",
+                                       capability="ml_full_list"):
+                    st.caption(f"Showing your top {ML_FREE_PREDICTIONS} for these filters and this sort order.")
                 display_cols = [
                     "fullName", "Position", "primaryTeamID", "bats", "prediction_year", "age_entering_year",
                     "Predicted R", "Predicted H", "Predicted 2B", "Predicted 3B", "Predicted HR", "Predicted RBI", "Predicted SB", "Predicted BB",
@@ -32133,26 +32170,32 @@ elif active_page == "ML Predictions":
                     if selected_ml_row is not None:
                         st.success(make_ml_prediction_summary(selected_ml_row, _ml_insight_stat_from_sort(ml_sort_by)))
 
-                with st.expander("Show age curve details", expanded=False):
-                    st.write("The age curve estimates typical year-to-year changes by age.")
-                    if not age_curve_df.empty:
-                        age_stats = [s for s in ML_TARGET_STATS if s in age_curve_df["Stat"].unique()]
-                        if age_stats:
-                            age_view_stat = st.selectbox("Age Curve Stat", age_stats, index=0, key="ml_age_curve_stat", on_change=projections_filter_changed)
-                            age_view = age_curve_df[age_curve_df["Stat"] == age_view_stat].rename(columns={"Age Adjustment": "Expected Age Change"})
-                            age_curve_table = format_display_table(age_view, rate_cols=["Expected Age Change"])
-                            render_output_table(age_curve_table, key="ml_age_curve", file_name="ml_age_curve.csv")
+                if _ml_diag_ok:  # E3: age curve and feature importance are Pro diagnostics
+                    with st.expander("Show age curve details", expanded=False):
+                        st.write("The age curve estimates typical year-to-year changes by age.")
+                        if not age_curve_df.empty:
+                            age_stats = [s for s in ML_TARGET_STATS if s in age_curve_df["Stat"].unique()]
+                            if age_stats:
+                                age_view_stat = st.selectbox("Age Curve Stat", age_stats, index=0, key="ml_age_curve_stat", on_change=projections_filter_changed)
+                                age_view = age_curve_df[age_curve_df["Stat"] == age_view_stat].rename(columns={"Age Adjustment": "Expected Age Change"})
+                                age_curve_table = format_display_table(age_view, rate_cols=["Expected Age Change"])
+                                render_output_table(age_curve_table, key="ml_age_curve", file_name="ml_age_curve.csv")
 
-                st.subheader("What Stats Matter Most?")
-                importance_options = [s for s in ML_TARGET_STATS if s in ml_models]
-                if importance_options:
-                    importance_stat = st.selectbox("Feature Importance For", importance_options, index=0, key="ml_importance_stat", on_change=projections_filter_changed)
-                    importance_df = ml_models[importance_stat]["importance"].head(15).copy()
-                    importance_df["Feature"] = importance_df["Feature"].apply(clean_feature_name)
-                    importance_table = format_display_table(clean_ui_columns(importance_df), rate_cols=["Importance"])
-                    render_output_table(importance_table, key="ml_feature_importance", file_name="ml_feature_importance.csv")
-                    with st.expander("Feature importance chart", expanded=pp.is_demo_mode(st) or pp.is_screenshot_mode(st)):
-                        top_bar_chart(importance_df, "Feature", "Importance", f"Top Feature Importance for Predicting {importance_stat}", top_n=15)
+                    st.subheader("What Stats Matter Most?")
+                    importance_options = [s for s in ML_TARGET_STATS if s in ml_models]
+                    if importance_options:
+                        importance_stat = st.selectbox("Feature Importance For", importance_options, index=0, key="ml_importance_stat", on_change=projections_filter_changed)
+                        importance_df = ml_models[importance_stat]["importance"].head(15).copy()
+                        importance_df["Feature"] = importance_df["Feature"].apply(clean_feature_name)
+                        importance_table = format_display_table(clean_ui_columns(importance_df), rate_cols=["Importance"])
+                        render_output_table(importance_table, key="ml_feature_importance", file_name="ml_feature_importance.csv")
+                        with st.expander("Feature importance chart", expanded=pp.is_demo_mode(st) or pp.is_screenshot_mode(st)):
+                            top_bar_chart(importance_df, "Feature", "Importance", f"Top Feature Importance for Predicting {importance_stat}", top_n=15)
+                else:
+                    from baseball_monetization_ui import pro_note_text as _pro_note_text
+
+                    st.caption(_pro_note_text("ml_predictions", "locked", "Age curve and feature importance"))
+
 
                 if developer_mode_enabled() and _ml_is_nonempty_dataframe(stored_df):
                     with st.expander("Developer: ML vs Draft Lab projection check", expanded=False):

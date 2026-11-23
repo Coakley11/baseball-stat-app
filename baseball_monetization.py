@@ -372,6 +372,8 @@ ROLLOUT_GROUPS: Mapping[str, RolloutGroup] = MappingProxyType({
                               capabilities=frozenset({"draft_lab_simulation", "draft_lab_live_analysis"})),
     "simulate_pick": RolloutGroup("simulate_pick", "E2 · Simulate Draft Pick (Player Actions)",
                                   capabilities=frozenset({"draft_pick_simulation"})),
+    "ml": RolloutGroup("ml", "E3 · ML Predictions beyond the top 25, model tuning and model diagnostics",
+                       capabilities=frozenset({"ml_full_list", "ml_tuning", "ml_diagnostics"})),
 })
 
 # Everything built and ready to switch on (for docs/tests); activation is per group, above.
@@ -438,6 +440,11 @@ CAPABILITY_FEATURES: Mapping[str, FeatureId] = MappingProxyType(
         "waiver_personalized_adds": FeatureId.WAIVER_INTELLIGENCE,
         "draft_pick_simulation": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
         "draft_lab_live_analysis": FeatureId.DRAFT_LAB,
+        # E3: ML Predictions — Free keeps the top 25 for the user's filters (the cap is a display limit;
+        # the prediction engine and shared draft settings are unchanged).
+        "ml_full_list": FeatureId.ML_PREDICTIONS,
+        "ml_tuning": FeatureId.ML_PREDICTIONS,
+        "ml_diagnostics": FeatureId.ML_PREDICTIONS,
     }
 )
 
