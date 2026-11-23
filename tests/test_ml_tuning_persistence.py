@@ -99,6 +99,67 @@ class EntryTests(unittest.TestCase):
         self.assertNotIn(ps.PROJECTIONS_RENDERED_KEY, page_state.PAGE_STATE_REGISTRY["ML Predictions"]["exact"])
 
 
+class OwnershipTests(unittest.TestCase):
+    """Browser QA (2026-11-23, pre-existing on Dev): user A tuned ML, the page reloaded while A was signed
+    in, and the new session restored a device-level copy of A's settings — a signed-out visitor and then
+    user B on the same browser saw A's value. The ML state now records its owner and is never shown to
+    another identity."""
+
+    def _a_session(self):
+        s = {"_suite_auth_user_id": "user-a", "ml_regression_strength": 0.35, "ml_auto_apply_tuning": False,
+             "ml_lookback": 3}
+        ps.write_canonical_projections_state(s, reason="projections_page_save", local_edit=False)
+        return s
+
+    def test_the_state_records_its_owner(self):
+        self.assertEqual(self._a_session()["projections_state"]["owner"], "user-a")
+        self.assertEqual(ps.write_canonical_projections_state({}, reason="x")["owner"], "", "signed out")
+
+    def test_another_signed_in_user_never_sees_it(self):
+        s = self._a_session()
+        s["_suite_auth_user_id"] = "user-b"
+        ps.prepare_projections_page(s, entering=True)
+        ps.prepare_projections_filters(s)
+        self.assertNotIn("ml_regression_strength", s, "A's value is dropped; the page default applies")
+        self.assertNotIn("ml_auto_apply_tuning", s)
+        self.assertEqual(s["projections_state"]["owner"], "user-b")
+        self.assertEqual(s["ml_lookback"], 3, "shared draft settings are not ML-owned and are untouched")
+
+    def test_a_signed_out_visitor_never_sees_it(self):
+        s = self._a_session()
+        s.pop("_suite_auth_user_id")
+        ps.prepare_projections_page(s, entering=True)
+        self.assertNotIn("ml_regression_strength", s)
+
+    def test_the_owner_keeps_their_settings(self):
+        s = self._a_session()
+        s.pop("ml_regression_strength")
+        ps.prepare_projections_page(s, entering=True)
+        self.assertEqual(s["ml_regression_strength"], 0.35)
+
+    def test_a_foreign_restore_is_not_applied(self):
+        a = self._a_session()
+        blob = {"projections_state": dict(a["projections_state"])}
+        b = {"_suite_auth_user_id": "user-b", "ml_regression_strength": 0.20}
+        self.assertFalse(ps.apply_cloud_projections_state_if_allowed(b, blob))
+        self.assertNotIn("ml_regression_strength", b)
+        store = {ps.PROJECTIONS_PAGE: {"projections_state": dict(a["projections_state"]), "ml_regression_strength": 0.35}}
+        b2 = {"_suite_auth_user_id": "user-b", "page_filter_state": store}
+        self.assertFalse(ps.restore_projections_page_filters(b2, store))
+        self.assertNotIn("ml_regression_strength", b2)
+        self.assertNotIn("ml_regression_strength", store[ps.PROJECTIONS_PAGE], "the foreign block copy is cleared too")
+
+    def test_own_restore_and_legacy_copies_still_apply(self):
+        a = self._a_session()
+        own = {"_suite_auth_user_id": "user-a"}
+        self.assertTrue(ps.apply_cloud_projections_state_if_allowed(own, {"projections_state": dict(a["projections_state"])}))
+        self.assertEqual(own["ml_regression_strength"], 0.35)
+        legacy_meta = {k: v for k, v in a["projections_state"].items() if k != "owner"}
+        other = {"_suite_auth_user_id": "user-b"}
+        self.assertTrue(ps.apply_cloud_projections_state_if_allowed(other, {"projections_state": legacy_meta}),
+                        "copies saved before the owner field behave as before")
+
+
 class WiringTests(unittest.TestCase):
     def test_callbacks_on_the_run_that_leaves_the_page_are_not_edits(self):
         i = APP.index("def projections_filter_changed():")
