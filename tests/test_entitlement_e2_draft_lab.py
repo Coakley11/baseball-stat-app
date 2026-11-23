@@ -18,7 +18,7 @@ ARCHIVE = (ROOT / "draft_archive_ui.py").read_text(encoding="utf-8")
 FREE = bm.EntitlementSnapshot(plan=bm.Plan.FREE, ready=True, status=bm.SubscriptionStatus.AUTHENTICATED_FREE, user_id="u1")
 PRO = bm.EntitlementSnapshot(plan=bm.Plan.PRO, ready=True, status=bm.SubscriptionStatus.ACTIVE, user_id="u1")
 E2 = ("draft_lab_simulation", "draft_lab_live_analysis", "draft_pick_simulation")
-ON = {bm.ENFORCEMENT_ENV: "on"}
+ON = {bm.ENFORCEMENT_ENV: "on", bm.GROUPS_ENV: "draft_lab,simulate_pick"}
 
 
 class SwitchTests(unittest.TestCase):

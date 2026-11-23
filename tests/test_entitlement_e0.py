@@ -32,17 +32,16 @@ class SwitchTests(unittest.TestCase):
         self.assertIs(bm.enforcement_mode({env: "preview"}), bm.EnforcementMode.PREVIEW)
         self.assertIs(bm.enforcement_mode({env: "yes please"}), bm.EnforcementMode.OFF, "unknown = off")
 
-    def test_a_ready_feature_is_enforced_only_while_the_switch_is_on(self):
-        with mock.patch.object(bm, "READY_FEATURES", frozenset({bm.FeatureId.DRAFT_STRATEGIES})):
-            for mode in ("off", "preview", ""):
-                with mock.patch.dict("os.environ", {bm.ENFORCEMENT_ENV: mode}):
-                    self.assertTrue(bm.allows(FREE, CAP), mode)
-            with mock.patch.dict("os.environ", {bm.ENFORCEMENT_ENV: "on"}):
-                self.assertFalse(bm.allows(FREE, CAP))
-                self.assertTrue(bm.allows(PRO, CAP))
-                self.assertTrue(bm.allows(FREE, "draft_recommendations"), "only the ready feature")
-        with mock.patch.object(bm, "READY_FEATURES", frozenset()), mock.patch.dict("os.environ", {bm.ENFORCEMENT_ENV: "on"}):
-            self.assertTrue(bm.allows(FREE, CAP), "switch on but no feature ready: nothing enforced")
+    def test_a_group_is_enforced_only_while_the_switch_is_on_and_it_is_listed(self):
+        for mode in ("off", "preview", ""):
+            with mock.patch.dict("os.environ", {bm.ENFORCEMENT_ENV: mode, bm.GROUPS_ENV: "strategies"}):
+                self.assertTrue(bm.allows(FREE, CAP), mode)
+        with mock.patch.dict("os.environ", {bm.ENFORCEMENT_ENV: "on", bm.GROUPS_ENV: "strategies"}):
+            self.assertFalse(bm.allows(FREE, CAP))
+            self.assertTrue(bm.allows(PRO, CAP))
+            self.assertTrue(bm.allows(FREE, "draft_recommendations"), "only the listed group")
+        with mock.patch.dict("os.environ", {bm.ENFORCEMENT_ENV: "on", bm.GROUPS_ENV: ""}):
+            self.assertTrue(bm.allows(FREE, CAP), "switch on but no group listed: nothing enforced")
 
 
 class HelperTests(unittest.TestCase):

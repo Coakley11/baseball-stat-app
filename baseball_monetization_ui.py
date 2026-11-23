@@ -67,6 +67,7 @@ def run_entitlement(
     """
     import time
 
+    _log_enforcement_once(environ)
     if developer_mode and development_overrides_enabled(environ):
         snap = development_entitlement(session.get(DEV_PLAN_KEY, Plan.FREE.value))
         session[RUN_SNAPSHOT_KEY] = snap
@@ -88,6 +89,25 @@ def run_entitlement(
             session.pop(SNAPSHOT_CACHE_KEY, None)
     session[RUN_SNAPSHOT_KEY] = snap
     return snap
+
+
+_ENFORCEMENT_LOGGED = False
+
+
+def _log_enforcement_once(environ: Mapping[str, str] | None = None) -> None:
+    """One log line per server process with the effective activation state (mode + active groups)."""
+    global _ENFORCEMENT_LOGGED
+    if _ENFORCEMENT_LOGGED:
+        return
+    _ENFORCEMENT_LOGGED = True
+    try:
+        import logging
+
+        from baseball_monetization import enforcement_summary
+
+        logging.getLogger("baseball_monetization").warning(enforcement_summary(environ))
+    except Exception:
+        pass
 
 
 def refresh_entitlement(session: MutableMapping) -> None:

@@ -24,7 +24,7 @@ TYPES = (v2.ITEM_TYPE, v2.BACKUP_ITEM_TYPE, v2.RESEARCH_ITEM_TYPE, v2.TRASH_ITEM
 FREE = bm.EntitlementSnapshot(plan=bm.Plan.FREE, ready=True, status=bm.SubscriptionStatus.AUTHENTICATED_FREE)
 PRO = bm.EntitlementSnapshot(plan=bm.Plan.PRO, ready=True, status=bm.SubscriptionStatus.ACTIVE)
 LOADING = bm.EntitlementSnapshot(ready=False, status=bm.SubscriptionStatus.UNKNOWN)
-ON = {bm.ENFORCEMENT_ENV: "on"}
+ON = {bm.ENFORCEMENT_ENV: "on", bm.GROUPS_ENV: "strategies"}
 
 
 class _Base(unittest.TestCase):

@@ -344,20 +344,39 @@ ENFORCED_PAGE_FEATURES: Mapping[str, FeatureId] = MappingProxyType({})
 # is enforced during billing acceptance. The UI and assistant tools read the same set.
 ENFORCED_FEATURES: frozenset[FeatureId] = frozenset()
 
-# E0 switch. A feature whose gates are built and tested is added to READY_FEATURES (one approved
-# feature at a time). It is enforced only while the server-side switch is "on":
-#   BASEBALL_ENTITLEMENT_ENFORCEMENT = off (default) | preview | on
-# Streamlit exposes top-level secrets as environment variables, so the switch can live in secrets.
-# "preview" shows Pro labels and never locks; any unknown value counts as "off".
+# Staged activation (two server-side settings; Streamlit exposes top-level secrets as env vars):
+#   BASEBALL_ENTITLEMENT_ENFORCEMENT = off (default) | preview | on      -- the master switch
+#   BASEBALL_ENTITLEMENT_GROUPS      = "strategies,draft_lab"            -- which built groups to restrict
+# A gate is enforced only when the master switch is "on" AND its group is listed. Fail-safe: the switch
+# off or "preview", an empty list, or an unknown/misspelt group name restricts nothing. Groups are
+# defined here in code, so activating one can never lock another prepared feature.
 ENFORCEMENT_ENV = "BASEBALL_ENTITLEMENT_ENFORCEMENT"
-# E1 (built, not active): Saved Draft Strategies and AMI strategy coaching share the
-# draft_strategy_library capability (store, page, in-draft plans, AMI A1/A2 tools).
-READY_FEATURES: frozenset[FeatureId] = frozenset({FeatureId.DRAFT_STRATEGIES})
+GROUPS_ENV = "BASEBALL_ENTITLEMENT_GROUPS"
 
-# E2 onward: gates are built per capability (a feature can have Free and Pro parts). A capability
-# listed here is enforced only while the switch is "on". E2 = Draft Lab runs and results, Draft Lab
-# grading of a completed Live draft, Simulate Draft Pick.
-READY_CAPABILITIES: frozenset[str] = frozenset({"draft_lab_simulation", "draft_lab_live_analysis", "draft_pick_simulation"})
+
+@dataclass(frozen=True)
+class RolloutGroup:
+    """A set of built, tested gates that is switched on together. ``features`` are restricted as a whole
+    (every capability, page label and AMI tool of the feature); ``capabilities`` one shared operation each."""
+
+    name: str
+    description: str
+    features: frozenset[FeatureId] = frozenset()
+    capabilities: frozenset[str] = frozenset()
+
+
+ROLLOUT_GROUPS: Mapping[str, RolloutGroup] = MappingProxyType({
+    "strategies": RolloutGroup("strategies", "E1 · Saved Draft Strategies and AMI strategy coaching",
+                               features=frozenset({FeatureId.DRAFT_STRATEGIES})),
+    "draft_lab": RolloutGroup("draft_lab", "E2 · Draft Lab runs and results, and grading of a completed Live draft",
+                              capabilities=frozenset({"draft_lab_simulation", "draft_lab_live_analysis"})),
+    "simulate_pick": RolloutGroup("simulate_pick", "E2 · Simulate Draft Pick (Player Actions)",
+                                  capabilities=frozenset({"draft_pick_simulation"})),
+})
+
+# Everything built and ready to switch on (for docs/tests); activation is per group, above.
+READY_FEATURES: frozenset[FeatureId] = frozenset().union(*(g.features for g in ROLLOUT_GROUPS.values()))
+READY_CAPABILITIES: frozenset[str] = frozenset().union(*(g.capabilities for g in ROLLOUT_GROUPS.values()))
 
 
 class EnforcementMode(str, Enum):
@@ -372,6 +391,22 @@ def enforcement_mode(environ: Mapping[str, str] | None = None) -> EnforcementMod
         return EnforcementMode(str(env.get(ENFORCEMENT_ENV) or "off").strip().lower())
     except ValueError:
         return EnforcementMode.OFF
+
+
+def active_groups(environ: Mapping[str, str] | None = None) -> frozenset[str]:
+    """The rollout groups restricted right now: none unless the master switch is "on"; then only the
+    listed names that exist in ROLLOUT_GROUPS (case and spaces ignored, unknown names ignored)."""
+    if enforcement_mode(environ) is not EnforcementMode.ON:
+        return frozenset()
+    env = os.environ if environ is None else environ
+    names = {n.strip().lower() for n in str(env.get(GROUPS_ENV) or "").split(",") if n.strip()}
+    return frozenset(n for n in names if n in ROLLOUT_GROUPS)
+
+
+def enforcement_summary(environ: Mapping[str, str] | None = None) -> str:
+    """One line for logs/diagnostics: the effective activation state (no secrets)."""
+    groups = sorted(active_groups(environ))
+    return f"entitlement enforcement: {enforcement_mode(environ).value}; active groups: {', '.join(groups) or 'none'}"
 
 
 class ProFeatureRequired(Exception):
@@ -469,10 +504,10 @@ def entitlement_for_page(snapshot: EntitlementSnapshot, page: str) -> bool:
 
 
 def enforced_features(environ: Mapping[str, str] | None = None) -> frozenset[FeatureId]:
-    """Every feature the app enforces right now: page features, feature-level ones, and the
-    READY_FEATURES while the enforcement switch is "on"."""
-    ready = READY_FEATURES if enforcement_mode(environ) is EnforcementMode.ON else frozenset()
-    return frozenset(ENFORCED_PAGE_FEATURES.values()) | ENFORCED_FEATURES | ready
+    """Every feature the app enforces right now: page features, feature-level ones, and the features
+    of the active rollout groups."""
+    grouped = frozenset().union(*(ROLLOUT_GROUPS[g].features for g in active_groups(environ)))
+    return frozenset(ENFORCED_PAGE_FEATURES.values()) | ENFORCED_FEATURES | grouped
 
 
 def feature_for_capability(capability: str) -> FeatureId | None:
@@ -480,14 +515,14 @@ def feature_for_capability(capability: str) -> FeatureId | None:
 
 
 def capability_enforced(capability: str, environ: Mapping[str, str] | None = None) -> bool:
-    """Is this capability restricted right now? Its whole feature is enforced, or the capability is in
-    READY_CAPABILITIES and the switch is "on"."""
+    """Is this capability restricted right now? Its whole feature is enforced, or it belongs to an active
+    rollout group."""
     feature_id = feature_for_capability(capability)
     if feature_id is None:
         return False
     if feature_id in enforced_features(environ):
         return True
-    return str(capability) in READY_CAPABILITIES and enforcement_mode(environ) is EnforcementMode.ON
+    return any(str(capability) in ROLLOUT_GROUPS[g].capabilities for g in active_groups(environ))
 
 
 def entitlement_for_capability(snapshot: EntitlementSnapshot, capability: str) -> bool:
