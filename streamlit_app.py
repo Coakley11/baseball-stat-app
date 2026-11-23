@@ -16016,7 +16016,11 @@ def projections_filter_changed():
     try:
         from projections_state import mark_projections_filter_pending_sync
 
-        mark_projections_filter_pending_sync(st.session_state)
+        # A callback that fires on the run that navigates AWAY (the sidebar already switched the page) is
+        # an ML widget committing its unchanged value on blur, not an edit. Marking it pending blocked the
+        # ML page's own state from winning when the page was opened again (ML tuning persistence fix).
+        if str(st.session_state.get("active_page") or "ML Predictions") == "ML Predictions":
+            mark_projections_filter_pending_sync(st.session_state)
     except Exception:
         pass
 

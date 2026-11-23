@@ -100,6 +100,13 @@ class EntryTests(unittest.TestCase):
 
 
 class WiringTests(unittest.TestCase):
+    def test_callbacks_on_the_run_that_leaves_the_page_are_not_edits(self):
+        i = APP.index("def projections_filter_changed():")
+        body = APP[i:APP.index("\n\n\n", i)]
+        self.assertIn('if str(st.session_state.get("active_page") or "ML Predictions") == "ML Predictions":\n'
+                      '            mark_projections_filter_pending_sync(st.session_state)', body)
+        self.assertIn("on_draft_settings_changed(", body, "shared draft settings still sync")
+
     def test_entry_is_detected_from_the_previous_run(self):
         self.assertIn("prepare_projections_page(st.session_state, entering=not st.session_state.get(PROJECTIONS_RENDERED_KEY))", APP)
         self.assertIn('if active_page != "ML Predictions":\n    st.session_state.pop("_projections_page_rendered", None)', APP)
