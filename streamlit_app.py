@@ -7171,6 +7171,19 @@ def compute_team_aware_draft_room_fit(
 
 
 
+# E4 (group draft_simulator): Simulator columns that are Pro. Dropped from the pick data itself when
+# locked, so the board pick log, its CSV and the roster views can never carry them.
+DRAFT_SIMULATOR_PRO_COLUMNS = (
+    "Market Rank", "Model Rank", "Fantasy Edge", "Draft Fit Score", "ML Projection Score", "Expected Fantasy Value",
+)
+
+
+def _strip_simulator_pro_columns(df, allowed):
+    if allowed or df is None or not hasattr(df, "columns"):
+        return df
+    return df.drop(columns=[c for c in DRAFT_SIMULATOR_PRO_COLUMNS if c in df.columns])
+
+
 @st.cache_data(show_spinner=False)
 def build_draft_room_roster_view(draft_results, fantasy_team):
     """Create a lineup-style roster view for a selected fantasy team in Draft Room."""
@@ -19960,6 +19973,16 @@ elif active_page == "Draft Assistant Simulator":
     draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
     da_answer_slot = st.container()  # U4: filled once the recommendations are ranked
     _da_answer_done = False
+    # E4 (built, NOT active; group draft_assistant): one authoritative membership read per Draft
+    # Assistant run when the group is enforced; every gate below uses these answers. Stored choices
+    # (sort, category priorities, positions, ML blend) are never rewritten; Free runs use the defaults.
+    from baseball_monetization_ui import allowed_now as _da_allowed_now
+
+    _da_allowed_now(st.session_state, "draft_ranking_modes", fresh=True)
+    _da_rank_ok = _da_allowed_now(st.session_state, "draft_ranking_modes")
+    _da_cat_ok = _da_allowed_now(st.session_state, "draft_category_priorities")
+    _da_insight_ok = _da_allowed_now(st.session_state, "draft_player_insight")
+    _da_blend_ok = _da_allowed_now(st.session_state, "draft_ml_blend_controls")
     try:
         from fantasy_context_ui import render_research_sync_badge
 
@@ -20045,6 +20068,8 @@ elif active_page == "Draft Assistant Simulator":
             )
 
         with st.expander("Advanced scoring settings", expanded=pp.expander_default(st)):
+            render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_da_ml_blend",
+                            label="ML-blend scoring controls", capability="draft_ml_blend_controls", compact=True)
             validate_state_option("fantasy_draft_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
             st.selectbox(
                 "Projection style",
@@ -20064,6 +20089,7 @@ elif active_page == "Draft Assistant Simulator":
                         "Comparison, and player profile cards. Turn this off to use baseline projections everywhere."
                     ),
                     on_change=_draft_assistant_settings_changed,
+                    disabled=not _da_blend_ok,
                 )
             with mlb2:
                 init_state_once("draft_ml_blend_weight", 0.12)
@@ -20075,6 +20101,7 @@ elif active_page == "Draft Assistant Simulator":
                     key="draft_ml_blend_weight",
                     help="Higher values make the Draft Assistant trust the ML projection signal more.",
                     on_change=_draft_assistant_settings_changed,
+                    disabled=not _da_blend_ok,
                 )
             with mlb3:
                 validate_number_state("draft_ml_min_games_signal", 50, min_value=0, max_value=500)
@@ -20085,6 +20112,7 @@ elif active_page == "Draft Assistant Simulator":
                     step=10,
                     key="draft_ml_min_games_signal",
                     on_change=_draft_assistant_settings_changed,
+                    disabled=not _da_blend_ok,
                 )
 
         draft_df = get_cached_unified_projection_pool_live()
@@ -20647,6 +20675,7 @@ elif active_page == "Draft Assistant Simulator":
                         key=DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
                         help="Auto-filled from open required slots. Override if you want a different build.",
                         on_change=_draft_assistant_position_needs_changed,
+                        disabled=not _da_cat_ok,
                     )
                 except ImportError:
                     _pos_widget_key = "draft_need_positions_auto"
@@ -20669,6 +20698,7 @@ elif active_page == "Draft Assistant Simulator":
                         key=_pos_widget_key,
                         help="Auto-filled from open required slots. Changing this keeps your override.",
                         on_change=_mark_position_override,
+                        disabled=not _da_cat_ok,
                     )
             with r2:
                 from draft_assistant_ranking import (
@@ -20713,7 +20743,8 @@ elif active_page == "Draft Assistant Simulator":
                     if _weak in _auto_priorities and _auto_priorities[_weak] == "Low":
                         _auto_priorities[_weak] = "Medium"
                 _priority_overrides = dict(st.session_state.get("da_category_priority_overrides") or {})
-                _effective_priorities = merge_category_priorities(_auto_priorities, _priority_overrides)
+                # E4 (B): saved overrides stay stored; Free runs use the automatic priorities.
+                _effective_priorities = merge_category_priorities(_auto_priorities, _priority_overrides if _da_cat_ok else {})
 
                 def _on_category_priority_changed(cat_label: str):
                     overrides = dict(st.session_state.get("da_category_priority_overrides") or {})
@@ -20746,7 +20777,9 @@ elif active_page == "Draft Assistant Simulator":
                     st.session_state["da_effective_category_priorities"] = dict(_effective_priorities)
 
                 render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_da_categories",
-                                label="Category priorities")
+                                label="Category priorities", capability="draft_category_priorities", compact=True)
+                if not _da_cat_ok:
+                    st.caption("Automatic priorities and positions are used; your saved choices apply with Pro.")
                 st.caption("High / Medium / Low / Off. These values change recommendation scores, not just labels.")
                 _pri_cols = st.columns(min(3, max(1, len(_cat_labels))))
                 for _i, _cat_label in enumerate(_cat_labels):
@@ -20766,11 +20799,13 @@ elif active_page == "Draft Assistant Simulator":
                             on_change=_on_category_priority_changed,
                             args=(_cat_label,),
                             help="Automatic until you change it. Restore automatic priorities clears overrides.",
+                            disabled=not _da_cat_ok,
                         )
                 if st.button(
                     "Restore automatic category priorities",
                     key="da_restore_category_priorities",
                     icon=_icons.UNDO,
+                    disabled=not _da_cat_ok,  # never clear a saved override while it is locked
                 ):
                     st.session_state["_da_restore_category_priorities"] = True
                     st.rerun()
@@ -20786,6 +20821,8 @@ elif active_page == "Draft Assistant Simulator":
                 )
             except ImportError:
                 pass
+            if not _da_cat_ok:  # E4 (B): Free uses the automatic positions; a saved override stays stored
+                needed_positions = list(dict.fromkeys(auto_needed_positions or []))
 
         init_state_once("sync_draft_assistant_position_needs", False)
 
@@ -20884,7 +20921,8 @@ elif active_page == "Draft Assistant Simulator":
                 ml_blend_weight=ml_blend_weight,
                 draft_top_n=int(draft_top_n),
                 research_sig=_research_sig,
-                ranking_mode=str(st.session_state.get("draft_assistant_rec_card_sort") or "Roster Fit"),
+                ranking_mode=(str(st.session_state.get("draft_assistant_rec_card_sort") or "Roster Fit")
+                              if _da_rank_ok else "Roster Fit"),
                 category_priority_sig=tuple(
                     sorted((str(k), str(v)) for k, v in (st.session_state.get("da_effective_category_priorities") or {}).items())
                 ),
@@ -21019,6 +21057,8 @@ elif active_page == "Draft Assistant Simulator":
         if "draft_assistant_rec_card_sort" not in st.session_state:
             st.session_state["draft_assistant_rec_card_sort"] = "Roster Fit"
         _da_sort_choice = str(st.session_state.get("draft_assistant_rec_card_sort") or "Roster Fit")
+        if not _da_rank_ok:  # E4 (B): Free ranks by Roster Fit; the saved choice stays stored
+            _da_sort_choice = "Roster Fit"
         _da_priorities = dict(st.session_state.get("da_effective_category_priorities") or {})
         try:
             from draft_assistant_ranking import apply_draft_assistant_ranking
@@ -21049,7 +21089,7 @@ elif active_page == "Draft Assistant Simulator":
             "Primary Position",
         ]
         render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_da_sort",
-                        label="Ranking modes beyond Roster Fit")
+                        label="Ranking modes beyond Roster Fit", capability="draft_ranking_modes", compact=True)
         _da_sort_choice = st.selectbox(
             "Sort recommendations by",
             _da_sort_labels,
@@ -21061,7 +21101,10 @@ elif active_page == "Draft Assistant Simulator":
                 "The other options rank the full available pool by that metric."
             ),
             on_change=_draft_assistant_settings_changed,
+            disabled=not _da_rank_ok,
         )
+        if not _da_rank_ok:
+            _da_sort_choice = "Roster Fit"
         try:
             from draft_assistant_ranking import order_recommendation_cards
 
@@ -21343,7 +21386,7 @@ elif active_page == "Draft Assistant Simulator":
                     )
         st.subheader("Selected Player Insight")
         render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_da_insight",
-                        label="Selected Player Insight")
+                        label="Selected Player Insight", capability="draft_player_insight", compact=True)
         selected_draft_row = _select_insight_row(
             recs,
             key="draft_assistant_selected_player",
@@ -21357,7 +21400,8 @@ elif active_page == "Draft Assistant Simulator":
                 render_insight_player_header(st, selected_draft_row)
             except ImportError:
                 pass
-            st.info(make_draft_recommendation_insight(selected_draft_row))
+            if _da_insight_ok:  # E4 (A): the explanation is computed only when allowed
+                st.info(make_draft_recommendation_insight(selected_draft_row))
         compact_player_action_center(
             (
                 recs_display["Player"].dropna().astype(str).tolist()
@@ -21374,92 +21418,92 @@ elif active_page == "Draft Assistant Simulator":
         )
 
         with st.expander("Position scarcity & roster category heatmap · PRO", expanded=False):
-            render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_da_scarcity",
-                            label="Scarcity heatmap")
-            st.subheader("Position scarcity")
-            st.caption(
-                "Top available vs replacement at each position. Larger dropoff = thinner position."
-            )
-            position_scarcity_df = pd.DataFrame(position_summary_rows)
+            if render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_da_scarcity",
+                               label="Scarcity heatmap", capability="draft_scarcity_insights"):  # E4 (C)
+                st.subheader("Position scarcity")
+                st.caption(
+                    "Top available vs replacement at each position. Larger dropoff = thinner position."
+                )
+                position_scarcity_df = pd.DataFrame(position_summary_rows)
 
-            if position_scarcity_df.empty:
-                st.info("Position scarcity could not be calculated yet.")
-            else:
-                _scarcity_order = (
-                    position_codes_in_slot_order(_slot_cfg)
-                    if _slot_cfg.get("slots")
-                    else sorted(
-                        {
-                            str(r.get("Position") or "")
-                            for r in (position_summary_rows or [])
-                            if str(r.get("Position") or "").strip()
-                        }
-                    )
-                )
-                position_scarcity_df["Position"] = pd.Categorical(
-                    position_scarcity_df["Position"],
-                    categories=_scarcity_order,
-                    ordered=True,
-                )
-                position_scarcity_df = position_scarcity_df.sort_values("Position")
-                position_scarcity_display = position_scarcity_df[[
-                    "Position", "Available Players", "Replacement Depth", "Replacement Value",
-                    "Top Available", "Top Available Value", "Scarcity Dropoff"
-                ]].copy()
-                position_scarcity_display["Position"] = position_scarcity_display["Position"].astype(str)
-                for col in ["Replacement Value", "Top Available Value", "Scarcity Dropoff"]:
-                    position_scarcity_display[col] = pd.to_numeric(position_scarcity_display[col], errors="coerce").round(4)
-                render_output_table(
-                    position_scarcity_display,
-                    key="draft_position_scarcity",
-                    file_name="draft_position_scarcity.csv",
-                    display_rows=20,
-                    style_cols=["Scarcity Dropoff"]
-                )
-
-            st.subheader("Roster construction heatmap")
-            roster_df = draft_df[draft_df["fullName"].isin(set(my_roster))].copy()
-            if roster_df.empty:
-                st.info("Draft players onto your team in Draft Room to see category strength vs the pool.")
-            else:
-                if draft_format == "5x5 Roto":
-                    cat_defs = {"R": "proj_R", "HR": "proj_HR", "RBI": "proj_RBI", "SB": "proj_SB", "BA": "proj_BA"}
+                if position_scarcity_df.empty:
+                    st.info("Position scarcity could not be calculated yet.")
                 else:
-                    cat_defs = {"Power": "proj_HR", "Run Production": "proj_RBI", "Speed": "proj_SB", "Walks/OPS": "proj_OPS", "Volume": "AB"}
-                heat_rows = []
-                for label, col in cat_defs.items():
-                    roster_val = safe_numeric_series(roster_df, col, 0).sum() if col != "proj_BA" else safe_numeric_series(roster_df, col, np.nan).mean()
-                    pool_values = safe_numeric_series(draft_df, col, 0)
-                    pool_avg = pool_values.mean()
-                    pool_std = pool_values.std()
-                    z = 0 if pd.isna(pool_std) or pool_std == 0 else (roster_val / max(len(roster_df), 1) - pool_avg) / pool_std
-                    if z >= 0.75:
-                        strength = "Strong"
-                    elif z <= -0.75:
-                        strength = "Weak"
+                    _scarcity_order = (
+                        position_codes_in_slot_order(_slot_cfg)
+                        if _slot_cfg.get("slots")
+                        else sorted(
+                            {
+                                str(r.get("Position") or "")
+                                for r in (position_summary_rows or [])
+                                if str(r.get("Position") or "").strip()
+                            }
+                        )
+                    )
+                    position_scarcity_df["Position"] = pd.Categorical(
+                        position_scarcity_df["Position"],
+                        categories=_scarcity_order,
+                        ordered=True,
+                    )
+                    position_scarcity_df = position_scarcity_df.sort_values("Position")
+                    position_scarcity_display = position_scarcity_df[[
+                        "Position", "Available Players", "Replacement Depth", "Replacement Value",
+                        "Top Available", "Top Available Value", "Scarcity Dropoff"
+                    ]].copy()
+                    position_scarcity_display["Position"] = position_scarcity_display["Position"].astype(str)
+                    for col in ["Replacement Value", "Top Available Value", "Scarcity Dropoff"]:
+                        position_scarcity_display[col] = pd.to_numeric(position_scarcity_display[col], errors="coerce").round(4)
+                    render_output_table(
+                        position_scarcity_display,
+                        key="draft_position_scarcity",
+                        file_name="draft_position_scarcity.csv",
+                        display_rows=20,
+                        style_cols=["Scarcity Dropoff"]
+                    )
+
+                st.subheader("Roster construction heatmap")
+                roster_df = draft_df[draft_df["fullName"].isin(set(my_roster))].copy()
+                if roster_df.empty:
+                    st.info("Draft players onto your team in Draft Room to see category strength vs the pool.")
+                else:
+                    if draft_format == "5x5 Roto":
+                        cat_defs = {"R": "proj_R", "HR": "proj_HR", "RBI": "proj_RBI", "SB": "proj_SB", "BA": "proj_BA"}
                     else:
-                        strength = "Average"
-                    heat_rows.append({"Category": label, "Team Strength": strength, "Strength Score": z})
-                heat_df = pd.DataFrame(heat_rows)
-                def roster_heat_style(val):
-                    try:
-                        v = float(val)
-                        if v >= 0.75:
-                            return "background-color:#006400; color:white; font-weight:bold;"
-                        if v > 0:
-                            return "background-color:#c6efce; color:#006100;"
-                        if v <= -0.75:
-                            return "background-color:#8b0000; color:white; font-weight:bold;"
-                        if v < 0:
-                            return "background-color:#ffc7ce; color:#9c0006;"
-                    except Exception:
+                        cat_defs = {"Power": "proj_HR", "Run Production": "proj_RBI", "Speed": "proj_SB", "Walks/OPS": "proj_OPS", "Volume": "AB"}
+                    heat_rows = []
+                    for label, col in cat_defs.items():
+                        roster_val = safe_numeric_series(roster_df, col, 0).sum() if col != "proj_BA" else safe_numeric_series(roster_df, col, np.nan).mean()
+                        pool_values = safe_numeric_series(draft_df, col, 0)
+                        pool_avg = pool_values.mean()
+                        pool_std = pool_values.std()
+                        z = 0 if pd.isna(pool_std) or pool_std == 0 else (roster_val / max(len(roster_df), 1) - pool_avg) / pool_std
+                        if z >= 0.75:
+                            strength = "Strong"
+                        elif z <= -0.75:
+                            strength = "Weak"
+                        else:
+                            strength = "Average"
+                        heat_rows.append({"Category": label, "Team Strength": strength, "Strength Score": z})
+                    heat_df = pd.DataFrame(heat_rows)
+                    def roster_heat_style(val):
+                        try:
+                            v = float(val)
+                            if v >= 0.75:
+                                return "background-color:#006400; color:white; font-weight:bold;"
+                            if v > 0:
+                                return "background-color:#c6efce; color:#006100;"
+                            if v <= -0.75:
+                                return "background-color:#8b0000; color:white; font-weight:bold;"
+                            if v < 0:
+                                return "background-color:#ffc7ce; color:#9c0006;"
+                        except Exception:
+                            return ""
                         return ""
-                    return ""
-                st.dataframe(
-                    heat_df.style.map(roster_heat_style, subset=["Strength Score"]).format({"Strength Score": "{:.2f}"}),
-                    use_container_width=True,
-                    hide_index=True
-                )
+                    st.dataframe(
+                        heat_df.style.map(roster_heat_style, subset=["Strength Score"]).format({"Strength Score": "{:.2f}"}),
+                        use_container_width=True,
+                        hide_index=True
+                    )
 
     render_contextual_page_nav(
         "Draft Assistant Simulator",
@@ -22174,9 +22218,17 @@ elif active_page == "Draft Room Simulator":
             "Draft Fit Score", "ML Projection Score", "Expected Fantasy Value",
             "proj_R", "proj_HR", "proj_RBI", "proj_SB", "proj_BA", "proj_OPS"
         ]].rename(columns={"fullName": "Player", "Team": "MLB Team"})
+        # E4 (C; built, NOT active): advanced columns and post-draft grades are Pro when the
+        # draft_simulator group is enforced. The board, picks, rosters and projections stay Free.
+        from baseball_monetization_ui import allowed_now as _dr_allowed_now
+
+        _dr_insights_ok = _dr_allowed_now(st.session_state, "draft_simulator_insights")
+        pick_info = _strip_simulator_pro_columns(pick_info, _dr_insights_ok)
 
         draft_results = edited_draft.merge(pick_info, on="Player", how="left")
         with st.expander("Pick log with model scores (export)", expanded=False):
+            render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_dr_pick_log",
+                            label="Model and market columns", capability="draft_simulator_insights", compact=True)
             st.caption(
                 "Same picks as the board, with market/model columns attached. "
                 "**Player Grade** is comparable across all draft pages. "
@@ -22248,7 +22300,8 @@ elif active_page == "Draft Room Simulator":
         if st.session_state.get("draft_room_roster_view_requested", False):
             if show_all_rosters:
                 for _team_name in _roster_team_options:
-                    _roster_view = build_draft_room_roster_view(draft_results, _team_name)
+                    _roster_view = _strip_simulator_pro_columns(
+                        build_draft_room_roster_view(draft_results, _team_name), _dr_insights_ok)
                     st.markdown(f"#### {_team_name} Roster")
                     if _roster_view.empty:
                         st.info(f"No drafted players entered yet for {_team_name}.")
@@ -22261,7 +22314,8 @@ elif active_page == "Draft Room Simulator":
                             style_cols=["Fantasy Edge", "Roster Fit Score", "Player Grade"]
                         )
             else:
-                roster_view = build_draft_room_roster_view(draft_results, roster_team_to_view)
+                roster_view = _strip_simulator_pro_columns(
+                    build_draft_room_roster_view(draft_results, roster_team_to_view), _dr_insights_ok)
                 st.markdown(f"#### {roster_team_to_view} Roster")
                 if roster_view.empty:
                     st.info(f"No drafted players entered yet for {roster_team_to_view}.")
@@ -22294,79 +22348,79 @@ elif active_page == "Draft Room Simulator":
                         )
 
         st.subheader("Post-draft roster grades")
-        render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_dr_grades",
-                        label="Post-draft roster grades")
-        st.caption(
-            "**Relative Draft Grade** (0–100) compares teams within this draft room only. "
-            "**Draft Rank** shows placement (#1 of N). "
-            "**Average Player Grade** is the mean player grade per team. "
-            "**Average Roster Fit Score** uses **1.00 as neutral** — above 1.00 means stronger roster fit, "
-            "below 1.00 means weaker fit."
-        )
-        completed_picks = draft_results[draft_results["Player"].astype(str).str.strip() != ""].copy()
-        if completed_picks.empty:
-            st.info("Enter draft picks on the Board tab to generate team grades.")
-        else:
-            grade_rows = []
-            for team_name, team_df in completed_picks.groupby("Team"):
-                grade_rows.append({
-                    "Fantasy Team": team_name,
-                    "Players Drafted": len(team_df),
-                    "Total Expected Fantasy Value": pd.to_numeric(team_df["Expected Fantasy Value"], errors="coerce").sum(),
-                    "Average Expected Fantasy Value": pd.to_numeric(team_df["Expected Fantasy Value"], errors="coerce").mean(),
-                    "Average Draft Fit Score": pd.to_numeric(team_df["Draft Fit Score"], errors="coerce").mean(),
-                    "Average Fantasy Edge": pd.to_numeric(team_df["Fantasy Edge"], errors="coerce").mean(),
-                    "Total HR Projection": pd.to_numeric(team_df["proj_HR"], errors="coerce").sum(),
-                    "Total RBI Projection": pd.to_numeric(team_df["proj_RBI"], errors="coerce").sum(),
-                    "Total R Projection": pd.to_numeric(team_df["proj_R"], errors="coerce").sum(),
-                    "Total SB Projection": pd.to_numeric(team_df["proj_SB"], errors="coerce").sum(),
-                    "Average OPS Projection": pd.to_numeric(team_df["proj_OPS"], errors="coerce").mean(),
-                })
-            grades_df = pd.DataFrame(grade_rows)
-            has_avg_fit = (
-                "Average Draft Fit Score" in grades_df.columns
-                and pd.to_numeric(grades_df["Average Draft Fit Score"], errors="coerce").notna().any()
+        if render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_dr_grades",
+                           label="Post-draft roster grades", capability="draft_simulator_insights"):  # E4 (C)
+            st.caption(
+                "**Relative Draft Grade** (0–100) compares teams within this draft room only. "
+                "**Draft Rank** shows placement (#1 of N). "
+                "**Average Player Grade** is the mean player grade per team. "
+                "**Average Roster Fit Score** uses **1.00 as neutral** — above 1.00 means stronger roster fit, "
+                "below 1.00 means weaker fit."
             )
-            if has_avg_fit:
-                grades_df["Overall Draft Grade Score"] = (
-                    normalize_series(grades_df["Total Expected Fantasy Value"]) * 0.45 +
-                    normalize_series(grades_df["Average Draft Fit Score"]) * 0.25 +
-                    normalize_series(grades_df["Average Fantasy Edge"].fillna(0)) * 0.15 +
-                    normalize_series(grades_df["Total HR Projection"]) * 0.05 +
-                    normalize_series(grades_df["Total RBI Projection"]) * 0.05 +
-                    normalize_series(grades_df["Total SB Projection"]) * 0.05
-                )
+            completed_picks = draft_results[draft_results["Player"].astype(str).str.strip() != ""].copy()
+            if completed_picks.empty:
+                st.info("Enter draft picks on the Board tab to generate team grades.")
             else:
-                if "Average Draft Fit Score" in grades_df.columns:
-                    grades_df = grades_df.drop(columns=["Average Draft Fit Score"])
-                grades_df["Overall Draft Grade Score"] = (
-                    normalize_series(grades_df["Total Expected Fantasy Value"]) * 0.55 +
-                    normalize_series(grades_df["Average Fantasy Edge"].fillna(0)) * 0.20 +
-                    normalize_series(grades_df["Total HR Projection"]) * 0.075 +
-                    normalize_series(grades_df["Total RBI Projection"]) * 0.075 +
-                    normalize_series(grades_df["Total SB Projection"]) * 0.05
+                grade_rows = []
+                for team_name, team_df in completed_picks.groupby("Team"):
+                    grade_rows.append({
+                        "Fantasy Team": team_name,
+                        "Players Drafted": len(team_df),
+                        "Total Expected Fantasy Value": pd.to_numeric(team_df["Expected Fantasy Value"], errors="coerce").sum(),
+                        "Average Expected Fantasy Value": pd.to_numeric(team_df["Expected Fantasy Value"], errors="coerce").mean(),
+                        "Average Draft Fit Score": pd.to_numeric(team_df["Draft Fit Score"], errors="coerce").mean(),
+                        "Average Fantasy Edge": pd.to_numeric(team_df["Fantasy Edge"], errors="coerce").mean(),
+                        "Total HR Projection": pd.to_numeric(team_df["proj_HR"], errors="coerce").sum(),
+                        "Total RBI Projection": pd.to_numeric(team_df["proj_RBI"], errors="coerce").sum(),
+                        "Total R Projection": pd.to_numeric(team_df["proj_R"], errors="coerce").sum(),
+                        "Total SB Projection": pd.to_numeric(team_df["proj_SB"], errors="coerce").sum(),
+                        "Average OPS Projection": pd.to_numeric(team_df["proj_OPS"], errors="coerce").mean(),
+                    })
+                grades_df = pd.DataFrame(grade_rows)
+                has_avg_fit = (
+                    "Average Draft Fit Score" in grades_df.columns
+                    and pd.to_numeric(grades_df["Average Draft Fit Score"], errors="coerce").notna().any()
                 )
-            grades_df["Draft Room Rank"] = grades_df["Overall Draft Grade Score"].rank(ascending=False, method="min")
-            grades_df = grades_df.sort_values("Draft Room Rank")
+                if has_avg_fit:
+                    grades_df["Overall Draft Grade Score"] = (
+                        normalize_series(grades_df["Total Expected Fantasy Value"]) * 0.45 +
+                        normalize_series(grades_df["Average Draft Fit Score"]) * 0.25 +
+                        normalize_series(grades_df["Average Fantasy Edge"].fillna(0)) * 0.15 +
+                        normalize_series(grades_df["Total HR Projection"]) * 0.05 +
+                        normalize_series(grades_df["Total RBI Projection"]) * 0.05 +
+                        normalize_series(grades_df["Total SB Projection"]) * 0.05
+                    )
+                else:
+                    if "Average Draft Fit Score" in grades_df.columns:
+                        grades_df = grades_df.drop(columns=["Average Draft Fit Score"])
+                    grades_df["Overall Draft Grade Score"] = (
+                        normalize_series(grades_df["Total Expected Fantasy Value"]) * 0.55 +
+                        normalize_series(grades_df["Average Fantasy Edge"].fillna(0)) * 0.20 +
+                        normalize_series(grades_df["Total HR Projection"]) * 0.075 +
+                        normalize_series(grades_df["Total RBI Projection"]) * 0.075 +
+                        normalize_series(grades_df["Total SB Projection"]) * 0.05
+                    )
+                grades_df["Draft Room Rank"] = grades_df["Overall Draft Grade Score"].rank(ascending=False, method="min")
+                grades_df = grades_df.sort_values("Draft Room Rank")
 
-            render_output_table(
-                format_post_draft_roster_grades(clean_ui_columns(grades_df)),
-                key="draft_room_roster_grades",
-                file_name="draft_room_roster_grades.csv",
-                display_rows=30,
-                style_cols=["Average Fantasy Edge", "Average Player Grade", "Average Roster Fit Score", "Relative Draft Grade"],
-            )
-
-            if your_team in grades_df["Fantasy Team"].values:
-                your_row = grades_df[grades_df["Fantasy Team"] == your_team].iloc[0]
-                from draft_score_display import COL_DRAFT_RANK, COL_RELATIVE_GRADE, fmt_draft_rank, fmt_relative_draft_grade
-
-                st.info(
-                    f"{your_team}: **Relative Draft Grade** "
-                    f"{fmt_relative_draft_grade(your_row[COL_RELATIVE_GRADE])} · "
-                    f"**Draft Rank** {fmt_draft_rank(your_row[COL_DRAFT_RANK], len(grades_df))} "
-                    f"(compared with other teams in this draft room)."
+                render_output_table(
+                    format_post_draft_roster_grades(clean_ui_columns(grades_df)),
+                    key="draft_room_roster_grades",
+                    file_name="draft_room_roster_grades.csv",
+                    display_rows=30,
+                    style_cols=["Average Fantasy Edge", "Average Player Grade", "Average Roster Fit Score", "Relative Draft Grade"],
                 )
+
+                if your_team in grades_df["Fantasy Team"].values:
+                    your_row = grades_df[grades_df["Fantasy Team"] == your_team].iloc[0]
+                    from draft_score_display import COL_DRAFT_RANK, COL_RELATIVE_GRADE, fmt_draft_rank, fmt_relative_draft_grade
+
+                    st.info(
+                        f"{your_team}: **Relative Draft Grade** "
+                        f"{fmt_relative_draft_grade(your_row[COL_RELATIVE_GRADE])} · "
+                        f"**Draft Rank** {fmt_draft_rank(your_row[COL_DRAFT_RANK], len(grades_df))} "
+                        f"(compared with other teams in this draft room)."
+                    )
 
     with room_answer_slot:
         try:

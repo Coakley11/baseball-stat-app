@@ -374,6 +374,15 @@ ROLLOUT_GROUPS: Mapping[str, RolloutGroup] = MappingProxyType({
                                   capabilities=frozenset({"draft_pick_simulation"})),
     "ml": RolloutGroup("ml", "E3 · ML Predictions beyond the top 25, model tuning and model diagnostics",
                        capabilities=frozenset({"ml_full_list", "ml_tuning", "ml_diagnostics"})),
+    # E4 (built, not active). The AMI draft tools (draft_recommendations / _explanation) stay out of this
+    # group until AMI snapshots carry a live-room origin tag: a live room must never lose AMI help.
+    "draft_assistant": RolloutGroup("draft_assistant", "E4 · Advanced Draft Assistant intelligence: ranking modes "
+                                    "beyond Roster Fit, category priorities, player insight, scarcity, ML-blend controls",
+                                    capabilities=frozenset({"draft_ranking_modes", "draft_category_priorities",
+                                                            "draft_player_insight", "draft_scarcity_insights",
+                                                            "draft_ml_blend_controls"})),
+    "draft_simulator": RolloutGroup("draft_simulator", "E4 · Draft Room Simulator advanced columns and post-draft grades",
+                                    capabilities=frozenset({"draft_simulator_insights"})),
 })
 
 # Everything built and ready to switch on (for docs/tests); activation is per group, above.
@@ -468,6 +477,14 @@ CAPABILITY_FEATURES: Mapping[str, FeatureId] = MappingProxyType(
         "ml_full_list": FeatureId.ML_PREDICTIONS,
         "ml_tuning": FeatureId.ML_PREDICTIONS,
         "ml_diagnostics": FeatureId.ML_PREDICTIONS,
+        # E4: advanced Draft Assistant intelligence (group draft_assistant) and Simulator insights
+        # (group draft_simulator). Roster Fit, basic recommendations, drafting and Live stay Free.
+        "draft_ranking_modes": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
+        "draft_category_priorities": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
+        "draft_player_insight": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
+        "draft_scarcity_insights": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
+        "draft_ml_blend_controls": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
+        "draft_simulator_insights": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
     }
 )
 
