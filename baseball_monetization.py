@@ -376,11 +376,12 @@ ROLLOUT_GROUPS: Mapping[str, RolloutGroup] = MappingProxyType({
                        capabilities=frozenset({"ml_full_list", "ml_tuning", "ml_diagnostics"})),
     # E4 (built, not active). The AMI draft tools (draft_recommendations / _explanation) stay out of this
     # group until AMI snapshots carry a live-room origin tag: a live room must never lose AMI help.
+    # The ML-blend controls and "Positions to prioritize" are shared settings (Live Draft scoring; the
+    # research pages' position sync) and stay Free (owner 2026-11-23).
     "draft_assistant": RolloutGroup("draft_assistant", "E4 · Advanced Draft Assistant intelligence: ranking modes "
-                                    "beyond Roster Fit, category priorities, player insight, scarcity, ML-blend controls",
+                                    "beyond Roster Fit, category priorities, player insight, scarcity",
                                     capabilities=frozenset({"draft_ranking_modes", "draft_category_priorities",
-                                                            "draft_player_insight", "draft_scarcity_insights",
-                                                            "draft_ml_blend_controls"})),
+                                                            "draft_player_insight", "draft_scarcity_insights"})),
     "draft_simulator": RolloutGroup("draft_simulator", "E4 · Draft Room Simulator advanced columns and post-draft grades",
                                     capabilities=frozenset({"draft_simulator_insights"})),
 })
@@ -483,7 +484,6 @@ CAPABILITY_FEATURES: Mapping[str, FeatureId] = MappingProxyType(
         "draft_category_priorities": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
         "draft_player_insight": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
         "draft_scarcity_insights": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
-        "draft_ml_blend_controls": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
         "draft_simulator_insights": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
     }
 )

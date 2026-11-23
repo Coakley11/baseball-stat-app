@@ -19,8 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / "streamlit_app.py").read_text(encoding="utf-8")
 E, G = bm.ENFORCEMENT_ENV, bm.GROUPS_ENV
-DA_CAPS = ("draft_ranking_modes", "draft_category_priorities", "draft_player_insight", "draft_scarcity_insights",
-           "draft_ml_blend_controls")
+DA_CAPS = ("draft_ranking_modes", "draft_category_priorities", "draft_player_insight", "draft_scarcity_insights")
 SIM_CAPS = ("draft_simulator_insights",)
 OTHERS = ("draft_strategy_library", "draft_lab_simulation", "draft_lab_live_analysis", "draft_pick_simulation",
           "ml_full_list", "ml_tuning", "ml_diagnostics")
@@ -84,7 +83,7 @@ class DraftAssistantWiringTests(unittest.TestCase):
     def test_one_authoritative_read_per_run(self):
         self.assertEqual(self.page.count('_da_allowed_now(st.session_state, "draft_ranking_modes", fresh=True)'), 1)
         for flag, cap in (("_da_rank_ok", "draft_ranking_modes"), ("_da_cat_ok", "draft_category_priorities"),
-                          ("_da_insight_ok", "draft_player_insight"), ("_da_blend_ok", "draft_ml_blend_controls")):
+                          ("_da_insight_ok", "draft_player_insight")):
             self.assertIn(f'{flag} = _da_allowed_now(st.session_state, "{cap}")', self.page)
 
     def test_ranking_modes_free_ranks_by_roster_fit_and_keeps_the_saved_choice(self):
@@ -98,18 +97,25 @@ class DraftAssistantWiringTests(unittest.TestCase):
 
     def test_category_priorities_free_uses_automatic_and_keeps_overrides(self):
         self.assertIn("merge_category_priorities(_auto_priorities, _priority_overrides if _da_cat_ok else {})", self.page)
-        self.assertIn("needed_positions = list(dict.fromkeys(auto_needed_positions or []))", self.page)
-        self.assertGreaterEqual(self.page.count("disabled=not _da_cat_ok"), 4, "both position widgets, priorities, restore")
+        self.assertEqual(self.page.count("disabled=not _da_cat_ok"), 2, "the priority selectboxes and Restore only")
         self.assertIn("disabled=not _da_cat_ok,  # never clear a saved override while it is locked", self.page)
 
-    def test_insight_scarcity_and_blend(self):
+    def test_insight_and_scarcity(self):
         self.assertIn("if _da_insight_ok:  # E4 (A)", self.page)
         self.assertIn('capability="draft_scarcity_insights"):  # E4 (C)', self.page)
-        self.assertEqual(self.page.count("disabled=not _da_blend_ok,"), 3, "ML-blend editing lock only")
 
-    def test_global_ml_blend_keys_are_never_substituted(self):
+    def test_shared_settings_stay_free(self):
+        """Owner 2026-11-23: the ML-blend controls (Live Draft scoring reads them) and "Positions to
+        prioritize" (synced to the research pages' position filters) are shared settings: no gate."""
+        self.assertNotIn("draft_ml_blend_controls", bm.CAPABILITY_FEATURES)
+        self.assertNotIn("_da_blend_ok", self.page)
         for key in ("draft_use_ml_blend", "draft_ml_blend_weight", "draft_ml_min_games_signal"):
-            self.assertNotRegex(self.page, rf'{key}[^\n]*if _da_blend_ok', "the global blend is never substituted")
+            i = self.page.index(f'key="{key}",')
+            self.assertNotIn("disabled=", self.page[i:i + 400], key)
+        for marker in ("on_change=_draft_assistant_position_needs_changed,", "on_change=_mark_position_override,"):
+            i = self.page.index(marker)
+            self.assertNotIn("disabled=", self.page[i:i + 120], marker)
+        self.assertNotIn("needed_positions = list(dict.fromkeys(auto_needed_positions", self.page)
 
     def test_no_gate_inside_live_draft_modules(self):
         for name in ("live_draft_room_ui.py", "live_draft_recommendations.py", "live_draft_pick_scoring.py",

@@ -19982,14 +19982,14 @@ elif active_page == "Draft Assistant Simulator":
     _da_answer_done = False
     # E4 (built, NOT active; group draft_assistant): one authoritative membership read per Draft
     # Assistant run when the group is enforced; every gate below uses these answers. Stored choices
-    # (sort, category priorities, positions, ML blend) are never rewritten; Free runs use the defaults.
+    # (sort, category priorities) are never rewritten; Free runs use the defaults. The ML-blend controls
+    # and "Positions to prioritize" are shared settings and stay Free.
     from baseball_monetization_ui import allowed_now as _da_allowed_now
 
     _da_allowed_now(st.session_state, "draft_ranking_modes", fresh=True)
     _da_rank_ok = _da_allowed_now(st.session_state, "draft_ranking_modes")
     _da_cat_ok = _da_allowed_now(st.session_state, "draft_category_priorities")
     _da_insight_ok = _da_allowed_now(st.session_state, "draft_player_insight")
-    _da_blend_ok = _da_allowed_now(st.session_state, "draft_ml_blend_controls")
     try:
         from fantasy_context_ui import render_research_sync_badge
 
@@ -20075,8 +20075,6 @@ elif active_page == "Draft Assistant Simulator":
             )
 
         with st.expander("Advanced scoring settings", expanded=pp.expander_default(st)):
-            render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_da_ml_blend",
-                            label="ML-blend scoring controls", capability="draft_ml_blend_controls", compact=True)
             validate_state_option("fantasy_draft_projection_style", list(PROJECTION_STYLE_OPTIONS), "Balanced")
             st.selectbox(
                 "Projection style",
@@ -20096,7 +20094,6 @@ elif active_page == "Draft Assistant Simulator":
                         "Comparison, and player profile cards. Turn this off to use baseline projections everywhere."
                     ),
                     on_change=_draft_assistant_settings_changed,
-                    disabled=not _da_blend_ok,
                 )
             with mlb2:
                 init_state_once("draft_ml_blend_weight", 0.12)
@@ -20108,7 +20105,6 @@ elif active_page == "Draft Assistant Simulator":
                     key="draft_ml_blend_weight",
                     help="Higher values make the Draft Assistant trust the ML projection signal more.",
                     on_change=_draft_assistant_settings_changed,
-                    disabled=not _da_blend_ok,
                 )
             with mlb3:
                 validate_number_state("draft_ml_min_games_signal", 50, min_value=0, max_value=500)
@@ -20119,7 +20115,6 @@ elif active_page == "Draft Assistant Simulator":
                     step=10,
                     key="draft_ml_min_games_signal",
                     on_change=_draft_assistant_settings_changed,
-                    disabled=not _da_blend_ok,
                 )
 
         draft_df = get_cached_unified_projection_pool_live()
@@ -20682,7 +20677,6 @@ elif active_page == "Draft Assistant Simulator":
                         key=DRAFT_ASSISTANT_POSITION_WIDGET_KEY,
                         help="Auto-filled from open required slots. Override if you want a different build.",
                         on_change=_draft_assistant_position_needs_changed,
-                        disabled=not _da_cat_ok,
                     )
                 except ImportError:
                     _pos_widget_key = "draft_need_positions_auto"
@@ -20705,7 +20699,6 @@ elif active_page == "Draft Assistant Simulator":
                         key=_pos_widget_key,
                         help="Auto-filled from open required slots. Changing this keeps your override.",
                         on_change=_mark_position_override,
-                        disabled=not _da_cat_ok,
                     )
             with r2:
                 from draft_assistant_ranking import (
@@ -20786,7 +20779,7 @@ elif active_page == "Draft Assistant Simulator":
                 render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_da_categories",
                                 label="Category priorities", capability="draft_category_priorities", compact=True)
                 if not _da_cat_ok:
-                    st.caption("Automatic priorities and positions are used; your saved choices apply with Pro.")
+                    st.caption("Automatic category priorities are used; your saved priorities apply with Pro.")
                 st.caption("High / Medium / Low / Off. These values change recommendation scores, not just labels.")
                 _pri_cols = st.columns(min(3, max(1, len(_cat_labels))))
                 for _i, _cat_label in enumerate(_cat_labels):
@@ -20828,8 +20821,6 @@ elif active_page == "Draft Assistant Simulator":
                 )
             except ImportError:
                 pass
-            if not _da_cat_ok:  # E4 (B): Free uses the automatic positions; a saved override stays stored
-                needed_positions = list(dict.fromkeys(auto_needed_positions or []))
 
         init_state_once("sync_draft_assistant_position_needs", False)
 
