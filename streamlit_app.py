@@ -22198,9 +22198,15 @@ elif active_page == "Draft Room Simulator":
             st.rerun()
         st.caption("Same board is used by **League Standings** when you score this league.")
 
+        # E4 (C; built, NOT active): advanced columns and post-draft grades are Pro when the
+        # draft_simulator group is enforced. The board, picks, rosters and projections stay Free.
+        from baseball_monetization_ui import allowed_now as _dr_allowed_now
+
+        _dr_insights_ok = _dr_allowed_now(st.session_state, "draft_simulator_insights")
         _dr_pool_xfer = room_df.copy()
         if not _dr_pool_xfer.empty and "fullName" in _dr_pool_xfer.columns:
             _dr_pool_xfer = _dr_pool_xfer.sort_values("Expected Fantasy Value", ascending=False, na_position="last")
+        _dr_pool_xfer = _strip_simulator_pro_columns(_dr_pool_xfer, _dr_insights_ok)  # hand-offs carry names only
         render_contextual_page_nav(
             "Draft Room Simulator",
             "after_board",
@@ -22220,11 +22226,6 @@ elif active_page == "Draft Room Simulator":
             "Draft Fit Score", "ML Projection Score", "Expected Fantasy Value",
             "proj_R", "proj_HR", "proj_RBI", "proj_SB", "proj_BA", "proj_OPS"
         ]].rename(columns={"fullName": "Player", "Team": "MLB Team"})
-        # E4 (C; built, NOT active): advanced columns and post-draft grades are Pro when the
-        # draft_simulator group is enforced. The board, picks, rosters and projections stay Free.
-        from baseball_monetization_ui import allowed_now as _dr_allowed_now
-
-        _dr_insights_ok = _dr_allowed_now(st.session_state, "draft_simulator_insights")
         pick_info = _strip_simulator_pro_columns(pick_info, _dr_insights_ok)
 
         draft_results = edited_draft.merge(pick_info, on="Player", how="left")
