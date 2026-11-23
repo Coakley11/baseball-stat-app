@@ -7,7 +7,8 @@ every suite on the candidate and on the baseline and lists new / pre-existing / 
 |---|---|---|---|---|
 | 45074542814 | `180a711` (+CI) | 8 + pro | 6 | Real: Material icons on the badge/page (owner rule: emoji only) and the pricing caption AMI's page help quotes. Fixed in `0f236c5`. |
 | 45076690269 | `0f236c5` (+CI) | 8 + pro | 1 | `test_live_draft_create_and_mode_sticky.StartTimeoutTests::test_stale_in_flight_expires` (draftsource_b) — timing-sensitive, see below |
-| 45082452207 | `5bbb761` (owner decisions) | 8 + pro | see final report | |
+| 45082452207 | `5bbb761` (owner decisions) | 8 + pro | 3 (+ flaky) | Real: Live Draft completion-panel tests — the new "Analyze Draft" Pro note read `st.session_state`, which the panel's test double lacks. Fixed in `18d4860` (uses the panel's session; labels can never break a page). |
+| 45084740647 | `18d4860` (+CI) | 8 + pro | 1 | Only the flaky `test_stale_in_flight_expires`; 8 of 9 suites 0 new, `pro` suite green on both sides. **No actual regression.** |
 
 ## The one remaining comparison difference is a flaky timing test, not a regression
 
