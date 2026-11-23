@@ -100,6 +100,18 @@ class DraftAssistantWiringTests(unittest.TestCase):
         self.assertEqual(self.page.count("disabled=not _da_cat_ok"), 2, "the priority selectboxes and Restore only")
         self.assertIn("disabled=not _da_cat_ok,  # never clear a saved override while it is locked", self.page)
 
+    def test_the_saved_sort_choice_survives_navigation_and_returns_with_pro(self):
+        """Browser QA: the sort is a widget key Streamlit drops while another page is open, so a locked
+        "Model Value" came back as Roster Fit. A durable, owner-tagged copy now keeps it."""
+        top = self.page[:self.page.index("ranking_mode=")]
+        self.assertIn('st.session_state["draft_assistant_rec_card_sort"] = _da_saved_sort["value"]', top,
+                      "applied before the scoring cache reads the sort")
+        self.assertIn('if _da_saved_sort.get("owner") == _da_identity:', top)
+        self.assertIn('st.session_state.pop("_da_rec_sort_saved", None)', top, "another identity's choice is dropped")
+        self.assertIn("on_change=_da_sort_changed,", self.page)
+        i = self.page.index("def _da_sort_changed(")
+        self.assertIn('"owner": str(st.session_state.get("_suite_auth_user_id") or "").strip(),', self.page[i:i + 400])
+
     def test_insight_and_scarcity(self):
         self.assertIn("if _da_insight_ok:  # E4 (A)", self.page)
         self.assertIn('capability="draft_scarcity_insights"):  # E4 (C)', self.page)
@@ -150,7 +162,8 @@ class SimulatorTests(unittest.TestCase):
 
     def test_wiring(self):
         page = _sim_page()
-        self.assertIn('_dr_insights_ok = _dr_allowed_now(st.session_state, "draft_simulator_insights")', page)
+        self.assertIn('_dr_insights_ok = _dr_allowed_now(st.session_state, "draft_simulator_insights", fresh=True)', page,
+                      "one authoritative read per Simulator run")
         self.assertIn("pick_info = _strip_simulator_pro_columns(pick_info, _dr_insights_ok)", page)
         self.assertEqual(page.count("_strip_simulator_pro_columns("), 4, "pick data, both roster views, the hand-off")
         self.assertIn("_dr_pool_xfer = _strip_simulator_pro_columns(_dr_pool_xfer, _dr_insights_ok)", page)
