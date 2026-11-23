@@ -194,6 +194,43 @@ def _projections_state_from_blob(state: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+# Ownership (2026-11-23): the canonical ML state records which signed-in identity wrote it ("" =
+# signed out). A copy written by another identity — e.g. a device-level restore after a reload while
+# someone else was signed in — is discarded instead of shown, so one account's ML settings never reach
+# another account or a signed-out visitor. Copies saved before this field existed have no owner and
+# behave as before.
+OWNER_FIELD = "owner"
+AUTH_USER_ID_SESSION_KEY = "_suite_auth_user_id"
+
+
+def session_identity(session: dict[str, Any]) -> str:
+    return str(session.get(AUTH_USER_ID_SESSION_KEY) or "").strip()
+
+
+def _meta_owner(meta: Any) -> str | None:
+    if isinstance(meta, dict) and OWNER_FIELD in meta:
+        return str(meta.get(OWNER_FIELD) or "").strip()
+    return None
+
+
+def _is_foreign(session: dict[str, Any], owner: str | None) -> bool:
+    return owner is not None and owner != session_identity(session)
+
+
+def drop_foreign_projections_state(session: dict[str, Any]) -> None:
+    """Forget ML-owned state that belongs to another identity (session keys and the page block)."""
+    session.pop("projections_state", None)
+    for key in PROJECTIONS_ENTRY_OWNED_KEYS:
+        session.pop(key, None)
+    pf = session.get("page_filter_state")
+    block = pf.get(PROJECTIONS_PAGE) if isinstance(pf, dict) else None
+    if isinstance(block, dict):
+        block.pop("projections_state", None)
+        for key in PROJECTIONS_ENTRY_OWNED_KEYS:
+            block.pop(key, None)
+    clear_projections_local_edit(session)
+
+
 def canonical_projections_state(session: dict[str, Any]) -> dict[str, Any] | None:
     meta = session.get("projections_state")
     if not isinstance(meta, dict):
@@ -231,6 +268,7 @@ def write_canonical_projections_state(
     flat = {k: _normalize_filter_value(k, v) for k, v in raw.items() if is_projections_state_key(k)}
     meta = _meta_from_flat(flat)
     meta["last_write_reason"] = reason or None
+    meta[OWNER_FIELD] = session_identity(session)
     session["projections_state"] = meta
     if sync_widget_keys:
         for key, val in flat.items():
@@ -297,6 +335,8 @@ def prepare_projections_page(session: dict[str, Any], *, entering: bool = False)
     returns, cloud restores and contextual transfers write the canonical state themselves (or run after
     this), so they still apply. Shared keys are untouched here.
     """
+    if _is_foreign(session, _meta_owner(session.get("projections_state"))):
+        drop_foreign_projections_state(session)  # another identity's ML settings: never shown
     if entering and not session.get(PROJECTIONS_PENDING_SYNC_KEY):
         canonical = canonical_projections_state(session) or {}
         for key in PROJECTIONS_ENTRY_OWNED_KEYS:
@@ -386,6 +426,9 @@ def restore_projections_page_filters(session: dict[str, Any], store: dict[str, A
     snapshot = store.get(PROJECTIONS_PAGE) if isinstance(store, dict) else None
     if not isinstance(snapshot, dict):
         return False
+    if _is_foreign(session, _meta_owner(snapshot.get("projections_state"))):
+        drop_foreign_projections_state(session)
+        return False
     for key, value in snapshot.items():
         if key == "projections_state":
             continue
@@ -407,6 +450,15 @@ def restore_projections_page_filters(session: dict[str, Any], store: dict[str, A
 def apply_cloud_projections_state_if_allowed(session: dict[str, Any], state: dict[str, Any]) -> bool:
     if is_projections_locally_dirty(session):
         return False
+    if isinstance(state, dict):
+        owner = _meta_owner(state.get("projections_state"))
+        if owner is None:
+            pf = state.get("page_filter_state")
+            block = pf.get(PROJECTIONS_PAGE) if isinstance(pf, dict) else None
+            owner = _meta_owner(block.get("projections_state")) if isinstance(block, dict) else None
+        if _is_foreign(session, owner):
+            drop_foreign_projections_state(session)
+            return False
     flat = _projections_state_from_blob(state)
     if not flat:
         return False
