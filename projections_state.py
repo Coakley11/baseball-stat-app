@@ -314,14 +314,20 @@ def gather_projections_state(session: dict[str, Any]) -> dict[str, Any]:
 
 
 PROJECTIONS_RENDERED_KEY = "_projections_page_rendered"
-# Keys only the ML page owns. Lookback, minimums, projection style and the research position filter are
-# shared with the draft pages / other research pages and keep their existing sync rules.
+# Keys only the ML page owns (tuning, scope size and display choices). Lookback, minimums, projection
+# style and the research position filter are shared with the draft pages / other research pages and keep
+# their existing sync rules.
 PROJECTIONS_ENTRY_OWNED_KEYS = (
     "ml_regression_strength",
     "ml_age_strength",
     "ml_comp_weight",
     "ml_k_neighbors",
     "ml_auto_apply_tuning",
+    "ml_max_players",
+    "ml_sort_by",
+    "ml_projection_insight_player",
+    "ml_age_curve_stat",
+    "ml_importance_stat",
 )
 
 

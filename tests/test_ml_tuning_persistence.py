@@ -49,6 +49,18 @@ class EntryTests(unittest.TestCase):
         self.assertEqual(s["ml_k_neighbors"], 15)
         self.assertEqual(ps.canonical_projections_state(s)["ml_regression_strength"], 0.30, "canonical not overwritten")
 
+    def test_ml_only_display_choices_are_kept_too(self):
+        s = _session_after_edit()
+        s["ml_sort_by"] = "Predicted SB"
+        ps.write_canonical_projections_state(s, reason="projections_page_save", local_edit=True, sync_widget_keys=False)
+        _leave_and_refill(s, ml_sort_by="Predicted HR")
+        ps.prepare_projections_page(s, entering=True)
+        self.assertEqual(s["ml_sort_by"], "Predicted SB")
+        import page_state
+
+        shared = {k for k in page_state._global_snapshot_excluded_keys({}) if k.startswith("ml_")}
+        self.assertFalse(shared & set(ps.PROJECTIONS_ENTRY_OWNED_KEYS), "never a shared draft/research key")
+
     def test_missing_keys_are_filled_from_the_pages_own_state(self):
         s = _session_after_edit()
         _leave_and_refill(s)
