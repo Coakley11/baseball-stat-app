@@ -12,6 +12,7 @@ and never writes a widget value back.
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from streamlit.testing.v1 import AppTest
 
@@ -118,6 +119,7 @@ class LeftoverHandoffFreezeTests(unittest.TestCase):
             ok, msg = login_with_email(session, email="coach@example.com", password="pw", st=st)
         return ok, msg, save
 
+    @mock.patch("suite_auth_browser.URL_AUTH_RESTORE_ENABLED", True)
     def test_a_leftover_freeze_no_longer_skips_the_save(self) -> None:
         from suite_auth_bridge_handoff import HANDOFF_FREEZE_KEY
 

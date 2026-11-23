@@ -6,6 +6,12 @@ isolation). This module stores tokens in Supabase and keeps an opaque session id
 ``st.query_params['suite_sid']``, which survives browser refresh on the same URL.
 
 Synced to sibling repos.
+
+SECURITY (2026-11-23): URL-carried sign-in restore is DISABLED. The ``suite_sid`` value was a bearer
+capability: anyone holding a copied URL could load that account's stored tokens. With
+``URL_AUTH_RESTORE_ENABLED = False`` nothing is read from or written to the token bridge, a
+``suite_sid`` arriving in a URL is removed from the address bar and its server-side record is revoked
+(marked invalid and its stored tokens erased), and a page reload requires signing in again.
 """
 
 from __future__ import annotations
@@ -18,8 +24,16 @@ SESSION_STATE_SID_KEY = "_suite_browser_session_id"
 BROWSER_LOAD_REASON_KEY = "_suite_browser_auth_load_reason"
 BROWSER_PERSIST_RESULT_KEY = "_suite_browser_auth_persistence_result"
 AUTH_USER_ID_SESSION_KEY = "_suite_auth_user_id"
+URL_AUTH_RESTORE_ENABLED = False
+URL_RESTORE_DISABLED_REASON = "url_restore_disabled"
+_REVOKED_SIDS_KEY = "_suite_browser_sids_revoked"
 
 InitState = Literal["ready"]
+
+
+def url_auth_restore_enabled() -> bool:
+    """Whether a URL ``suite_sid`` may restore a sign-in (off: security hotfix 2026-11-23)."""
+    return bool(URL_AUTH_RESTORE_ENABLED)
 
 
 def init_browser_auth_storage(st: Any) -> InitState:
@@ -27,16 +41,77 @@ def init_browser_auth_storage(st: Any) -> InitState:
     return "ready"
 
 
-def _session_id_from_st(st: Any) -> str:
-    raw = st.query_params.get(SESSION_QUERY_PARAM)
+def _query_sid(st: Any) -> str:
+    try:
+        raw = st.query_params.get(SESSION_QUERY_PARAM)
+    except Exception:
+        return ""
     if isinstance(raw, list):
         raw = raw[0] if raw else ""
+    return str(raw or "").strip()
+
+
+def _session_id_from_st(st: Any) -> str:
+    raw = _query_sid(st)
+    if not url_auth_restore_enabled():
+        return raw
     sid = str(raw or st.session_state.get(SESSION_STATE_SID_KEY) or "").strip()
     return sid
 
 
+def _revoke_presented_sid(st: Any, sid: str) -> None:
+    """Invalidate the bridge record a URL named (once per session) and erase its stored tokens.
+
+    Best effort: a storage failure never blocks the page, and the record is unreadable by the app
+    regardless because every bridge read is disabled.
+    """
+    try:
+        done = st.session_state.get(_REVOKED_SIDS_KEY)
+        if not isinstance(done, list):
+            done = []
+        if sid in done:
+            return
+        done.append(sid)
+        st.session_state[_REVOKED_SIDS_KEY] = done[-8:]
+    except Exception:
+        pass
+    try:
+        from suite_storage_supabase import invalidate_browser_auth_session
+
+        invalidate_browser_auth_session(sid)
+    except Exception:
+        pass
+
+
+def strip_url_auth_param(st: Any) -> bool:
+    """Remove ``suite_sid`` from the URL and session, revoking the record it named. Returns True
+    when a value was present. A no-op while URL restore is enabled."""
+    if url_auth_restore_enabled():
+        return False
+    sid = _query_sid(st)
+    try:
+        st.session_state.pop(SESSION_STATE_SID_KEY, None)
+    except Exception:
+        pass
+    if not sid:
+        return False
+    _revoke_presented_sid(st, sid)
+    try:
+        if SESSION_QUERY_PARAM in st.query_params:
+            del st.query_params[SESSION_QUERY_PARAM]
+    except Exception:
+        pass
+    return True
+
+
 def sync_suite_sid_from_query(st: Any) -> str:
-    """Bind opaque ``suite_sid`` from URL into session state before token lookup."""
+    """Bind opaque ``suite_sid`` from URL into session state before token lookup.
+
+    With URL restore disabled this strips and revokes any ``suite_sid`` instead and returns "".
+    """
+    if not url_auth_restore_enabled():
+        strip_url_auth_param(st)
+        return ""
     sid = _session_id_from_st(st)
     if sid:
         st.session_state[SESSION_STATE_SID_KEY] = sid
@@ -50,7 +125,7 @@ def sync_suite_sid_from_query(st: Any) -> str:
 
 def _set_session_id(st: Any, session_id: str) -> None:
     sid = str(session_id or "").strip()
-    if not sid:
+    if not sid or not url_auth_restore_enabled():
         return
     st.session_state[SESSION_STATE_SID_KEY] = sid
     st.query_params[SESSION_QUERY_PARAM] = sid
@@ -75,6 +150,10 @@ def _note_browser_load_reason(st: Any | None, reason: str) -> None:
 
 
 def load_browser_auth_tokens(st: Any) -> dict[str, Any] | None:
+    if not url_auth_restore_enabled():
+        strip_url_auth_param(st)
+        _note_browser_load_reason(st, URL_RESTORE_DISABLED_REASON)
+        return None
     sid = sync_suite_sid_from_query(st)
     if not sid:
         _note_browser_load_reason(st, "suite_sid_missing")
@@ -169,6 +248,16 @@ def save_browser_auth_tokens(
     handoff_phase: str = "",
 ) -> dict[str, Any]:
     """Write tokens to Supabase and mirror opaque id in URL query params."""
+    if not url_auth_restore_enabled():
+        strip_url_auth_param(st)
+        return _finish_browser_persistence(
+            st,
+            {
+                "persistence_attempted": False,
+                "failure_reason": URL_RESTORE_DISABLED_REASON,
+                "handoff_phase": str(handoff_phase or "")[:32],
+            },
+        )
     from suite_auth_bridge_handoff import (
         PHASE_FINAL,
         PHASE_INTERMEDIATE,

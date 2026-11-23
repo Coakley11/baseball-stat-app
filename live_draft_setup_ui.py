@@ -1233,7 +1233,7 @@ def start_button_disabled(session: dict[str, Any]) -> tuple[bool, str]:
             load_reason = str(session.get("_suite_browser_auth_load_reason") or "").strip()
             if load_reason == "token_record_missing":
                 return True, "Sign in to start a live draft (no saved credentials for this browser link)."
-            if load_reason in ("token_record_incomplete", "suite_sid_missing"):
+            if load_reason in ("token_record_incomplete", "suite_sid_missing", "url_restore_disabled"):
                 return True, "Sign in to start a live draft."
             return True, "Restoring your sign-in before you can start…"
     except ImportError:

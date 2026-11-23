@@ -211,6 +211,7 @@ def test_guest_sign_in_drops_only_the_guests_session_library() -> None:
     delete_row.assert_not_called()  # session copies only: nothing saved is deleted
 
 
+@mock.patch("suite_auth_browser.URL_AUTH_RESTORE_ENABLED", True)
 def test_persistence_failure_rolls_back_login_without_workspace_cleanup() -> None:
     saved = [{"draft_id": "draft-1", "name": "Keep Me"}]
     session: dict = {"draft_archive_teams": deepcopy(saved), "active_page": "Saved Draft Library"}
@@ -327,6 +328,7 @@ def test_stripe_checkout_requires_complete_authentication() -> None:
         assert post.call_args.kwargs["headers"] == {"Authorization": "Bearer access-test"}
 
 
+@mock.patch("suite_auth_browser.URL_AUTH_RESTORE_ENABLED", True)
 def test_completed_handoff_logout_then_login_survives_ordinary_reruns() -> None:
     import baseball_persistent_state  # noqa: F401 — registers the account clearer, as the app always does
     from suite_auth_bridge_handoff import HANDOFF_FREEZE_KEY, HANDOFF_FINAL_GENERATION_KEY
@@ -407,6 +409,7 @@ def test_completed_handoff_logout_then_login_survives_ordinary_reruns() -> None:
         assert claim_sidebar_render(session, GUARD_ACCOUNT)
 
 
+@mock.patch("suite_auth_browser.URL_AUTH_RESTORE_ENABLED", True)
 def test_auth_lifecycle_preserves_actual_saved_workspace_file() -> None:
     """Use isolated on-disk persistence while exercising every auth transition."""
     import suite_user_persistence
