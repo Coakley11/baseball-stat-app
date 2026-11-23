@@ -12941,6 +12941,12 @@ def render_developer_mode_sidebar_toggle():
     except ImportError:
         pass
     if developer_mode_enabled():
+        try:  # owner-only: the effective Pro restriction state, including configuration mistakes
+            from baseball_monetization import enforcement_summary
+
+            st.sidebar.caption("🛠️ " + enforcement_summary())
+        except Exception:
+            pass
         try:
             from page_diagnostics import suppress_inline_diagnostics
 

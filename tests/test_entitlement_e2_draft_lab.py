@@ -136,7 +136,30 @@ class WiringTests(unittest.TestCase):
 
     def test_live_draft_grading_is_gated_in_the_handler_and_the_button(self):
         self.assertIn('allowed_now(session, "draft_lab_live_analysis", fresh=True)', ARCHIVE)
-        self.assertIn('capability="draft_lab_live_analysis"', ARCHIVE)
+        self.assertIn('capability="draft_lab_live_analysis", compact=True)', ARCHIVE, "compact lock in the narrow column")
+
+    def test_compact_lock_is_one_caption_and_an_upgrade_button(self):
+        calls = []
+
+        class _St:
+            def caption(self, t): calls.append(("caption", t))
+            def button(self, label, **k): calls.append(("button", label, k.get("use_container_width"))); return False
+            def container(self, **k): raise AssertionError("no bordered box in the compact lock")
+            def markdown(self, t): raise AssertionError("compact lock is a single line")
+            def write(self, t): raise AssertionError("compact lock is a single line")
+
+        s = {ui.RUN_SNAPSHOT_KEY: FREE}
+        with mock.patch.dict("os.environ", ON):
+            ok = ui.render_pro_note(_St(), s, "draft_lab", key="k", label="Draft Lab grading",
+                                    capability="draft_lab_live_analysis", compact=True)
+        self.assertFalse(ok)
+        self.assertEqual(calls[0], ("caption", f"{ui.PRO_BADGE} Draft Lab grading · included with Pro"))
+        self.assertEqual(calls[1], ("button", "See Pro plans", True))
+        self.assertEqual(len(calls), 2)
+        calls.clear()
+        self.assertTrue(ui.render_pro_note(_St(), s, "draft_lab", key="k", capability="draft_lab_live_analysis",
+                                           compact=True), "switch off: the normal one-line note and the button")
+        self.assertEqual([c[0] for c in calls], ["caption"])
 
     def test_no_gate_inside_live_draft_pick_flows(self):
         for name in ("live_draft_room_ui.py", "draft_ui.py", "draft_actions.py"):

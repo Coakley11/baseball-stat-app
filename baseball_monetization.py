@@ -400,15 +400,38 @@ def active_groups(environ: Mapping[str, str] | None = None) -> frozenset[str]:
     listed names that exist in ROLLOUT_GROUPS (case and spaces ignored, unknown names ignored)."""
     if enforcement_mode(environ) is not EnforcementMode.ON:
         return frozenset()
+    return frozenset(n for n in _listed_groups(environ) if n in ROLLOUT_GROUPS)
+
+
+def _listed_groups(environ: Mapping[str, str] | None = None) -> frozenset[str]:
     env = os.environ if environ is None else environ
-    names = {n.strip().lower() for n in str(env.get(GROUPS_ENV) or "").split(",") if n.strip()}
-    return frozenset(n for n in names if n in ROLLOUT_GROUPS)
+    return frozenset(n.strip().lower() for n in str(env.get(GROUPS_ENV) or "").split(",") if n.strip())
+
+
+def unrecognized_groups(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
+    """Listed group names that do not exist (configuration mistakes). They are ignored, never widened,
+    and reported whatever the master switch says, so a typo is visible before activation."""
+    return tuple(sorted(n for n in _listed_groups(environ) if n not in ROLLOUT_GROUPS))
+
+
+def unrecognized_enforcement_value(environ: Mapping[str, str] | None = None) -> bool:
+    """True when the master switch holds something other than off/preview/on (treated as off)."""
+    env = os.environ if environ is None else environ
+    raw = str(env.get(ENFORCEMENT_ENV) or "").strip().lower()
+    return bool(raw) and raw not in {m.value for m in EnforcementMode}
 
 
 def enforcement_summary(environ: Mapping[str, str] | None = None) -> str:
-    """One line for logs/diagnostics: the effective activation state (no secrets)."""
+    """One line for logs/diagnostics: the effective activation state and any configuration mistakes
+    (no secrets: only the switch value and group names are shown)."""
     groups = sorted(active_groups(environ))
-    return f"entitlement enforcement: {enforcement_mode(environ).value}; active groups: {', '.join(groups) or 'none'}"
+    line = f"entitlement enforcement: {enforcement_mode(environ).value}; active groups: {', '.join(groups) or 'none'}"
+    if unrecognized_enforcement_value(environ):
+        line += f"; unrecognized {ENFORCEMENT_ENV} value treated as off"
+    unknown = unrecognized_groups(environ)
+    if unknown:
+        line += f"; unrecognized group names ignored: {', '.join(unknown)}"
+    return line
 
 
 class ProFeatureRequired(Exception):

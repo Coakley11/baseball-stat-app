@@ -65,6 +65,39 @@ class RolloutGroupTests(unittest.TestCase):
         self.assertEqual(bm.enforcement_summary({}), "entitlement enforcement: off; active groups: none")
         self.assertIn("active groups: draft_lab, strategies", bm.enforcement_summary({E: "on", G: "strategies,draft_lab"}))
 
+    def test_configuration_mistakes_are_reported_and_never_widen(self):
+        env = {E: "on", G: "ml, strategy ,ALL"}
+        self.assertEqual(bm.unrecognized_groups(env), ("all", "strategy"))
+        self.assertEqual(bm.active_groups(env), frozenset({"ml"}))
+        line = bm.enforcement_summary(env)
+        self.assertIn("active groups: ml", line)
+        self.assertIn("unrecognized group names ignored: all, strategy", line)
+        # Reported even while the switch is off, so a typo is caught before activation.
+        self.assertIn("ignored: strateges", bm.enforcement_summary({G: "strateges"}))
+        self.assertIn("active groups: none", bm.enforcement_summary({G: "strateges"}))
+        bad = bm.enforcement_summary({E: "yes", G: "ml"})
+        self.assertIn("enforcement: off", bad)
+        self.assertIn(f"unrecognized {E} value treated as off", bad)
+        self.assertNotIn("yes", bad, "the raw value is not echoed")
+        self.assertEqual(bm.unrecognized_groups({}), ())
+        self.assertFalse(bm.unrecognized_enforcement_value({E: " Preview "}))
+
+    def test_one_log_line_per_server_process(self):
+        import baseball_monetization_ui as ui
+
+        with mock.patch.object(ui, "_ENFORCEMENT_LOGGED", False), self.assertLogs("baseball_monetization", "WARNING") as logs:
+            ui._log_enforcement_once({G: "typo"})
+            ui._log_enforcement_once({G: "typo"})
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("unrecognized group names ignored: typo", logs.output[0])
+
+    def test_owner_diagnostics_show_the_same_line(self):
+        from pathlib import Path
+
+        app = (Path(__file__).resolve().parents[1] / "streamlit_app.py").read_text(encoding="utf-8")
+        i = app.index('st.sidebar.caption("🛠️ " + enforcement_summary())')
+        self.assertIn("if developer_mode_enabled():", app[i - 300:i])
+
 
 if __name__ == "__main__":
     unittest.main()
