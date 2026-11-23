@@ -6,7 +6,7 @@ name: UI phase validation
 
 on:
   push:
-    branches: ["ci/ui-phase-remote-validation", "ci/adaptive-queue-validation", "ci/post-release-validation", "ci/pro-strategy-s2-validation", "ci/strategy-s0-validation", "ci/pro-strategy-s2-integrated", "ci/ami-a1-validation", "ci/post-release-review-2", "ci/review-2-candidate", "ci/draft-source-privacy", "ci/ami-a2-validation", "ci/memory-retention", "ci/ami-a2-release", "ci/pro-presentation", "ci/entitlement-e0-e1", "ci/release-entitlement-e0-e1", "ci/entitlement-e2-draft-lab", "ci/entitlement-e3-ml", "ci/release-entitlement-groups-e3"]
+    branches: ["ci/ui-phase-remote-validation", "ci/adaptive-queue-validation", "ci/post-release-validation", "ci/pro-strategy-s2-validation", "ci/strategy-s0-validation", "ci/pro-strategy-s2-integrated", "ci/ami-a1-validation", "ci/post-release-review-2", "ci/review-2-candidate", "ci/draft-source-privacy", "ci/ami-a2-validation", "ci/memory-retention", "ci/ami-a2-release", "ci/pro-presentation", "ci/entitlement-e0-e1", "ci/release-entitlement-e0-e1", "ci/entitlement-e2-draft-lab", "ci/entitlement-e3-ml", "ci/release-entitlement-groups-e3", "ci/security-auth-isolation"]
 
 permissions:
   contents: read
@@ -20,7 +20,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BASELINE_SHA: eefb53c256d84a0d23252c06640b6d997b8dd30a
+  BASELINE_SHA: 25f5e3a19cbd0f0f6817cee95a0d30cef2bfc5d8
   PYTHONUNBUFFERED: "1"
   PYTHONIOENCODING: utf-8
   # Belt and braces: the app's local stores only (the harness sets these too).
@@ -35,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [ami, s2, strategy_layout, queue, review2, draftsource_a, draftsource_b, privacy, pro]
+        suite: [security, ami, s2, strategy_layout, queue, review2, draftsource_a, draftsource_b, privacy, pro]
         target: [candidate, baseline]
     steps:
       - name: Suite lists (this branch)
