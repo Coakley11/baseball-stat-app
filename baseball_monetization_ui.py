@@ -46,6 +46,59 @@ PREVIEW_NOTE = "open to everyone while billing is in preview"
 PRICE_LABEL_ENV = "BASEBALL_PRO_PRICE_LABEL"  # same setting as fix/billing-portal-completion
 PRICE_LABEL_MAX = 40
 RUN_SNAPSHOT_KEY = "_monetization_run_snapshot"  # this run's trusted snapshot, set by streamlit_app
+SNAPSHOT_CACHE_KEY = "_monetization_snapshot_cache"  # {"user_id", "at", "snapshot"}: one account only
+SNAPSHOT_TTL_S = 60.0
+
+
+def run_entitlement(
+    session: MutableMapping,
+    *,
+    developer_mode: bool = False,
+    environ: Mapping[str, str] | None = None,
+    now: float | None = None,
+) -> EntitlementSnapshot:
+    """The one trusted membership snapshot for this script run (E0).
+
+    Resolved server-side (``resolve_trusted_entitlement``) at most once per ``SNAPSHOT_TTL_S`` per
+    account, cached in this session keyed by the signed-in user's id, so signing in, out or as
+    someone else re-resolves immediately. A snapshot that is not ready (still loading, billing
+    unreachable) is never cached. Stored under ``RUN_SNAPSHOT_KEY`` for every gate and label in the
+    run (:func:`snapshot_for_run`). Never derived from anything the browser sends.
+    """
+    import time
+
+    if developer_mode and development_overrides_enabled(environ):
+        snap = development_entitlement(session.get(DEV_PLAN_KEY, Plan.FREE.value))
+        session[RUN_SNAPSHOT_KEY] = snap
+        return snap
+    from baseball_monetization import authenticated_subject
+
+    user_id = authenticated_subject(session)[0]
+    clock = time.monotonic() if now is None else now
+    cached = session.get(SNAPSHOT_CACHE_KEY)
+    if (isinstance(cached, dict) and cached.get("user_id") == user_id
+            and isinstance(cached.get("snapshot"), EntitlementSnapshot)
+            and 0 <= clock - float(cached.get("at") or 0) < SNAPSHOT_TTL_S):
+        snap = cached["snapshot"]
+    else:
+        snap = resolve_trusted_entitlement(session, environ=environ)
+        if snap.ready:
+            session[SNAPSHOT_CACHE_KEY] = {"user_id": user_id, "at": clock, "snapshot": snap}
+        else:
+            session.pop(SNAPSHOT_CACHE_KEY, None)
+    session[RUN_SNAPSHOT_KEY] = snap
+    return snap
+
+
+def refresh_entitlement(session: MutableMapping) -> None:
+    """Forget the cached snapshot (after a billing return or "Refresh subscription status")."""
+    session.pop(SNAPSHOT_CACHE_KEY, None)
+
+
+def snapshot_for_run(session: MutableMapping) -> EntitlementSnapshot:
+    """This run's snapshot for gates and labels; resolves directly only outside the app (tests, scripts)."""
+    snap = session.get(RUN_SNAPSHOT_KEY) if hasattr(session, "get") else None
+    return snap if isinstance(snap, EntitlementSnapshot) else current_entitlement(session)
 
 
 def pro_price_label(environ: Mapping[str, str] | None = None) -> str:
@@ -114,9 +167,7 @@ def render_pro_note(
     """
     feature_id = FeatureId(feature_id)  # a typo fails loudly in tests
     try:
-        snap = snapshot if snapshot is not None else session.get(RUN_SNAPSHOT_KEY)
-        if not isinstance(snap, EntitlementSnapshot):
-            snap = current_entitlement(session)
+        snap = snapshot if snapshot is not None else snapshot_for_run(session)
         state = pro_state(snap, feature_id)
         if state == "locked":
             render_locked_feature(st, session, feature_id, key=key)
@@ -444,7 +495,7 @@ def render_subscription_actions(
 def render_account_subscription(st, session: MutableMapping) -> None:
     """Account & Workspace subscription block for an authenticated user."""
     st.markdown("**Subscription**")
-    snapshot = current_entitlement(session)
+    snapshot = snapshot_for_run(session)
     render_subscription_actions(st, session, snapshot, key_prefix="account")
 
 

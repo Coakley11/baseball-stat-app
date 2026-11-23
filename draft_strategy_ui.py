@@ -83,9 +83,9 @@ def _persist(st: Any) -> None:
 def _access(st: Any, session: dict[str, Any]) -> tuple[bool, str, bool]:
     """(can_use, reason, is_pro) — the same checks the store applies."""
     import baseball_monetization as bm
-    from baseball_monetization_ui import current_entitlement
+    from baseball_monetization_ui import snapshot_for_run
 
-    snapshot = current_entitlement(session)
+    snapshot = snapshot_for_run(session)
     try:
         from suite_auth import is_anonymous_guest
 

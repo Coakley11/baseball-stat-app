@@ -15137,9 +15137,15 @@ _monetization_snapshot = None
 _monetization_gate_page = ""
 try:
     from baseball_monetization import ENFORCED_PAGE_FEATURES, entitlement_for_page
-    from baseball_monetization_ui import current_entitlement, remember_paywall_context
+    from baseball_monetization_ui import refresh_entitlement, remember_paywall_context, run_entitlement
 
-    _monetization_snapshot = current_entitlement(
+    try:  # back from Stripe Checkout / the billing portal: read membership fresh
+        if "billing" in st.query_params:
+            refresh_entitlement(st.session_state)
+    except Exception:
+        pass
+    # E0: the one trusted snapshot for this run (cached per account for 60 s), used by every gate.
+    _monetization_snapshot = run_entitlement(
         st.session_state,
         developer_mode=developer_mode_enabled(),
     )
@@ -15987,10 +15993,10 @@ elif active_page == "__MONETIZATION_GATE__":
 
 
 elif active_page == "Pricing & Upgrade":
-    from baseball_monetization_ui import current_entitlement, render_pricing_page
+    from baseball_monetization_ui import render_pricing_page, run_entitlement
 
     if _monetization_snapshot is None:
-        _monetization_snapshot = current_entitlement(
+        _monetization_snapshot = run_entitlement(
             st.session_state,
             developer_mode=developer_mode_enabled(),
         )

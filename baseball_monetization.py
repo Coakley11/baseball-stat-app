@@ -344,6 +344,39 @@ ENFORCED_PAGE_FEATURES: Mapping[str, FeatureId] = MappingProxyType({})
 # is enforced during billing acceptance. The UI and assistant tools read the same set.
 ENFORCED_FEATURES: frozenset[FeatureId] = frozenset()
 
+# E0 switch. A feature whose gates are built and tested is added to READY_FEATURES (one approved
+# feature at a time). It is enforced only while the server-side switch is "on":
+#   BASEBALL_ENTITLEMENT_ENFORCEMENT = off (default) | preview | on
+# Streamlit exposes top-level secrets as environment variables, so the switch can live in secrets.
+# "preview" shows Pro labels and never locks; any unknown value counts as "off".
+ENFORCEMENT_ENV = "BASEBALL_ENTITLEMENT_ENFORCEMENT"
+READY_FEATURES: frozenset[FeatureId] = frozenset()
+
+
+class EnforcementMode(str, Enum):
+    OFF = "off"
+    PREVIEW = "preview"
+    ON = "on"
+
+
+def enforcement_mode(environ: Mapping[str, str] | None = None) -> EnforcementMode:
+    env = os.environ if environ is None else environ
+    try:
+        return EnforcementMode(str(env.get(ENFORCEMENT_ENV) or "off").strip().lower())
+    except ValueError:
+        return EnforcementMode.OFF
+
+
+class ProFeatureRequired(Exception):
+    """A typed refusal from :func:`require`: the operation needs Pro (or membership is still loading).
+    It carries the feature so the UI can show the lock component with its benefit text."""
+
+    def __init__(self, feature_id: "FeatureId", *, loading: bool = False) -> None:
+        self.feature_id = feature_id
+        self.loading = loading
+        name = FEATURE_REGISTRY[feature_id].name if feature_id in FEATURE_REGISTRY else str(feature_id)
+        super().__init__("Checking your membership…" if loading else f"{name} is included with Baseball Explorer Pro.")
+
 # Which shared capabilities belong to a plan feature, so every surface that serves one (page,
 # assistant tool, API) can apply the same gate. Capabilities not listed are free.
 CAPABILITY_FEATURES: Mapping[str, FeatureId] = MappingProxyType(
@@ -428,9 +461,11 @@ def entitlement_for_page(snapshot: EntitlementSnapshot, page: str) -> bool:
     return True if feature_id is None else can_use_feature(snapshot, feature_id)
 
 
-def enforced_features() -> frozenset[FeatureId]:
-    """Every feature the app enforces right now: page features plus feature-level ones."""
-    return frozenset(ENFORCED_PAGE_FEATURES.values()) | ENFORCED_FEATURES
+def enforced_features(environ: Mapping[str, str] | None = None) -> frozenset[FeatureId]:
+    """Every feature the app enforces right now: page features, feature-level ones, and the
+    READY_FEATURES while the enforcement switch is "on"."""
+    ready = READY_FEATURES if enforcement_mode(environ) is EnforcementMode.ON else frozenset()
+    return frozenset(ENFORCED_PAGE_FEATURES.values()) | ENFORCED_FEATURES | ready
 
 
 def feature_for_capability(capability: str) -> FeatureId | None:
@@ -444,6 +479,23 @@ def entitlement_for_capability(snapshot: EntitlementSnapshot, capability: str) -
     if feature_id is None or feature_id not in enforced_features():
         return True
     return can_use_feature(snapshot, feature_id)
+
+
+def allows(snapshot: EntitlementSnapshot, capability: str) -> bool:
+    """May this snapshot use the capability right now? (Free, not enforced, or entitled Pro.)"""
+    return entitlement_for_capability(snapshot, capability)
+
+
+def require(snapshot: EntitlementSnapshot, capability: str) -> None:
+    """Gate an operation (kind A): raise :class:`ProFeatureRequired` before computing anything."""
+    if not entitlement_for_capability(snapshot, capability):
+        raise ProFeatureRequired(feature_for_capability(capability), loading=not snapshot.ready)
+
+
+def effective(snapshot: EntitlementSnapshot, capability: str, value, default):
+    """Gate a saved setting (kind B): the user's value when allowed, otherwise the Free default.
+    The saved value itself is never changed, so it comes back on upgrade."""
+    return value if entitlement_for_capability(snapshot, capability) else default
 
 
 def default_entitlement() -> EntitlementSnapshot:
