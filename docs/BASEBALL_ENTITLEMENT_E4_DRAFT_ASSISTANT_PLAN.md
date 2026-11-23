@@ -25,10 +25,9 @@ release. The Free/Pro split comes from `docs/BASEBALL_FREE_PRO_MATRIX.md` §2.1 
 | Capability | What Pro adds | Gate kind | Gate point (Dev `25f5e3a`) |
 |---|---|---|---|
 | `draft_ranking_modes` | Every ranking mode except Roster Fit. That is **Model Value** (owner-approved as Pro), Decision Score, Player Grade, Model Rank, Market Rank, Positional Scarcity and Primary Position | **B**: the saved choice `draft_assistant_rec_card_sort` is kept, and Free runs pass "Roster Fit" | the `ranking_mode=` argument to the Draft Assistant scoring cache (~20887) and `order_recommendation_cards(available, _da_sort_choice)` (~21068); the selectbox is disabled while locked |
-| `draft_category_priorities` | High/Medium/Low/Off overrides and "Positions to prioritize" overrides | **B**: `da_category_priority_overrides` is kept, and Free uses `merge_category_priorities(_auto_priorities, {})` and the automatic positions | the `_effective_priorities` line (~20716) and the needed-positions value; the widgets are disabled while locked |
+| `draft_category_priorities` | High/Medium/Low/Off category-priority overrides | **B**: `da_category_priority_overrides` is kept, and Free uses `merge_category_priorities(_auto_priorities, {})`; the selectboxes and "Restore" are disabled while locked | the `_effective_priorities` line (~20716) |
 | `draft_recommendation_explanation` (exists) | Selected Player Insight ("why this player") | **A** | `make_draft_recommendation_insight` (~21360) and AMI `explain_draft_recommendation` outside live rooms |
 | `draft_scarcity_insights` | Position-scarcity table and roster heatmap | **C**: the expander content is hidden and scoring is unchanged | the expander at ~21376 (it already carries a capability-less Pro note) |
-| `draft_ml_blend_controls` | Editing the ML-blend checkbox, weight and minimum games | **Editing lock only** (see decision 1) | the three controls in "Advanced scoring settings" (~20058–20090) |
 | `draft_recommendations` (exists) | AMI draft recommendations outside a live room | capability gate plus a snapshot origin tag | `ami_assistant/tools/draft.py` |
 
 **Group `draft_simulator`: Draft Room Simulator insights, activated separately (owner).**
@@ -68,16 +67,16 @@ locks the other, `simulate_pick`, `draft_lab`, `ml` or `strategies`.
      that branch.
    - The local branch can be deleted at the owner's discretion; it is not deleted here.
 
-## 4. Decision needed from the owner
+## 4. Owner decisions (2026-11-23)
 
-1. **ML-blend controls.** They are one global setting that also drives Live Draft scoring.
-   - Substituting defaults on the Draft Assistant only would make its scores disagree with the Live Draft
-     Room for the same user.
-   - Substituting them everywhere would change Live scoring for Free users.
-   - *Recommendation:* lock **editing** only. Free users keep the default blend unless they set one while
-     Pro. A lapsed member's saved blend keeps applying everywhere consistently, so nothing in a live room
-     changes.
-   - The alternative is to keep these controls Free, like projection style.
+1. **Shared settings stay Free.** The ML-blend controls (`draft_use_ml_blend`, `draft_ml_blend_weight`,
+   `draft_ml_min_games_signal`) drive Live Draft scoring, so a user never loses control of them when Pro
+   ends. A later, *dedicated* Draft-Assistant-only blend control could be Pro, without duplicating the
+   scoring engine.
+2. **"Positions to prioritize" stays Free.** It is not independently safe: with the position-sync toggle on
+   it sets the position filters on the Free research pages (Trend Value, Valuation, ML Predictions,
+   Sleepers). Category priorities are Draft Assistant-only and remain Pro.
+3. Model Value is Pro; `draft_assistant` and `draft_simulator` stay separate groups.
 
 ## 5. Build and test plan
 
