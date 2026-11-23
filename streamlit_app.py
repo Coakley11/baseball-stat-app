@@ -19994,6 +19994,17 @@ elif active_page == "Draft Assistant Simulator":
     _da_rank_ok = _da_allowed_now(st.session_state, "draft_ranking_modes")
     _da_cat_ok = _da_allowed_now(st.session_state, "draft_category_priorities")
     _da_insight_ok = _da_allowed_now(st.session_state, "draft_player_insight")
+    # The sort choice is a widget key that Streamlit drops while another page is open (it came back as
+    # Roster Fit). A durable copy, updated by the selectbox's own callback, keeps the user's choice —
+    # also while ranking modes are locked, so it returns with Pro.
+    _da_saved_sort = st.session_state.get("_da_rec_sort_saved")
+    _da_identity = str(st.session_state.get("_suite_auth_user_id") or "").strip()
+    if isinstance(_da_saved_sort, dict) and _da_saved_sort.get("value"):
+        if _da_saved_sort.get("owner") == _da_identity:
+            st.session_state["draft_assistant_rec_card_sort"] = _da_saved_sort["value"]
+        else:  # another identity's choice: never carried over
+            st.session_state.pop("_da_rec_sort_saved", None)
+            st.session_state.pop("draft_assistant_rec_card_sort", None)
     try:
         from fantasy_context_ui import render_research_sync_badge
 
@@ -21092,6 +21103,13 @@ elif active_page == "Draft Assistant Simulator":
         ]
         render_pro_note(st, st.session_state, "advanced_draft_intelligence", key="pro_da_sort",
                         label="Ranking modes beyond Roster Fit", capability="draft_ranking_modes", compact=True)
+        def _da_sort_changed(*_args, **_kwargs):
+            st.session_state["_da_rec_sort_saved"] = {
+                "value": st.session_state.get("draft_assistant_rec_card_sort") or "Roster Fit",
+                "owner": str(st.session_state.get("_suite_auth_user_id") or "").strip(),
+            }
+            _draft_assistant_settings_changed()
+
         _da_sort_choice = st.selectbox(
             "Sort recommendations by",
             _da_sort_labels,
@@ -21102,7 +21120,7 @@ elif active_page == "Draft Assistant Simulator":
                 "Model Value weighs player quality, with a smaller roster adjustment. "
                 "The other options rank the full available pool by that metric."
             ),
-            on_change=_draft_assistant_settings_changed,
+            on_change=_da_sort_changed,
             disabled=not _da_rank_ok,
         )
         if not _da_rank_ok:
@@ -22202,7 +22220,7 @@ elif active_page == "Draft Room Simulator":
         # draft_simulator group is enforced. The board, picks, rosters and projections stay Free.
         from baseball_monetization_ui import allowed_now as _dr_allowed_now
 
-        _dr_insights_ok = _dr_allowed_now(st.session_state, "draft_simulator_insights")
+        _dr_insights_ok = _dr_allowed_now(st.session_state, "draft_simulator_insights", fresh=True)  # one read per run
         _dr_pool_xfer = room_df.copy()
         if not _dr_pool_xfer.empty and "fullName" in _dr_pool_xfer.columns:
             _dr_pool_xfer = _dr_pool_xfer.sort_values("Expected Fantasy Value", ascending=False, na_position="last")
