@@ -66,8 +66,11 @@ class ResearchIdentityTests(_Base):
     def test_research_pages_use_the_simulator_team_and_its_drafted_players(self) -> None:  # 8-9
         self.saved_one_pick()
         self.wipe_local_disk()
-        dev = self.device("phone", signed_in=False, override=True).run()
+        dev = self.device("phone", signed_in=False).run()
         dev.sign_in()
+        # A choice made while signed out stays with the guest (sign-in drops guest work, as the real
+        # login does); the account turns the Simulator-team context on itself.
+        dev.at.session_state["use_simulator_board_as_fantasy_context"] = True
         dev.go("Trend Value")
         import active_team_context as atc
         import fantasy_context_source as fcs
