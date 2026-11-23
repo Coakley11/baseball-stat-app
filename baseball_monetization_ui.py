@@ -95,6 +95,24 @@ def refresh_entitlement(session: MutableMapping) -> None:
     session.pop(SNAPSHOT_CACHE_KEY, None)
 
 
+def allowed_now(session: MutableMapping, capability: str, *, fresh: bool = False) -> bool:
+    """May this session use the capability? ``fresh=True`` (for actions that create Pro results or
+    start Pro work) re-reads membership when the capability is enforced, so a Pro plan that just ended
+    is not used from the 60 s cache (docs/BASEBALL_ENTITLEMENT_CACHE_REVIEW.md). Never raises."""
+    from baseball_monetization import allows, capability_enforced
+
+    try:
+        snap = snapshot_for_run(session)
+        if fresh and capability_enforced(capability) and snap.source != "development_override":
+            refresh_entitlement(session)
+            snap = run_entitlement(session)
+        return allows(snap, capability)
+    except Exception:
+        from baseball_monetization import capability_enforced as _enforced
+
+        return not _enforced(capability)  # fail closed only when enforced
+
+
 def snapshot_for_run(session: MutableMapping) -> EntitlementSnapshot:
     """This run's snapshot for gates and labels; resolves directly only outside the app (tests, scripts)."""
     snap = session.get(RUN_SNAPSHOT_KEY) if hasattr(session, "get") else None
@@ -121,7 +139,7 @@ def pro_price_label(environ: Mapping[str, str] | None = None) -> str:
     return label[:PRICE_LABEL_MAX]
 
 
-def pro_state(snapshot: EntitlementSnapshot | None, feature_id: FeatureId) -> str:
+def pro_state(snapshot: EntitlementSnapshot | None, feature_id: FeatureId, capability: str = "") -> str:
     """How a Pro feature presents for this account right now.
 
     ``included``: the account has active Pro. ``preview``: the feature is not enforced, so it is
@@ -131,7 +149,9 @@ def pro_state(snapshot: EntitlementSnapshot | None, feature_id: FeatureId) -> st
     snap = snapshot or default_entitlement()
     if snap.grants_pro:
         return "included"
-    if not is_enforced(feature_id):
+    from baseball_monetization import capability_enforced
+
+    if not (capability_enforced(capability) if capability else is_enforced(feature_id)):
         return "preview"
     if not snap.ready:
         return "checking"
@@ -157,6 +177,7 @@ def render_pro_note(
     key: str,
     label: str = "",
     snapshot: EntitlementSnapshot | None = None,
+    capability: str = "",
 ) -> bool:
     """One restrained Pro indicator next to a Pro control. Returns whether the control may run.
 
@@ -168,7 +189,7 @@ def render_pro_note(
     feature_id = FeatureId(feature_id)  # a typo fails loudly in tests
     try:
         snap = snapshot if snapshot is not None else snapshot_for_run(session)
-        state = pro_state(snap, feature_id)
+        state = pro_state(snap, feature_id, capability)
         if state == "locked":
             render_locked_feature(st, session, feature_id, key=key)
             return False
@@ -176,7 +197,9 @@ def render_pro_note(
         return state != "checking"
     except Exception:
         # A label must never break the page it sits on. Fail closed only for an enforced feature.
-        return not is_enforced(feature_id)
+        from baseball_monetization import capability_enforced
+
+        return not (capability_enforced(capability) if capability else is_enforced(feature_id))
 
 
 def render_locked_feature(st, session: MutableMapping, feature_id: FeatureId, *, key: str) -> None:

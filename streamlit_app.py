@@ -11280,9 +11280,9 @@ def compact_player_action_center(
     sim_result = st.session_state.get(f"{key}_draft_simulation_result")
     if isinstance(sim_result, dict):
         st.markdown("##### Simulate Draft Pick")
-        render_pro_note(st, st.session_state, "advanced_draft_intelligence", key=f"pro_{key}_simulate_result",
-                        label="Simulate Draft Pick (roster impact)")
-        render_draft_simulation_result(sim_result)
+        if render_pro_note(st, st.session_state, "advanced_draft_intelligence", key=f"pro_{key}_simulate_result",
+                           label="Simulate Draft Pick (roster impact)", capability="draft_pick_simulation"):
+            render_draft_simulation_result(sim_result)
         if st.button("Clear simulation", key=f"{key}_clear_draft_simulation", icon=_icons.CLEAR):
             st.session_state.pop(f"{key}_draft_simulation_result", None)
             st.rerun()
@@ -11498,6 +11498,11 @@ def _on_simulate_draft_pick_click(
     lookup_name_col: str,
 ):
     """Button callback: store simulation result under a dedicated state key (not the button key)."""
+    from baseball_monetization_ui import allowed_now as _pro_allowed_now
+
+    if not _pro_allowed_now(st.session_state, "draft_pick_simulation", fresh=True):  # E2: one gate for every page
+        st.session_state.pop(state_key, None)
+        return
     if not is_active_current_player(player_raw):
         st.session_state[state_key] = {
             "player": str(player_raw).strip(),
@@ -11658,12 +11663,13 @@ def player_quick_actions_popover(
         sim_state_key = f"{key}_draft_simulation_result"
         proj_dialog_key = f"{key}_projection_breakdown_pending"
 
+        _sim_ok = True
         if active_current and has_draft_room_context():
-            render_pro_note(st, st.session_state, "advanced_draft_intelligence", key=f"pro_{sfx}_simulate",
-                            label="Simulate Draft Pick (roster impact)")
+            _sim_ok = render_pro_note(st, st.session_state, "advanced_draft_intelligence", key=f"pro_{sfx}_simulate",
+                                      label="Simulate Draft Pick (roster impact)", capability="draft_pick_simulation")
         extra = st.columns(2)
         with extra[0]:
-            if active_current and has_draft_room_context():
+            if _sim_ok and active_current and has_draft_room_context():
                 st.button(
                     "Simulate Draft Pick",
                     key=f"plr_act_{sfx}_simulate_draft_button",
@@ -11797,9 +11803,9 @@ def render_contextual_player_actions(
             )
             _maybe_show_projection_breakdown_dialog(ctx_proj_key)
 
-        if active_available:
-            render_pro_note(st, st.session_state, "advanced_draft_intelligence", key=f"pro_{act_id}_simulate",
-                            label="Simulate Draft Pick (roster impact)")
+        if active_available and render_pro_note(
+                st, st.session_state, "advanced_draft_intelligence", key=f"pro_{act_id}_simulate",
+                label="Simulate Draft Pick (roster impact)", capability="draft_pick_simulation"):
             st.button(
                 "Simulate Draft Pick",
                 key=f"plr_act_{act_id}_simulate_draft_button",
@@ -22366,7 +22372,10 @@ elif active_page == DRAFT_LAB_PAGE:
 
     render_draft_page_head("🧪 Draft Lab / Simulation", draft_tools.purpose(active_page))
     render_page_guide(active_page)
-    render_pro_note(st, st.session_state, "draft_lab", key="pro_draft_lab")
+    # E2: Draft Lab runs and results are Pro (enforced only when the switch is on). A locked page shows
+    # the standard lock; stored results are kept, never cleared (Free code reads them).
+    _lab_allowed = render_pro_note(st, st.session_state, "draft_lab", key="pro_draft_lab",
+                                   capability="draft_lab_simulation")
     draft_tools.render_draft_tool_nav(st, active_page, _u1_nav_cb)
     lab_answer_slot = st.container()  # U4: the result first, then Run, then the model controls
     lab_run_slot = st.container()
@@ -22498,7 +22507,12 @@ elif active_page == DRAFT_LAB_PAGE:
     render_shared_scoring_consistency_check(yearly_df, lab_market_df, key_suffix="draft_lab")
 
     with lab_run_slot:
-        run_lab = st.button("Run 4-Team Draft Simulation", type="primary", key="run_draft_lab_simulation", icon=_icons.RUN_SIMULATION)
+        run_lab = _lab_allowed and st.button("Run 4-Team Draft Simulation", type="primary",
+                                             key="run_draft_lab_simulation", icon=_icons.RUN_SIMULATION)
+    if run_lab:
+        from baseball_monetization_ui import allowed_now as _pro_allowed_now
+
+        run_lab = _pro_allowed_now(st.session_state, "draft_lab_simulation", fresh=True)  # fresh check before Pro work
     if run_lab:
         try:
             from page_perf import perf_end, perf_timer
@@ -22621,7 +22635,9 @@ elif active_page == DRAFT_LAB_PAGE:
             except ImportError:
                 pass
 
-    if is_dataframe_empty(lab_draft):
+    if not _lab_allowed:
+        pass  # E2: Pro results are withheld (incl. their tables and CSV/Excel); the lock above explains why
+    elif is_dataframe_empty(lab_draft):
         with lab_answer_slot:
             _u1_lab.answer_card(st, "No simulation yet",
                                 "Run 4-Team Draft Simulation to see which draft strategy builds the strongest roster, "

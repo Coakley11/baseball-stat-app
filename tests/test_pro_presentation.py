@@ -116,9 +116,15 @@ class IndicatorPlacementTests(unittest.TestCase):
                    if d.status is not bm.FeatureStatus.PLANNED} - used
         self.assertFalse(missing, f"no Pro label for: {sorted(missing)}")
 
-    def test_indicators_do_not_gate_anything_today(self):
-        """Presentation only: callers ignore the return value, so nothing can be hidden yet."""
-        self.assertNotRegex(_app_text(), r"(if|and|or|not)\s+render_pro_note\(")
+    def test_only_capability_gates_use_a_label_to_hide_a_tool(self):
+        """A label decides whether a tool renders only when it names its capability (a built, tested
+        gate that is enforced only with the switch on). Every other label is presentation only."""
+        text = _app_text()
+        gating = [m.start() for m in re.finditer(r"(?:if|and|or|not|=)\s*render_pro_note\(", text)]
+        self.assertTrue(gating, "E2 gates exist")
+        for pos in gating:
+            call = text[pos:text.index(")", text.index("render_pro_note(", pos) + 200) + 1]
+            self.assertIn("capability=", call, call[:160])
 
 
 class RobustnessTests(unittest.TestCase):

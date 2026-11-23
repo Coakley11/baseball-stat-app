@@ -354,6 +354,11 @@ ENFORCEMENT_ENV = "BASEBALL_ENTITLEMENT_ENFORCEMENT"
 # draft_strategy_library capability (store, page, in-draft plans, AMI A1/A2 tools).
 READY_FEATURES: frozenset[FeatureId] = frozenset({FeatureId.DRAFT_STRATEGIES})
 
+# E2 onward: gates are built per capability (a feature can have Free and Pro parts). A capability
+# listed here is enforced only while the switch is "on". E2 = Draft Lab runs and results, Draft Lab
+# grading of a completed Live draft, Simulate Draft Pick.
+READY_CAPABILITIES: frozenset[str] = frozenset({"draft_lab_simulation", "draft_lab_live_analysis", "draft_pick_simulation"})
+
 
 class EnforcementMode(str, Enum):
     OFF = "off"
@@ -474,13 +479,23 @@ def feature_for_capability(capability: str) -> FeatureId | None:
     return CAPABILITY_FEATURES.get(str(capability or ""))
 
 
+def capability_enforced(capability: str, environ: Mapping[str, str] | None = None) -> bool:
+    """Is this capability restricted right now? Its whole feature is enforced, or the capability is in
+    READY_CAPABILITIES and the switch is "on"."""
+    feature_id = feature_for_capability(capability)
+    if feature_id is None:
+        return False
+    if feature_id in enforced_features(environ):
+        return True
+    return str(capability) in READY_CAPABILITIES and enforcement_mode(environ) is EnforcementMode.ON
+
+
 def entitlement_for_capability(snapshot: EntitlementSnapshot, capability: str) -> bool:
     """The gate for one shared capability: free or not enforced → allowed; otherwise the same
     ``can_use_feature`` the page gate uses (fails closed while the snapshot isn't ready)."""
-    feature_id = feature_for_capability(capability)
-    if feature_id is None or feature_id not in enforced_features():
+    if not capability_enforced(capability):
         return True
-    return can_use_feature(snapshot, feature_id)
+    return can_use_feature(snapshot, feature_for_capability(capability))
 
 
 def allows(snapshot: EntitlementSnapshot, capability: str) -> bool:

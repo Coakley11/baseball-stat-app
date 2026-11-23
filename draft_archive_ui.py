@@ -1734,6 +1734,18 @@ def _on_analyze_draft_click(key_prefix: str = "live_draft_complete") -> None:
     import streamlit as st
 
     session = st.session_state
+    try:  # E2: Draft Lab grading of a completed Live draft is Pro (the draft itself stays viewable/exportable)
+        from baseball_monetization_ui import allowed_now
+
+        if not allowed_now(session, "draft_lab_live_analysis", fresh=True):
+            session[_DRAFT_ANALYZE_UI_FLASH_KEY] = {
+                "level": "info",
+                "message": "Draft Lab grading is included with Baseball Explorer Pro. Your draft, its picks and "
+                           "exports stay available here.",
+            }
+            return
+    except ImportError:
+        pass
     room = session.get("live_draft_room")
     if not isinstance(room, dict):
         session[_DRAFT_ANALYZE_UI_FLASH_KEY] = {
@@ -3906,11 +3918,12 @@ def render_live_draft_completion_panel(
         try:  # presentation only: never let the Pro note break the completion panel
             from baseball_monetization_ui import render_pro_note
 
-            render_pro_note(st, session, "draft_lab", key=f"pro_{key_prefix}_analyze",
-                            label="Draft Lab grading (viewing, saving and exporting your draft stay Free)")
+            _analyze_ok = render_pro_note(st, session, "draft_lab", key=f"pro_{key_prefix}_analyze",
+                                          label="Draft Lab grading (viewing, saving and exporting your draft stay Free)",
+                                          capability="draft_lab_live_analysis")
         except Exception:
-            pass
-        st.button(
+            _analyze_ok = True
+        _analyze_ok and st.button(
             "Analyze Draft",
             key=f"{key_prefix}_analyze_btn",
             icon=_icons.ANALYZE,
