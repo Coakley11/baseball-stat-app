@@ -350,7 +350,9 @@ ENFORCED_FEATURES: frozenset[FeatureId] = frozenset()
 # Streamlit exposes top-level secrets as environment variables, so the switch can live in secrets.
 # "preview" shows Pro labels and never locks; any unknown value counts as "off".
 ENFORCEMENT_ENV = "BASEBALL_ENTITLEMENT_ENFORCEMENT"
-READY_FEATURES: frozenset[FeatureId] = frozenset()
+# E1 (built, not active): Saved Draft Strategies and AMI strategy coaching share the
+# draft_strategy_library capability (store, page, in-draft plans, AMI A1/A2 tools).
+READY_FEATURES: frozenset[FeatureId] = frozenset({FeatureId.DRAFT_STRATEGIES})
 
 
 class EnforcementMode(str, Enum):

@@ -181,8 +181,8 @@ class DraftStrategyPageTests(unittest.TestCase):
         with mock.patch("baseball_monetization.entitlement_for_capability", return_value=False):
             at = self._app(["Aaron Judge"])
             self.assertNotIn("Create strategy", _buttons(at))
-            self.assertIn("View Pricing & Upgrade", _buttons(at))
-            self.assertTrue(any("Pro feature" in str(i.value) for i in at.info))
+            self.assertIn("See Pro plans", _buttons(at))  # E1: the standard lock component
+            self.assertTrue(any("included with Baseball Explorer Pro" in str(m.value) for m in at.markdown))
             self.assertEqual(_queue(at), ["Aaron Judge"])  # the Global Queue still shows
 
 

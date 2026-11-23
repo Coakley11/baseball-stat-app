@@ -23,8 +23,8 @@ CAP = "draft_strategy_library"
 class SwitchTests(unittest.TestCase):
     def test_default_is_off_and_nothing_is_enforced(self):
         self.assertIs(bm.enforcement_mode({}), bm.EnforcementMode.OFF)
-        self.assertEqual(bm.READY_FEATURES, frozenset())
-        self.assertEqual(bm.enforced_features(), frozenset())
+        self.assertEqual(bm.READY_FEATURES, frozenset({bm.FeatureId.DRAFT_STRATEGIES}))  # E1 built, not active
+        self.assertEqual(bm.enforced_features({}), frozenset())
 
     def test_values(self):
         env = bm.ENFORCEMENT_ENV
@@ -41,7 +41,7 @@ class SwitchTests(unittest.TestCase):
                 self.assertFalse(bm.allows(FREE, CAP))
                 self.assertTrue(bm.allows(PRO, CAP))
                 self.assertTrue(bm.allows(FREE, "draft_recommendations"), "only the ready feature")
-        with mock.patch.dict("os.environ", {bm.ENFORCEMENT_ENV: "on"}):
+        with mock.patch.object(bm, "READY_FEATURES", frozenset()), mock.patch.dict("os.environ", {bm.ENFORCEMENT_ENV: "on"}):
             self.assertTrue(bm.allows(FREE, CAP), "switch on but no feature ready: nothing enforced")
 
 

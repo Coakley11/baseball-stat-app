@@ -314,15 +314,14 @@ def render_draft_strategy_page(st: Any, session: dict[str, Any], *, pool_fn=None
     plan_state = _render_plan(st, session, pool_fn) if pool_fn is not None else {}
     queue = _render_queue(st, session, drafted=plan_state.get("drafted"), backups=plan_state.get("backups"))
     if not can_use:
-        with st.container(border=True):
-            st.markdown("**Saved strategies**")
-            st.info(reason)
-            if "Pro" in reason and st.button("View Pricing & Upgrade", key="draft_strategy_pricing_btn",
-                                             type="primary", use_container_width=True):
-                from baseball_monetization_ui import PRICING_PAGE, schedule_page
+        if "Pro" in reason:  # E1: the standard lock (what it does + See Pro plans); no strategy data shown
+            from baseball_monetization_ui import render_locked_feature
 
-                schedule_page(session, PRICING_PAGE)
-                st.rerun()
+            render_locked_feature(st, session, "draft_strategies", key="draft_strategy_lock")
+        else:  # signed out, or membership still loading
+            with st.container(border=True):
+                st.markdown("**Saved strategies**")
+                st.info(reason)
         return
     from draft_strategy_pro_ui import render_pro_strategies
 
