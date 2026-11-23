@@ -120,7 +120,7 @@ class IndicatorPlacementTests(unittest.TestCase):
         """A label decides whether a tool renders only when it names its capability (a built, tested
         gate that is enforced only with the switch on). Every other label is presentation only."""
         text = _app_text()
-        gating = [m.start() for m in re.finditer(r"(?:if|and|or|not|=)\s*render_pro_note\(", text)]
+        gating = [m.start() for m in re.finditer(r"(?:\bif|\band|\bor|\bnot|=)\s*render_pro_note\(", text)]
         self.assertTrue(gating, "E2 gates exist")
         for pos in gating:
             call = text[pos:text.index(")", text.index("render_pro_note(", pos) + 200) + 1]
