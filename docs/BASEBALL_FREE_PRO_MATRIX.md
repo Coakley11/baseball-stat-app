@@ -86,7 +86,7 @@ Gate (kind @ point) · Bypass routes to close · Work + tests.**
 | Scarcity + roster heatmap | 21290–21374 | built | yes | **Pro** | Owner (approved) | Shows where positions dry up | C (hide expander, keep scoring) | — | — |
 | Simulator advanced columns (Market/Model Rank, Fantasy Edge, Draft Fit, ML Projection, Expected Value) + pick-log expander | 22085–22114, 22168/22181 | built | yes | **Pro** | Owner (approved) | — | C (drop columns) | pick-log expander exposes the same columns — gate both | — |
 | Simulator post-draft roster grades | 22208–22279 | built | yes | **Pro** | Owner (2026-11-05: grades Pro, essentials Free) | — | C | — | — |
-| AMI `get_team_needs` | ami_assistant/tools/draft.py:205 | built | yes | **Free** (change mapping) | Rec (open) | — | remove `draft_team_needs` from the Pro capability map | **Mismatch today:** the same needs are Free on three pages | — |
+| AMI `get_team_needs` | ami_assistant/tools/draft.py:205 | built | yes | **Free** | Owner (2026-11-22) | — | none: the Pro capability was removed | Same needs are Free on three pages | done |
 | AMI draft recommendations / explanations | tools/draft.py:118/161 | built | yes | **Pro outside live rooms; Free inside a live room** | Owner (approved) | — | capability gate + snapshot origin tag (Stage 1 plan §3.1) | Live room publishes to the same AMI snapshot | test Free member in a live room |
 
 ### 2.2 ML Predictions — **decided: top 25 Free + advanced Pro** (Owner)
@@ -268,9 +268,8 @@ the shared scoring functions ungated.
 Decided on 2026-11-22: ML split, Simulate Draft Pick, Draft Lab grading of Live drafts, the advanced
 analytics list, personalized waivers (see section 6). Still open:
 
-1. **AMI `get_team_needs`:** make it Free to match the pages (recommended).
-2. **Launch price:** $14.99/month is proposed; the Stripe test prices disagree (section 3.3).
-3. **Enforcement:** stays off until the matrix and the enforcement plan are approved.
+1. **Launch price:** $14.99/month is proposed; the Stripe test prices disagree (section 3.3).
+2. **Enforcement:** stays off until the matrix and the enforcement plan are approved.
 
 ---
 
@@ -296,5 +295,6 @@ analytics list, personalized waivers (see section 6). Still open:
 - **Planned items** stay marked planned and are never sold as included.
 - **Price:** $14.99/month is the *proposed* price, not production-approved. The page shows only the
   trusted billing configuration's label (see §3.3).
-- **Still to decide:** AMI `get_team_needs` (recommend Free, to match the pages); Shared League
-  creation limit timing.
+- **AMI basic team needs:** Free (decided 2026-11-22, third brief); its Pro capability was removed.
+- **Approved (third brief):** the whole classification above. $14.99/month stays the proposed price.
+- **Still to decide:** the launch price and the Shared League creation limit timing.

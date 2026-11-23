@@ -350,7 +350,6 @@ CAPABILITY_FEATURES: Mapping[str, FeatureId] = MappingProxyType(
     {
         "draft_recommendations": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
         "draft_recommendation_explanation": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
-        "draft_team_needs": FeatureId.ADVANCED_DRAFT_INTELLIGENCE,
         "draft_lab_simulation": FeatureId.DRAFT_LAB,
         "ml_predictions": FeatureId.ML_PREDICTIONS,
         "draft_strategy_library": FeatureId.DRAFT_STRATEGIES,

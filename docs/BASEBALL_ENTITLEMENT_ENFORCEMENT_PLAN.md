@@ -62,8 +62,8 @@ mechanics of `plan/free-pro-entitlements` (`BASEBALL_ENTITLEMENTS_STAGE1_PLAN.md
 9. **Billing lifecycle code is not in Dev.** Scheduled cancellation, past-due labels, return notice and
    the configurable price label live on `fix/billing-portal-completion`; production needs the amended
    `20261102` migration → merge and verify billing first (Phase 5) before any paid gate.
-10. **Mismatch:** AMI `get_team_needs` is Pro-mapped while the same needs are Free on three pages →
-    decide (recommend Free) before enforcing draft intelligence.
+10. **Resolved:** AMI `get_team_needs` is Free (owner 2026-11-22); its Pro capability was removed, so
+    Pro draft intelligence can be enforced without touching it.
 
 ## 4. Order (each step separately approved; enforcement off between steps)
 
