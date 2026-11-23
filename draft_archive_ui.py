@@ -3920,7 +3920,8 @@ def render_live_draft_completion_panel(
 
             _analyze_ok = render_pro_note(st, session, "draft_lab", key=f"pro_{key_prefix}_analyze",
                                           label="Draft Lab grading (viewing, saving and exporting your draft stay Free)",
-                                          capability="draft_lab_live_analysis", compact=True)
+                                          capability="draft_lab_live_analysis", compact=True,
+                                          locked_label="Draft Lab grading")
         except Exception:
             _analyze_ok = True
         _analyze_ok and st.button(

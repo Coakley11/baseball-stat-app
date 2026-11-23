@@ -104,6 +104,13 @@ class WiringTests(unittest.TestCase):
                           "disabled, not removed, so the saved value stays")
         self.assertIn("ml_projection_style=ml_projection_style,", APP, "style is a shared Free draft setting")
 
+    def test_the_blend_caption_shows_what_the_run_uses(self):
+        i = APP.index("# E3: show the blend this run actually uses")
+        block = APP[i:i + 1200]
+        self.assertIn('if _ml_tuning_ok else', block)
+        self.assertIn('ML_DEFAULT_TUNING["regression_strength"]', block)
+        self.assertIn("your saved slider values apply with Pro", block)
+
     def test_diagnostics_are_guarded(self):
         self.assertIn('capability="ml_diagnostics"):', APP)
         self.assertIn("if _ml_diag_ok:  # E3: age curve and feature importance are Pro diagnostics", APP)
