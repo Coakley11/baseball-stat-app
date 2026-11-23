@@ -5487,6 +5487,8 @@ def _ml_transfer_extra_context(
 
 
 ML_FREE_PREDICTIONS = 25  # E3: Free shows the top 25 for the user's filters and sort
+# E3: the tuning Free runs use (the slider defaults). The user's own slider values stay stored.
+ML_DEFAULT_TUNING = {"regression_strength": 0.20, "age_strength": 0.50, "comp_weight": 0.10, "k_neighbors": 10}
 
 
 def _ml_full_list_allowed() -> bool:
@@ -31947,19 +31949,26 @@ elif active_page == "ML Predictions":
             if not st.session_state.get("ml_auto_apply_tuning", True):
                 st.caption("Auto-apply is off — use this button after changing sliders.")
 
+        # E3 (B gate): Free runs use the default tuning; the user's saved values stay stored and apply
+        # again with Pro. Projection style is a shared Free draft setting and is not gated.
+        _ml_run_tuning = (
+            {"regression_strength": regression_strength, "age_strength": age_strength,
+             "comp_weight": comp_weight, "k_neighbors": k_neighbors}
+            if _ml_tuning_ok else dict(ML_DEFAULT_TUNING)
+        )
+        if not _ml_tuning_ok and st.session_state.get(ML_LAST_TUNING_SIG_KEY) not in (None, _ml_tuning_run_signature(
+                *ML_DEFAULT_TUNING.values(), ml_min_ab, ml_projection_style)):
+            # Stored results were tuned while Pro was active: re-blend them with the defaults now, even
+            # when auto-apply is off (the Apply button is disabled while locked).
+            st.session_state["ml_tuning_apply_requested"] = True
         _ml_pipeline_ran = _ml_execute_pipeline_if_needed(
             yearly_source=yearly_df,
             ml_lookback=ml_lookback,
             ml_min_games=ml_min_games,
             ml_max_players=ml_max_players,
             ml_min_ab=ml_min_ab,
-            # E3 (B gate): Free runs use the default tuning; the user's saved values stay stored and apply
-            # again with Pro. Projection style is a shared Free draft setting and is not gated.
-            regression_strength=regression_strength if _ml_tuning_ok else 0.20,
-            age_strength=age_strength if _ml_tuning_ok else 0.50,
-            comp_weight=comp_weight if _ml_tuning_ok else 0.10,
-            k_neighbors=k_neighbors if _ml_tuning_ok else 10,
             ml_projection_style=ml_projection_style,
+            **_ml_run_tuning,
         )
         _ml_diag_ok = _pro_allowed_now(st.session_state, "ml_diagnostics")
         if not _ml_pipeline_ran and _ml_is_nonempty_dataframe(st.session_state.get(ML_PREDICTIONS_DF_KEY)):

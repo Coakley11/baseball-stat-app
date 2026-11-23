@@ -89,9 +89,16 @@ class WiringTests(unittest.TestCase):
         self.assertEqual(APP.count('_pro_allowed_now(st.session_state, "ml_tuning", fresh=True)'), 1)
 
     def test_tuning_defaults_apply_only_when_locked_and_saved_values_are_kept(self):
-        for arg, default in (("regression_strength", "0.20"), ("age_strength", "0.50"), ("comp_weight", "0.10"),
-                             ("k_neighbors", "10")):
-            self.assertIn(f"{arg}={arg} if _ml_tuning_ok else {default},", APP)
+        self.assertIn('ML_DEFAULT_TUNING = {"regression_strength": 0.20, "age_strength": 0.50, '
+                      '"comp_weight": 0.10, "k_neighbors": 10}', APP, "the slider defaults")
+        for arg, default in (("Regression to Mean", "0.20"), ("Aging Curve Strength", "0.50"),
+                             ("Similar Player Weight", "0.10"), ("Similar Players Used", "10")):
+            self.assertRegex(APP, rf'st\.slider\("{arg}", [\d.]+, [\d.]+, {re.escape(default)}, ', "defaults agree")
+        self.assertIn("if _ml_tuning_ok else dict(ML_DEFAULT_TUNING)", APP)
+        self.assertIn("**_ml_run_tuning,", APP)
+        # Results tuned while Pro was active are re-blended with the defaults even with auto-apply off.
+        i = APP.index("if not _ml_tuning_ok and st.session_state.get(ML_LAST_TUNING_SIG_KEY)")
+        self.assertIn('st.session_state["ml_tuning_apply_requested"] = True', APP[i:i + 600])
         for key in ("ml_regression_strength", "ml_age_strength", "ml_comp_weight", "ml_k_neighbors"):
             self.assertIn(f'key="{key}", on_change=projections_filter_changed, disabled=not _ml_tuning_ok)', APP,
                           "disabled, not removed, so the saved value stays")
