@@ -304,7 +304,7 @@ FEATURE_REGISTRY: Mapping[FeatureId, FeatureDefinition] = MappingProxyType(
             status=_A,
             includes=(
                 FeatureItem("Ask AMI what is in your strategies and how one compares with your Global Queue"),
-                FeatureItem("See where players rank in your strategy right inside research answers", _P),
+                FeatureItem("See where players rank in your strategy right inside research answers"),  # A2, in Dev dbae5e7
                 FeatureItem("AMI suggests notes to save to your strategy, saved only when you confirm", _P),
             ),
             free_keeps="Ask AMI for page help, stats, comparisons, trends, standings and lineup facts.",
