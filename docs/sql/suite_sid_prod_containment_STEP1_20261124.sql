@@ -1,7 +1,7 @@
 -- STEP 1 of the suite_sid containment — PRODUCTION, 2026-11-24. DO NOT RUN without the owner's explicit approval.
 -- One DO block = one transaction. Every check that fails raises, and then NOTHING below has happened.
 --
---   1a. checks: right project (3 Auth users), 1485 browser-session rows (+25), ~1308 other saved items
+--   1a. lock (writes to suite_saved_items wait; 5 s lock timeout), then checks: right project (3 Auth users), 1485 browser-session rows (+25), ~1308 other saved items
 --   1b. evidence: copies NON-SENSITIVE metadata of every browser-session row into
 --       security_audit.suite_sid_bridge_snapshot_20261124 (no token, no sid: the sid is stored only as a SHA-256)
 --   1c. trigger: public.suite_block_browser_session_bridge — from now on any write of a browser-session row,
@@ -23,9 +23,15 @@ declare
   allowed_other_drift constant int := 100;
   expected_auth_users constant int := 3;
   n_users int; n_scope int; n_valid int; n_other int; n_snap int; n_updated int; n_left int;
-  fp_before text; fp_after text; probe_key text; probe_ok boolean;
+  fp_before text; fp_after text; probe_key text; probe_insert_ok boolean; probe_update_ok boolean;
 begin
-  -- 1a. checks
+  -- 1a. lock first, so the counts, the fingerprint, the snapshot and the revocation all see the same data.
+  --     SHARE ROW EXCLUSIVE blocks writes to suite_saved_items (not reads) until this transaction ends;
+  --     it is the same lock CREATE TRIGGER takes. Give up after 5 s instead of queueing behind another writer.
+  perform set_config('lock_timeout', '5s', true);
+  lock table public.suite_saved_items in share row exclusive mode;
+
+  -- checks
   select count(*) into n_users from auth.users;
   if n_users <> expected_auth_users then
     raise exception 'refused: % Auth users, expected % (wrong project?)', n_users, expected_auth_users;
@@ -101,17 +107,25 @@ begin
   execute 'create trigger suite_block_browser_session_bridge before insert or update on public.suite_saved_items '
        || 'for each row execute function public.suite_block_browser_session_bridge()';
 
-  -- 1d. self-test: an insert and an update that try to store tokens must both end up revoked
+  -- 1d. self-tests, checked separately: (i) an INSERT that tries to store tokens, (ii) an UPDATE that tries to
+  --     put tokens back and re-validate. Both must end up valid = false with no token. The probe row is deleted.
   probe_key := 'trigger-selftest-' || gen_random_uuid()::text;
   insert into public.suite_saved_items (user_id, app, item_type, item_key, title, payload, valid)
   select user_id, app, item_type, probe_key, title, '{"access_token": "selftest", "refresh_token": "selftest"}'::jsonb, true
     from public.suite_saved_items where app = '_auth_browser' and item_type = 'browser_session' limit 1;
+  select count(*) = 1 and bool_and(not valid and not (payload ? 'access_token') and not (payload ? 'refresh_token'))
+    into probe_insert_ok
+    from public.suite_saved_items where item_key = probe_key and app = '_auth_browser' and item_type = 'browser_session';
+  if probe_insert_ok is not true then
+    raise exception 'rolled back: trigger INSERT self-test failed';
+  end if;
   update public.suite_saved_items set payload = '{"access_token": "selftest2", "refresh_token": "selftest2"}'::jsonb, valid = true
    where item_key = probe_key and app = '_auth_browser' and item_type = 'browser_session';
-  select bool_and(not valid and not (payload ? 'access_token') and not (payload ? 'refresh_token')) into probe_ok
+  select count(*) = 1 and bool_and(not valid and not (payload ? 'access_token') and not (payload ? 'refresh_token'))
+    into probe_update_ok
     from public.suite_saved_items where item_key = probe_key and app = '_auth_browser' and item_type = 'browser_session';
-  if probe_ok is not true then
-    raise exception 'rolled back: trigger self-test failed';
+  if probe_update_ok is not true then
+    raise exception 'rolled back: trigger UPDATE self-test failed';
   end if;
   delete from public.suite_saved_items where item_key = probe_key and app = '_auth_browser' and item_type = 'browser_session';
 
@@ -146,7 +160,7 @@ begin
     raise exception 'rolled back: Auth users changed';
   end if;
 
-  raise notice 'OK: evidence snapshot % rows; trigger installed and self-tested; revoked % browser-session rows (% had been valid); % other saved items unchanged',
+  raise notice 'OK: evidence snapshot % rows; trigger installed, INSERT and UPDATE self-tests passed; revoked % browser-session rows (% had been valid); % other saved items unchanged',
     n_snap, n_updated, n_valid, n_other;
 end $$;
 

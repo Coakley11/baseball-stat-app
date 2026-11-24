@@ -62,12 +62,24 @@ run_with 99 "$NO" 3; grep -q "refused: $NB browser-session rows, expected 99" "$
 q "create function public._qa_touch() returns trigger language plpgsql as \$\$ begin update public.suite_saved_items set title = title || '!' where id = (select min(id) from public.suite_saved_items where app <> '_auth_browser'); return new; end \$\$; create trigger _qa_touch after update on public.suite_saved_items for each row when (new.app = '_auth_browser' and new.item_key not like 'trigger-selftest-%') execute function public._qa_touch();" >/dev/null
 run_with "$NB" "$NO" 3; grep -q "rolled back: other saved items changed" "$WORK/out.txt" && ok "rolls back when another saved item changes" || bad "fingerprint rollback" "$(cat "$WORK/out.txt")"
 q "drop trigger _qa_touch on public.suite_saved_items; drop function public._qa_touch();" >/dev/null
+# trigger self-tests, independently: a later BEFORE trigger (fires after ours: names sort) re-adds tokens on one path only
+q "create function public._qa_readd() returns trigger language plpgsql as \$\$ begin if new.item_key like 'trigger-selftest-%' then new.payload := new.payload || '{\"refresh_token\":\"x\"}'; end if; return new; end \$\$; create trigger zz_qa_readd before insert on public.suite_saved_items for each row execute function public._qa_readd();" >/dev/null
+run_with "$NB" "$NO" 3; grep -q "rolled back: trigger INSERT self-test failed" "$WORK/out.txt" && ok "INSERT self-test detects an insert that keeps a token" || bad "insert self-test" "$(cat "$WORK/out.txt")"
+q "drop trigger zz_qa_readd on public.suite_saved_items; create trigger zz_qa_readd before update on public.suite_saved_items for each row execute function public._qa_readd();" >/dev/null
+run_with "$NB" "$NO" 3; grep -q "rolled back: trigger UPDATE self-test failed" "$WORK/out.txt" && ok "UPDATE self-test detects an update that keeps a token (INSERT test passed)" || bad "update self-test" "$(cat "$WORK/out.txt")"
+q "drop trigger zz_qa_readd on public.suite_saved_items; drop function public._qa_readd();" >/dev/null
+# lock: another session in the middle of a write -> give up after the lock timeout, change nothing
+("$PGBIN/psql" -X -q -h localhost -p "$PORT" -U postgres -d "$DB" -c "begin; update public.suite_saved_items set title = title where id = (select min(id) from public.suite_saved_items); select pg_sleep(9); rollback;" >/dev/null 2>&1 &)
+for i in $(seq 1 20); do [ "$(q "select count(*) from pg_stat_activity where query like '%pg_sleep(9)%' and pid <> pg_backend_pid()")" = "1" ] && break; q "select pg_sleep(0.2)" >/dev/null; done
+t0=$(date +%s); run_with "$NB" "$NO" 3; t1=$(date +%s)
+grep -q "lock timeout" "$WORK/out.txt" && ok "gives up on the lock timeout while another session is writing ($((t1 - t0)) s)" || bad "lock timeout" "$(cat "$WORK/out.txt")"
+for i in $(seq 1 60); do [ "$(q "select count(*) from pg_stat_activity where query like '%pg_sleep(9)%' and pid <> pg_backend_pid()")" = "0" ] && break; q "select pg_sleep(0.3)" >/dev/null; done
 equals "$(fp_all)" "$before" "  saved items unchanged after the refusals and the rollback"
 equals "$(schema_state)/$(trig_state)" "0/0" "  no evidence schema and no trigger left behind"
 
 echo "Applies"
 other=$(fp_other)
-run_with "$NB" "$NO" 3; grep -q "OK: evidence snapshot $NB rows; trigger installed and self-tested; revoked $NB browser-session rows ($NV had been valid); $NO other saved items unchanged" "$WORK/out.txt" && ok "snapshot + trigger + revocation in one run" || bad "applies" "$(cat "$WORK/out.txt")"
+run_with "$NB" "$NO" 3; grep -q "OK: evidence snapshot $NB rows; trigger installed, INSERT and UPDATE self-tests passed; revoked $NB browser-session rows ($NV had been valid); $NO other saved items unchanged" "$WORK/out.txt" && ok "snapshot + trigger + revocation in one run" || bad "applies" "$(cat "$WORK/out.txt")"
 grep -q "^$NB|0|0|$NO|$NB|t$" "$WORK/out.txt" && ok "verify query: $NB | 0 | 0 | $NO | $NB | true" || bad "verify query" "$(tail -2 "$WORK/out.txt")"
 equals "$(fp_other)" "$other" "other saved items byte-for-byte unchanged"
 equals "$(q "select count(*) from public.suite_saved_items where item_key like 'trigger-selftest-%'")" "0" "self-test row removed"
@@ -87,6 +99,13 @@ q "update public.suite_saved_items set payload = '{\"access_token\": \"t2\", \"r
 equals "$(q "select valid::text || '|' || (payload ? 'refresh_token')::text from public.suite_saved_items where item_key = 'sid-secret-1'")" "false|false" "an old app re-saving tokens into an existing record is neutralised"
 q "update public.suite_saved_items set title = 'renamed' where id = (select min(id) from public.suite_saved_items where app <> '_auth_browser')" >/dev/null
 equals "$(q "select count(*) from public.suite_saved_items where title = 'renamed'")" "1" "other saved items still save normally"
+
+echo "Writes during the run wait for it (no lost saves)"
+q "delete from security_audit.suite_sid_bridge_snapshot_20261124 where false" >/dev/null
+( "$PGBIN/psql" -X -q -h localhost -p "$PORT" -U postgres -d "$DB" -c "begin; lock table public.suite_saved_items in share row exclusive mode; select pg_sleep(3); commit;" >/dev/null 2>&1 & )
+for i in $(seq 1 20); do [ "$(q "select count(*) from pg_stat_activity where query like '%pg_sleep(3)%' and pid <> pg_backend_pid()")" = "1" ] && break; q "select pg_sleep(0.2)" >/dev/null; done
+t0=$(date +%s); q "update public.suite_saved_items set title = 'saved-during-lock' where id = (select min(id) from public.suite_saved_items where app <> '_auth_browser')" >/dev/null; t1=$(date +%s)
+equals "$(q "select count(*) from public.suite_saved_items where title = 'saved-during-lock'")" "1" "a user's save during the lock waits ($((t1 - t0)) s) and then succeeds"
 
 echo "Second run"
 run_with "$NB" "$NO" 3; grep -q "refused: \|rolled back" "$WORK/out.txt" && ok "refuses to run twice (snapshot preserved)" || bad "second run" "$(cat "$WORK/out.txt")"
