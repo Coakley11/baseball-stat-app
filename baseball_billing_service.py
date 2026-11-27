@@ -75,5 +75,18 @@ try:
         except BillingError as e: return JSONResponse({"error":str(e)},status_code=400)
         except Exception: return JSONResponse({"error":"Webhook processing failed"},status_code=500)
     app=Starlette(routes=[Route("/billing/health",health),Route("/billing/checkout",checkout,methods=["POST"]),Route("/billing/portal",portal,methods=["POST"]),Route("/billing/webhooks/stripe",webhook,methods=["POST"])])
+    # Temporary diagnostic: retains the existing app, routes and lifespan state.
+    from contextlib import asynccontextmanager
+    from starlette.concurrency import run_in_threadpool
+    from baseball_stripe_scope_probe import run_startup_probe
+    _original_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def _diagnostic_lifespan(application):
+        await run_in_threadpool(run_startup_probe)
+        async with _original_lifespan(application) as state:
+            yield state
+
+    app.router.lifespan_context = _diagnostic_lifespan
 except ImportError:
     app=None

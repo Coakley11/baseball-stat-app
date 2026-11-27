@@ -1,20 +1,24 @@
-﻿"""Offline regression checks; every provider request is intercepted."""
-from pathlib import Path
-import runpy
+﻿"""Offline checks for startup-only account lookup through the unchanged ASGI target."""
+import subprocess
 
 import pytest
 import requests
 
-PROBE = Path(__file__).resolve().parents[1] / 'baseball_stripe_scope_probe.py'
+import baseball_stripe_scope_probe as probe
+
 FAKE_KEY = 'sk_test_fixture_only_not_a_real_credential'
+DEPLOYED = 'f' * 40
 
 
 @pytest.fixture
 def probe_env(monkeypatch):
-    monkeypatch.setenv('RENDER_EXTERNAL_HOSTNAME', 'baseball-billing-staging.onrender.com')
+    monkeypatch.setenv('RENDER_EXTERNAL_HOSTNAME', probe.EXPECTED_HOST)
+    monkeypatch.setenv('RENDER_GIT_COMMIT', DEPLOYED)
     monkeypatch.setenv('BASEBALL_BILLING_ROLLOUT', 'test')
     monkeypatch.setenv('BASEBALL_STRIPE_MODE', 'test')
     monkeypatch.setenv('STRIPE_SECRET_KEY', FAKE_KEY)
+    monkeypatch.setattr(probe, '_attempted', False)
+    monkeypatch.setattr(probe, '_deployed_revision_matches', lambda: True)
     def forbidden(*args, **kwargs):
         pytest.fail('Unexpected network access')
     monkeypatch.setattr(requests.sessions.Session, 'request', forbidden)
@@ -52,23 +56,19 @@ def transport(monkeypatch, *, status=200, payload=None, error=None):
 def test_unsafe_startup_has_no_requests(probe_env, monkeypatch, name, value, capsys):
     monkeypatch.setenv(name, value)
     calls = transport(monkeypatch)
-    with pytest.raises(RuntimeError, match='guard rejected startup'):
-        runpy.run_path(str(PROBE))
+    probe.run_startup_probe()
     assert calls == []
-    assert capsys.readouterr().out == ''
+    assert capsys.readouterr().out == 'STRIPE_SCOPE_CHECK skipped safety_guard\n'
 
 
 @pytest.mark.parametrize('account,comparison', [
     ('acct_1Ub8HEGSM5yahQur', 'SAME_AS_MUSIC'),
     ('acct_BaseballFixture', 'DIFFERENT_FROM_MUSIC'),
 ])
-def test_single_pinned_get_and_existing_app(probe_env, monkeypatch, capsys, account, comparison):
-    from baseball_billing_service import app
-    routes = [(r.path, r.methods) for r in app.routes]
+def test_single_get_per_process(probe_env, monkeypatch, capsys, account, comparison):
     calls = transport(monkeypatch, payload={'id': account, 'email': 'must_not_be_logged'})
-    result = runpy.run_path(str(PROBE))
-    assert result['app'] is app
-    assert [(r.path, r.methods) for r in app.routes] == routes
+    probe.run_startup_probe()
+    probe.run_startup_probe()
     assert calls == [('https://api.stripe.com/v1/account', {
         'auth': (FAKE_KEY, ''), 'timeout': 10, 'allow_redirects': False}, False)]
     assert capsys.readouterr().out == (
@@ -83,10 +83,74 @@ def test_single_pinned_get_and_existing_app(probe_env, monkeypatch, capsys, acco
     (200, [], None, 'details_suppressed'),
     (200, None, requests.ConnectionError(FAKE_KEY), 'details_suppressed'),
 ])
-def test_failures_are_sanitized_and_app_survives(probe_env, monkeypatch, capsys,
-                                               status, payload, error, expected):
+def test_failures_are_sanitized_without_retry(probe_env, monkeypatch, capsys,
+                                            status, payload, error, expected):
     calls = transport(monkeypatch, status=status, payload=payload, error=error)
-    result = runpy.run_path(str(PROBE))
-    assert result['app'] is not None
+    probe.run_startup_probe()
+    probe.run_startup_probe()
     assert len(calls) == 1
     assert capsys.readouterr().out == f'STRIPE_SCOPE_CHECK failed {expected}\n'
+
+
+@pytest.mark.parametrize('deployed,revision,activation,valid', [
+    (DEPLOYED, DEPLOYED+'\n'+probe.DIAGNOSTIC_PARENT+'\n', DEPLOYED, True),
+    ('', '', '', False),
+    ('bad', '', '', False),
+    (DEPLOYED, 'a'*40+'\n'+probe.DIAGNOSTIC_PARENT, DEPLOYED, False),
+    (DEPLOYED, DEPLOYED+'\n'+'b'*40, DEPLOYED, False),
+    (DEPLOYED, DEPLOYED+'\n'+probe.DIAGNOSTIC_PARENT, 'c'*40, False),
+])
+def test_revision_guard(monkeypatch, deployed, revision, activation, valid):
+    monkeypatch.setenv('RENDER_GIT_COMMIT', deployed)
+    calls = []
+    def command(args, **kwargs):
+        calls.append((args, kwargs))
+        return revision if args[1] == 'rev-parse' else activation
+    monkeypatch.setattr(probe.subprocess, 'check_output', command)
+    assert probe._deployed_revision_matches() is valid
+    for args, kwargs in calls:
+        assert args[0] == 'git'
+        assert kwargs['timeout'] == 3
+        assert kwargs['stderr'] is subprocess.DEVNULL
+
+
+def test_missing_git_skips_without_network(monkeypatch, capsys):
+    monkeypatch.setenv('RENDER_GIT_COMMIT', DEPLOYED)
+    def missing(*args, **kwargs): raise FileNotFoundError(FAKE_KEY)
+    monkeypatch.setattr(probe.subprocess, 'check_output', missing)
+    assert probe._deployed_revision_matches() is False
+    assert capsys.readouterr().out == ''
+
+
+def test_existing_start_target_lifespan_and_routes(probe_env, monkeypatch, capsys):
+    from starlette.testclient import TestClient
+    from baseball_billing_service import app
+    from baseball_billing_config import BillingConfig
+    calls = transport(monkeypatch, payload={'id': 'acct_BaseballFixture'})
+    assert [(r.path, r.methods) for r in app.routes] == [
+        ('/billing/health', {'GET', 'HEAD'}),
+        ('/billing/checkout', {'POST'}),
+        ('/billing/portal', {'POST'}),
+        ('/billing/webhooks/stripe', {'POST'}),
+    ]
+    with TestClient(app) as client:
+        response = client.get('/billing/health')
+        assert response.status_code == 200
+        assert response.json() == BillingConfig.from_environ().public_status()
+        assert len(calls) == 1
+        client.get('/billing/health')
+        assert len(calls) == 1
+    with TestClient(app):
+        assert len(calls) == 1
+    assert 'comparison=DIFFERENT_FROM_MUSIC' in capsys.readouterr().out
+
+
+def test_release_guard_skip_preserves_health(probe_env, monkeypatch, capsys):
+    from starlette.testclient import TestClient
+    from baseball_billing_service import app
+    monkeypatch.setattr(probe, '_deployed_revision_matches', lambda: False)
+    calls = transport(monkeypatch)
+    with TestClient(app) as client:
+        assert client.get('/billing/health').status_code == 200
+    assert calls == []
+    assert capsys.readouterr().out == 'STRIPE_SCOPE_CHECK skipped safety_guard\n'

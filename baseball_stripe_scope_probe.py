@@ -1,6 +1,9 @@
-﻿"""Temporary, GET-only Stripe scope probe for the Baseball staging process."""
+"""Temporary, GET-only Stripe scope probe for the Baseball staging process."""
 import os
 import re
+import subprocess
+import threading
+from pathlib import Path
 
 import requests
 
@@ -38,16 +41,44 @@ def report_account_scope(config):
         print("STRIPE_SCOPE_CHECK failed details_suppressed", flush=True)
 
 
-config = BillingConfig.from_environ()
-if (os.environ.get("RENDER_EXTERNAL_HOSTNAME") != EXPECTED_HOST
-        or not config.test_mode
-        or not config.stripe_secret_key.startswith("sk_test_")
-        or len(config.stripe_secret_key) <= len("sk_test_")):
-    raise RuntimeError("Staging account diagnostic guard rejected startup")
+# This revision must be the immediate child of the reviewed first diagnostic.
+DIAGNOSTIC_PARENT = "371543c3901453872e793a8c85b3362b10897f93"
+_attempted = False
+_lock = threading.Lock()
 
-# Existing application is exported unchanged; no new HTTP route is introduced.
-from baseball_billing_service import app  # noqa: E402
 
-if app is None:
-    raise RuntimeError("Existing billing application is unavailable")
-report_account_scope(config)
+def _deployed_revision_matches():
+    """Fail closed if Render metadata or the checkout's Git evidence is missing."""
+    deployed = os.environ.get('RENDER_GIT_COMMIT', '')
+    if not re.fullmatch(r'[0-9a-f]{40}', deployed):
+        return False
+    root = Path(__file__).resolve().parent
+    try:
+        revision = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD', 'HEAD^'], cwd=root,
+            stderr=subprocess.DEVNULL, timeout=3, text=True).splitlines()
+        activation = subprocess.check_output(
+            ['git', 'log', '-1', '--format=%H', '--',
+             'baseball_billing_service.py', 'baseball_stripe_scope_probe.py'],
+            cwd=root, stderr=subprocess.DEVNULL, timeout=3, text=True).strip()
+        return revision == [deployed, DIAGNOSTIC_PARENT] and activation == deployed
+    except Exception:
+        return False
+
+
+def run_startup_probe():
+    """At most one diagnostic attempt per process; no import-time network calls."""
+    global _attempted
+    config = BillingConfig.from_environ()
+    if (os.environ.get('RENDER_EXTERNAL_HOSTNAME') != EXPECTED_HOST
+            or not config.test_mode
+            or not config.stripe_secret_key.startswith('sk_test_')
+            or len(config.stripe_secret_key) <= len('sk_test_')
+            or not _deployed_revision_matches()):
+        print('STRIPE_SCOPE_CHECK skipped safety_guard', flush=True)
+        return
+    with _lock:
+        if _attempted:
+            return
+        _attempted = True
+    report_account_scope(config)
